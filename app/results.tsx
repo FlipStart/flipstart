@@ -1,24 +1,17 @@
 /**
- * results.tsx — UI ONLY
+ * results.tsx — Analysis screen (fast decision engine)
  *
- * This file:
- *   ✅ renders data
- *   ✅ handles user input
- *   ✅ calls calculation functions from utils/flipCalculations.ts
- *   ✅ triggers store updates via useFlipStore
- *
- * This file does NOT:
- *   ❌ contain business logic
- *   ❌ contain formulas
- *   ❌ duplicate calculations
+ * Structure: Identity → Decision → Quick Summary → Why This Rating
+ *            → Deep Analysis CTA → Market Value → Your Price → Actions
  */
 
 import {
-  Text, View, ScrollView, Pressable, Platform,
-  StyleSheet, TextInput, Alert, KeyboardAvoidingView,
+  Text, View, ScrollView, Pressable, Platform, Modal,
+  StyleSheet, TextInput, Alert, KeyboardAvoidingView, Clipboard,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useMemo } from 'react';
@@ -28,96 +21,251 @@ import { useScanContext } from '@/lib/scan-context';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
 import { FlipResult } from '@/types/flip';
-import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
-import {
-  computeFlipCalc,
-  getStarRationale,
-  getPlatformRationale,
-} from '@/utils/flipCalculations';
+import { computeFlipCalc } from '@/utils/flipCalculations';
+import { REC_THEMES } from '@/utils/recommendation';
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Listings helper ─────────────────────────────────────────────────────────
 
-function StarRow({ stars, size = 18 }: { stars: number; size?: number }) {
+/**
+ * Returns true ONLY if listing content has real non-empty text.
+ * Empty strings, null, undefined, or missing fields all return false.
+ */
+function hasGeneratedListings(listings: { ebay?: { title?: string; description?: string } | null; depop?: { title?: string; description?: string } | null } | null | undefined): boolean {
+  if (!listings) return false;
+  const ebayOk  = !!(listings.ebay?.title?.trim()  || listings.ebay?.description?.trim());
+  const depopOk = !!(listings.depop?.title?.trim() || listings.depop?.description?.trim());
+  return ebayOk || depopOk;
+}
+
+// ─── Palette ──────────────────────────────────────────────────────────────────
+const BG     = '#F0E8D4';
+const CARD   = '#FFF9EE';
+const CARD_B = '#DDD0B0';
+const FOREST = '#2A4A2A';
+const BROWN  = '#5A3A1A';
+const MUTED  = '#8A7050';
+const GOLD   = '#BE9C2C';
+const CREAM  = '#F4EED8';
+
+
+function confidenceLabel(conf: number): { text: string; color: string } {
+  if (conf >= 85) return { text: 'Strong Match',   color: '#2A5A2A' };
+  if (conf >= 60) return { text: 'Good Match',     color: '#7A5C1E' };
+  if (conf >= 35) return { text: 'Low Confidence', color: '#8A4A1A' };
+  return           { text: 'Uncertain',            color: '#6A2A2A' };
+}
+
+function buildWhyBullets(calc: ReturnType<typeof computeFlipCalc>, md: any, ra: any): string[] {
+  const bullets: string[] = [];
+  const demand = (md.demand ?? '').toLowerCase();
+  const comp   = (md.competition_level ?? '').toLowerCase();
+  const speed  = (md.sell_speed ?? '').toLowerCase();
+
+  if (calc.profit < 0)               bullets.push('Costs exceed estimated resale value at this price');
+  if (calc.profit >= 0 && calc.profit < 10) bullets.push(`Thin profit margin ($${calc.profit}) — low reward for risk`);
+  if (calc.profit >= 10)             bullets.push(`Est. $${calc.profit} profit after platform fees`);
+  if (md.average_sold_price)         bullets.push(`Average sold price is $${md.average_sold_price} on eBay`);
+  if (comp === 'high')               bullets.push('High seller competition makes it harder to stand out');
+  if (demand === 'low')              bullets.push('Buyer demand is currently low for this item type');
+  if (demand === 'high')             bullets.push('High buyer demand — good chance of a fast sale');
+  if (speed === 'slow')              bullets.push('Items like this tend to sit listed for a while');
+  if (ra.match_confidence < 60 && ra.match_confidence > 0)
+    bullets.push(`Confidence ${ra.match_confidence}% — estimate may vary from actual result`);
+
+  return bullets.slice(0, 3);
+}
+
+const SUMMARY_ICONS: Record<string, string> = {
+  'Est. Profit': 'attach-money',
+  'ROI':         'show-chart',
+  'Competition': 'group',
+  'Sell Speed':  'speed',
+};
+
+// ─── Image Viewer Modal ───────────────────────────────────────────────────────
+
+function ImageViewerModal({
+  uri, visible, onClose,
+}: { uri: string; visible: boolean; onClose: () => void }) {
   return (
-    <View style={{ flexDirection: 'row', gap: 2 }}>
-      {[1, 2, 3, 4, 5].map(i => (
-        <MaterialIcons
-          key={i}
-          name={i <= stars ? 'star' : 'star-outline'}
-          size={size}
-          color={i <= stars ? V.gold : V.tan}
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={iv.backdrop} onPress={onClose}>
+        <Pressable style={iv.closeBtn} onPress={onClose}>
+          <MaterialIcons name="close" size={22} color={CREAM} />
+        </Pressable>
+        <Image
+          source={{ uri }}
+          style={iv.image}
+          contentFit="contain"
+          transition={200}
         />
-      ))}
-    </View>
+      </Pressable>
+    </Modal>
   );
 }
 
-function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+const iv = StyleSheet.create({
+  backdrop: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  closeBtn: {
+    position: 'absolute', top: 52, right: 20,
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  image: { width: '90%', height: '75%' },
+});
+
+// ─── Listings Modal ───────────────────────────────────────────────────────────
+
+function ListingsModal({
+  visible, listings, onClose,
+}: {
+  visible: boolean;
+  listings: { ebay?: { title: string; description: string } | null; depop?: { title: string; description: string } | null } | null;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = (text: string, key: string) => {
+    Clipboard.setString(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
   return (
-    <View style={s.card}>
-      {title ? <Text style={s.cardTitle}>{title}</Text> : null}
-      {children}
-    </View>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={lm.overlay} onPress={onClose} />
+      <View style={lm.sheet}>
+        <View style={lm.handle} />
+        <View style={lm.sheetHeader}>
+          <Text style={lm.sheetTitle}>Generated Listings</Text>
+          <Pressable onPress={onClose} hitSlop={8}>
+            <MaterialIcons name="close" size={22} color={FOREST} />
+          </Pressable>
+        </View>
+
+        <ScrollView contentContainerStyle={{ paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
+          {(['ebay', 'depop'] as const).map(platform => {
+            const entry = listings?.[platform];
+            if (!entry) return null;
+            const titleKey = `${platform}_title`;
+            const descKey  = `${platform}_desc`;
+            return (
+              <View key={platform} style={lm.platformBlock}>
+                <Text style={lm.platformName}>{platform === 'ebay' ? 'eBay' : 'Depop'}</Text>
+
+                <View style={lm.fieldWrap}>
+                  <View style={lm.fieldHeader}>
+                    <Text style={lm.fieldLabel}>TITLE</Text>
+                    <Pressable onPress={() => copy(entry.title, titleKey)} style={lm.copyBtn}>
+                      <MaterialIcons name={copied === titleKey ? 'check' : 'content-copy'} size={13} color={FOREST} />
+                      <Text style={lm.copyBtnText}>{copied === titleKey ? 'Copied' : 'Copy'}</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={lm.fieldText} selectable>{entry.title}</Text>
+                </View>
+
+                <View style={lm.fieldWrap}>
+                  <View style={lm.fieldHeader}>
+                    <Text style={lm.fieldLabel}>DESCRIPTION</Text>
+                    <Pressable onPress={() => copy(entry.description, descKey)} style={lm.copyBtn}>
+                      <MaterialIcons name={copied === descKey ? 'check' : 'content-copy'} size={13} color={FOREST} />
+                      <Text style={lm.copyBtnText}>{copied === descKey ? 'Copied' : 'Copy'}</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={lm.fieldText} selectable>{entry.description}</Text>
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
 
-function MetricRow({
-  label, value, valueColor, bold,
-}: { label: string; value: string; valueColor?: string; bold?: boolean }) {
-  return (
-    <View style={s.metricRow}>
-      <Text style={s.metricLabel}>{label}</Text>
-      <Text style={[s.metricValue, valueColor ? { color: valueColor } : {}, bold ? { fontWeight: '900' } : {}]}>
-        {value}
-      </Text>
-    </View>
-  );
-}
+const lm = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.40)' },
+  sheet: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: CARD, borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    maxHeight: '80%', paddingHorizontal: 18, paddingBottom: 8,
+  },
+  handle: {
+    width: 40, height: 4, borderRadius: 2,
+    backgroundColor: CARD_B, alignSelf: 'center', marginTop: 10, marginBottom: 6,
+  },
+  sheetHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: CARD_B, marginBottom: 12,
+  },
+  sheetTitle:    { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '700', color: FOREST },
+  platformBlock: { marginBottom: 20 },
+  platformName:  { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '700', color: FOREST, marginBottom: 10 },
+  fieldWrap:     { backgroundColor: BG, borderRadius: 10, borderWidth: 1, borderColor: CARD_B, padding: 10, marginBottom: 8 },
+  fieldHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  fieldLabel:    { fontSize: 9, fontWeight: '700', color: MUTED, letterSpacing: 1 },
+  fieldText:     { fontSize: 12, color: BROWN, lineHeight: 18 },
+  copyBtn:       { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: CARD_B, backgroundColor: CARD },
+  copyBtnText:   { fontSize: 10, fontWeight: '600', color: FOREST },
+});
 
-function StatBox({ label, value, delta }: { label: string; value: string; delta?: string }) {
-  return (
-    <View style={s.statBox}>
-      <Text style={s.statValue}>{value}</Text>
-      {delta ? <Text style={s.statDelta}>{delta}</Text> : null}
-      <Text style={s.statLabel}>{label}</Text>
-    </View>
-  );
-}
-
-// ─── Hero theme map ───────────────────────────────────────────────────────────
-
-const HERO_THEMES = {
-  '🔥 GRAIL FIND':   { bg: V.green,       border: V.greenSecond },
-  '💰 STRONG BUY':   { bg: V.green,       border: V.greenSecond },
-  '✅ BUY':          { bg: V.greenSecond, border: V.green       },
-  '⚠️ RISKY BUY':   { bg: V.warning,     border: '#9A7010'     },
-  "❌ DON'T BUY":    { bg: '#7A3A1A',     border: '#5A2A0E'     },
-  '🤮 TRASH':        { bg: '#4A2010',     border: '#3A1808'     },
-} as const;
-
-// ─── Main Screen ──────────────────────────────────────────────────────────────
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ResultsScreen() {
-  const router   = useRouter();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { currentScan, setCurrentScan, updateScan } = useScanContext();
-  const {
-    addFlip, removeFlip,
-    pendingThriftPrices, setPendingThriftPrice,
-    globalStats, globalRank,
-  } = useFlipStore();
+  const { addFlip, removeFlip, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
 
-  const [thriftEditing, setThriftEditing] = useState(false);
-  const [listingsExpanded, setListingsExpanded] = useState(false);
+  const [thriftEditing,   setThriftEditing]   = useState(false);
+  const [listingsLoading, setListingsLoading] = useState(false);
+  const [listingsError,   setListingsError]   = useState(false);
+  const [imageModalOpen,  setImageModalOpen]  = useState(false);
+  const [listingsOpen,    setListingsOpen]    = useState(false);
+  const [isSaved,         setIsSaved]         = useState(false);
 
   const generateListingsMutation = trpc.scan.generateListings.useMutation();
 
-  // ── Guard ──────────────────────────────────────────────────────────────────
+  // ── Derive values before any early return so all hooks run unconditionally ──
+  // When currentScan is null these produce safe zero-defaults; the early
+  // return below prevents them from ever reaching the JSX.
+  // Use underscored optionals before the guard so useMemo can run unconditionally
+  const _md = currentScan?.market_data;
+  const _id = currentScan?.identification;
+  const _ra = currentScan?.risk_analysis;
+
+  const thriftPriceStr  = pendingThriftPrices[currentScan?.id ?? ''] ?? '';
+  const parsedThrift    = parseFloat(thriftPriceStr) || 0;
+  const effectiveThrift = parsedThrift > 0 ? parsedThrift : (_md?.suggested_buy_price ?? 0);
+
+  // useMemo MUST be before any early return — fixes the "fewer hooks" crash
+  const calc = useMemo(
+    () => computeFlipCalc(
+      _md?.adjusted_estimated_value ?? 0,
+      effectiveThrift,
+      _ra?.match_confidence ?? 0,
+      _md?.competition_level ?? '',
+      _id?.style_labels ?? [],
+      _id?.estimated_era ?? '',
+      _md?.demand ?? '',
+      _md?.sell_speed ?? '',
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [_md?.adjusted_estimated_value, effectiveThrift, _ra?.match_confidence,
+     _md?.competition_level, _id?.style_labels, _id?.estimated_era,
+     _md?.demand, _md?.sell_speed],
+  );
+
+  // Early return AFTER all hooks — safe now
   if (!currentScan) {
     return (
       <ScreenContainer>
         <View style={s.emptyWrap}>
-          <Text style={s.emptyText}>No scan data available</Text>
+          <Text style={s.emptyText}>No scan data available.</Text>
           <Pressable onPress={() => router.replace('/(tabs)' as any)} style={s.emptyBtn}>
             <Text style={s.emptyBtnText}>Go Home</Text>
           </Pressable>
@@ -126,468 +274,354 @@ export default function ResultsScreen() {
     );
   }
 
+  // Past the guard — currentScan is non-null. Redeclare as concrete types.
   const md = currentScan.market_data;
   const id = currentScan.identification;
   const ra = currentScan.risk_analysis;
 
-  // ── Read thrift price from store (persists during session) ────────────────
-  const thriftPriceStr = pendingThriftPrices[currentScan.id] ?? '';
-  const parsedThrift   = parseFloat(thriftPriceStr) || 0;
-  const effectiveThrift = parsedThrift > 0 ? parsedThrift : md.suggested_buy_price;
+  const rec          = calc.recommendation;
+  const theme        = REC_THEMES[rec.colorKey];
+  const confBadge    = confidenceLabel(ra.match_confidence);
+  const whyBullets   = rec.bullets;
+  const profitColor = calc.profit >= 15 ? '#2A5A2A' : calc.profit >= 0 ? '#7A5C1E' : '#8A3A2A';
 
-  // ── Live recalculation — ALL via utils/flipCalculations.ts ───────────────
-  const calc = useMemo(
-    () =>
-      computeFlipCalc(
-        md.adjusted_estimated_value,
-        effectiveThrift,
-        ra.match_confidence,
-        md.competition_level,
-        id.style_labels,
-        id.estimated_era,
-      ),
-    [md.adjusted_estimated_value, effectiveThrift, ra.match_confidence, md.competition_level, id.style_labels, id.estimated_era],
-  );
-
-  const heroTheme = HERO_THEMES[calc.buyLabel] ?? HERO_THEMES['🤮 TRASH'];
-
-  // ── Handlers ──────────────────────────────────────────────────────────────
   const haptic = (style: Haptics.ImpactFeedbackStyle) => {
     if (Platform.OS !== 'web') Haptics.impactAsync(style).catch(() => {});
   };
 
   const handleThriftChange = (text: string) => {
-    // Only allow numeric input with optional decimal
-    if (/^\d*\.?\d*$/.test(text)) {
-      setPendingThriftPrice(currentScan.id, text);
-    }
+    if (/^\d*\.?\d*$/.test(text)) setPendingThriftPrice(currentScan.id, text);
   };
 
   const handleConfirm = () => {
+    if (isSaved) return;  // prevent double tap
     haptic(Haptics.ImpactFeedbackStyle.Medium);
-
-    // Build FlipResult — the only place this object is constructed
+    setIsSaved(true);
     const flip: FlipResult = {
-      id:          currentScan.id,
-      imageUri:    currentScan.imageUri,
-      timestamp:   Date.now(),
-      itemName:    id.item_name,
-      brand:       id.brand,
-      category:    id.category,
-      era:         id.estimated_era,
-      styleLabels: id.style_labels,
-      material:    id.material_guess,
-      resaleValue:      md.adjusted_estimated_value,
-      resaleRangeLow:   md.estimated_resale_range.low,
-      resaleRangeHigh:  md.estimated_resale_range.high,
-      avgSoldPrice:     md.average_sold_price,
-      demand:           md.demand,
-      sellSpeed:        md.sell_speed,
-      competitionLevel: md.competition_level,
-      matchConfidence:  ra.match_confidence,
-      riskFlags:        ra.risk_flags,
-      thriftPrice:  calc.thriftPrice,
-      fees:         calc.fees,
-      profit:       calc.profit,
-      roi:          calc.roi,
-      buyScore:     calc.buyScore,
-      buyLabel:     calc.buyLabel,
-      stars:        calc.stars,
-      bestPlatform: calc.bestPlatform,
-
-      // Listings initialised as not-yet-generated; persisted when user generates them
-      listingsGenerated: false,
-      generatedAt:       null,
-      listingData:       null,
+      id: currentScan.id, imageUri: currentScan.imageUri, timestamp: Date.now(),
+      itemName: id.item_name, brand: id.brand, category: id.category,
+      era: id.estimated_era, styleLabels: id.style_labels, material: id.material_guess,
+      resaleValue: md.adjusted_estimated_value,
+      resaleRangeLow: md.estimated_resale_range.low,
+      resaleRangeHigh: md.estimated_resale_range.high,
+      avgSoldPrice: md.average_sold_price,
+      demand: md.demand, sellSpeed: md.sell_speed, competitionLevel: md.competition_level,
+      matchConfidence: ra.match_confidence, riskFlags: ra.risk_flags,
+      thriftPrice: calc.thriftPrice, fees: calc.fees, profit: calc.profit,
+      roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel,
+      stars: calc.stars, bestPlatform: calc.bestPlatform,
+      listingsGenerated: hasGeneratedListings(currentScan.listings),
+      generatedAt: hasGeneratedListings(currentScan.listings) ? Date.now() : null,
+      listingData: hasGeneratedListings(currentScan.listings)
+        ? {
+            ebay:  { title: currentScan.listings!.ebay.title,  description: currentScan.listings!.ebay.description  },
+            depop: { title: currentScan.listings!.depop.title, description: currentScan.listings!.depop.description },
+          }
+        : null,
     };
-
-    addFlip(flip);  // persisted to AsyncStorage inside the store
+    addFlip(flip);
     setCurrentScan(null);
     router.replace('/(tabs)' as any);
   };
 
   const handleDelete = () => {
-    Alert.alert('Delete Scan', 'Remove this scan from history?', [
+    Alert.alert('Delete Scan', 'Remove this scan?', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete', style: 'destructive',
-        onPress: () => {
+      { text: 'Delete', style: 'destructive', onPress: () => {
           removeFlip(currentScan.id);
           setCurrentScan(null);
           router.replace('/(tabs)' as any);
-        },
-      },
+      }},
     ]);
   };
 
   const handleGenerateListings = async () => {
-    if (currentScan.listings) { setListingsExpanded(true); return; }
+    if (hasGeneratedListings(currentScan.listings)) {
+      // Real content already exists — open modal without re-calling AI
+      setListingsOpen(true);
+      return;
+    }
+    if (listingsLoading) return;
     haptic(Haptics.ImpactFeedbackStyle.Medium);
+    setListingsLoading(true);
+    setListingsError(false);
     try {
       const result = await generateListingsMutation.mutateAsync({
-        item_name:                id.item_name,
-        brand:                    id.brand,
-        category:                 id.category,
-        estimated_era:            id.estimated_era,
-        material_guess:           id.material_guess,
-        style_labels:             id.style_labels,
-        adjusted_estimated_value: md.adjusted_estimated_value,
-        demand:                   md.demand,
+        item_name: id.item_name, brand: id.brand, category: id.category,
+        estimated_era: id.estimated_era, material_guess: id.material_guess,
+        style_labels: id.style_labels,
+        adjusted_estimated_value: md.adjusted_estimated_value, demand: md.demand,
       });
       updateScan(currentScan.id, { listings: result });
-      setListingsExpanded(true);
+      // Open immediately after generation
+      setListingsOpen(true);
     } catch {
-      Alert.alert('Error', 'Could not generate listings. Please try again.');
+      setListingsError(true);
+    } finally {
+      setListingsLoading(false);
     }
   };
 
-  // Navigate to deep-dive screen, passing only the scanId
   const handleOpenAnalysis = () => {
     haptic(Haptics.ImpactFeedbackStyle.Light);
-    // Pass scanId + a serialized snapshot of the current scan + calc so
-    // analysis-details can render before the user confirms (before flip is in store).
     const snapshot = JSON.stringify({
-      id:              currentScan.id,
-      imageUri:        currentScan.imageUri,
-      itemName:        id.item_name,
-      brand:           id.brand,
-      category:        id.category,
-      era:             id.estimated_era,
-      styleLabels:     id.style_labels,
-      material:        id.material_guess,
-      resaleValue:     md.adjusted_estimated_value,
-      resaleRangeLow:  md.estimated_resale_range.low,
+      id: currentScan.id, imageUri: currentScan.imageUri,
+      itemName: id.item_name, brand: id.brand, category: id.category,
+      era: id.estimated_era, styleLabels: id.style_labels, material: id.material_guess,
+      resaleValue: md.adjusted_estimated_value,
+      resaleRangeLow: md.estimated_resale_range.low,
       resaleRangeHigh: md.estimated_resale_range.high,
-      avgSoldPrice:    md.average_sold_price,
-      demand:          md.demand,
-      sellSpeed:       md.sell_speed,
-      competitionLevel:md.competition_level,
-      matchConfidence: ra.match_confidence,
-      riskFlags:       ra.risk_flags,
-      thriftPrice:     calc.thriftPrice,
-      fees:            calc.fees,
-      profit:          calc.profit,
-      roi:             calc.roi,
-      buyScore:        calc.buyScore,
-      buyLabel:        calc.buyLabel,
-      stars:           calc.stars,
-      bestPlatform:    calc.bestPlatform,
-      // history fields not yet known — zero until confirmed
+      avgSoldPrice: md.average_sold_price, demand: md.demand,
+      sellSpeed: md.sell_speed, competitionLevel: md.competition_level,
+      matchConfidence: ra.match_confidence, riskFlags: ra.risk_flags,
+      thriftPrice: calc.thriftPrice, fees: calc.fees, profit: calc.profit,
+      roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel,
+      stars: calc.stars, bestPlatform: calc.bestPlatform,
       timestamp: Date.now(),
+      listingsGenerated: hasGeneratedListings(currentScan.listings),
+      generatedAt: hasGeneratedListings(currentScan.listings) ? Date.now() : null,
+      listingData: hasGeneratedListings(currentScan.listings)
+        ? { ebay: currentScan.listings!.ebay, depop: currentScan.listings!.depop }
+        : null,
     });
-    router.push({
-      pathname: '/analysis-details' as any,
-      params: { scanId: currentScan.id, snapshot, source: 'results' },
-    });
+    router.push({ pathname: '/analysis-details' as any, params: { scanId: currentScan.id, snapshot, source: 'results' } });
   };
 
-  const listings = currentScan.listings;
+  const listings = hasGeneratedListings(currentScan.listings) ? currentScan.listings! : null;
 
   return (
-    <ScreenContainer>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
+    <ScreenContainer edges={['left', 'right', 'bottom']}>
+      {/* Modals */}
+      {currentScan.imageUri && (
+        <ImageViewerModal
+          uri={currentScan.imageUri}
+          visible={imageModalOpen}
+          onClose={() => setImageModalOpen(false)}
+        />
+      )}
+      <ListingsModal
+        visible={listingsOpen}
+        listings={listings}
+        onClose={() => setListingsOpen(false)}
+      />
+
+      {/* Header — outside ScrollView so safe area is not double-applied */}
+      <View style={[s.header, { paddingTop: insets.top + 4 }]}>
+        <Pressable
+          onPress={() => router.canGoBack() ? router.back() : router.replace('/(tabs)' as any)}
+          hitSlop={8} style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+        >
+          <MaterialIcons name="arrow-back" size={22} color={CREAM} />
+        </Pressable>
+
+        <View style={s.headerCenter}>
+          <Text style={s.headerBrand}>FlipStart</Text>
+          <View style={s.headerSubRow}>
+            <Text style={s.headerStar}>✦</Text>
+            <Text style={s.headerSub}>ANALYSIS</Text>
+            <Text style={s.headerStar}>✦</Text>
+          </View>
+        </View>
+
+        <Pressable onPress={handleDelete} hitSlop={8}>
+          <MaterialIcons name="delete-outline" size={22} color={CREAM} />
+        </Pressable>
+      </View>
+
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={s.scroll}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
 
-          {/* ── Header ── */}
-          <View style={s.header}>
-            <Pressable
-              onPress={() => router.canGoBack() ? router.back() : router.replace('/(tabs)' as any)}
-              style={({ pressed }) => [pressed && { opacity: 0.6 }]}
-              hitSlop={8}
-            >
-              <MaterialIcons name="arrow-back" size={22} color={V.green} />
-            </Pressable>
-            <Text style={s.headerTitle}>Analysis</Text>
-            <Pressable onPress={handleDelete} hitSlop={8}>
-              <MaterialIcons name="delete-outline" size={22} color={V.error} />
-            </Pressable>
-          </View>
-
-          {/* ══ 1. HERO CARD ══════════════════════════════════════════════ */}
-          <View style={[s.heroCard, { backgroundColor: heroTheme.bg, borderColor: heroTheme.border }]}>
-            <Text style={s.heroLabel}>{calc.buyLabel}</Text>
-
-            {/* Score badge */}
-            <View style={s.scorePill}>
-              <Text style={s.scorePillText}>{calc.buyScore}/100</Text>
-            </View>
-
-            <Text style={s.heroBuyLine}>
-              {calc.profit >= 0
-                ? `Buy this for $${md.suggested_buy_price} or less`
-                : 'Not worth buying at this price'}
-            </Text>
-
-            <View style={s.heroProfitRow}>
-              <Text style={s.heroProfit}>
-                {calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`}
-              </Text>
-              <Text style={s.heroProfitSub}> est. profit</Text>
-            </View>
-
-            {calc.roi > 0 && (
-              <View style={s.roiBadge}>
-                <Text style={s.roiBadgeText}>{calc.roi}% ROI</Text>
-              </View>
-            )}
-          </View>
-
-          {/* ══ 2. ITEM CARD ══════════════════════════════════════════════ */}
-          <SectionCard title="">
-            {/* Tapping image, title, or stars → analysis details */}
-            <Pressable style={s.itemRow} onPress={handleOpenAnalysis}>
-              <View style={s.thumbWrap}>
-                {currentScan.imageUri ? (
-                  <Image
-                    source={{ uri: currentScan.imageUri }}
-                    style={s.thumb}
-                    contentFit="cover"
-                    transition={200}
-                  />
-                ) : (
-                  <View style={[s.thumb, s.thumbPlaceholder]}>
-                    <MaterialIcons name="checkroom" size={28} color={V.textMuted} />
+          {/* ── 1. Item Identity Card — large and prominent ── */}
+          <View style={s.card}>
+            <View style={s.itemRow}>
+              {/* Tappable image */}
+              <Pressable
+                onPress={() => currentScan.imageUri && setImageModalOpen(true)}
+                style={({ pressed }) => [s.thumbWrap, pressed && { opacity: 0.88 }]}
+              >
+                {currentScan.imageUri
+                  ? <Image source={{ uri: currentScan.imageUri }} style={s.thumb} contentFit="cover" transition={200} />
+                  : <View style={[s.thumb, s.thumbFallback]}><MaterialIcons name="checkroom" size={32} color={MUTED} /></View>
+                }
+                {currentScan.imageUri && (
+                  <View style={s.thumbExpandHint}>
+                    <MaterialIcons name="zoom-in" size={11} color={CREAM} />
                   </View>
                 )}
-              </View>
+              </Pressable>
 
               <View style={s.itemInfo}>
                 <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
-                <Text style={s.itemBrand}>{id.brand} · {id.category}</Text>
-                <StarRow stars={calc.stars} />
-                <Text style={s.tapHint}>Tap for deep analysis →</Text>
-              </View>
-            </Pressable>
-
-            {id.style_labels.length > 0 && (
-              <View style={s.tagRow}>
-                {id.style_labels.slice(0, 5).map((lbl, i) => (
-                  <View key={i} style={s.tag}>
-                    <Text style={s.tagText}>{lbl}</Text>
+                <Text style={s.itemMeta}>{id.brand} · {id.category}</Text>
+                {id.estimated_era && id.estimated_era !== 'Unknown' && (
+                  <Text style={s.itemEra}>{id.estimated_era}</Text>
+                )}
+                {ra.match_confidence > 0 && (
+                  <View style={[s.confBadge, { backgroundColor: confBadge.color + '18', borderColor: confBadge.color + '50' }]}>
+                    <Text style={[s.confBadgeText, { color: confBadge.color }]}>
+                      {ra.match_confidence}% CONFIDENCE
+                    </Text>
+                    <Text style={[s.confBadgeSub, { color: confBadge.color }]}>{confBadge.text}</Text>
                   </View>
-                ))}
+                )}
               </View>
-            )}
-          </SectionCard>
+            </View>
+          </View>
 
-          {/* ══ 3. CORE METRICS + THRIFT PRICE INPUT ═════════════════════ */}
-          <SectionCard title="CORE METRICS">
-            <MetricRow label="Est. Resale Value" value={`$${md.adjusted_estimated_value}`} />
-            <View style={s.divider} />
-            <MetricRow label="Platform Fees (~12%)" value={`-$${calc.fees}`} valueColor={V.error} />
-            <View style={s.divider} />
-            <MetricRow
-              label="Est. Profit"
-              value={calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`}
-              valueColor={calc.profit >= 15 ? V.green : calc.profit >= 0 ? V.greenMuted : V.error}
-              bold
-            />
-            <View style={s.divider} />
-
-            {/* Editable thrift price */}
-            <View style={s.thriftRow}>
-              <Text style={s.metricLabel}>
-                {parsedThrift > 0 ? 'Your Thrift Price' : 'Max Buy Price'}
+          {/* ── 2. Decision Card ── */}
+          <View style={[s.decisionCard, { backgroundColor: theme.bg, borderColor: theme.border }]}>
+            <View style={s.decisionLeft}>
+              <MaterialIcons name={theme.icon as any} size={30} color={theme.iconColor} />
+            </View>
+            <View style={s.decisionMid}>
+              <Text style={[s.decisionLabel, { color: theme.textColor }]}>
+                {rec.displayLabel.toUpperCase()}
               </Text>
+              <Text style={[s.decisionReason, { color: theme.dimColor }]} numberOfLines={2}>
+                {rec.headline}
+              </Text>
+              <Text style={[s.decisionMaxBuy, { color: theme.dimColor }]}>
+                Only buy for ${Math.max(1, md.suggested_buy_price)} or less
+              </Text>
+            </View>
+            <View style={s.decisionRight}>
+              <Text style={[s.decisionProfitLabel, { color: theme.dimColor }]}>EST. PROFIT</Text>
+              <Text style={[s.decisionProfit, { color: theme.textColor }]}>
+                {calc.profit >= 0 ? '+' : ''}{calc.profit < 0 ? `-$${Math.abs(calc.profit)}` : `$${calc.profit}`}
+              </Text>
+            </View>
+          </View>
+
+          {/* ── 3. Quick Summary (with icons) ── */}
+          <View style={s.card}>
+            <Text style={s.sectionLabel}>QUICK SUMMARY</Text>
+            <View style={s.summaryRow}>
+              {[
+                { label: 'Est. Profit', value: `${calc.profit >= 0 ? '+' : '-'}$${Math.abs(calc.profit)}`, color: profitColor,    icon: 'attach-money'   },
+                { label: 'ROI',         value: calc.roi > 0 ? `${calc.roi}%` : '—',                         color: calc.roi >= 50 ? '#2A5A2A' : BROWN, icon: 'show-chart' },
+                { label: 'Competition', value: md.competition_level || '—',                                  color: (md.competition_level||'').toLowerCase() === 'high' ? '#8A3A2A' : '#2A5A2A', icon: 'group' },
+                { label: 'Sell Speed',  value: md.sell_speed || '—',                                        color: (md.sell_speed||'').toLowerCase() === 'slow' ? '#8A3A2A' : '#2A5A2A',        icon: 'speed'  },
+              ].map(m => (
+                <View key={m.label} style={s.summaryBox}>
+                  <MaterialIcons name={m.icon as any} size={18} color={m.color} style={{ marginBottom: 2 }} />
+                  <Text style={[s.summaryValue, { color: m.color }]}>{m.value}</Text>
+                  <Text style={s.summaryLabel}>{m.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+
+          {/* ── 4. Why This Rating ── */}
+          <View style={s.card}>
+            <Text style={s.sectionLabel}>WHY THIS RATING?</Text>
+            {whyBullets.map((b, i) => (
+              <View key={i} style={s.bulletRow}>
+                <Text style={s.bulletDot}>•</Text>
+                <Text style={s.bulletText}>{b}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* ── 5. Deep Analysis CTA — prominent, after Why, before Market Value ── */}
+          <Pressable onPress={handleOpenAnalysis} style={({ pressed }) => [s.deepCtaCard, pressed && { opacity: 0.88 }]}>
+            <View style={s.deepCtaInner}>
+              <View style={s.deepCtaTextCol}>
+                <Text style={s.deepCtaTitle}>WANT MORE DETAILS?</Text>
+                <Text style={s.deepCtaSub}>Price breakdown · Platform data · Item details</Text>
+              </View>
+              <View style={s.deepCtaArrow}>
+                <Text style={s.deepCtaLink}>View Deep Analysis</Text>
+                <MaterialIcons name="chevron-right" size={18} color={FOREST} />
+              </View>
+            </View>
+          </Pressable>
+
+          {/* ── 6. Market Value ── */}
+          <View style={s.card}>
+            <Text style={s.sectionLabel}>MARKET VALUE</Text>
+            <View style={s.marketRow}>
+              <View style={s.marketBox}>
+                <Text style={s.marketLabel}>AVERAGE SOLD</Text>
+                <Text style={s.marketValue}>${md.average_sold_price || '—'}</Text>
+              </View>
+              <View style={[s.marketBox, s.marketBoxMid]}>
+                <Text style={s.marketLabel}>MARKET RANGE</Text>
+                <Text style={s.marketValue}>${md.estimated_resale_range?.low}–${md.estimated_resale_range?.high}</Text>
+              </View>
+              <View style={s.marketBox}>
+                <Text style={s.marketLabel}>EST. RESALE</Text>
+                <Text style={s.marketValue}>${md.adjusted_estimated_value}</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* ── 7. Your Price ── */}
+          <View style={s.card}>
+            <Text style={s.sectionLabel}>YOUR PRICE</Text>
+            <View style={s.priceRow}>
+              <Text style={s.priceHint}>Your thrift price</Text>
               {thriftEditing ? (
-                <View style={s.thriftInputWrap}>
-                  <Text style={s.thriftDollar}>$</Text>
+                <View style={s.priceInputWrap}>
+                  <Text style={s.priceDollar}>$</Text>
                   <TextInput
-                    style={s.thriftInput}
-                    value={thriftPriceStr}
-                    onChangeText={handleThriftChange}
-                    keyboardType="decimal-pad"
-                    autoFocus
-                    onBlur={() => setThriftEditing(false)}
-                    returnKeyType="done"
+                    style={s.priceInput} value={thriftPriceStr}
+                    onChangeText={handleThriftChange} keyboardType="decimal-pad"
+                    autoFocus returnKeyType="done" onBlur={() => setThriftEditing(false)}
                     onSubmitEditing={() => setThriftEditing(false)}
-                    placeholder={String(md.suggested_buy_price)}
-                    placeholderTextColor={V.textMuted}
+                    placeholder={String(md.suggested_buy_price)} placeholderTextColor={MUTED}
                   />
                 </View>
               ) : (
                 <Pressable
-                  onPress={() => {
-                    setThriftEditing(true);
-                    haptic(Haptics.ImpactFeedbackStyle.Light);
-                  }}
-                  style={s.thriftDisplay}
+                  onPress={() => { setThriftEditing(true); haptic(Haptics.ImpactFeedbackStyle.Light); }}
+                  style={s.priceDisplay}
                 >
-                  <Text style={s.thriftDisplayText}>
-                    ${parsedThrift > 0 ? parsedThrift : md.suggested_buy_price}
-                  </Text>
-                  <MaterialIcons name="edit" size={14} color={V.green} />
+                  <Text style={s.priceDisplayText}>${parsedThrift > 0 ? parsedThrift : md.suggested_buy_price}</Text>
+                  <MaterialIcons name="edit" size={14} color={FOREST} />
                 </Pressable>
               )}
             </View>
+            <Text style={s.priceAutoNote}>✓ All values update automatically</Text>
+          </View>
 
-            {parsedThrift > 0 && (
-              <Text style={s.thriftHint}>
-                ✓ All values recalculated using your price of ${parsedThrift}
-              </Text>
-            )}
-          </SectionCard>
-
-          {/* ══ 4. BUY RATING ════════════════════════════════════════════ */}
-          <SectionCard title="BUY RATING">
-            {/* Score bar */}
-            <View style={s.scoreBarRow}>
-              <View style={[s.scoreBarBg]}>
-                <View
-                  style={[
-                    s.scoreBarFill,
-                    {
-                      width: `${calc.buyScore}%` as any,
-                      backgroundColor:
-                        calc.buyScore >= 70 ? V.green :
-                        calc.buyScore >= 40 ? V.warning : V.error,
-                    },
-                  ]}
-                />
-              </View>
-              <Text style={s.scoreBarNum}>{calc.buyScore}/100</Text>
-            </View>
-
-            {/* Label */}
-            <View style={[s.ratingPill, { backgroundColor: heroTheme.bg + '22', borderColor: heroTheme.bg }]}>
-              <Text style={[s.ratingPillText, { color: heroTheme.bg }]}>{calc.buyLabel}</Text>
-            </View>
-
-            {/* Factors */}
-            <View style={s.factorsRow}>
-              {[
-                { label: 'Profit',      value: `$${calc.profit}` },
-                { label: 'Confidence',  value: `${ra.match_confidence}%` },
-                { label: 'Competition', value: md.competition_level },
-              ].map(f => (
-                <View key={f.label} style={s.factorBox}>
-                  <Text style={s.factorLabel}>{f.label}</Text>
-                  <Text style={s.factorValue}>{f.value}</Text>
-                </View>
-              ))}
-            </View>
-
-            <View style={s.platformRow}>
-              <MaterialIcons name="store" size={13} color={V.textMuted} />
-              <Text style={s.platformText}>
-                Best platform: <Text style={s.platformBold}>{calc.bestPlatform}</Text>
-              </Text>
-            </View>
-          </SectionCard>
-
-          {/* ══ 5. ACTION BUTTONS ════════════════════════════════════════ */}
-          <View style={s.actionRow}>
+          {/* ── 8. Actions ── */}
+          <View style={s.actionsRow}>
             <Pressable
               onPress={handleGenerateListings}
-              disabled={generateListingsMutation.isPending}
-              style={({ pressed }) => [s.actionBtn, s.actionOutline, pressed && { opacity: 0.8 }]}
+              disabled={listingsLoading}
+              style={({ pressed }) => [s.actionOutline, pressed && { opacity: 0.8 }]}
             >
-              <MaterialIcons name="edit-note" size={18} color={V.green} />
+              {listingsLoading
+                ? <MaterialIcons name="hourglass-empty" size={17} color={FOREST} />
+                : <MaterialIcons name="edit-note" size={17} color={FOREST} />}
               <Text style={s.actionOutlineText}>
-                {generateListingsMutation.isPending ? 'Generating...' : 'Generate Listings'}
+                {listingsLoading ? 'Generating…' : hasGeneratedListings(listings) ? 'View Listings' : 'Generate Listings'}
               </Text>
             </Pressable>
 
             <Pressable
-              onPress={() => {
-                haptic(Haptics.ImpactFeedbackStyle.Light);
-                Alert.alert('Saved', 'Flip saved to your history.');
-              }}
-              style={({ pressed }) => [s.actionBtn, s.actionSolid, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
-            >
-              <MaterialIcons name="bookmark" size={18} color={V.white} />
-              <Text style={s.actionSolidText}>Save Flip</Text>
-            </Pressable>
-          </View>
-
-          {/* Listings */}
-          {(listingsExpanded || listings) && listings ? (
-            <SectionCard title="LISTINGS">
-              {/* Best platform first */}
-              {([calc.bestPlatform === 'Depop' ? 'depop' : 'ebay', calc.bestPlatform === 'Depop' ? 'ebay' : 'depop'] as const).map(platform => {
-                const listing = listings[platform as 'ebay' | 'depop'];
-                if (!listing) return null;
-                return (
-                  <View key={platform} style={s.listingBlock}>
-                    <View style={s.listingHeader}>
-                      <Text style={s.listingPlatform}>
-                        {platform === 'ebay' ? 'eBay' : 'Depop'}
-                        {platform === calc.bestPlatform.toLowerCase() ? '  ⭐ Recommended' : ''}
-                      </Text>
-                    </View>
-                    <View style={[s.listingContent]}>
-                      <Text style={s.listingTitle}>{listing.title}</Text>
-                      <Text style={s.listingDesc}>{listing.description}</Text>
-                    </View>
-                  </View>
-                );
-              })}
-            </SectionCard>
-          ) : null}
-
-          {/* ══ 6. USER STATS ════════════════════════════════════════════ */}
-          <SectionCard title="YOUR STATS">
-            <View style={s.statsRow}>
-              <StatBox
-                label="Total Flips"
-                value={String(globalStats.totalFlips)}
-              />
-              <View style={s.statDivider} />
-              <StatBox
-                label="Lifetime ROI"
-                value={`${globalStats.lifetimeRoi}%`}
-                delta={calc.roi > 0 ? `+${calc.roi}% this flip` : undefined}
-              />
-              <View style={s.statDivider} />
-              <StatBox
-                label="Total Profit"
-                value={`$${Math.round(globalStats.totalProfit)}`}
-                delta={calc.profit > 0 ? `+$${calc.profit} this flip` : undefined}
-              />
-            </View>
-          </SectionCard>
-
-          {/* ══ 7. GLOBAL RANK ═══════════════════════════════════════════ */}
-          <SectionCard title="GLOBAL RANK">
-            <View style={s.rankRow}>
-              <Text style={s.rankBadge}>{globalRank.rank}</Text>
-              <View>
-                <Text style={s.rankScore}>{globalRank.score} pts</Text>
-                <Text style={s.rankSub}>ROI × 0.4 + Avg Profit × 0.3 + Win Rate × 0.3</Text>
-              </View>
-            </View>
-          </SectionCard>
-
-          {/* ══ 8. CONFIRM + DELETE ═══════════════════════════════════════ */}
-          <View style={s.confirmRow}>
-            <Pressable
               onPress={handleConfirm}
+              disabled={isSaved}
               style={({ pressed }) => [
-                s.confirmBtn,
-                pressed && { opacity: 0.88, transform: [{ scale: 0.97 }] },
+                s.actionSolid,
+                pressed && !isSaved && { opacity: 0.88, transform: [{ scale: 0.97 }] },
+                isSaved && { backgroundColor: '#2A5A2A', opacity: 0.85 },
               ]}
             >
-              <MaterialIcons name="check-circle" size={20} color={V.white} />
-              <Text style={s.confirmBtnText}>Confirm Item</Text>
-            </Pressable>
-
-            <Pressable
-              onPress={handleDelete}
-              style={({ pressed }) => [s.deleteIconBtn, pressed && { opacity: 0.6 }]}
-              hitSlop={8}
-            >
-              <MaterialIcons name="delete-outline" size={22} color={V.error} />
+              <MaterialIcons name={isSaved ? 'check' : 'bookmark'} size={17} color={CREAM} />
+              <Text style={s.actionSolidText}>{isSaved ? 'Saved' : 'Save to History'}</Text>
             </Pressable>
           </View>
 
-          <View style={{ height: 40 }} />
+          {listingsError && (
+            <Text style={s.listingsErrText}>Couldn't generate listings. Tap to retry.</Text>
+          )}
+
+          <View style={{ height: 32 }} />
         </ScrollView>
       </KeyboardAvoidingView>
     </ScreenContainer>
@@ -597,124 +631,123 @@ export default function ResultsScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  scroll: { paddingHorizontal: V.screenPad, paddingBottom: 20 },
-
+  scroll:    { backgroundColor: BG, paddingBottom: 20 },
   emptyWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 16 },
-  emptyText: { fontSize: 16, color: V.textMuted },
-  emptyBtn:  { backgroundColor: V.green, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 50 },
-  emptyBtnText: { color: V.white, fontWeight: '700', fontSize: 15 },
+  emptyText: { fontSize: 16, color: BROWN },
+  emptyBtn:  { backgroundColor: FOREST, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 50 },
+  emptyBtnText: { color: CREAM, fontWeight: '700' },
 
+  // Header — deep forest green, no separate safe-area view needed because paddingTop handles it
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 12,
+    paddingHorizontal: 18, paddingTop: 14, paddingBottom: 14,
+    backgroundColor: FOREST,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15, shadowRadius: 4, elevation: 4,
   },
-  headerTitle: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '700', color: V.green },
-
-  // Hero
-  heroCard: {
-    borderRadius: 18, borderWidth: 2,
-    padding: 20, marginBottom: 12, gap: 8,
-    shadowColor: V.textDark, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18, shadowRadius: 12, elevation: 5,
-    overflow: 'hidden',
-  },
-  heroLabel:    { fontFamily: FONTS.serif, fontSize: 26, fontWeight: '800', color: V.white, letterSpacing: -0.3 },
-  scorePill:    { position: 'absolute', top: 14, right: 14, backgroundColor: 'rgba(0,0,0,0.20)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  scorePillText:{ fontSize: 11, fontWeight: '700', color: V.white },
-  heroBuyLine:  { fontSize: 13, color: V.white, opacity: 0.82 },
-  heroProfitRow:{ flexDirection: 'row', alignItems: 'baseline', gap: 4 },
-  heroProfit:   { fontSize: 36, fontWeight: '900', color: V.white, letterSpacing: -1 },
-  heroProfitSub:{ fontSize: 13, color: V.white, opacity: 0.75 },
-  roiBadge:     { alignSelf: 'flex-start', borderWidth: 1, borderColor: 'rgba(255,255,255,0.40)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  roiBadgeText: { fontSize: 12, fontWeight: '700', color: V.white },
+  // Header center branding
+  headerCenter:  { alignItems: 'center', gap: 2 },
+  headerBrand:   { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: CREAM, letterSpacing: 0.3 },
+  headerSubRow:  { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  headerSub:     { fontSize: 14, fontWeight: '700', color: GOLD, letterSpacing: 2.0, textTransform: 'uppercase' },
+  headerStar:    { fontSize: 14, color: GOLD },
 
   // Cards
   card: {
-    backgroundColor: V.cardBg, borderRadius: 14, borderWidth: 1, borderColor: V.border,
-    padding: 16, marginBottom: 12,
-    shadowColor: V.textDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2,
+    backgroundColor: CARD, borderRadius: 14, borderWidth: 1, borderColor: CARD_B,
+    marginHorizontal: 14, marginTop: 12, padding: 16,
+    shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.07, shadowRadius: 4, elevation: 2,
   },
-  cardTitle: {
-    fontSize: 10, fontWeight: '700', color: V.textMuted,
-    textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 12,
+  sectionLabel: {
+    fontSize: 10, fontWeight: '700', color: MUTED,
+    letterSpacing: 1.4, textTransform: 'uppercase', marginBottom: 12,
   },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: V.border, marginVertical: 8 },
 
-  // Item
-  itemRow:  { flexDirection: 'row', gap: 14, alignItems: 'flex-start' },
-  thumbWrap:{ borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: V.border },
-  thumb:    { width: 88, height: 88, borderRadius: 11 },
-  thumbPlaceholder: { backgroundColor: V.tan, justifyContent: 'center', alignItems: 'center' },
+  // Item identity card — large
+  itemRow:    { flexDirection: 'row', gap: 14, alignItems: 'flex-start' },
+  thumbWrap:  { position: 'relative', borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: CARD_B },
+  thumb:      { width: 100, height: 100, borderRadius: 11 },
+  thumbFallback: { backgroundColor: '#EDE0C4', justifyContent: 'center', alignItems: 'center' },
+  thumbExpandHint: {
+    position: 'absolute', bottom: 4, right: 4,
+    backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 8,
+    paddingHorizontal: 4, paddingVertical: 2,
+  },
   itemInfo: { flex: 1, gap: 5 },
-  itemName: { fontSize: 16, fontWeight: '800', color: V.textDark, lineHeight: 21 },
-  itemBrand:{ fontSize: 12, color: V.textMuted },
-  tapHint:  { fontSize: 10, color: V.green, marginTop: 2 },
-  tagRow:   { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12 },
-  tag:      { backgroundColor: V.tan, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 8 },
-  tagText:  { fontSize: 11, fontWeight: '600', color: V.textMuted },
+  itemName: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '700', color: FOREST, lineHeight: 26 },
+  itemMeta: { fontSize: 13, color: MUTED },
+  itemEra:  { fontSize: 11, color: MUTED, fontStyle: 'italic' },
+  confBadge: {
+    alignSelf: 'flex-start', borderWidth: 1, borderRadius: 8,
+    paddingHorizontal: 9, paddingVertical: 4, marginTop: 4, gap: 1,
+  },
+  confBadgeText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
+  confBadgeSub:  { fontSize: 9, fontWeight: '500' },
 
-  // Metrics
-  metricRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
-  metricLabel: { fontSize: 14, fontWeight: '500', color: V.textMuted },
-  metricValue: { fontSize: 15, fontWeight: '700', color: V.textDark },
+  // Decision card
+  decisionCard: {
+    flexDirection: 'row', alignItems: 'center',
+    marginHorizontal: 14, marginTop: 12,
+    borderRadius: 14, borderWidth: 1.5,
+    padding: 16, gap: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 5, elevation: 4,
+  },
+  decisionLeft:        { width: 38, alignItems: 'center' },
+  decisionMid:         { flex: 1, gap: 4 },
+  decisionLabel:       { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', letterSpacing: 0.2 },
+  decisionReason:      { fontSize: 12 },
+  decisionMaxBuy:      { fontSize: 11, marginTop: 4, fontStyle: 'italic' },
+  decisionRight:       { alignItems: 'flex-end', gap: 2, minWidth: 68 },
+  decisionProfitLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 0.5 },
+  decisionProfit:      { fontFamily: FONTS.serif, fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
 
-  // Thrift price
-  thriftRow:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
-  thriftInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: V.pageBg, borderRadius: 10, borderWidth: 1.5, borderColor: V.green, paddingHorizontal: 10, paddingVertical: 6 },
-  thriftDollar:    { fontSize: 16, fontWeight: '700', color: V.green },
-  thriftInput:     { fontSize: 18, fontWeight: '800', color: V.textDark, minWidth: 80, padding: 0 },
-  thriftDisplay:   { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: V.pageBg, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1.5, borderColor: V.border },
-  thriftDisplayText: { fontSize: 16, fontWeight: '800', color: V.textDark },
-  thriftHint:      { fontSize: 11, color: V.green, marginTop: 6, fontStyle: 'italic' },
+  // Quick summary
+  summaryRow:   { flexDirection: 'row' },
+  summaryBox:   { flex: 1, alignItems: 'center', paddingVertical: 4, gap: 2 },
+  summaryValue: { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800' },
+  summaryLabel: { fontSize: 9, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.4, textAlign: 'center' },
 
-  // Buy rating
-  scoreBarRow:  { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
-  scoreBarBg:   { flex: 1, height: 8, borderRadius: 4, overflow: 'hidden', backgroundColor: V.tan },
-  scoreBarFill: { height: '100%', borderRadius: 4 },
-  scoreBarNum:  { fontSize: 13, fontWeight: '700', color: V.textDark, minWidth: 45 },
-  ratingPill:   { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1.5, marginBottom: 12 },
-  ratingPillText: { fontSize: 14, fontWeight: '800' },
-  factorsRow:   { flexDirection: 'row', gap: 0, marginBottom: 10 },
-  factorBox:    { flex: 1, alignItems: 'center', paddingVertical: 8, backgroundColor: V.pageBg, borderRadius: 10, margin: 3, gap: 3 },
-  factorLabel:  { fontSize: 9, color: V.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 },
-  factorValue:  { fontSize: 13, fontWeight: '700', color: V.textDark },
-  platformRow:  { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  platformText: { fontSize: 12, color: V.textMuted },
-  platformBold: { fontWeight: '700', color: V.textDark },
+  // Bullets
+  bulletRow: { flexDirection: 'row', gap: 8, marginBottom: 6, alignItems: 'flex-start' },
+  bulletDot: { fontSize: 14, color: GOLD, lineHeight: 20 },
+  bulletText:{ flex: 1, fontSize: 13, color: BROWN, lineHeight: 20 },
+
+  // Deep analysis CTA
+  deepCtaCard: {
+    backgroundColor: CARD, borderRadius: 14,
+    borderWidth: 1.5, borderColor: GOLD + '70',
+    marginHorizontal: 14, marginTop: 12,
+    shadowColor: GOLD, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.14, shadowRadius: 6, elevation: 3,
+  },
+  deepCtaInner:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16 },
+  deepCtaTextCol: { flex: 1, gap: 3 },
+  deepCtaTitle:   { fontSize: 11, fontWeight: '700', color: FOREST, letterSpacing: 1 },
+  deepCtaSub:     { fontSize: 11, color: MUTED },
+  deepCtaArrow:   { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  deepCtaLink:    { fontSize: 13, fontWeight: '700', color: FOREST, fontFamily: FONTS.serif },
+
+  // Market value
+  marketRow:    { flexDirection: 'row' },
+  marketBox:    { flex: 1, alignItems: 'center', gap: 4 },
+  marketBoxMid: { borderLeftWidth: 1, borderRightWidth: 1, borderColor: CARD_B },
+  marketLabel:  { fontSize: 9, fontWeight: '700', color: MUTED, letterSpacing: 0.5, textAlign: 'center' },
+  marketValue:  { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: FOREST, textAlign: 'center' },
+
+  // Your price
+  priceRow:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  priceHint:      { fontSize: 13, color: BROWN },
+  priceInputWrap: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, borderWidth: 1.5, borderColor: FOREST, paddingHorizontal: 10, paddingVertical: 6, gap: 2 },
+  priceDollar:    { fontSize: 15, fontWeight: '700', color: FOREST },
+  priceInput:     { fontSize: 18, fontWeight: '800', color: FOREST, minWidth: 70, padding: 0 },
+  priceDisplay:   { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 8, borderWidth: 1.5, borderColor: CARD_B, paddingHorizontal: 12, paddingVertical: 7 },
+  priceDisplayText: { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: FOREST },
+  priceAutoNote:  { fontSize: 10, color: MUTED, marginTop: 6, fontStyle: 'italic' },
 
   // Actions
-  actionRow:         { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  actionBtn:         { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 12 },
-  actionSolid:       { backgroundColor: V.green },
-  actionOutline:     { backgroundColor: V.cardBg, borderWidth: 1.5, borderColor: V.green },
-  actionSolidText:   { fontSize: 14, fontWeight: '700', color: V.white },
-  actionOutlineText: { fontSize: 14, fontWeight: '700', color: V.green },
-
-  // Listings
-  listingBlock:   { marginBottom: 14 },
-  listingHeader:  { marginBottom: 8 },
-  listingPlatform:{ fontSize: 14, fontWeight: '700', color: V.textDark },
-  listingContent: { borderRadius: 10, borderWidth: 1, borderColor: V.border, padding: 12, backgroundColor: V.pageBg },
-  listingTitle:   { fontSize: 13, fontWeight: '700', color: V.textDark, marginBottom: 6, lineHeight: 19 },
-  listingDesc:    { fontSize: 12, color: V.textMuted, lineHeight: 18 },
-
-  // Stats
-  statsRow:   { flexDirection: 'row', alignItems: 'center' },
-  statBox:    { flex: 1, alignItems: 'center', paddingVertical: 8, gap: 3 },
-  statValue:  { fontSize: 20, fontWeight: '900', color: V.green },
-  statDelta:  { fontSize: 10, fontWeight: '700', color: V.gold },
-  statLabel:  { fontSize: 10, color: V.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 },
-  statDivider:{ width: 1, height: 40, backgroundColor: V.border },
-
-  // Rank
-  rankRow:   { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  rankBadge: { fontSize: 32, fontWeight: '900' },
-  rankScore: { fontSize: 18, fontWeight: '800', color: V.textDark },
-  rankSub:   { fontSize: 10, color: V.textMuted, marginTop: 2, maxWidth: 200 },
-
-  // Confirm
-  confirmRow:    { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
-  confirmBtn:    { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16, borderRadius: 50, backgroundColor: V.green },
-  confirmBtnText:{ fontSize: 16, fontWeight: '700', color: V.white },
-  deleteIconBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: V.cardBg, borderWidth: 1.5, borderColor: V.border, justifyContent: 'center', alignItems: 'center' },
+  actionsRow:      { flexDirection: 'row', gap: 10, marginHorizontal: 14, marginTop: 14 },
+  actionOutline:   { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 14, borderRadius: 10, borderWidth: 1.5, borderColor: FOREST, backgroundColor: CARD },
+  actionOutlineText: { fontSize: 13, fontWeight: '700', color: FOREST, fontFamily: FONTS.serif },
+  actionSolid:     { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 14, borderRadius: 10, backgroundColor: FOREST },
+  actionSolidText: { fontSize: 13, fontWeight: '700', color: CREAM, fontFamily: FONTS.serif },
+  listingsErrText: { fontSize: 11, color: '#8A3A2A', textAlign: 'center', marginTop: 6 },
 });

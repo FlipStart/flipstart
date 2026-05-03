@@ -12,6 +12,7 @@ import type {
   BuyLabel, Platform, RankLabel,
   FlipCalc, GlobalStats, GlobalRank, FlipResult,
 } from '@/types/flip';
+import { getRecommendation, type Recommendation } from '@/utils/recommendation';
 
 // ─── Rank gate constants ──────────────────────────────────────────────────────
 // Volume thresholds for rank eligibility.
@@ -206,6 +207,8 @@ export function computeFlipCalc(
   competitionLevel: string,
   styleLabels:      string[],
   era:              string,
+  demandLevel:      string = '',
+  sellSpeed:        string = '',
 ): FlipCalc {
   const fees        = calculateFees(resaleValue);
   const profit      = calculateProfit(resaleValue, fees, thriftPrice);
@@ -215,7 +218,23 @@ export function computeFlipCalc(
   const stars       = getStarRating(profit);
   const bestPlatform = getBestPlatform(styleLabels, era, resaleValue);
 
-  return { thriftPrice, fees, profit, roi, buyScore, buyLabel, stars, bestPlatform };
+  // Situational recommendation — replaces the old binary buy/skip logic
+  const recommendation = getRecommendation({
+    netProfit:        profit,
+    resaleValue,
+    thriftPrice,
+    roi,
+    matchConfidence,
+    competitionLevel,
+    demandLevel,
+    sellSpeed,
+  });
+
+  return {
+    thriftPrice, fees, profit, roi,
+    buyScore, buyLabel, stars, bestPlatform,
+    recommendation,
+  };
 }
 
 // ─── Global stats (derived from history) ─────────────────────────────────────

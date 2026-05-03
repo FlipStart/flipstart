@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Text, View, StyleSheet, Alert, ScrollView, FlatList, Platform, ImageBackground, Pressable, Image } from 'react-native';
+import { Text, View, StyleSheet, Alert, ScrollView, FlatList, Platform, ImageBackground, Pressable, Image, Modal } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
@@ -27,6 +27,8 @@ import { captureFromCamera, captureMultipleFromGallery, type CapturedPhoto, type
 import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
+import { isOnboardingComplete, completeOnboarding, getUserMode, setUserMode, type UserMode } from '@/lib/onboarding-storage';
+import { ModeToggle } from '@/components/home/ModeToggle';
 
 // ─── Background image (hanger / clothing lifestyle photo) ────────────────────
 const BG_IMAGE_URL =
@@ -113,6 +115,19 @@ function HuntModeBar({ onPress }: { onPress: () => void }) {
         </View>
         <Text style={hm.chevron}>›</Text>
       </View>
+
+      {/* ── Safari grass — tall reeds growing from the bottom edge ────────── */}
+      {/* Left cluster */}
+      <View style={[hm.blade, { left: 18,  height: 18, transform: [{ rotate: '-8deg'  }] }]} />
+      <View style={[hm.blade, { left: 24,  height: 22, transform: [{ rotate: '4deg'   }] }]} />
+      <View style={[hm.blade, { left: 30,  height: 16, transform: [{ rotate: '-3deg'  }] }]} />
+      {/* Mid-left cluster */}
+      <View style={[hm.blade, { left: 72,  height: 14, transform: [{ rotate: '6deg'   }] }]} />
+      <View style={[hm.blade, { left: 78,  height: 19, transform: [{ rotate: '-5deg'  }] }]} />
+      {/* Right cluster */}
+      <View style={[hm.blade, { right: 60, height: 17, transform: [{ rotate: '7deg'   }] }]} />
+      <View style={[hm.blade, { right: 66, height: 21, transform: [{ rotate: '-4deg'  }] }]} />
+      <View style={[hm.blade, { right: 72, height: 13, transform: [{ rotate: '3deg'   }] }]} />
     </Pressable>
   );
 }
@@ -122,10 +137,10 @@ const hm = StyleSheet.create({
     flexDirection:     'row',
     alignItems:        'center',
     backgroundColor:   HUNT_BG,
-    paddingVertical:   8,          // slightly taller than before
-    paddingHorizontal: 12,
-    gap:               9,
-    overflow:          'hidden',   // clips claw marks to rounded corners
+    paddingVertical:   10,
+    paddingHorizontal: 14,
+    gap:               12,
+    overflow:          'hidden',
   },
 
   // ── Claw marks — three long diagonal scratches in the top-right area ──────
@@ -163,25 +178,26 @@ const hm = StyleSheet.create({
   },
 
   iconFrame: {
-    width:           24,
-    height:          24,
-    borderRadius:    6,
+    width:           36,
+    height:          36,
+    borderRadius:    8,
     backgroundColor: HUNT_GOLD,
     padding:         2,
   },
   iconInner: {
-    flex:            1,
+    width:           32,
+    height:          32,
     borderRadius:    5,
     backgroundColor: HUNT_PARCHMENT,
     overflow:        'hidden',
   },
   lionImage: {
-    width:  '100%',
-    height: '100%',
+    width:  32,
+    height: 32,
   },
   divider: {
     width:           1,
-    height:          14,
+    height:          22,
     backgroundColor: 'rgba(255,255,255,0.18)',
   },
   textBlock: {
@@ -189,15 +205,15 @@ const hm = StyleSheet.create({
     gap:  1,
   },
   title: {
-    fontSize:      12,
+    fontSize:      14,
     fontWeight:    '700',
     color:         '#ECE7D3',
     letterSpacing: 0.1,
   },
   subtitle: {
-    fontSize:   10,
-    color:      'rgba(255,255,255,0.50)',
-    lineHeight: 13,
+    fontSize:   12,
+    color:      'rgba(255,255,255,0.55)',
+    lineHeight: 16,
   },
   rightGroup: {
     flexDirection: 'row',
@@ -206,12 +222,12 @@ const hm = StyleSheet.create({
   },
   newPill: {
     backgroundColor:   HUNT_GOLD,
-    paddingHorizontal: 5,
-    paddingVertical:   2,
-    borderRadius:      4,
+    paddingHorizontal: 7,
+    paddingVertical:   3,
+    borderRadius:      5,
   },
   newPillText: {
-    fontSize:      7,
+    fontSize:      9,
     fontWeight:    '800',
     color:         '#3D2A12',
     letterSpacing: 0.6,
@@ -222,12 +238,42 @@ const hm = StyleSheet.create({
     lineHeight:  18,
     marginRight: 1,
   },
+
+  // Safari grass blades — thin reeds anchored to bottom edge
+  blade: {
+    position:        'absolute',
+    bottom:          0,
+    width:           2.5,
+    borderRadius:    2,
+    backgroundColor: '#2A5A1A',
+    opacity:         0.55,
+  },
 });
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
   const router = useRouter();
+
+  // Onboarding overlay — null = checking, true = show onboarding, false = skip
+  const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
+  // User mode — loaded from storage, defaults to onboarding choice or 'resell'
+  const [userMode,   setUserModeState] = useState<UserMode>('resell');
+  const [modeOpen,   setModeOpen]       = useState(false);
+
+  useEffect(() => {
+    // Load onboarding status and saved mode in parallel
+    Promise.all([isOnboardingComplete(), getUserMode()]).then(([done, savedMode]) => {
+      if (savedMode) setUserModeState(savedMode);
+      setShowOnboarding(!done);
+    });
+  }, []);
+
+  const handleModeChange = (mode: UserMode) => {
+    setUserModeState(mode);
+    setUserMode(mode);  // persist immediately
+  };
+
   const [photoSet, setPhotoSet] = useState<CapturedPhotoSet | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -345,7 +391,13 @@ export default function HomeScreen() {
   // ─── Home feed ─────────────────────────────────────────────────────────────
   return (
     <ScreenContainer>
-      <HomeHeader onSettingsPress={() => router.push('/(tabs)/settings' as any)} />
+      <HomeHeader
+        onSettingsPress={() => router.push('/(tabs)/settings' as any)}
+        onModeToggle={() => setModeOpen(v => !v)}
+        modeOpen={modeOpen}
+      />
+      {/* Collapsible mode toggle — slides in under header when modeOpen */}
+      {modeOpen && <ModeToggle value={userMode} onChange={handleModeChange} />}
 
       <ScrollView
         style={s.scroll}
@@ -376,6 +428,7 @@ export default function HomeScreen() {
             </View>
           </View>
         </ImageBackground>
+
 
         {/* ── Scan module — one unified rounded container ─────────────────── */}
         {/* Single outer View owns borderRadius + shadow + marginHorizontal.   */}
@@ -424,9 +477,118 @@ export default function HomeScreen() {
 
         <View style={{ height: 32 }} />
       </ScrollView>
+
+      {/* Onboarding modal — Modal renders at native root so tab bar stays visible */}
+      <Modal
+        visible={showOnboarding === true}
+        animationType="fade"
+        statusBarTranslucent
+      >
+        <OnboardingOverlay onComplete={() => setShowOnboarding(false)} />
+      </Modal>
     </ScreenContainer>
   );
 }
+
+// ─── Inline onboarding overlay ────────────────────────────────────────────────
+
+function OnboardingOverlay({ onComplete }: { onComplete: () => void }) {
+  const [step,   setStep]   = useState<1 | 2>(1);
+  const [mode,   setMode]   = useState<'resell' | 'personal' | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const BG     = '#F0E8D4';
+  const CARD   = '#FFF9EE';
+  const CARD_B = '#DDD0B0';
+  const FOREST = '#2A4A2A';
+  const GOLD   = '#BE9C2C';
+  const MUTED  = '#8A7050';
+  const CREAM  = '#F4EED8';
+  const BROWN  = '#5A3A1A';
+
+  const handleFinish = async () => {
+    if (saving) return;
+    setSaving(true);
+    await completeOnboarding(mode ?? 'resell');
+    onComplete();
+  };
+
+  return (
+    <View style={{ flex: 1, backgroundColor: BG, justifyContent: 'center', paddingHorizontal: 24 }}>
+
+      <View style={{ alignItems: 'center', gap: 4, marginBottom: 32 }}>
+        <Text style={{ fontSize: 32, fontWeight: '800', color: FOREST }}>FlipStart</Text>
+        <Text style={{ fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 2 }}>✦ THRIFT INTELLIGENCE ✦</Text>
+      </View>
+
+      {step === 1 ? (
+        <>
+          <View style={{ alignItems: 'center', gap: 8, marginBottom: 28 }}>
+            <Text style={{ fontSize: 22, fontWeight: '700', color: FOREST, textAlign: 'center', lineHeight: 30 }}>
+              {'What are you using\nFlipStart for?'}
+            </Text>
+            <Text style={{ fontSize: 14, color: MUTED, textAlign: 'center' }}>Choose how you want the app to help you.</Text>
+          </View>
+          {([
+            { m: 'resell'   as const, icon: '📈', label: 'Flip for Profit',  desc: 'Check resale value, profit, comps, and sell speed' },
+            { m: 'personal' as const, icon: '🛍️', label: 'Buy for Myself',   desc: 'See if an item is worth the price' },
+          ]).map(item => (
+            <Pressable
+              key={item.m}
+              onPress={() => { setMode(item.m); setStep(2); }}
+              style={({ pressed }) => ({
+                flexDirection: 'row', alignItems: 'center', gap: 14,
+                backgroundColor: pressed ? '#F5EDDA' : CARD,
+                borderRadius: 16, borderWidth: 1.5, borderColor: pressed ? GOLD : CARD_B,
+                padding: 18, marginBottom: 12,
+              })}
+            >
+              <Text style={{ fontSize: 28 }}>{item.icon}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 16, fontWeight: '700', color: FOREST, marginBottom: 3 }}>{item.label}</Text>
+                <Text style={{ fontSize: 12, color: MUTED, lineHeight: 17 }}>{item.desc}</Text>
+              </View>
+              <Text style={{ fontSize: 18, color: GOLD }}>{'›'}</Text>
+            </Pressable>
+          ))}
+          <Text style={{ fontSize: 11, color: MUTED, textAlign: 'center', marginTop: 8 }}>You can change this later in Settings.</Text>
+        </>
+      ) : (
+        <>
+          <View style={{ alignItems: 'center', marginBottom: 28 }}>
+            <View style={{ width: 96, height: 96, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginBottom: 24 }}>
+              <Text style={{ fontSize: 44 }}>📷</Text>
+            </View>
+            <Text style={{ fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 12 }}>Scan. Decide. Profit.</Text>
+            <Text style={{ fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22 }}>Scan any item to instantly see value, profit, and whether it's worth buying.</Text>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 36 }}>
+            {[
+              { icon: '⚡', label: 'Instant\nAnalysis' },
+              { icon: '💰', label: 'Resale\nValue'    },
+              { icon: '👍', label: 'Buy /\nSkip'       },
+            ].map(f => (
+              <View key={f.label} style={{ alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: FOREST + '10', justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 20 }}>{f.icon}</Text>
+                </View>
+                <Text style={{ fontSize: 11, fontWeight: '600', color: FOREST, textAlign: 'center' }}>{f.label.replace('\\n', '\n')}</Text>
+              </View>
+            ))}
+          </View>
+          <Pressable
+            onPress={handleFinish}
+            disabled={saving}
+            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: FOREST, borderRadius: 50, paddingVertical: 18, opacity: pressed || saving ? 0.85 : 1 })}
+          >
+            <Text style={{ fontSize: 17, fontWeight: '700', color: CREAM }}>{saving ? 'Starting…' : 'Start Scanning'}</Text>
+          </Pressable>
+        </>
+      )}
+    </View>
+  );
+}
+
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 

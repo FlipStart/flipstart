@@ -1,19 +1,12 @@
 /**
  * app/loading.tsx — Scan analysis screen
  *
- * Background image (assets/images/scan-loading-bg.png) contains:
- *   - green ribbon banner at top
- *   - glowing clock face in center
- *   - treasure chest scene below
+ * Background image: green ribbon banner, clock face, treasure chest.
+ * Overlays: banner text, pulsing gold dot, rotating status message,
+ *           estimated confidence bar, cancel button.
  *
- * We overlay ONLY:
- *   - "Analyzing..." text inside the ribbon banner
- *   - live countdown number inside the clock face
- *   - status message below the clock
- *   - cancel button in the ground area below the chest
- *
- * The scan pipeline is unchanged — navigation fires the instant the
- * API response arrives. The countdown is perceived progress only.
+ * No fake countdown. No fake eBay/Depop claims.
+ * Navigation fires IMMEDIATELY when the API responds.
  */
 
 import {
@@ -26,7 +19,8 @@ import {
 import { useRouter, useLocalSearchParams } from "expo-router";
 import Animated, {
   useSharedValue, useAnimatedStyle,
-  withRepeat, withSequence, withTiming, Easing, FadeIn, FadeInDown,
+  withRepeat, withSequence, withTiming, withSpring,
+  Easing, FadeIn, FadeInDown,
 } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
@@ -39,24 +33,51 @@ import { consumePendingScan } from "@/lib/pending-scan";
 import { ScanResult } from "@/lib/types";
 import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
+import { useAudioPlayer } from "expo-audio";
+import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
 
-// ─── Asset ────────────────────────────────────────────────────────────────────
-// Save as: assets/images/scan-loading-bg.png
-const BG_IMAGE = require("@/assets/images/scan-loading-bg.png");
+// ─── Assets ───────────────────────────────────────────────────────────────────
+const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
+const COIN_SOUND = require("@/assets/images/sounds/coin-pour.mp3");
 
-// ─── Status messages tied to real pipeline stages ────────────────────────────
-type StageKey = "preparing" | "identifying" | "market" | "finishing";
+// ─── Message pool ─────────────────────────────────────────────────────────────
+// Honest messages only — no fake data-source claims.
+// Shuffled on mount so every scan feels different.
+const MESSAGE_POOL = [
+  "Reading item details...",
+  "Detecting brand signals...",
+  "Analyzing category...",
+  "Checking condition clues...",
+  "Comparing resale patterns...",
+  "Estimating buyer demand...",
+  "Reviewing style and era...",
+  "Examining material and finish...",
+  "Building resale report...",
+  "Calculating profit potential...",
+  "Assessing market competition...",
+  "Reviewing similar sold items...",
+];
 
-const STAGE_MESSAGES: Record<StageKey, string> = {
-  preparing:   "Preparing image...",
-  identifying: "Scanning item...",
-  market:      "Searching market data...",
-  finishing:   "Finalizing results...",
-};
+const MESSAGE_INTERVAL_MS = 3000; // 3 seconds — premium, unhurried feel
 
-// Estimated total duration in seconds — conservative upper bound.
-// Navigation fires IMMEDIATELY when the real response arrives.
-// This value only affects how the countdown counts down, not when we navigate.
+// ─── Confidence config ────────────────────────────────────────────────────────
+// Estimated progress, NOT actual AI result confidence.
+// Rises to ~95% while loading, pauses there until backend responds,
+// then jumps to 100% right before navigation.
+const CONFIDENCE_TICK_MS   = 250;   // how often confidence updates
+const CONFIDENCE_CRUISE_MS = 6000;  // time to reach 95%
+const CONFIDENCE_HOLD      = 95;    // max before backend responds
+const HARD_TIMEOUT_MS      = 30000; // 30s — generous but not infinite
+const CONFIDENCE_HAPTIC_AT = [25, 50, 75]; // subtle haptics at these milestones
+
+function shuffleArray<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -67,77 +88,185 @@ export default function LoadingScreen() {
   const colors       = useColors();
   const { addScan }  = useScanContext();
 
-  const [stage,     setStage]     = useState<StageKey>("preparing");
-  const [error,     setError]     = useState<string | null>(null);
+  // Shuffled message queue — different every scan
+  const [messages]     = useState<string[]>(() => shuffleArray(MESSAGE_POOL));
+  const [msgIndex,     setMsgIndex]     = useState(0);
+  const [confidence,   setConfidence]   = useState(0);
+  const [finalizing,   setFinalizing]   = useState(false);
+  const [scanKey,  setScanKey]   = useState(0);   // increment to re-trigger doScan
+  const [failState, setFailState] = useState<{
+    type:        FailType;
+    message:     string;
+    confidence?: number;
+  } | null>(null);
 
-  const hasNavigated = useRef(false);
-  // hasStartedRef prevents double-fire in React Strict Mode (dev builds run
-  // every effect twice intentionally). Set synchronously before any await so
-  // the second invocation hits this guard before any async work begins.
-  const hasStartedRef = useRef(false);
-  const startTime    = useRef(Date.now());
+  const hasNavigated    = useRef(false);
+  const hasStartedRef   = useRef(false);
+  const scanStartTime   = useRef(Date.now());
+  const lastHapticAt    = useRef(0);
+  const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPendingScan = useRef<{ imageBase64: string; mimeType: string } | null>(null);
+
+  // ── Audio ─────────────────────────────────────────────────────────────────
+  const player       = useAudioPlayer(COIN_SOUND);
+  const soundStarted = useRef(false);
 
   const analyzeFastMutation = trpc.scan.analyzeFast.useMutation();
 
-  // Countdown removed — showing a number that doesn't match real API speed
-  // damages trust. Stage messages below the clock convey progress instead.
-
-  // ── Stage helper ──────────────────────────────────────────────────────────
-  const advanceStage = useCallback((s: StageKey) => {
-    setStage(s);
-    console.log(`[loading] stage → ${s}`);
-  }, []);
-
-  // ── Pulse animation on countdown number ───────────────────────────────────
-  const pulse = useSharedValue(1);
+  // ── Rotating messages (every 3s) ─────────────────────────────────────────
   useEffect(() => {
-    pulse.value = withRepeat(
+    const id = setInterval(() => {
+      if (hasNavigated.current) return;
+      setMsgIndex(i => (i + 1) % messages.length);
+    }, MESSAGE_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [messages]);
+
+  // ── Estimated confidence bar ──────────────────────────────────────────────
+  // Rises smoothly to CONFIDENCE_HOLD while the backend works.
+  // "Finalizing analysis..." shown from CONFIDENCE_HOLD until response arrives.
+  // Jumps to 100 right before navigation.
+  const confidenceWidth = useSharedValue(0);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (hasNavigated.current) return;
+      setConfidence(prev => {
+        if (prev >= CONFIDENCE_HOLD) {
+          if (!finalizing) setFinalizing(true);
+          return prev; // hold — backend not done yet
+        }
+        const elapsed    = Date.now() - scanStartTime.current;
+        const target     = Math.min(CONFIDENCE_HOLD, (elapsed / CONFIDENCE_CRUISE_MS) * CONFIDENCE_HOLD);
+        const next       = Math.min(CONFIDENCE_HOLD, prev + (target - prev) * 0.12 + 0.4);
+
+        // Subtle haptic at milestones — only once per milestone
+        for (const milestone of CONFIDENCE_HAPTIC_AT) {
+          if (prev < milestone && next >= milestone && lastHapticAt.current !== milestone) {
+            lastHapticAt.current = milestone;
+            if (Platform.OS !== "web") {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            }
+          }
+        }
+
+        return next;
+      });
+    }, CONFIDENCE_TICK_MS);
+    return () => clearInterval(id);
+  }, [finalizing]);
+
+  // Sync confidence value to Reanimated width
+  useEffect(() => {
+    confidenceWidth.value = withTiming(confidence / 100, {
+      duration: CONFIDENCE_TICK_MS * 1.2,
+      easing:   Easing.out(Easing.ease),
+    });
+  }, [confidence]);
+
+  const barStyle = useAnimatedStyle(() => ({
+    width: `${(confidenceWidth.value * 100).toFixed(1)}%` as any,
+  }));
+
+  // ── Pulse animations ──────────────────────────────────────────────────────
+  const dotScale    = useSharedValue(1);
+  const ringScale   = useSharedValue(0.6);
+  const ringOpacity = useSharedValue(0.7);
+
+  useEffect(() => {
+    dotScale.value = withRepeat(
       withSequence(
-        withTiming(1.08, { duration: 600, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1.00, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1.40, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1.00, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1,
+      false,
+    );
+    ringScale.value = withRepeat(
+      withSequence(
+        withTiming(2.4, { duration: 1400, easing: Easing.out(Easing.ease) }),
+        withTiming(0.6, { duration: 0 }),
+      ),
+      -1,
+      false,
+    );
+    ringOpacity.value = withRepeat(
+      withSequence(
+        withTiming(0,   { duration: 1400, easing: Easing.out(Easing.ease) }),
+        withTiming(0.65, { duration: 0 }),
       ),
       -1,
       false,
     );
   }, []);
-  const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
+
+  const dotStyle  = useAnimatedStyle(() => ({ transform: [{ scale: dotScale.value }] }));
+  const ringStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: ringScale.value }],
+    opacity:   ringOpacity.value,
+  }));
 
   // ── Scan pipeline ─────────────────────────────────────────────────────────
   useEffect(() => {
-    // Synchronous guard — fires before any async work so Strict Mode
-    // double-invocation is blocked before the second doScan() call starts.
     if (hasStartedRef.current || hasNavigated.current) return;
     hasStartedRef.current = true;
 
     const doScan = async () => {
       console.log("[loading] pipeline start");
-      advanceStage("preparing");
+      scanStartTime.current = Date.now();
+
+      // Start coin sound
+      if (!soundStarted.current) {
+        soundStarted.current = true;
+        try {
+          player.volume = 0.45;
+          player.loop   = false;
+          player.play();
+        } catch { /* never block analysis */ }
+      }
 
       const pending = consumePendingScan();
       if (!pending?.imageBase64) {
         console.error("[loading] no pending scan data — aborting");
-        setError("Couldn't find the selected image. Please try again.");
+        setFailState({ type: "bad_input", message: "We couldn't load the selected image. Please go back and try again." });
         return;
       }
 
+      // Cache for retry — consumePendingScan() clears the module store,
+      // so if the user retries we must use this cached version
+      lastPendingScan.current = pending;
+
       const { imageBase64, mimeType } = pending;
       console.log(`[loading] image ready — mimeType: ${mimeType}, base64 length: ${imageBase64.length}`);
-
-      advanceStage("identifying");
-      console.log("[loading] analysis request start");
+      console.log("[loading] analysis request start — timeout in", HARD_TIMEOUT_MS / 1000, "s");
 
       try {
-        const result = await analyzeFastMutation.mutateAsync({
-          imageBase64,
-          mimeType: mimeType || "image/jpeg",
+        // Cancellable timeout — stored in ref so we can clear it
+        // the MOMENT the backend responds (before confidence check).
+        // This prevents the timeout firing on slow-but-successful responses.
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutIdRef.current = setTimeout(() => {
+            console.log("[loading] hard timeout triggered after", HARD_TIMEOUT_MS / 1000, "s");
+            reject(new Error("__TIMEOUT__"));
+          }, HARD_TIMEOUT_MS);
         });
 
+        const result = await Promise.race([
+          analyzeFastMutation.mutateAsync({
+            imageBase64,
+            mimeType: mimeType || "image/jpeg",
+          }),
+          timeoutPromise,
+        ]);
+
+        // Backend responded — cancel timeout immediately so it cannot fire later
+        if (timeoutIdRef.current !== null) {
+          clearTimeout(timeoutIdRef.current);
+          timeoutIdRef.current = null;
+        }
+
         console.log("[loading] analysis response received");
-        advanceStage("market");
-
         if (hasNavigated.current) return;
-
-        advanceStage("finishing");
 
         const scanId = `scan_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
@@ -189,7 +318,40 @@ export default function LoadingScreen() {
           identification: safeIdentification,
           market_data:    safeMarketData,
           risk_analysis:  safeRiskAnalysis,
+          // listings intentionally omitted — undefined until user generates them
         };
+
+        // Low-confidence detection — show warning instead of full fail
+        const matchConf = safeRiskAnalysis.match_confidence ?? 0;
+        console.log("[loading] match_confidence:", matchConf);
+
+        if (matchConf > 0 && matchConf < 35) {
+          // Very low confidence — treat as bad_input (no usable result)
+          console.log("[loading] bad_input: confidence too low to use:", matchConf);
+          addScan(scanResult);  // store anyway so Continue Anyway is possible
+          try { player.pause(); } catch { /* ignore */ }
+          setFailState({ type: "bad_input", message: "", confidence: matchConf });
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+          }
+          return;
+        }
+
+        if (matchConf > 0 && matchConf < 55) {
+          // Medium-low confidence — show warning screen but allow Continue Anyway
+          console.log("[loading] low_confidence: showing warning screen:", matchConf);
+          addScan(scanResult);
+          try { player.pause(); } catch { /* ignore */ }
+          setFailState({ type: "low_confidence", message: "", confidence: matchConf });
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+          }
+          return;
+        }
+
+        // matchConf === 0 means the AI didn't return a confidence score.
+        // Treat this as a normal result — zero is "unset", not "zero confidence".
+        // Only block on explicitly low non-zero values (1–54).
 
         addScan(scanResult);
 
@@ -197,37 +359,48 @@ export default function LoadingScreen() {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         }
 
-        // Navigate immediately — no artificial delay
-        hasNavigated.current = true;
-        console.log("[loading] navigating to results");
-        router.replace("/results" as any);
+        // Animate confidence to 100% THEN navigate — never feels abrupt
+        setConfidence(100);
+        try { player.pause(); } catch { /* ignore */ }
+
+        // Wait for the bar to visually reach 100% before transitioning
+        // Uses a short timeout that matches the bar animation duration
+        setTimeout(() => {
+          if (hasNavigated.current) return;
+          hasNavigated.current = true;
+          console.log("[loading] navigating to results — confidence:", matchConf);
+          router.replace("/results" as any);
+        }, 600);
 
       } catch (err: any) {
+        // Clear timeout if it hasn't fired yet (e.g. network error arrived before timeout)
+        if (timeoutIdRef.current !== null) {
+          clearTimeout(timeoutIdRef.current);
+          timeoutIdRef.current = null;
+        }
         console.error("[loading] error caught:", err);
+        try { player.pause(); } catch { /* ignore */ }
 
         const raw: string = err?.message ?? "";
-        let msg: string;
 
-        if (
+        let failType: FailType = "network";
+        if (raw === "__TIMEOUT__" || raw.toLowerCase().includes("timed out")) {
+          failType = "timeout";
+          console.log("[loading] hard timeout triggered after", HARD_TIMEOUT_MS / 1000, "s");
+        } else if (
           raw.toLowerCase().includes("unsupported image") ||
           raw.toLowerCase().includes("image format") ||
-          raw.toLowerCase().includes("heic") ||
-          (raw.toLowerCase().includes("png") && raw.toLowerCase().includes("jpeg"))
+          raw.toLowerCase().includes("heic")
         ) {
-          msg = "This image format wasn't supported. Try taking a new photo or choose a JPEG/PNG from your library.";
-        } else if (
-          raw.toLowerCase().includes("network") ||
-          raw.toLowerCase().includes("fetch") ||
-          raw.toLowerCase().includes("connect")
-        ) {
-          msg = "Connection error. Please check your internet and try again.";
-        } else if (raw.length > 0 && raw.length < 120 && !raw.startsWith("{")) {
-          msg = raw;
-        } else {
-          msg = "Analysis failed. Please try again.";
+          failType = "bad_input";
+        } else if (raw.toLowerCase().includes("timeout")) {
+          failType = "timeout";
         }
 
-        setError(msg);
+        console.log("[loading] error fail state — type:", failType, "raw:", raw.substring(0, 80));
+        const safeMsg = (raw.length > 0 && raw.length < 120 && !raw.startsWith("{") && raw !== "__TIMEOUT__")
+          ? raw : "";
+        setFailState({ type: failType, message: safeMsg });
 
         if (Platform.OS !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -236,76 +409,105 @@ export default function LoadingScreen() {
     };
 
     doScan();
+  // scanKey increments on retry — re-runs this effect so doScan fires again
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [scanKey]);
 
-  // ── Layout position constants ──────────────────────────────────────────────
-  // Named constants — tune these to adjust overlay positions without
-  // hunting through magic numbers elsewhere in the file.
-  const HEADER_H                 = 56;    // header height (px)
-  const BANNER_TEXT_Y_RATIO      = 0.072; // fraction of imgH → ribbon banner center
-  const CLOCK_CENTER_Y_RATIO     = 0.275; // fraction of imgH → clock face center
-  const STATUS_TEXT_Y_RATIO      = 0.505; // fraction of imgH → status msg below clock
-  const CANCEL_BUTTON_BOTTOM_INSET = 40;  // px from bottom of image area
+  // ── Layout constants ──────────────────────────────────────────────────────
+  const HEADER_H                   = 56;
+  const BANNER_TEXT_Y_RATIO        = 0.072;
+  const CLOCK_CENTER_Y_RATIO       = 0.275;
+  const STATUS_TEXT_Y_RATIO        = 0.505;
+  // Cancel sits below the treasure chest (~82% down the image area)
+  const CANCEL_BUTTON_Y_RATIO = 0.84;
 
   const imgH    = screenH - HEADER_H;
   const bannerY = imgH * BANNER_TEXT_Y_RATIO;
   const clockY  = imgH * CLOCK_CENTER_Y_RATIO;
   const statusY = imgH * STATUS_TEXT_Y_RATIO;
+  const cancelY = imgH * CANCEL_BUTTON_Y_RATIO;
 
-  // ── Cancel handler ────────────────────────────────────────────────────────
+  // ── Cancel ────────────────────────────────────────────────────────────────
   const handleCancel = () => {
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     }
+    try { player.pause(); } catch { /* ignore */ }
     hasNavigated.current = true;
     router.back();
   };
 
+  // ── Derived display ───────────────────────────────────────────────────────
+  const currentMessage = finalizing
+    ? "Finalizing analysis..."
+    : messages[msgIndex % messages.length];
+
+  const confidencePct = Math.round(confidence);
+
   // ── Error state ───────────────────────────────────────────────────────────
-  if (error) {
+  if (failState) {
+    const handleRetry = () => {
+      console.log("[loading] retry pressed — resetting state machine");
+      // Clear any pending timeout
+      if (timeoutIdRef.current !== null) {
+        clearTimeout(timeoutIdRef.current);
+        timeoutIdRef.current = null;
+      }
+      // If the pending scan was already consumed, restore from cache
+      // so doScan has data on retry
+      if (lastPendingScan.current) {
+        // Re-inject into the module store so consumePendingScan() works again
+        const { setPendingScan } = require("@/lib/pending-scan");
+        setPendingScan(lastPendingScan.current);
+      }
+      // Reset all state flags
+      hasStartedRef.current = false;
+      hasNavigated.current  = false;
+      soundStarted.current  = false;
+      lastHapticAt.current  = 0;
+      setFailState(null);
+      setConfidence(0);
+      setFinalizing(false);
+      // Incrementing scanKey re-runs the useEffect → re-fires doScan
+      setScanKey(k => k + 1);
+    };
+    const handleRetake = () => {
+      console.log("[loading] retake pressed — navigating to camera screen");
+      if (timeoutIdRef.current !== null) {
+        clearTimeout(timeoutIdRef.current);
+        timeoutIdRef.current = null;
+      }
+      try { player.pause(); } catch { /* ignore */ }
+      hasNavigated.current = true;
+      // Push to camera screen so user retakes immediately without extra taps
+      router.replace("/camera" as any);
+    };
+    // Continue Anyway available for both low_confidence and bad_input
+    // (result was stored via addScan before showing fail state in both cases)
+    const handleContinueAnyway =
+      (failState.type === "low_confidence" || failState.type === "bad_input")
+        ? () => {
+            console.log("[loading] user continuing anyway from fail state:", failState.type);
+            hasNavigated.current = true;
+            router.replace("/results" as any);
+          }
+        : undefined;
+
     return (
-      <ScreenContainer edges={["top", "bottom", "left", "right"]}>
-        <View style={s.errorContainer}>
-          <Animated.View entering={FadeIn.duration(300)}>
-            <View style={[s.errorIconWrap, { backgroundColor: colors.error + "20" }]}>
-              <MaterialIcons name="error-outline" size={48} color={colors.error} />
-            </View>
-          </Animated.View>
-
-          <Animated.View entering={FadeInDown.delay(150).duration(300)} style={s.errorTextBlock}>
-            <Text style={[s.errorTitle, { color: colors.foreground }]}>Analysis Failed</Text>
-            <Text style={[s.errorBody,  { color: colors.muted }]}>{error}</Text>
-          </Animated.View>
-
-          <Animated.View entering={FadeInDown.delay(300).duration(300)}>
-            <Pressable
-              onPress={() => {
-                if (Platform.OS !== "web") {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-                }
-                router.back();
-              }}
-              style={({ pressed }) => [
-                s.retryBtn,
-                { backgroundColor: colors.primary },
-                pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
-              ]}
-            >
-              <MaterialIcons name="refresh" size={20} color={V.white} />
-              <Text style={s.retryBtnText}>Try Again</Text>
-            </Pressable>
-          </Animated.View>
-        </View>
-      </ScreenContainer>
+      <FailStateScreen
+        type={failState.type}
+        message={failState.message}
+        confidence={failState.confidence}
+        onRetry={handleRetry}
+        onRetake={handleRetake}
+        onContinueAnyway={handleContinueAnyway}
+      />
     );
   }
 
   // ── Loading state ─────────────────────────────────────────────────────────
-
   return (
     <View style={s.flex}>
-      {/* Header — sits above the background image */}
       <View style={[s.header, { backgroundColor: "transparent" }]}>
         <Pressable
           onPress={handleCancel}
@@ -314,22 +516,14 @@ export default function LoadingScreen() {
         >
           <MaterialIcons name="arrow-back" size={22} color={V.white} />
         </Pressable>
-
         <Text style={s.headerTitle}>FlipStart</Text>
-
         <View style={s.headerIcon} />
       </View>
 
-      {/* Background image fills everything below the header */}
-      <ImageBackground
-        source={BG_IMAGE}
-        style={s.bg}
-        resizeMode="cover"
-      >
-        {/* Subtle dark scrim so text overlays are always readable */}
+      <ImageBackground source={BG_IMAGE} style={s.bg} resizeMode="cover">
         <View style={s.scrim} />
 
-        {/* ── "Analyzing..." inside the green ribbon banner ────────────── */}
+        {/* ── Banner text ── */}
         <Animated.View
           entering={FadeIn.duration(400)}
           style={[s.bannerOverlay, { top: bannerY }]}
@@ -338,33 +532,38 @@ export default function LoadingScreen() {
           <Text style={s.bannerText}>Analyzing...</Text>
         </Animated.View>
 
-        {/* ── Animated pulse dot in clock center — shows life without fake numbers */}
-        <Animated.View
-          style={[s.clockOverlay, { top: clockY }, pulseStyle]}
-          pointerEvents="none"
-        >
-          <View style={s.pulseDot} />
-        </Animated.View>
+        {/* ── Clock center: pulsing gold dot + glow ring ── */}
+        <View style={[s.clockOverlay, { top: clockY }]} pointerEvents="none">
+          <Animated.View style={[s.glowRing, ringStyle]} />
+          <Animated.View style={[s.dotWrap, dotStyle]}>
+            <View style={s.pulseDot} />
+          </Animated.View>
+        </View>
 
-        {/* ── Status message below the clock ───────────────────────────── */}
-        <Animated.View
-          entering={FadeIn.delay(200).duration(400)}
-          style={[s.statusOverlay, { top: statusY }]}
-          pointerEvents="none"
-        >
-          <Text style={s.statusText}>{STAGE_MESSAGES[stage]}</Text>
-        </Animated.View>
+        {/* ── Status + confidence bar ── */}
+        <View style={[s.statusOverlay, { top: statusY }]} pointerEvents="none">
+          <Text style={s.statusText}>{currentMessage}</Text>
 
-        {/* ── Cancel Search button in the lower ground area ─────────────── */}
-        <View style={[s.cancelWrapper, { bottom: CANCEL_BUTTON_BOTTOM_INSET }]}>
+          {/* Confidence bar */}
+          <View style={s.barTrack}>
+            <Animated.View style={[s.barFill, barStyle]} />
+          </View>
+          <View style={s.confidencePill}>
+            <Text style={s.confidenceLabel}>
+              {confidencePct < 100
+                ? `Estimated confidence: ${confidencePct}%`
+                : "Complete"}
+            </Text>
+          </View>
+        </View>
+
+        {/* ── Cancel button ── */}
+        <View style={[s.cancelWrapper, { top: cancelY }]}>
           <Pressable
             onPress={handleCancel}
-            style={({ pressed }) => [
-              s.cancelBtn,
-              pressed && { transform: [{ scale: 0.96 }], opacity: 0.85 },
-            ]}
+            style={({ pressed }) => [s.cancelBtn, pressed && { transform: [{ scale: 0.96 }], opacity: 0.85 }]}
           >
-            <Text style={s.cancelBtnText}>Cancel Search</Text>
+            <Text style={s.cancelBtnText}>✕  Cancel scan</Text>
           </Pressable>
         </View>
 
@@ -376,171 +575,107 @@ export default function LoadingScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: "#1A2A10" },
+  flex:  { flex: 1, backgroundColor: "#1A2A10" },
+  bg:    { flex: 1 },
+  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.08)" },
 
-  // Header
   header: {
-    height:         56,
-    flexDirection:  "row",
-    alignItems:     "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    // Sits on top of the image, styled to blend
+    height: 56, flexDirection: "row", alignItems: "center",
+    justifyContent: "space-between", paddingHorizontal: 16,
     backgroundColor: "rgba(0,0,0,0.35)",
   },
   headerIcon:  { width: 36, height: 36, justifyContent: "center", alignItems: "center" },
-  headerTitle: {
-    fontFamily:    FONTS.serif,
-    fontSize:      20,
-    fontWeight:    "700",
-    color:         "#ECE7D3",   // Antique Cream — warm, not bright white
-    letterSpacing: 0.2,
-  },
+  headerTitle: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: "700", color: "#ECE7D3", letterSpacing: 0.2 },
 
-  // Background
-  bg: {
-    flex: 1,
-  },
-
-  // Very slight dark overlay so text is always legible
-  scrim: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.08)",
-  },
-
-  // ── Text overlays — all absolute inside the ImageBackground ──────────────
-
-  // "Analyzing..." sits inside the ribbon banner
-  bannerOverlay: {
-    position:  "absolute",
-    left:      0,
-    right:     0,
-    alignItems:"center",
-    justifyContent: "center",
-  },
+  bannerOverlay: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },
   bannerText: {
-    fontFamily:    FONTS.serif,
-    fontSize:      22,
-    fontWeight:    "800",
-    color:         "#ECE7D3",   // Antique Cream — warm, not bright white
-    letterSpacing: 1.2,
-    textShadowColor:  "rgba(0,0,0,0.40)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
+    fontFamily: FONTS.serif, fontSize: 22, fontWeight: "800",
+    color: "#ECE7D3", letterSpacing: 1.2,
+    textShadowColor: "rgba(0,0,0,0.40)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4,
   },
 
-  // Countdown sits in the center of the clock face
-  clockOverlay: {
-    position:       "absolute",
-    left:           0,
-    right:          0,
-    alignItems:     "center",
-    justifyContent: "center",
+  // Clock
+  clockOverlay: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },
+  glowRing: {
+    position: "absolute", width: 32, height: 32, borderRadius: 16,
+    backgroundColor: "rgba(190,156,44,0.35)",
   },
+  dotWrap: { alignItems: "center", justifyContent: "center" },
   pulseDot: {
-    width:           18,
-    height:          18,
-    borderRadius:    9,
-    backgroundColor: "rgba(190,156,44,0.80)",  // warm gold — visible on clock face
-    shadowColor:     "#BE9C2C",
-    shadowOffset:    { width: 0, height: 0 },
-    shadowOpacity:   0.9,
-    shadowRadius:    10,
-    elevation:       4,
+    width: 22, height: 22, borderRadius: 11,
+    backgroundColor: "rgba(190,156,44,0.88)",
+    shadowColor: "#BE9C2C", shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9, shadowRadius: 14, elevation: 6,
   },
 
-  // Status message below clock, above chest
+  // Status + bar
   statusOverlay: {
-    position:       "absolute",
-    left:           0,
-    right:          0,
-    alignItems:     "center",
-    paddingHorizontal: 32,
+    position: "absolute", left: 0, right: 0,
+    alignItems: "center", paddingHorizontal: 32,
+    gap: 10,
   },
   statusText: {
+    fontFamily: FONTS.serif, fontSize: 15, fontWeight: "600",
+    color: "#F0E8C8", textAlign: "center", letterSpacing: 0.3,
+    textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6,
+  },
+  barTrack: {
+    width: "80%", height: 4, borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    overflow: "hidden",
+  },
+  barFill: {
+    height: "100%", borderRadius: 2,
+    backgroundColor: "rgba(190,156,44,0.85)",
+  },
+  confidencePill: {
+    backgroundColor: "rgba(0,0,0,0.38)",
+    paddingHorizontal: 10,
+    paddingVertical:   3,
+    borderRadius:      20,
+    borderWidth:       0.5,
+    borderColor:       "rgba(190,156,44,0.30)",
+  },
+  confidenceLabel: {
     fontFamily:    FONTS.serif,
-    fontSize:      15,
+    fontSize:      11,
     fontWeight:    "600",
-    color:         "#F0E8C8",
-    textAlign:     "center",
-    letterSpacing: 0.3,
-    textShadowColor:  "rgba(0,0,0,0.55)",
+    color:         "rgba(240,230,190,0.95)",
+    letterSpacing: 0.4,
+    textShadowColor:  "rgba(0,0,0,0.60)",
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 6,
+    textShadowRadius: 3,
   },
 
-  // Cancel button in lower earth area
-  cancelWrapper: {
-    position:       "absolute",
-    left:           0,
-    right:          0,
-    alignItems:     "center",
-  },
+  // Cancel
+  cancelWrapper: { position: "absolute", left: 0, right: 0, alignItems: "center" },
   cancelBtn: {
-    paddingHorizontal: 32,
-    paddingVertical:   12,
+    paddingHorizontal: 22,
+    paddingVertical:    9,
     borderRadius:      50,
-    backgroundColor:   "rgba(160,120,20,0.95)",   // deeper vintage gold, readable on image
-    borderWidth:       1.5,
-    borderColor:       "#9A7A10",
-    shadowColor:       "#3A2000",
-    shadowOffset:      { width: 0, height: 3 },
-    shadowOpacity:     0.40,
+    backgroundColor:   "rgba(10,15,8,0.52)",  // semi-transparent dark — ghost feel
+    borderWidth:       1,
+    borderColor:       "rgba(190,156,44,0.45)",  // soft gold rim
+    shadowColor:       "#000",
+    shadowOffset:      { width: 0, height: 2 },
+    shadowOpacity:     0.30,
     shadowRadius:      6,
-    elevation:         5,
+    elevation:         4,
   },
   cancelBtnText: {
     fontFamily:    FONTS.serif,
-    fontSize:      15,
-    fontWeight:    "700",
-    color:         "#1E1409",
-    letterSpacing: 0.3,
+    fontSize:      13,
+    fontWeight:    "600",
+    color:         "rgba(236,231,211,0.88)",  // cream — legible but subtle
+    letterSpacing: 0.5,
   },
 
-  // ── Error state ────────────────────────────────────────────────────────────
-  errorContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems:     "center",
-    paddingHorizontal: 32,
-    gap: 0,
-    backgroundColor: V.pageBg,
-  },
-  errorIconWrap: {
-    width: 80, height: 80,
-    borderRadius: 40,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  errorTextBlock: {
-    alignItems: "center",
-    marginBottom: 32,
-  },
-  errorTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    marginBottom: 8,
-    fontFamily: FONTS.serif,
-  },
-  errorBody: {
-    fontSize:   14,
-    textAlign:  "center",
-    lineHeight: 20,
-    paddingHorizontal: 16,
-  },
-  retryBtn: {
-    flexDirection:   "row",
-    alignItems:      "center",
-    justifyContent:  "center",
-    gap:             8,
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-    borderRadius:    50,
-  },
-  retryBtnText: {
-    fontSize:   16,
-    fontWeight: "700",
-    color:      V.white,
-  },
+  // Error
+  errorContainer: { flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 32, backgroundColor: V.pageBg },
+  errorIconWrap:  { width: 80, height: 80, borderRadius: 40, justifyContent: "center", alignItems: "center", marginBottom: 20 },
+  errorTextBlock: { alignItems: "center", marginBottom: 32 },
+  errorTitle:     { fontSize: 20, fontWeight: "700", marginBottom: 8, fontFamily: FONTS.serif },
+  errorBody:      { fontSize: 14, textAlign: "center", lineHeight: 20, paddingHorizontal: 16 },
+  retryBtn:       { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, paddingHorizontal: 32, borderRadius: 50 },
+  retryBtnText:   { fontSize: 16, fontWeight: "700", color: V.white },
 });

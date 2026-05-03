@@ -32,15 +32,10 @@ export interface ScanResult {
     match_confidence: number;
     risk_flags: string[];
   };
-  // Listings are generated on-demand, not during initial analysis
+  // Listings — undefined until user explicitly generates them.
+  // Never initialized with empty strings — presence alone means real content exists.
   listings?: {
-    ebay: {
-      title: string;
-      description: string;
-    };
-    depop: {
-      title: string;
-      description: string;
-    };
-  };
+    ebay:  { title: string; description: string };
+    depop: { title: string; description: string };
+  } | undefined;
 }

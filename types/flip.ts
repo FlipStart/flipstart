@@ -46,10 +46,10 @@ export interface FlipResult {
   stars:       number;
   bestPlatform: Platform;
 
-  // Listings — generated on demand, persisted once created
-  listingsGenerated: boolean;
-  generatedAt:       number | null;   // timestamp
-  listingData:       ListingData | null;
+  // Listings — optional; only set after user generates listings
+  listingsGenerated?: boolean;
+  generatedAt?:       number | null;
+  listingData?:       ListingData | null;
 }
 
 // ─── Listing data (persisted inside FlipResult) ─────────────────────────────
@@ -68,14 +68,20 @@ export interface ListingData {
 // ─── Live recalculated values (ephemeral, derived on screen) ─────────────────
 
 export interface FlipCalc {
-  thriftPrice:  number;
-  fees:         number;
-  profit:       number;
-  roi:          number;
-  buyScore:     number;
-  buyLabel:     BuyLabel;
-  stars:        number;
-  bestPlatform: Platform;
+  thriftPrice:    number;
+  fees:           number;
+  profit:         number;
+  roi:            number;
+  buyScore:       number;
+  buyLabel:       BuyLabel;
+  stars:          number;
+  bestPlatform:   Platform;
+  recommendation: Recommendation;
+
+  // Listings — optional; only set after user generates listings
+  listingsGenerated?: boolean;
+  generatedAt?:       number | null;
+  listingData?:       ListingData | null;
 }
 
 // ─── Derived stats (computed from FlipResult[]) ───────────────────────────────
@@ -119,4 +125,4 @@ export const WIN_LABELS: BuyLabel[] = [
   '🔥 GRAIL FIND',
   '💰 STRONG BUY',
   '✅ BUY',
-];
+];import type { Recommendation } from '@/utils/recommendation';

@@ -127,41 +127,8 @@ async function normalizeAsset(
     };
   }
 
-  // Step 2: format not recognised (true HEIC/HEIF or unknown).
-  // Re-request the same URI via launchImageLibraryAsync — iOS will JPEG-encode
-  // it automatically when quality is set and base64 is requested.
-  // We do NOT call launchImageLibraryAsync again (that would open the picker).
-  // Instead we use expo-image-picker's crop/resize helper indirectly by
-  // re-fetching the URI with a data-URI read via fetch().
-
-  try {
-    const response = await fetch(asset.uri);
-    const blob     = await response.blob();
-
-    // Read blob as base64 data URL
-    const b64DataUrl: string = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload  = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-
-    // Strip the "data:image/...;base64," prefix
-    const b64 = b64DataUrl.split(',')[1] ?? '';
-    const mime = detectMimeFromBase64(b64) ?? 'image/jpeg';
-
-    if (b64 && SUPPORTED_MIME_TYPES.has(mime)) {
-      return { uri: asset.uri, base64: b64, mimeType: mime };
-    }
-  } catch {
-    // fetch / FileReader fallback failed — this can happen on native
-    // if the URI is a native photo library reference (ph://)
-  }
-
-  // Step 3: For native (non-web) HEIC that fetch can't read, the last
-  // reliable fallback is to re-launch the picker with explicit JPEG
-  // options on that same image is not possible. Return null and let
-  // the caller show the user a helpful message.
+  // Step 2: base64 was empty or format unrecognised.
+  // Return null — caller will show a clean error message.
   return null;
 }
 

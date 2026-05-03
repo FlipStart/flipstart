@@ -34,7 +34,6 @@ export default function RootLayout() {
 
   const [insets, setInsets] = useState<EdgeInsets>(initialInsets);
   const [frame, setFrame] = useState<Rect>(initialFrame);
-
   // Initialize Manus runtime for cookie injection from parent container
   useEffect(() => {
     initManusRuntime();
@@ -91,6 +90,7 @@ export default function RootLayout() {
           {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false }} />
             <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="results" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />

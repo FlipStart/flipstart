@@ -13,11 +13,13 @@ import {
   ActivityIndicator, Alert, ScrollView,
   useWindowDimensions,
 } from 'react-native';
+import { Asset } from 'expo-asset';
 import { Image } from 'expo-image';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
 import { captureFromCamera, captureFromGallery } from '@/lib/capture';
@@ -61,10 +63,22 @@ const TIPS: { icon: keyof typeof MaterialIcons.glyphMap; label: string }[] = [
 export function PhotoReview({
   photoSet, onAnalyze, onRetake, isAnalyzing, onPhotoSetUpdate,
 }: PhotoReviewProps) {
-  const { width: screenW } = useWindowDimensions();
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
 
   // Which slot is shown in the carousel
   const [viewingSlot, setViewingSlot] = useState<PhotoSlot>('front');
+
+  // Preload the loading screen background asset while user is on this screen
+  // so it appears instantly when they tap Analyze Item
+  useEffect(() => {
+    // Preload both the loading screen background AND the coin sound
+    // so both appear/play instantly when the user taps Analyze Item
+    Asset.loadAsync([
+      require('@/assets/images/scan-loading-bg.png'),
+      require('@/assets/images/sounds/coin-pour.mp3'),
+    ]).catch(() => {});
+  }, []);
 
   const getSlotPhoto = (slot: PhotoSlot): CapturedPhoto | undefined =>
     slot === 'front' ? photoSet.front : slot === 'back' ? photoSet.back : photoSet.tag;
@@ -162,7 +176,7 @@ export function PhotoReview({
   return (
     <View style={s.root}>
       <ScrollView
-        contentContainerStyle={s.scroll}
+        contentContainerStyle={[s.scroll, { paddingTop: insets.top + 8 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -198,7 +212,7 @@ export function PhotoReview({
         {/* ── Photo carousel ─────────────────────────────────────────────── */}
         <View style={[s.carouselWrap, { width: carouselW }]}>
           {/* Photo frame */}
-          <View style={s.carouselFrame}>
+          <View style={[s.carouselFrame, { maxHeight: Math.round(screenH * 0.30) }]}>
             {/* Active slot badge top-left */}
             <View style={s.slotActiveBadge}>
               <Text style={s.slotActiveBadgeText}>
@@ -302,25 +316,6 @@ export function PhotoReview({
           </View>
         )}
 
-        {/* ── Tips card ───────────────────────────────────────────────────── */}
-        <View style={s.tipsCard}>
-          {/* Corner ornaments */}
-          <View style={[s.cardOrnament, s.ornTL]} />
-          <View style={[s.cardOrnament, s.ornTR]} />
-          <View style={[s.cardOrnament, s.ornBL]} />
-          <View style={[s.cardOrnament, s.ornBR]} />
-
-          <Text style={s.tipsHeader}>✦  TIPS FOR THE BEST RESULTS  ✦</Text>
-          <View style={s.tipsGrid}>
-            {TIPS.map((tip) => (
-              <View key={tip.label} style={s.tipItem}>
-                <MaterialIcons name={tip.icon} size={28} color={FOREST} />
-                <Text style={s.tipLabel}>{tip.label}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
         {/* ── Analyze button ──────────────────────────────────────────────── */}
         <Pressable
           onPress={onAnalyze}
@@ -349,6 +344,25 @@ export function PhotoReview({
           <Text style={s.retakeBtnText}>Retake Photos</Text>
         </Pressable>
 
+        {/* ── Tips card ───────────────────────────────────────────────────── */}
+        <View style={s.tipsCard}>
+          {/* Corner ornaments */}
+          <View style={[s.cardOrnament, s.ornTL]} />
+          <View style={[s.cardOrnament, s.ornTR]} />
+          <View style={[s.cardOrnament, s.ornBL]} />
+          <View style={[s.cardOrnament, s.ornBR]} />
+
+          <Text style={s.tipsHeader}>✦  TIPS FOR THE BEST RESULTS  ✦</Text>
+          <View style={s.tipsGrid}>
+            {TIPS.map((tip) => (
+              <View key={tip.label} style={s.tipItem}>
+                <MaterialIcons name={tip.icon} size={28} color={FOREST} />
+                <Text style={s.tipLabel}>{tip.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
         {/* ── Privacy note ────────────────────────────────────────────────── */}
         <View style={s.privacyRow}>
           <MaterialIcons name="lock-outline" size={11} color={PARCHMENT_DD} />
@@ -368,8 +382,8 @@ const s = StyleSheet.create({
   root:   { flex: 1, backgroundColor: PARCHMENT },
   scroll: {
     alignItems:        'center',
-    paddingHorizontal: 20,
-    paddingBottom:     40,
+    paddingHorizontal: 18,
+    paddingBottom:     24,
     paddingTop:        0,
     backgroundColor:   PARCHMENT,
   },
@@ -380,12 +394,12 @@ const s = StyleSheet.create({
     alignItems:     'center',
     justifyContent: 'space-between',
     width:          '100%',
-    paddingTop:     14,
-    paddingBottom:  6,
+    paddingTop:     8,
+    paddingBottom:  2,
   },
   headerCircleBtn: {
-    width:           42,
-    height:          36,
+    width:           36,
+    height:          32,
     borderRadius:    20,
     backgroundColor: PARCHMENT_D,
     justifyContent:  'center',
@@ -397,29 +411,29 @@ const s = StyleSheet.create({
     elevation:       2,
   },
   headerCenter:   { alignItems: 'center' },
-  headerTitle:    { fontFamily: FONTS.serif, fontSize: 26, fontWeight: '700', color: FOREST, letterSpacing: -0.3 },
-  headerSubtitle: { fontFamily: FONTS.serif, fontSize: 12, fontWeight: '700', color: FOREST_LIGHT, letterSpacing: 2, marginTop: -1 },
+  headerTitle:    { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '700', color: FOREST, letterSpacing: -0.3 },
+  headerSubtitle: { fontFamily: FONTS.serif, fontSize: 10, fontWeight: '700', color: FOREST_LIGHT, letterSpacing: 2, marginTop: -1 },
 
   // ── Title
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
   titleDecorator: { fontSize: 16, color: GOLD },
   titleText: {
-    fontFamily: FONTS.serif, fontSize: 22, fontWeight: '700',
+    fontFamily: FONTS.serif, fontSize: 19, fontWeight: '700',
     color: FOREST, letterSpacing: 0.1,
   },
   titleSub: {
-    fontSize: 13, color: WARM_BROWN, marginTop: 3, marginBottom: 12,
+    fontSize: 12, color: WARM_BROWN, marginTop: 1, marginBottom: 8,
     textAlign: 'center',
   },
 
   // ── Carousel
   carouselWrap: {
     alignSelf: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   carouselFrame: {
     width:           '100%',
-    aspectRatio:     4 / 3,
+    // aspectRatio removed — maxHeight is set dynamically via inline style
     borderRadius:    16,
     overflow:        'hidden',
     backgroundColor: PARCHMENT_D,
@@ -498,12 +512,12 @@ const s = StyleSheet.create({
   thumbRow: {
     flexDirection:  'row',
     justifyContent: 'center',
-    gap:            14,
+    gap:            10,
     width:          '100%',
-    marginBottom:   10,
+    marginBottom:   6,
   },
   thumbItem:       { alignItems: 'center', gap: 5, position: 'relative' },
-  thumbFrame:      { width: 72, height: 72, borderRadius: 10, overflow: 'hidden', borderWidth: 2, borderColor: PARCHMENT_DD },
+  thumbFrame:      { width: 62, height: 62, borderRadius: 8, overflow: 'hidden', borderWidth: 2, borderColor: PARCHMENT_DD },
   thumbFrameActive:{ borderColor: FOREST, borderWidth: 2.5 },
   thumbFrameEmpty: { borderStyle: 'dashed', borderColor: PARCHMENT_DD, backgroundColor: PARCHMENT_D },
   thumbImg:        { width: '100%', height: '100%' },
@@ -526,12 +540,12 @@ const s = StyleSheet.create({
     gap:               6,
     backgroundColor:   'rgba(190,156,44,0.12)',
     borderRadius:      8,
-    paddingHorizontal: 12,
-    paddingVertical:   7,
+    paddingHorizontal: 10,
+    paddingVertical:   5,
     borderWidth:       1,
     borderColor:       GOLD + '50',
     width:             '100%',
-    marginBottom:      8,
+    marginBottom:      18,
   },
   hintBannerText: { fontSize: 11, color: WARM_BROWN, flex: 1 },
 
@@ -539,11 +553,11 @@ const s = StyleSheet.create({
   tipsCard: {
     width:             '100%',
     backgroundColor:   CARD_BG,
-    borderRadius:      14,
-    borderWidth:       1.5,
+    borderRadius:      12,
+    borderWidth:       1,
     borderColor:       PARCHMENT_DD,
-    padding:           16,
-    marginBottom:      16,
+    padding:           10,
+    marginBottom:      6,
     position:          'relative',
     shadowColor:       WARM_BROWN,
     shadowOffset:      { width: 0, height: 2 },
@@ -565,22 +579,22 @@ const s = StyleSheet.create({
 
   tipsHeader: {
     fontFamily:    FONTS.serif,
-    fontSize:      12,
+    fontSize:      10,
     fontWeight:    '700',
     color:         FOREST,
     textAlign:     'center',
-    letterSpacing: 1,
-    marginBottom:  14,
+    letterSpacing: 0.8,
+    marginBottom:  8,
   },
   tipsGrid:  { flexDirection: 'row', justifyContent: 'space-around' },
   tipItem:   { alignItems: 'center', gap: 6, flex: 1 },
   tipLabel:  {
     fontFamily:  FONTS.serif,
-    fontSize:    10,
+    fontSize:    9,
     fontWeight:  '600',
     color:       FOREST,
     textAlign:   'center',
-    lineHeight:  14,
+    lineHeight:  13,
   },
 
   // ── Buttons
@@ -590,7 +604,7 @@ const s = StyleSheet.create({
     justifyContent:  'center',
     gap:             10,
     width:           '100%',
-    paddingVertical: 17,
+    paddingVertical: 15,
     borderRadius:    50,
     backgroundColor: FOREST_BTN,
     borderWidth:     1,
@@ -604,7 +618,7 @@ const s = StyleSheet.create({
   },
   analyzeBtnText: {
     fontFamily:    FONTS.serif,
-    fontSize:      18,
+    fontSize:      17,
     fontWeight:    '700',
     color:         CREAM_TEXT,
     letterSpacing: 0.2,
@@ -616,16 +630,16 @@ const s = StyleSheet.create({
     justifyContent:  'center',
     gap:             6,
     width:           '100%',
-    paddingVertical: 13,
+    paddingVertical: 11,
     borderRadius:    50,
-    borderWidth:     1.5,
+    borderWidth:     1,
     borderColor:     PARCHMENT_DD,
-    backgroundColor: 'rgba(217,201,163,0.40)',
-    marginBottom:    12,
+    backgroundColor: 'rgba(217,201,163,0.25)',
+    marginBottom:    8,
   },
   retakeBtnText: {
     fontFamily: FONTS.serif,
-    fontSize:   15,
+    fontSize:   13,
     fontWeight: '600',
     color:      WARM_BROWN,
   },
