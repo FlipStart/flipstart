@@ -62,24 +62,26 @@ async function startServer() {
   });
 
   // ── Scan stats REST endpoint ────────────────────────────────────────────────
-  // Reads global.__flipScanCounter — the SAME counter routers.ts increments.
-  // One counter, one source of truth.
+  // Reads global.__flipScanCounter — same object routers.ts increments.
+  // Date key uses America/Chicago so reset is at midnight Chicago time.
   app.get("/api/scan-stats", (_req, res) => {
     const LIMIT = 200;
-    const today = new Date().toISOString().slice(0, 10);
-    if (!(global as any).__flipScanCounter || (global as any).__flipScanCounter.date !== today) {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
+    const c = (global as any).__flipScanCounter;
+    if (!c || c.date !== today) {
       (global as any).__flipScanCounter = { date: today, count: 0 };
     }
-    const c         = (global as any).__flipScanCounter as { date: string; count: number };
-    const remaining = Math.max(0, LIMIT - c.count);
+    const counter   = (global as any).__flipScanCounter as { date: string; count: number };
+    const remaining = Math.max(0, LIMIT - counter.count);
+    // Next midnight in Chicago
     const tomorrow  = new Date();
-    tomorrow.setUTCHours(24, 0, 0, 0);
-    console.log(`[scan-stats] used=${c.count} remaining=${remaining}`);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(tomorrow);
     res.json({
       globalDailyLimit:          LIMIT,
-      globalScansUsedToday:      c.count,
+      globalScansUsedToday:      counter.count,
       globalScansRemainingToday: remaining,
-      resetTime:                 tomorrow.toISOString(),
+      resetTime:                 new Date(`${tStr}T00:00:00-05:00`).toISOString(),
     });
   });
 

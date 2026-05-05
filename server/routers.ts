@@ -5,40 +5,50 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { uploadScanImage, analyzeItemFast, generateItemListings } from "./scan";
 // ── Single global scan counter ───────────────────────────────────────────────
-// Uses global.__flipScanCounter — the SAME object that /api/scan-stats reads.
-// This is the only counter. Any scan anywhere in the app decrements this.
+// Date key uses America/Chicago timezone — resets at midnight Chicago time.
+// Same object used by both analyzeFast (increment) and /api/scan-stats (read).
 const SCAN_LIMIT = 200;
+const TZ         = 'America/Chicago';
+
+function todayChicago(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
+  // en-CA gives YYYY-MM-DD format natively
+}
+
+function nextMidnightChicago(): Date {
+  // Get tomorrow's date string in Chicago time, then parse as midnight Chicago
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(tomorrow);
+  // Build a Date representing midnight Chicago time for that date
+  return new Date(`${tomorrowStr}T00:00:00-05:00`); // CST offset; close enough for display
+}
 
 function getGlobalCounter(): { date: string; count: number } {
-  const today = new Date().toISOString().slice(0, 10);
-  if (!(global as any).__flipScanCounter || (global as any).__flipScanCounter.date !== today) {
+  const today = todayChicago();
+  const c     = (global as any).__flipScanCounter;
+  if (!c || c.date !== today) {
     (global as any).__flipScanCounter = { date: today, count: 0 };
-    console.log(`[scan-counter] new day (${today}), count reset to 0`);
   }
   return (global as any).__flipScanCounter;
 }
 
 function tryIncrementScanCount(): boolean {
   const c = getGlobalCounter();
-  if (c.count >= SCAN_LIMIT) {
-    console.log(`[scan-counter] BLOCKED — limit ${SCAN_LIMIT} reached`);
-    return false;
-  }
+  if (c.count >= SCAN_LIMIT) return false;
   c.count++;
-  console.log(`[scan-counter] scan ${c.count}/${SCAN_LIMIT} allowed`);
+  console.log(`[scan] ${c.count}/${SCAN_LIMIT} used today (${c.date})`);
   return true;
 }
 
 function getScanStats() {
   const c         = getGlobalCounter();
   const remaining = Math.max(0, SCAN_LIMIT - c.count);
-  const tomorrow  = new Date();
-  tomorrow.setUTCHours(24, 0, 0, 0);
   return {
     globalDailyLimit:          SCAN_LIMIT,
     globalScansUsedToday:      c.count,
     globalScansRemainingToday: remaining,
-    resetTime:                 tomorrow.toISOString(),
+    resetTime:                 nextMidnightChicago().toISOString(),
   };
 }
 
