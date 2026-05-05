@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet, Pressable, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ScreenContainer } from '@/components/screen-container';
 import { V } from '@/constants/vintage';
 import { resetOnboarding } from '@/lib/onboarding-storage';
@@ -17,6 +18,18 @@ export default function ProfileScreen() {
 
   return (
     <ScreenContainer>
+      {/* Settings button top-right */}
+      <View style={styles.topBar}>
+        <View style={{ width: 36 }} />
+        <View style={{ flex: 1 }} />
+        <Pressable
+          onPress={() => router.push('/(tabs)/settings' as any)}
+          hitSlop={8}
+          style={({ pressed }) => [styles.settingsBtn, pressed && { opacity: 0.65 }]}
+        >
+          <MaterialIcons name="settings" size={20} color="#2A4A2A" />
+        </Pressable>
+      </View>
       <View style={styles.container}>
         <Text style={styles.emoji}>👤</Text>
         <Text style={styles.title}>Profile</Text>
@@ -35,6 +48,23 @@ export default function ProfileScreen() {
 }
 
 const styles = StyleSheet.create({
+  topBar: {
+    flexDirection:     'row',
+    alignItems:        'center',
+    paddingHorizontal: 16,
+    paddingTop:        12,
+    paddingBottom:     4,
+  },
+  settingsBtn: {
+    width:           36,
+    height:          36,
+    borderRadius:    18,
+    backgroundColor: '#D9C9A3',
+    borderWidth:     1,
+    borderColor:     '#C4AD82',
+    justifyContent:  'center',
+    alignItems:      'center',
+  },
   container: {
     flex: 1,
     justifyContent: 'center',

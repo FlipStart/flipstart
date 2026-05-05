@@ -146,7 +146,7 @@ function haptic(style: Haptics.ImpactFeedbackStyle) {
 const CAMERA_OPTIONS: ImagePicker.ImagePickerOptions = {
   mediaTypes:    ['images'] as ImagePicker.MediaType[],
   allowsEditing: false,
-  quality:       0.55,
+  quality:       0.92,   // high quality for sharp preview
   base64:        true,
   exif:          false,
 };
@@ -165,7 +165,7 @@ const CAMERA_OPTIONS: ImagePicker.ImagePickerOptions = {
 const GALLERY_OPTIONS: ImagePicker.ImagePickerOptions = {
   mediaTypes:    ['images'] as ImagePicker.MediaType[],
   allowsEditing: true,   // ← forces iOS JPEG re-encode, eliminates HEIC
-  quality:       0.55,
+  quality:       0.92,   // high quality for sharp preview
   base64:        true,
   exif:          false,
 };

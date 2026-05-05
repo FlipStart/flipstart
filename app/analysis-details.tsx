@@ -15,6 +15,7 @@ import { useState, useMemo } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useFlipStore } from '@/lib/useFlipStore';
+import { useScanContext } from '@/lib/scan-context';
 import { trpc } from '@/lib/trpc';
 import { FlipResult, ListingData } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
@@ -111,6 +112,7 @@ export default function AnalysisDetailsScreen() {
   const insets  = useSafeAreaInsets();
   const { scanId, snapshot, source } = useLocalSearchParams<{ scanId: string; snapshot?: string; source?: string }>();
   const { getFlipById, updateFlip } = useFlipStore();
+  const { updateScan } = useScanContext();
 
   const storedFlip = scanId ? getFlipById(scanId) : undefined;
   const baseFlip: FlipResult | undefined = storedFlip ?? (snapshot ? (() => {
@@ -123,6 +125,7 @@ export default function AnalysisDetailsScreen() {
   const [thriftEditing, setThriftEditing] = useState(false);
   const [listingsOpen,  setListingsOpen]  = useState(false);
   const [listLoading,   setListLoading]   = useState(false);
+  const [localListings, setLocalListings] = useState<ListingData | null>(null);
   const [imageOpen,     setImageOpen]     = useState(false);
   const [copiedKey,     setCopiedKey]     = useState<string | null>(null);
 
@@ -165,7 +168,7 @@ export default function AnalysisDetailsScreen() {
   const profitColor = calc.profit >= 15 ? '#2A5A2A' : calc.profit >= 0 ? '#7A5C1E' : '#8A3A2A';
   const rec   = calc.recommendation;
   const theme = REC_THEMES[rec.colorKey];
-  const currentListings: ListingData | null = storedFlip?.listingData ?? baseFlip.listingData ?? null;
+  const currentListings: ListingData | null = localListings ?? storedFlip?.listingData ?? baseFlip.listingData ?? null;
   const listingsToShow = currentListings;
   // hasListings is true ONLY if real non-empty content exists
   const hasListings = hasGeneratedListings(
@@ -195,17 +198,28 @@ export default function AnalysisDetailsScreen() {
     try {
       const result = await generateListingsMutation.mutateAsync({
         item_name: baseFlip.itemName, brand: baseFlip.brand, category: baseFlip.category,
-        estimated_era: baseFlip.era, material_guess: baseFlip.material,
-        style_labels: baseFlip.styleLabels,
-        adjusted_estimated_value: baseFlip.resaleValue, demand: baseFlip.demand,
+        estimated_era: baseFlip.era ?? 'Unknown', material_guess: baseFlip.material ?? 'Unknown',
+        style_labels: baseFlip.styleLabels ?? [],
+        adjusted_estimated_value: baseFlip.resaleValue, demand: baseFlip.demand ?? 'Medium',
       });
       const listingData: ListingData = {
         ebay:  { title: result.ebay.title,  description: result.ebay.description  },
         depop: { title: result.depop.title, description: result.depop.description },
       };
-      if (storedFlip) updateFlip(storedFlip.id, { listingsGenerated: true, generatedAt: Date.now(), listingData });
+      // Save to flip store if item is in history
+      if (storedFlip) {
+        updateFlip(storedFlip.id, { listingsGenerated: true, generatedAt: Date.now(), listingData });
+      }
+      // Also save to scan context so results screen picks it up (when source='results')
+      if (baseFlip?.id) {
+        updateScan(baseFlip.id, {
+          listings: { ebay: listingData.ebay, depop: listingData.depop },
+        });
+      }
+      setLocalListings(listingData);
       setListingsOpen(true);
-    } catch {
+    } catch (err: any) {
+      console.error('[analysis-details] generateListings failed:', err?.message ?? err);
       Alert.alert('Error', 'Could not generate listings. Please try again.');
     } finally {
       setListLoading(false);

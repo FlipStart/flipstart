@@ -27,6 +27,7 @@ import { captureFromCamera, captureMultipleFromGallery, type CapturedPhoto, type
 import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
+import { trpc } from '@/lib/trpc';
 import { isOnboardingComplete, completeOnboarding, getUserMode, setUserMode, type UserMode } from '@/lib/onboarding-storage';
 import { ModeToggle } from '@/components/home/ModeToggle';
 
@@ -269,6 +270,8 @@ export default function HomeScreen() {
     });
   }, []);
 
+  // ScanBalancePill fetches its own scan stats — no query needed here
+
   const handleModeChange = (mode: UserMode) => {
     setUserModeState(mode);
     setUserMode(mode);  // persist immediately
@@ -306,7 +309,6 @@ export default function HomeScreen() {
         setPhotoSet(set);
         setIsAnalyzing(false);
       }
-      // Safe no-op if nothing stored (user pressed back without taking photos)
     }, [])
   );
 

@@ -61,6 +61,28 @@ async function startServer() {
     res.json({ ok: true, time: Date.now(), server: "FlipStart API" });
   });
 
+  // ── Scan stats REST endpoint ────────────────────────────────────────────────
+  // Reads global.__flipScanCounter — the SAME counter routers.ts increments.
+  // One counter, one source of truth.
+  app.get("/api/scan-stats", (_req, res) => {
+    const LIMIT = 200;
+    const today = new Date().toISOString().slice(0, 10);
+    if (!(global as any).__flipScanCounter || (global as any).__flipScanCounter.date !== today) {
+      (global as any).__flipScanCounter = { date: today, count: 0 };
+    }
+    const c         = (global as any).__flipScanCounter as { date: string; count: number };
+    const remaining = Math.max(0, LIMIT - c.count);
+    const tomorrow  = new Date();
+    tomorrow.setUTCHours(24, 0, 0, 0);
+    console.log(`[scan-stats] used=${c.count} remaining=${remaining}`);
+    res.json({
+      globalDailyLimit:          LIMIT,
+      globalScansUsedToday:      c.count,
+      globalScansRemainingToday: remaining,
+      resetTime:                 tomorrow.toISOString(),
+    });
+  });
+
   app.use(
     "/api/trpc",
     createExpressMiddleware({

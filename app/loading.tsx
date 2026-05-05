@@ -388,6 +388,22 @@ export default function LoadingScreen() {
           failType = "timeout";
           console.log("[loading] hard timeout triggered after", HARD_TIMEOUT_MS / 1000, "s");
         } else if (
+          raw.includes("GLOBAL_SCAN_LIMIT_REACHED") ||
+          raw.toLowerCase().includes("beta scan limit")
+        ) {
+          // Global daily limit hit — show dedicated fail state
+          failType = "timeout";  // reuse timeout type with custom message
+          console.log("[loading] global scan limit reached");
+          try { player.pause(); } catch {}
+          setFailState({
+            type: "timeout",
+            message: "FlipStart hit today's beta scan limit. Try again tomorrow.",
+          });
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+          }
+          return;   // exit early — don't fall through to generic error
+        } else if (
           raw.toLowerCase().includes("unsupported image") ||
           raw.toLowerCase().includes("image format") ||
           raw.toLowerCase().includes("heic")

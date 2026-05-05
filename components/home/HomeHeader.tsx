@@ -1,19 +1,18 @@
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { V } from '@/constants/vintage';
+import { ScanBalancePill } from '@/components/home/ScanBalancePill';
 import { FONTS, FONT_SIZES } from '@/constants/typography';
 
 interface HomeHeaderProps {
-  onProfilePress?:      () => void;
-  onNotificationsPress?: () => void;
-  onSettingsPress?:     () => void;
-  onModeToggle?:        () => void;
-  modeOpen?:            boolean;
+  onProfilePress?:  () => void;
+  onSettingsPress?: () => void;
+  onModeToggle?:    () => void;
+  modeOpen?:        boolean;
 }
 
 export function HomeHeader({
   onProfilePress,
-  onNotificationsPress,
   onSettingsPress,
   onModeToggle,
   modeOpen = false,
@@ -53,28 +52,9 @@ export function HomeHeader({
           </Pressable>
         </View>
 
-        {/* Right — notifications + settings */}
+        {/* Right — scan balance pill */}
         <View style={s.rightGroup}>
-          <Pressable
-            onPress={onNotificationsPress}
-            hitSlop={8}
-            style={({ pressed }) => [s.iconBtn, pressed && { opacity: 0.65 }]}
-          >
-            <View style={s.iconCircle}>
-              <MaterialIcons name="notifications-none" size={18} color={V.green} />
-              <View style={s.notifDot} />
-            </View>
-          </Pressable>
-
-          <Pressable
-            onPress={onSettingsPress}
-            hitSlop={8}
-            style={({ pressed }) => [s.iconBtn, pressed && { opacity: 0.65 }]}
-          >
-            <View style={s.iconCircle}>
-              <MaterialIcons name="settings" size={18} color={V.green} />
-            </View>
-          </Pressable>
+          <ScanBalancePill />
         </View>
 
       </View>
@@ -145,22 +125,12 @@ const s = StyleSheet.create({
     borderRadius:    17,
     backgroundColor: V.tan,
     borderWidth:     1.5,
-    borderColor:     V.border,
+    borderColor:     V.gold,
     justifyContent:  'center',
     alignItems:      'center',
     ...V.shadowSm,
   },
-  notifDot: {
-    position:        'absolute',
-    top:             7,
-    right:           7,
-    width:           6,
-    height:          6,
-    borderRadius:    3,
-    backgroundColor: '#C0392B',
-    borderWidth:     1,
-    borderColor:     V.tan,
-  },
+
   rightGroup: {
     flexDirection:  'row',
     gap:            8,

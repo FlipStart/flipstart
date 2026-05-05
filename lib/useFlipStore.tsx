@@ -52,7 +52,8 @@ type FlipAction =
   | { type: 'REMOVE_FLIP';       payload: string }       // by id
   | { type: 'UPDATE_FLIP';       payload: { id: string; updates: Partial<FlipResult> } }
   | { type: 'SET_THRIFT_PRICE';  payload: { id: string; price: string } }
-  | { type: 'CLEAR_THRIFT_PRICE'; payload: string };     // by id
+  | { type: 'CLEAR_THRIFT_PRICE'; payload: string }      // by id
+  | { type: 'CLEAR_ALL' };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,10 @@ function reducer(state: FlipStoreState, action: FlipAction): FlipStoreState {
         },
       };
 
+    case 'CLEAR_ALL':
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([])).catch(() => {});
+      return { ...state, flips: [], pendingThriftPrices: {} };
+
     case 'CLEAR_THRIFT_PRICE': {
       const pendingThriftPrices = { ...state.pendingThriftPrices };
       delete pendingThriftPrices[action.payload];
@@ -118,6 +123,7 @@ interface FlipStoreValue {
   // Actions
   addFlip:            (flip: FlipResult) => void;
   removeFlip:         (id: string) => void;
+  clearAllFlips:      () => void;
   updateFlip:         (id: string, updates: Partial<FlipResult>) => void;
   setPendingThriftPrice: (id: string, price: string) => void;
   clearPendingThriftPrice: (id: string) => void;
@@ -170,6 +176,10 @@ export function FlipStoreProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'REMOVE_FLIP', payload: id });
   }, []);
 
+  const clearAllFlips = useCallback(() => {
+    dispatch({ type: 'CLEAR_ALL' });
+  }, []);
+
   const updateFlip = useCallback((id: string, updates: Partial<FlipResult>) => {
     dispatch({ type: 'UPDATE_FLIP', payload: { id, updates } });
   }, []);
@@ -199,6 +209,7 @@ export function FlipStoreProvider({ children }: { children: React.ReactNode }) {
         pendingThriftPrices: state.pendingThriftPrices,
         addFlip,
         removeFlip,
+        clearAllFlips,
         updateFlip,
         setPendingThriftPrice,
         clearPendingThriftPrice,
