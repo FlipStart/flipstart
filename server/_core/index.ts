@@ -72,7 +72,29 @@ async function startServer() {
     }
   });
 
-  // ── Dev feedback inspector — GET /api/dev/feedback ──────────────────────────
+  // ── Founder Analytics Dashboard ──────────────────────────────────────────────
+  app.get("/api/dev/dashboard", (req, res) => {
+    const secret = process.env.DEV_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).send("<h1>401 Unauthorized</h1>");
+    }
+    try {
+      const { generateDashboard } = require("../dashboard");
+      const { getAllFeedback, getFeedbackSummary, getScanStats } = require("../persist");
+      const html = generateDashboard({
+        entries:   getAllFeedback(),
+        summary:   getFeedbackSummary(),
+        scanStats: getScanStats(),
+        secret:    req.query.secret as string,
+      });
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (e: any) {
+      res.status(500).send("<pre>Dashboard error: " + (e?.message ?? e) + "</pre>");
+    }
+  });
+
+    // ── Dev feedback inspector — GET /api/dev/feedback ──────────────────────────
   // Protected by DEV_SECRET env var. Set this in Railway environment variables.
   // Access: /api/dev/feedback?secret=YOUR_SECRET
   app.get("/api/dev/feedback", (req, res) => {
@@ -123,6 +145,9 @@ async function startServer() {
     }
   });
 
+
+  // ── Founder Analytics Dashboard ───────────────────────────────────────────
+  // GET /api/dev/dashboard?secret=DEV_SECRET
   app.use(
     "/api/trpc",
     createExpressMiddleware({
