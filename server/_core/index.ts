@@ -85,6 +85,57 @@ async function startServer() {
     });
   });
 
+  // ── Dev feedback inspector — GET /api/dev/feedback ──────────────────────────
+  // Protected by DEV_SECRET env var. Set this in Railway environment variables.
+  // Access: /api/dev/feedback?secret=YOUR_SECRET
+  app.get("/api/dev/feedback", (req, res) => {
+    const secret = process.env.DEV_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const { getAllFeedback, getFeedbackSummary } = require("../feedback");
+      res.json({
+        summary: getFeedbackSummary(),
+        entries: getAllFeedback(),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message ?? "feedback module not loaded" });
+    }
+  });
+
+  // ── Dev feedback CSV export ───────────────────────────────────────────────
+  app.get("/api/dev/feedback.csv", (req, res) => {
+    const secret = process.env.DEV_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const { getAllFeedback } = require("../feedback");
+      const entries = getAllFeedback();
+      const header  = "scanId,timestamp,itemName,brand,category,resaleLow,resaleHigh,suggestedBuy,demand,confidenceScore,recommendation,accuracyRating,buyDecision,userEstimatedValue,notes";
+      const rows    = entries.map((e: any) =>
+        [
+          e.scanId, new Date(e.timestamp).toISOString(),
+          `"${e.prediction.itemName}"`, `"${e.prediction.brand}"`,
+          `"${e.prediction.category}"`, e.prediction.resaleLow,
+          e.prediction.resaleHigh, e.prediction.suggestedBuy,
+          e.prediction.demand, e.prediction.confidenceScore,
+          e.prediction.recommendation,
+          e.feedback.accuracyRating ?? "",
+          e.feedback.buyDecision    ?? "",
+          e.feedback.userEstimatedValue ?? "",
+          `"${(e.feedback.notes ?? "").replace(/"/g, "'")}"`,
+        ].join(",")
+      );
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", "attachment; filename=flipstart-feedback.csv");
+      res.send([header, ...rows].join("\n"));
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
   app.use(
     "/api/trpc",
     createExpressMiddleware({

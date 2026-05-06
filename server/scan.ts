@@ -33,7 +33,7 @@ export async function uploadScanImage(base64Data: string, mimeType: string): Pro
 
 // ─── Single Combined Prompt (optimized for speed) ────────────────────────────
 
-const FAST_ANALYSIS_PROMPT = `You are FlipStart, an AI resale analyst. Analyze the item image and return a COMPLETE resale analysis as JSON.
+const FAST_ANALYSIS_PROMPT = `You are FlipStart, an AI resale analyst. You may receive 1–3 labeled photos: [FRONT], [BACK], and/or [TAG]. Use all available photos to produce the most accurate resale analysis. Tag photos are especially valuable for brand, material, era, and authenticity. Return a COMPLETE resale analysis as JSON.
 
 IDENTIFICATION RULES:
 - Only describe what you can CLEARLY SEE in the image
@@ -89,24 +89,50 @@ Return ONLY this JSON (no markdown, no explanation):
 /**
  * Single fast analysis — everything in one LLM call.
  */
-export async function analyzeItemFast(base64Data: string, mimeType: string): Promise<any> {
-  const dataUrl = `data:${mimeType};base64,${base64Data}`;
+export async function analyzeItemFast(
+  base64Data: string,
+  mimeType:   string,
+  back?:      { base64: string; mimeType: string },
+  tag?:       { base64: string; mimeType: string },
+): Promise<any> {
+  // Build image parts — front always present, back/tag added when available
+  const imageParts: any[] = [
+    {
+      type:      "text",
+      text:      "[FRONT] This is the front of the item. Use it for item type, style, shape, and general condition.",
+    },
+    {
+      type:      "image_url",
+      image_url: { url: `data:${mimeType};base64,${base64Data}`, detail: "high" },
+    },
+  ];
+
+  if (back?.base64) {
+    imageParts.push(
+      { type: "text", text: "[BACK] This is the back of the item. Use it for condition details, stitching, construction quality, and any markings." },
+      { type: "image_url", image_url: { url: `data:${back.mimeType};base64,${back.base64}`, detail: "high" } },
+    );
+  }
+
+  if (tag?.base64) {
+    imageParts.push(
+      { type: "text", text: "[TAG] This is the item's tag. Extract brand, size, material composition, country of manufacture, and any authenticity markers. This is the most important image for pricing." },
+      { type: "image_url", image_url: { url: `data:${tag.mimeType};base64,${tag.base64}`, detail: "high" } },
+    );
+  }
+
+  const photoCount = 1 + (back ? 1 : 0) + (tag ? 1 : 0);
+  imageParts.unshift({
+    type: "text",
+    text: `Analyze this item for resale using ${photoCount} photo${photoCount > 1 ? 's' : ''}. Be conservative. All price adjustments must be whole dollar amounts. Return JSON only.`,
+  });
 
   const response = await invokeLLM({
     messages: [
       { role: "system", content: FAST_ANALYSIS_PROMPT },
       {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: "Analyze this item for resale. Be conservative. All price adjustments must be whole dollar amounts. Return JSON only.",
-          },
-          {
-            type: "image_url",
-            image_url: { url: dataUrl, detail: "low" },
-          },
-        ],
+        role:    "user",
+        content: imageParts,
       },
     ],
     response_format: { type: "json_object" },

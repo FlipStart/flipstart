@@ -105,7 +105,7 @@ export default function LoadingScreen() {
   const scanStartTime   = useRef(Date.now());
   const lastHapticAt    = useRef(0);
   const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastPendingScan = useRef<{ imageBase64: string; mimeType: string } | null>(null);
+  const lastPendingScan = useRef<import('@/lib/pending-scan').PendingScan | null>(null);
 
   // ── Audio ─────────────────────────────────────────────────────────────────
   const player       = useAudioPlayer(COIN_SOUND);
@@ -226,7 +226,7 @@ export default function LoadingScreen() {
       }
 
       const pending = consumePendingScan();
-      if (!pending?.imageBase64) {
+      if (!pending?.front?.base64) {
         console.error("[loading] no pending scan data — aborting");
         setFailState({ type: "bad_input", message: "We couldn't load the selected image. Please go back and try again." });
         return;
@@ -236,8 +236,10 @@ export default function LoadingScreen() {
       // so if the user retries we must use this cached version
       lastPendingScan.current = pending;
 
-      const { imageBase64, mimeType } = pending;
-      console.log(`[loading] image ready — mimeType: ${mimeType}, base64 length: ${imageBase64.length}`);
+      const { front, back, tag } = pending;
+      const imageBase64 = front.base64;
+      const mimeType    = front.mimeType;
+      console.log(`[loading] images ready — front✓ back:${!!back} tag:${!!tag}`);
       console.log("[loading] analysis request start — timeout in", HARD_TIMEOUT_MS / 1000, "s");
 
       try {
@@ -254,7 +256,11 @@ export default function LoadingScreen() {
         const result = await Promise.race([
           analyzeFastMutation.mutateAsync({
             imageBase64,
-            mimeType: mimeType || "image/jpeg",
+            mimeType:       mimeType || "image/jpeg",
+            backImageBase64: back?.base64,
+            backMimeType:    back?.mimeType,
+            tagImageBase64:  tag?.base64,
+            tagMimeType:     tag?.mimeType,
           }),
           timeoutPromise,
         ]);

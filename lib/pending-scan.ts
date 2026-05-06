@@ -1,29 +1,32 @@
 /**
- * Module-level store for the pending scan's base64 image data.
+ * lib/pending-scan.ts
  *
- * We deliberately do NOT pass imageBase64 through Expo Router params because
- * a base64 JPEG (200–500 KB) serialized into navigation state blocks the JS
- * thread synchronously, causing the ~30s freeze on the review screen before
- * the loading screen appears.
+ * Module-level store for all pending scan photos.
+ * We pass via module state (not router params) to avoid base64 serialization
+ * blocking the JS thread.
  *
- * Usage:
- *   - review screen sets pendingScan before calling router.push
- *   - loading screen reads pendingScan on mount, then clears it
+ * Supports front (required), back (optional), tag (optional).
  */
 
-interface PendingScan {
-    imageBase64: string;
-    mimeType: string;
-  }
-  
-  let _pending: PendingScan | null = null;
-  
-  export function setPendingScan(data: PendingScan) {
-    _pending = data;
-  }
-  
-  export function consumePendingScan(): PendingScan | null {
-    const data = _pending;
-    _pending = null;
-    return data;
-  }
+export interface PhotoData {
+  base64:   string;
+  mimeType: string;
+}
+
+export interface PendingScan {
+  front: PhotoData;
+  back?: PhotoData;
+  tag?:  PhotoData;
+}
+
+let _pending: PendingScan | null = null;
+
+export function setPendingScan(data: PendingScan) {
+  _pending = data;
+}
+
+export function consumePendingScan(): PendingScan | null {
+  const data = _pending;
+  _pending   = null;
+  return data;
+}

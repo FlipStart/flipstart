@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { submitFeedback, getFeedbackByScanId } from "./feedback";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -52,20 +53,7 @@ function getScanStats() {
   };
 }
 
-export const appRouter = router({
-  system: systemRouter,
-  auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
-    }),
-  }),
-
-  scan: router({
+const appRouter_scan = router({
     /**
      * Fast single-call analysis: image → AI → full results (identification + pricing + listings).
      * Uploads to S3 in parallel with analysis for speed.
@@ -73,8 +61,12 @@ export const appRouter = router({
     analyzeFast: publicProcedure
       .input(
         z.object({
-          imageBase64: z.string().min(1, "Image data is required"),
-          mimeType: z.string().default("image/jpeg"),
+          imageBase64:     z.string().min(1, "Image data is required"),
+          mimeType:        z.string().default("image/jpeg"),
+          backImageBase64: z.string().optional(),
+          backMimeType:    z.string().optional(),
+          tagImageBase64:  z.string().optional(),
+          tagMimeType:     z.string().optional(),
         })
       )
       .mutation(async ({ input }) => {
@@ -106,7 +98,12 @@ export const appRouter = router({
           // Run S3 upload and AI analysis in PARALLEL
           const [imageUrl, analysisResult] = await Promise.all([
             uploadScanImage(input.imageBase64, input.mimeType),
-            analyzeItemFast(input.imageBase64, input.mimeType),
+            analyzeItemFast(
+              input.imageBase64,
+              input.mimeType,
+              input.backImageBase64 ? { base64: input.backImageBase64, mimeType: input.backMimeType ?? 'image/jpeg' } : undefined,
+              input.tagImageBase64  ? { base64: input.tagImageBase64,  mimeType: input.tagMimeType  ?? 'image/jpeg' } : undefined,
+            ),
           ]);
 
           console.log("[analyze] AI request complete");
@@ -150,7 +147,72 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         return generateItemListings(input);
       }),
-  }),
+  })
+
+// ─── Feedback router ─────────────────────────────────────────────────────────
+
+const feedbackRouter = router({
+
+  submit: publicProcedure
+    .input(z.object({
+      scanId:             z.string(),
+      // Prediction snapshot
+      itemName:           z.string(),
+      brand:              z.string(),
+      category:           z.string(),
+      resaleLow:          z.number(),
+      resaleHigh:         z.number(),
+      suggestedBuy:       z.number(),
+      demand:             z.string(),
+      bestPlatform:       z.string(),
+      confidenceScore:    z.number(),
+      recommendation:     z.string(),
+      // User feedback
+      accuracyRating:     z.enum(["accurate", "somewhat", "bad"]).nullable(),
+      buyDecision:        z.enum(["bought", "passed", "unsure"]).nullable(),
+      userEstimatedValue: z.number().nullable().optional(),
+      notes:              z.string().max(150).nullable().optional(),
+    }))
+    .mutation(({ input }) => {
+      const entry = {
+        id:        `fb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        scanId:    input.scanId,
+        timestamp: Date.now(),
+        prediction: {
+          itemName:        input.itemName,
+          brand:           input.brand,
+          category:        input.category,
+          resaleLow:       input.resaleLow,
+          resaleHigh:      input.resaleHigh,
+          suggestedBuy:    input.suggestedBuy,
+          demand:          input.demand,
+          bestPlatform:    input.bestPlatform,
+          confidenceScore: input.confidenceScore,
+          recommendation:  input.recommendation,
+        },
+        feedback: {
+          accuracyRating:     input.accuracyRating,
+          buyDecision:        input.buyDecision,
+          userEstimatedValue: input.userEstimatedValue ?? null,
+          notes:              input.notes ?? null,
+        },
+      };
+      submitFeedback(entry);
+      return { ok: true };
+    }),
+
+  getByScanId: publicProcedure
+    .input(z.object({ scanId: z.string() }))
+    .query(({ input }) => getFeedbackByScanId(input.scanId)),
+
+});
+
+// ─── App router ───────────────────────────────────────────────────────────────
+
+export const appRouter = router({
+  scan:     appRouter_scan,
+  feedback: feedbackRouter,
+  system:   systemRouter,
 });
 
 export type AppRouter = typeof appRouter;

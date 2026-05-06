@@ -18,6 +18,7 @@ import { useState, useMemo } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useScanContext } from '@/lib/scan-context';
+import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
 import { FlipResult } from '@/types/flip';
@@ -620,6 +621,21 @@ export default function ResultsScreen() {
           {listingsError && (
             <Text style={s.listingsErrText}>Couldn't generate listings. Tap to retry.</Text>
           )}
+
+          {/* Beta feedback card */}
+          <FeedbackCard
+            scanId={currentScan.id}
+            itemName={id.item_name}
+            brand={id.brand}
+            category={id.category}
+            resaleLow={md.estimated_resale_range.low}
+            resaleHigh={md.estimated_resale_range.high}
+            suggestedBuy={md.suggested_buy_price}
+            demand={md.demand}
+            bestPlatform={calc.bestPlatform}
+            confidenceScore={ra.match_confidence}
+            recommendation={calc.recommendation?.label ?? 'SKIP'}
+          />
 
           <View style={{ height: 32 }} />
         </ScrollView>

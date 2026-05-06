@@ -363,8 +363,9 @@ export default function HomeScreen() {
     setIsAnalyzing(true);
 
     setPendingScan({
-      imageBase64: primary.base64,
-      mimeType: primary.mimeType,
+      front: { base64: primary.base64, mimeType: primary.mimeType },
+      ...(photoSet.back?.base64  ? { back: { base64: photoSet.back.base64,  mimeType: photoSet.back.mimeType  } } : {}),
+      ...(photoSet.tag?.base64   ? { tag:  { base64: photoSet.tag.base64,   mimeType: photoSet.tag.mimeType   } } : {}),
     });
 
     const imageUri = primary.uri;
