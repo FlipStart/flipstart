@@ -1,58 +1,10 @@
 import { z } from "zod";
-import { submitFeedback, getFeedbackByScanId } from "./feedback";
+import { tryIncrementScanCount, getScanStats, submitFeedback, getFeedbackByScanId } from "./persist";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { uploadScanImage, analyzeItemFast, generateItemListings } from "./scan";
-// ── Single global scan counter ───────────────────────────────────────────────
-// Date key uses America/Chicago timezone — resets at midnight Chicago time.
-// Same object used by both analyzeFast (increment) and /api/scan-stats (read).
-const SCAN_LIMIT = 200;
-const TZ         = 'America/Chicago';
-
-function todayChicago(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  // en-CA gives YYYY-MM-DD format natively
-}
-
-function nextMidnightChicago(): Date {
-  // Get tomorrow's date string in Chicago time, then parse as midnight Chicago
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(tomorrow);
-  // Build a Date representing midnight Chicago time for that date
-  return new Date(`${tomorrowStr}T00:00:00-05:00`); // CST offset; close enough for display
-}
-
-function getGlobalCounter(): { date: string; count: number } {
-  const today = todayChicago();
-  const c     = (global as any).__flipScanCounter;
-  if (!c || c.date !== today) {
-    (global as any).__flipScanCounter = { date: today, count: 0 };
-  }
-  return (global as any).__flipScanCounter;
-}
-
-function tryIncrementScanCount(): boolean {
-  const c = getGlobalCounter();
-  if (c.count >= SCAN_LIMIT) return false;
-  c.count++;
-  console.log(`[scan] ${c.count}/${SCAN_LIMIT} used today (${c.date})`);
-  return true;
-}
-
-function getScanStats() {
-  const c         = getGlobalCounter();
-  const remaining = Math.max(0, SCAN_LIMIT - c.count);
-  return {
-    globalDailyLimit:          SCAN_LIMIT,
-    globalScansUsedToday:      c.count,
-    globalScansRemainingToday: remaining,
-    resetTime:                 nextMidnightChicago().toISOString(),
-  };
-}
-
 const appRouter_scan = router({
     /**
      * Fast single-call analysis: image → AI → full results (identification + pricing + listings).

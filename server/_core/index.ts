@@ -62,27 +62,14 @@ async function startServer() {
   });
 
   // ── Scan stats REST endpoint ────────────────────────────────────────────────
-  // Reads global.__flipScanCounter — same object routers.ts increments.
-  // Date key uses America/Chicago so reset is at midnight Chicago time.
+  // Reads from persist.ts — survives redeploys via Railway volume.
   app.get("/api/scan-stats", (_req, res) => {
-    const LIMIT = 200;
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
-    const c = (global as any).__flipScanCounter;
-    if (!c || c.date !== today) {
-      (global as any).__flipScanCounter = { date: today, count: 0 };
+    try {
+      const { getScanStats } = require("../persist");
+      res.json(getScanStats());
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
     }
-    const counter   = (global as any).__flipScanCounter as { date: string; count: number };
-    const remaining = Math.max(0, LIMIT - counter.count);
-    // Next midnight in Chicago
-    const tomorrow  = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(tomorrow);
-    res.json({
-      globalDailyLimit:          LIMIT,
-      globalScansUsedToday:      counter.count,
-      globalScansRemainingToday: remaining,
-      resetTime:                 new Date(`${tStr}T00:00:00-05:00`).toISOString(),
-    });
   });
 
   // ── Dev feedback inspector — GET /api/dev/feedback ──────────────────────────
@@ -94,13 +81,13 @@ async function startServer() {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
-      const { getAllFeedback, getFeedbackSummary } = require("../feedback");
+      const { getAllFeedback, getFeedbackSummary } = require("../persist");
       res.json({
         summary: getFeedbackSummary(),
         entries: getAllFeedback(),
       });
     } catch (e: any) {
-      res.status(500).json({ error: e?.message ?? "feedback module not loaded" });
+      res.status(500).json({ error: e?.message ?? "persist module not loaded" });
     }
   });
 
@@ -111,7 +98,7 @@ async function startServer() {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
-      const { getAllFeedback } = require("../feedback");
+      const { getAllFeedback } = require("../persist");
       const entries = getAllFeedback();
       const header  = "scanId,timestamp,itemName,brand,category,resaleLow,resaleHigh,suggestedBuy,demand,confidenceScore,recommendation,accuracyRating,buyDecision,userEstimatedValue,notes";
       const rows    = entries.map((e: any) =>
