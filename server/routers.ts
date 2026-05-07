@@ -119,6 +119,7 @@ const feedbackRouter = router({
       bestPlatform:       z.string(),
       confidenceScore:    z.number(),
       recommendation:     z.string(),
+      aiEstimatedResale:  z.number().nullable().optional(),
       // User feedback
       accuracyRating:     z.enum(["accurate", "somewhat", "bad"]).nullable(),
       buyDecision:        z.enum(["bought", "passed", "unsure"]).nullable(),
@@ -138,9 +139,10 @@ const feedbackRouter = router({
           resaleHigh:      input.resaleHigh,
           suggestedBuy:    input.suggestedBuy,
           demand:          input.demand,
-          bestPlatform:    input.bestPlatform,
-          confidenceScore: input.confidenceScore,
-          recommendation:  input.recommendation,
+          bestPlatform:       input.bestPlatform,
+          confidenceScore:    input.confidenceScore,
+          recommendation:     input.recommendation,
+          aiEstimatedResale:  input.aiEstimatedResale ?? undefined,
         },
         feedback: {
           accuracyRating:     input.accuracyRating,

@@ -631,6 +631,7 @@ export default function ResultsScreen() {
             resaleLow={md.estimated_resale_range.low}
             resaleHigh={md.estimated_resale_range.high}
             suggestedBuy={md.suggested_buy_price}
+            aiEstimatedResale={md.adjusted_estimated_value}
             demand={md.demand}
             bestPlatform={calc.bestPlatform}
             confidenceScore={ra.match_confidence}

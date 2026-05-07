@@ -40,8 +40,9 @@ export interface FeedbackCardProps {
   suggestedBuy:    number;
   demand:          string;
   bestPlatform:    string;
-  confidenceScore: number;
-  recommendation:  string;
+  confidenceScore:    number;
+  recommendation:     string;
+  aiEstimatedResale?: number;   // adjusted_estimated_value from AI
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -71,6 +72,7 @@ export function FeedbackCard(props: FeedbackCardProps) {
       bestPlatform:       props.bestPlatform,
       confidenceScore:    props.confidenceScore,
       recommendation:     props.recommendation,
+      aiEstimatedResale:  props.aiEstimatedResale ?? null,
       accuracyRating:     accuracy,
       buyDecision:        decision,
       userEstimatedValue: estValue ? parseFloat(estValue) : null,

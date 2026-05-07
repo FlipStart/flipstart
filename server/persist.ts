@@ -40,16 +40,25 @@ export interface FeedbackEntry {
   scanId:    string;
   timestamp: number;
   prediction: {
-    itemName:        string;
-    brand:           string;
-    category:        string;
-    resaleLow:       number;
-    resaleHigh:      number;
-    suggestedBuy:    number;
-    demand:          string;
-    bestPlatform:    string;
-    confidenceScore: number;
-    recommendation:  string;
+    itemName:           string;
+    brand:              string;
+    category:           string;
+    resaleLow:          number;
+    resaleHigh:         number;
+    suggestedBuy:       number;
+    aiEstimatedResale?: number;   // adjusted_estimated_value — the AI's best resale estimate
+    demand:             string;
+    bestPlatform:       string;
+    confidenceScore:    number;
+    recommendation:     string;
+  };
+  // Future outcome tracking (optional — collected post-sale)
+  outcome?: {
+    actualSoldPrice?:         number;
+    actualPlatformSold?:      string;
+    actualDaysToSell?:        number;
+    listingCreated?:          boolean;
+    soldOutcomeSubmittedAt?:  number;
   };
   feedback: {
     accuracyRating:     string | null;
