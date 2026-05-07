@@ -89,7 +89,10 @@ function th(cols: string[]): string {
   return "<tr>" + cols.map(c => "<th>" + esc(c) + "</th>").join("") + "</tr>";
 }
 function td(cells: string[]): string {
-  return "<tr>" + cells.map(c => "<td>" + c + "</td>").join("") + "</tr>";
+  return "<tr>" + cells.map((c, i) => {
+    const isLast = i === cells.length - 1;
+    return '<td' + (isLast ? ' style="white-space:normal;max-width:280px;word-break:break-word"' : "") + ">" + c + "</td>";
+  }).join("") + "</tr>";
 }
 function card(label: string, value: string, sub = "", danger = false): string {
   const bg = danger ? "#4a1c1c" : "#1a2035";
@@ -109,7 +112,7 @@ function emptyMsg(msg = "No data yet."): string {
 }
 function buildTable(headers: string[], rows: string[]): string {
   if (rows.length === 0) return emptyMsg();
-  return "<table><thead>" + th(headers) + "</thead><tbody>" + rows.join("") + "</tbody></table>";
+  return '<div class="tbl-wrap"><table><thead>' + th(headers) + "</thead><tbody>" + rows.join("") + "</tbody></table></div>";
 }
 
 function getAiResale(e: Entry): number | null {
@@ -144,9 +147,9 @@ const CSS = [
   ".topbar h1 { font-size: 18px; font-weight: 500; color: #f0c040; }",
   ".meta { font-size: 12px; color: #718096; }",
   ".container { max-width: 1280px; margin: 0 auto; padding: 24px 20px; }",
-  "table { width: 100%; border-collapse: collapse; background: #1a2035; border-radius: 8px; overflow: hidden; margin-bottom: 8px; }",
+  "table { width: 100%; border-collapse: collapse; background: #1a2035; border-radius: 8px; margin-bottom: 8px; } .tbl-wrap { overflow-x: auto; margin-bottom: 8px; border-radius: 8px; }",
   "th { background: #243050; padding: 8px 12px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #a0aec0; }",
-  "td { padding: 8px 12px; border-top: 1px solid #2d3748; color: #cbd5e0; font-size: 13px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }",
+  "td { padding: 8px 12px; border-top: 1px solid #2d3748; color: #cbd5e0; font-size: 13px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; } td.wrap { white-space: normal; max-width: 260px; word-break: break-word; }",
   "tr:hover td { background: #1e2a45; }",
   ".badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 500; }",
   ".badge-green { background: #1c4532; color: #68d391; } .badge-yellow { background: #2d3319; color: #f6e05e; }",
