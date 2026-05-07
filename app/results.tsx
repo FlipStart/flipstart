@@ -458,7 +458,7 @@ export default function ResultsScreen() {
               <View style={s.itemInfo}>
                 <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
                 <Text style={s.itemMeta}>{id.brand} · {id.category}</Text>
-                {id.estimated_era && id.estimated_era !== 'Unknown' && (
+                {id.estimated_era && id.estimated_era !== 'Unknown' && id.estimated_era !== 'Insufficient evidence' && (
                   <Text style={s.itemEra}>{id.estimated_era}</Text>
                 )}
                 {ra.match_confidence > 0 && (

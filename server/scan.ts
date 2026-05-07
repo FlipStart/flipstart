@@ -39,12 +39,117 @@ IDENTIFICATION RULES:
 - Only describe what you can CLEARLY SEE in the image
 - Do NOT guess details you cannot verify (sleeve length, specific year, material)
 - Use broad wording when uncertain
-- item_name PRIORITY ORDER: [Visible Brand] → [Visible Team/Logo] → [Item Type] → [Edition/Style if visible]
-  * Sports example: "Chicago Bulls City Edition Jersey" NOT "Zach LaVine Jersey" unless player name is CLEARLY printed
-  * Clothing example: "Polo Ralph Lauren Rugby Shirt" NOT "Ralph Lauren Vintage 90s Shirt" unless era tag is visible
-  * No brand visible: use item type only, e.g. "Vintage Denim Jacket"
+- item_name ASSEMBLY — THIS IS CRITICAL. You are naming items like an expert Depop/eBay reseller, not a chatbot.
+
+  TITLE STRUCTURE: [ERA if confident] + [BRAND] + [GRAPHIC/LOCATION/EVENT/CHARACTER if visible] + [SPECIFIC ITEM TYPE] + [OPTIONAL ATTRIBUTE]
+
+  STEP 1 — ERA: Include ONLY if visually supported. Use: "Vintage", "Y2K", "90s", "Early 2000s". Skip if modern or uncertain.
+
+  STEP 2 — BRAND: Always prioritize visible brand name. e.g. "Gap", "Nike", "Harley Davidson", "Carhartt"
+
+  STEP 3 — GRAPHIC/LOCATION/EVENT (CRITICAL — this separates good titles from generic ones):
+    Actively look for and include:
+    - Location/destination printed on item: "Key West", "Florida Keys", "Daytona", "Oregon", "Myrtle Beach"
+    - Event/occasion: "Daytona Bike Week", "Sturgis Rally", "50th Anniversary"
+    - Character/license: "Betty Boop", "Looney Tunes", "NASCAR", "NFL team name"
+    - Sports team: "Packers", "Bulls", "Oregon Ducks"
+    - College/university: "University of Florida", "Michigan"
+    - Slogan/text if prominent and short: spellout text counts
+    - Collection name if on tag or graphic
+    This is the most important differentiator. "Harley Davidson Key West Tee" beats "Harley Davidson Tee" every time.
+
+  ⚠️  GRAPHIC RULE — ONE IDENTITY ONLY:
+    Pick the SINGLE most recognizable thing. Never stack multiple graphic elements.
+    BAD: "Vintage Harley Davidson Motorcycle Eagle Fire Skull Tee" (spam)
+    BAD: "Vintage Betty Boop Looney Tunes Character Graphic Tee" (spam)
+    GOOD: "Harley Davidson Key West Long Sleeve Tee" (one location)
+    GOOD: "Vintage Betty Boop Graphic Tee" (one character)
+    If multiple graphics exist, pick the ONE most reseller-relevant. Location > event > character > generic graphic.
+
+  STEP 4 — SPECIFIC ITEM TYPE (never generic):
+    NEVER use: "shirt", "hoodie", "jacket" alone
+    ALWAYS use the most specific type:
+    - "zip-up hoodie" / "pullover hoodie" / "crewneck" / "quarter-zip"
+    - "long sleeve tee" / "graphic tee" / "pocket tee" / "thermal"
+    - "knit sweater" / "coogi-style sweater" / "cable knit"
+    - "work jacket" / "chore coat" / "varsity jacket" / "windbreaker"
+    - "mesh jersey" / "basketball jersey" / "football jersey"
+    - "cargo pants" / "double knee pants" / "work pants"
+    - "denim jacket" / "trucker jacket"
+
+  STEP 5 — OPTIONAL ATTRIBUTE (only if clearly visible and adds value):
+    - "mini swoosh" / "embroidered logo" / "spellout"
+    - "single stitch" / "heavyweight" / "faded" / "distressed"
+    - "oversized" / "boxy" / "cropped"
+    - Color ONLY if obvious and it helps: "navy", "black", "grey" — skip if uncertain
+
+  TARGET LENGTH: 4–11 words. Never shorter than 4. Never a SEO spam list.
+
+  GOOD EXAMPLES (write like these):
+    "Vintage Gap Zip-Up Hoodie"
+    "Y2K Nike Mini Swoosh Hoodie"
+    "Vintage Oregon Ducks Crewneck"
+    "Harley Davidson Key West Long Sleeve Tee"
+    "Vintage Florida Keys Graphic Tee"
+    "Vintage Betty Boop Graphic T-Shirt"
+    "50th Anniversary Harley Davidson Tee"
+    "Vintage NASCAR Racing Tee"
+    "Vintage Carhartt Double Knee Pants"
+    "Coogi Style Knit Sweater"
+
+  BAD EXAMPLES (never write these):
+    "Gap Hoodie" / "Nike Sweatshirt" / "Harley Tee" / "Florida Shirt"
+    "Comfortable Fit Hoodie" / "Stylish Casual Tee" / "Blue Shirt"
+
 - Player/athlete names: ONLY include if name or number is clearly printed AND you are highly confident
-- estimated_era/material_guess: use "Unknown" if not clearly identifiable from the image
+- No brand visible: lead with era + item type, e.g. "Vintage Graphic Crewneck" or "Y2K Knit Sweater"
+- material_guess: use "Unknown" only if fabric/material truly cannot be inferred
+- estimated_era: NEVER default to "Unknown" — use all available evidence (see ERA DETECTION below)
+
+ERA DETECTION — CRITICAL. Determine era using every available clue:
+
+TAG CLUES (most reliable — use the [TAG] photo heavily):
+  - Tag typography, color, layout style
+  - Country of manufacture: "Made in USA" (likely pre-2000s), Mexico/Honduras (90s-2000s), China/Vietnam/Bangladesh (2000s-present)
+  - RN/WPL/CA numbers if visible (support age estimates)
+  - Union labels = strong vintage indicator
+  - Nike silver/grey tag = early 2000s
+  - Woven tag vs printed tag (older woven = likely more vintage)
+  - Single-line brand tag vs modern multi-info tag
+  - Care label layout and symbols
+
+CONSTRUCTION CLUES:
+  - Single stitch = pre-mid 90s
+  - Double stitch = 90s onward
+  - Raglan vs set-in sleeve
+  - Zipper style (YKK metal, plastic, etc.)
+  - Heavyweight cotton vs modern blends
+
+VISUAL/STYLE CLUES:
+  - Graphic print style (airbrushed, screen print, embroidered)
+  - Fading, distressing, cracking on graphic
+  - Color palette and design aesthetics
+  - Sports/team logo era (check if logo is current or retired)
+  - College/school branding style
+  - Silhouette: oversized boxy (90s/Y2K) vs slim fit (2010s) vs modern relaxed
+
+ERA LABELS TO USE:
+  - "1980s" / "Early 1980s" / "Late 1980s"
+  - "1990s" / "Early 90s" / "Late 90s"
+  - "Y2K / Early 2000s"
+  - "2000s"
+  - "2010s"
+  - "Modern / 2010s–2020s"
+  - "Modern, vintage-inspired"
+  - "Late 90s–early 2000s"
+  - "Vintage (pre-1990s)"
+  - "Insufficient evidence" (ONLY when truly no clues exist — prefer a range over Unknown)
+
+RULES:
+  - Use "likely" or a range when uncertain: "Likely 90s–2000s"
+  - "Unknown" is only acceptable if: no tag visible, no style clues, no construction evidence
+  - Never say Unknown when modern Dri-FIT, modern logo, or new-style tag is visible — say "Modern"
+  - Vintage-aesthetic modern items: "Modern, vintage-inspired"
 
 LOW-VALUE ITEM GUARDRAILS — CRITICAL:
 The following are NEVER profitable flips. Price at real garage-sale value:
@@ -84,7 +189,7 @@ CRITICAL PRICE ADJUSTMENT RULES:
 - Positive type="positive", negative type="negative"
 
 Return ONLY this JSON (no markdown, no explanation):
-{"identification":{"item_name":"","brand":"","category":"","estimated_era":"","style_labels":[],"material_guess":""},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
+{"identification":{"item_name":"","brand":"","category":"","estimated_era":"[required — use era label, not Unknown unless truly no evidence]","style_labels":[],"material_guess":""},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
 
 /**
  * Single fast analysis — everything in one LLM call.
@@ -116,7 +221,7 @@ export async function analyzeItemFast(
 
   if (tag?.base64) {
     imageParts.push(
-      { type: "text", text: "[TAG] This is the item's tag. Extract brand, size, material composition, country of manufacture, and any authenticity markers. This is the most important image for pricing." },
+      { type: "text", text: "[TAG] This is the item's tag. Extract: brand, size, material composition, country of manufacture, RN/WPL/CA numbers, union labels, tag typography/style, care label layout. CRITICAL: Use all of this to determine the item's era. A tag is the single most reliable era indicator — do not ignore it." },
       { type: "image_url", image_url: { url: `data:${tag.mimeType};base64,${tag.base64}`, detail: "high" } },
     );
   }

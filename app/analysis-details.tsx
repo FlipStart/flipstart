@@ -411,7 +411,7 @@ export default function AnalysisDetailsScreen() {
               </View>
               <View style={d.colDivider} />
               <View style={d.colRight}>
-                <DataRow label="Era"      value={baseFlip.era      || '—'} />
+                <DataRow label="Era"      value={baseFlip.era && baseFlip.era.toLowerCase() !== 'unknown' ? baseFlip.era : 'Needs tag/photo evidence'} />
                 <DataRow label="Material" value={baseFlip.material || '—'} />
               </View>
             </View>

@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, AppState } from 'react-native';
+import { View, Text, Pressable, StyleSheet, AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { FONTS } from '@/constants/typography';
 
@@ -28,6 +28,7 @@ async function fetchScanStats(): Promise<number> {
 export function ScanBalancePill() {
   const [remaining, setRemaining] = useState<number>(LIMIT);
   const [loading,   setLoading]   = useState(true);
+  const [tipOpen,   setTipOpen]   = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -64,12 +65,29 @@ export function ScanBalancePill() {
   const accent = isZero || isLow ? WARNING : GOLD;
   const color  = isZero || isLow ? WARNING : FOREST;
 
+  const tooltipText = loading
+    ? 'Checking today\'s beta scan limit…'
+    : `${remaining} global beta scans left today. This shared daily limit helps us control AI costs before the official launch.`;
+
   return (
-    <View style={[s.pill, { borderColor: accent + '80' }]}>
-      <Text style={[s.icon, { color: accent }]}>⚡</Text>
-      <Text style={[s.label, { color }]}>
-        {loading ? '…' : `${remaining} left`}
-      </Text>
+    <View style={s.wrap}>
+      <Pressable
+        onPress={() => setTipOpen(v => !v)}
+        style={[s.pill, { borderColor: accent + '80' }]}
+        hitSlop={6}
+      >
+        <Text style={[s.icon, { color: accent }]}>⚡</Text>
+        <Text style={[s.label, { color }]}>
+          {loading ? '…' : `${remaining} left`}
+        </Text>
+      </Pressable>
+
+      {tipOpen && (
+        <View style={s.tooltip}>
+          <View style={s.tooltipArrow} />
+          <Text style={s.tooltipText}>{tooltipText}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -82,6 +100,10 @@ export interface ScanBalancePillProps {
 }
 
 const s = StyleSheet.create({
+  wrap: {
+    alignItems:  'flex-end',
+    position:    'relative',
+  },
   pill: {
     flexDirection:     'row',
     alignItems:        'center',
@@ -98,5 +120,42 @@ const s = StyleSheet.create({
     fontSize:      11,
     fontWeight:    '700',
     letterSpacing: 0.1,
+  },
+  tooltipArrow: {
+    position:           'absolute',
+    top:                -6,
+    right:              18,
+    width:              0,
+    height:             0,
+    borderLeftWidth:    6,
+    borderRightWidth:   6,
+    borderBottomWidth:  6,
+    borderLeftColor:    'transparent',
+    borderRightColor:   'transparent',
+    borderBottomColor:  '#BE9C2C',
+  },
+  tooltip: {
+    position:          'absolute',
+    top:               32,
+    right:             0,
+    width:             220,
+    backgroundColor:   '#FFF9EE',
+    borderWidth:       1,
+    borderColor:       '#BE9C2C',
+    borderRadius:      10,
+    paddingHorizontal: 12,
+    paddingVertical:   10,
+    shadowColor:       '#2A1A0A',
+    shadowOffset:      { width: 0, height: 3 },
+    shadowOpacity:     0.14,
+    shadowRadius:      6,
+    elevation:         6,
+    zIndex:            100,
+  },
+  tooltipText: {
+    fontFamily:  FONTS.serif,
+    fontSize:    11,
+    color:       '#5A3A1A',
+    lineHeight:  16,
   },
 });
