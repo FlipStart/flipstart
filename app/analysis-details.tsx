@@ -4,7 +4,7 @@
 
 import {
   View, Text, Pressable, StyleSheet, ScrollView, Platform,
-  Alert, TextInput, KeyboardAvoidingView, Modal, Clipboard,
+  Alert, TextInput, KeyboardAvoidingView, Modal, Clipboard, useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -42,13 +42,141 @@ const CREAM  = '#F4EED8';
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 /** A clean label-value row with guaranteed spacing */
+/**
+ * DataRow — used in Price Breakdown / Market Signals (single-column, independent rows).
+ * Unchanged from original — no overflow, no chevron.
+ */
 function DataRow({ label, value, valueColor, bold }: {
   label: string; value: string; valueColor?: string; bold?: boolean;
 }) {
   return (
     <View style={d.dataRow}>
-      <Text style={d.dataLabel}>{label}</Text>
-      <Text style={[d.dataValue, valueColor ? { color: valueColor } : {}, bold ? { fontWeight: '800' } : {}]}>
+      <Text style={d.dataLabel}>{label}:</Text>
+      <Text
+        style={[d.dataValue, d.dataValueInline,
+          valueColor ? { color: valueColor } : {},
+          bold ? { fontWeight: '800' as const } : {}]}
+        numberOfLines={1}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * ItemDetailsGrid — renders all four Item Detail fields in two synchronized rows.
+ *
+ * Divider position is computed ONCE from all four values so both rows share
+ * the same column widths. The left flex is a content-weighted ratio clamped
+ * between 40 % and 60 % so neither side dominates.
+ *
+ * Sony example:
+ *   left  longest: "Category: Video Game Accessory" → 30 chars
+ *   right longest: "Material: Plastic"              → 17 chars
+ *   rawFlex = 30/47 ≈ 0.638 → clamped to 0.60 → left gets 60%, right 40%
+ *   Category can now show "Video Game Accessory" fully before chevron kicks in.
+ */
+const SCROLL_THRESHOLD = 18;
+const MIN_LEFT_FLEX    = 0.40;
+const MAX_LEFT_FLEX    = 0.60;
+
+function ItemDetailsGrid({ brand, category, eraValue, material }: {
+  brand: string; category: string; eraValue: string; material: string;
+}) {
+  // Weight left column on longest full label+value string in each column
+  const leftLongest  = Math.max(
+    ('Brand: '    + brand).length,
+    ('Category: ' + category).length,
+  );
+  const rightLongest = Math.max(
+    ('Era: '      + eraValue).length,
+    ('Material: ' + material).length,
+  );
+  const total       = leftLongest + rightLongest || 1;
+  const rawFlex     = leftLongest / total;
+  const leftFlex    = Math.min(MAX_LEFT_FLEX, Math.max(MIN_LEFT_FLEX, rawFlex));
+  const rightFlex   = 1 - leftFlex;
+
+  return (
+    <View>
+      <ItemDetailRow
+        leftLabel="Brand"    leftValue={brand}
+        rightLabel="Era"     rightValue={eraValue}
+        leftFlex={leftFlex}  rightFlex={rightFlex}
+      />
+      <ItemDetailRow
+        leftLabel="Category" leftValue={category}
+        rightLabel="Material" rightValue={material}
+        leftFlex={leftFlex}  rightFlex={rightFlex}
+      />
+    </View>
+  );
+}
+
+function ItemDetailRow({
+  leftLabel, leftValue, rightLabel, rightValue, leftFlex, rightFlex,
+}: {
+  leftLabel: string;  leftValue: string;
+  rightLabel: string; rightValue: string;
+  leftFlex: number;   rightFlex: number;
+}) {
+  return (
+    <View style={d.itemDetailRow}>
+      <DetailCell label={leftLabel}  value={leftValue}  cellFlex={leftFlex} />
+      <View style={d.itemDetailDivider} />
+      <DetailCell label={rightLabel} value={rightValue} cellFlex={rightFlex} />
+    </View>
+  );
+}
+
+function DetailCell({ label, value, cellFlex }: {
+  label: string; value: string; cellFlex: number;
+}) {
+  const isScrollable = value.length > SCROLL_THRESHOLD;
+  return (
+    <View style={[d.dataCell, { flex: cellFlex, minWidth: 0 }]}>
+      <View style={d.dataCellInner}>
+        <Text style={d.dataLabel} numberOfLines={1}>{label}:</Text>
+        {isScrollable ? (
+          <>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={d.dataCellScroll}
+              contentContainerStyle={{ paddingRight: 2 }}
+            >
+              <Text style={d.dataValue} numberOfLines={1}>{value}</Text>
+            </ScrollView>
+            <Text style={d.chevron} numberOfLines={1}>›</Text>
+          </>
+        ) : (
+          <Text style={[d.dataValue, d.dataValueInline]} numberOfLines={1}>{value}</Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * PriceRow — used in Price Breakdown only.
+ * Full-width row: label left, value right-aligned with reserved width.
+ * Values NEVER clip because the value container has minWidth.
+ */
+function PriceRow({ label, value, valueColor, bold }: {
+  label: string; value: string; valueColor?: string; bold?: boolean;
+}) {
+  return (
+    <View style={d.priceRow2}>
+      <Text style={d.priceLabel2} numberOfLines={1}>{label}</Text>
+      <Text
+        style={[
+          d.priceValue2,
+          valueColor ? { color: valueColor } : {},
+          bold ? { fontWeight: '800' as const } : {},
+        ]}
+        numberOfLines={1}
+      >
         {value}
       </Text>
     </View>
@@ -139,7 +267,7 @@ export default function AnalysisDetailsScreen() {
 
   if (!baseFlip) {
     return (
-      <ScreenContainer edges={['left', 'right', 'bottom']}>
+      <ScreenContainer edges={['left', 'right']}>
         <View style={d.emptyWrap}>
           <Text style={d.emptyTitle}>Analysis not found</Text>
           <Pressable onPress={() => router.back()} style={d.backBtn}>
@@ -230,7 +358,7 @@ export default function AnalysisDetailsScreen() {
   const platNote = platformNote(calc.bestPlatform);
 
   return (
-    <ScreenContainer edges={['left', 'right', 'bottom']}>
+    <ScreenContainer edges={['left', 'right']}>
       {baseFlip.imageUri && (
         <ImageViewerModal uri={baseFlip.imageUri} visible={imageOpen} onClose={() => setImageOpen(false)} />
       )}
@@ -279,7 +407,7 @@ export default function AnalysisDetailsScreen() {
               </Pressable>
 
               <View style={d.summaryInfo}>
-                <Text style={d.summaryName} numberOfLines={1}>{baseFlip.itemName}</Text>
+                <Text style={d.summaryName} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.78}>{baseFlip.itemName}</Text>
                 <Text style={d.summaryMeta}>{baseFlip.brand} · {baseFlip.category}</Text>
 
                 <View style={d.summaryBadgeRow}>
@@ -362,21 +490,25 @@ export default function AnalysisDetailsScreen() {
           {/* Price Breakdown */}
           <View style={d.card}>
             <SectionHead icon="💰" title="PRICE BREAKDOWN" />
-            <View style={d.twoCol}>
-              <View style={d.colLeft}>
-                <DataRow label="Estimated Resale Value" value={`$${baseFlip.resaleValue}`} />
-                <DataRow label="Platform Fees (~12%)"   value={`-$${calc.fees}`} valueColor="#8A3A2A" />
-                <DataRow label="Max Buy Price"          value={`$${baseFlip.thriftPrice}`} />
-                <DataRow label="Net Profit"             value={calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`} valueColor={profitColor} bold />
-                <DataRow label="ROI"                    value={calc.roi > 0 ? `${calc.roi}%` : '—'} />
-              </View>
-              <View style={d.colDivider} />
-              <View style={d.colRight}>
-                <DataRow label="Market Range" value={`$${baseFlip.resaleRangeLow} – $${baseFlip.resaleRangeHigh}`} />
-                <DataRow label="Average Sold" value={baseFlip.avgSoldPrice > 0 ? `$${baseFlip.avgSoldPrice}` : 'N/A'} />
-                <Text style={d.smallNote}>Based on recent eBay sold listings. Depop prices typically vary by 10–15%.</Text>
-              </View>
-            </View>
+            {/* Single-column stacked rows — no divider, guaranteed readable values */}
+            <PriceRow label="Est. Resale Value"   value={`$${baseFlip.resaleValue}`} />
+            <PriceRow label="Platform Fees (~12%)" value={`-$${calc.fees}`}           valueColor="#8A3A2A" />
+            {/* Buy Price vs Max Buy Price: logic based on whether user entered a real price */}
+            {isHistory && editedThrift > 0
+              ? <PriceRow label="Buy Price"     value={`-$${editedThrift}`}          valueColor="#8A3A2A" />
+              : <PriceRow label="Max Buy Price" value={`$${baseFlip.thriftPrice}`} />
+            }
+            <PriceRow
+              label="Net Profit"
+              value={calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`}
+              valueColor={profitColor}
+              bold
+            />
+            <PriceRow label="ROI"          value={calc.roi > 0 ? `${calc.roi}%` : '—'} />
+            <View style={d.priceRowDivider} />
+            <PriceRow label="Market Range" value={`$${baseFlip.resaleRangeLow} – $${baseFlip.resaleRangeHigh}`} />
+            <PriceRow label="Average Sold" value={baseFlip.avgSoldPrice > 0 ? `$${baseFlip.avgSoldPrice}` : 'N/A'} />
+            <Text style={d.smallNote}>Based on recent eBay sold listings. Depop prices typically vary by 10–15%.</Text>
           </View>
 
           {/* Market Signals + Platform — side by side */}
@@ -404,17 +536,12 @@ export default function AnalysisDetailsScreen() {
           {/* Item Details */}
           <View style={d.card}>
             <SectionHead icon="📦" title="ITEM DETAILS" />
-            <View style={d.twoCol}>
-              <View style={d.colLeft}>
-                <DataRow label="Brand"    value={baseFlip.brand    || '—'} />
-                <DataRow label="Category" value={baseFlip.category || '—'} />
-              </View>
-              <View style={d.colDivider} />
-              <View style={d.colRight}>
-                <DataRow label="Era"      value={baseFlip.era && baseFlip.era.toLowerCase() !== 'unknown' ? baseFlip.era : 'Needs tag/photo evidence'} />
-                <DataRow label="Material" value={baseFlip.material || '—'} />
-              </View>
-            </View>
+            <ItemDetailsGrid
+              brand={baseFlip.brand       || '—'}
+              category={baseFlip.category || '—'}
+              eraValue={baseFlip.era && baseFlip.era.toLowerCase() !== 'unknown' ? baseFlip.era : 'Needs tag/photo evidence'}
+              material={baseFlip.material || '—'}
+            />
             {baseFlip.styleLabels?.length > 0 && (
               <View style={d.tagRow}>
                 {baseFlip.styleLabels.map((l, i) => (
@@ -527,7 +654,7 @@ export default function AnalysisDetailsScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const d = StyleSheet.create({
-  scroll:    { backgroundColor: BG, paddingBottom: 20 },
+  scroll:    { backgroundColor: BG, paddingBottom: 40 },
   emptyWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12, padding: 32 },
   emptyTitle:{ fontSize: 18, fontWeight: '700', color: FOREST, fontFamily: FONTS.serif },
   backBtn:   { backgroundColor: FOREST, paddingHorizontal: 24, paddingVertical: 10, borderRadius: 50, marginTop: 8 },
@@ -557,7 +684,7 @@ const d = StyleSheet.create({
   thumbFallback:  { backgroundColor: '#EDE0C4', justifyContent: 'center', alignItems: 'center' },
   thumbZoomBadge: { position: 'absolute', bottom: 3, right: 3, backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 6, padding: 2 },
   summaryInfo:    { flex: 1, gap: 4 },
-  summaryName:    { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '700', color: FOREST },
+  summaryName:    { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '700', color: FOREST, lineHeight: 22, flexShrink: 1 },
   summaryMeta:    { fontSize: 11, color: MUTED },
   summaryBadgeRow:{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   confPill:       { flexDirection: 'row', alignItems: 'center', gap: 3, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6 },
@@ -572,17 +699,45 @@ const d = StyleSheet.create({
   sectionIcon:  { fontSize: 13 },
   sectionTitle: { fontSize: 10, fontWeight: '700', color: MUTED, letterSpacing: 1.4, textTransform: 'uppercase' },
 
-  // Data rows — label left, value right, guaranteed gap
-  dataRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, gap: 8 },
-  dataLabel: { fontSize: 13, color: BROWN, flex: 1 },
-  dataValue: { fontSize: 13, fontWeight: '600', color: FOREST, textAlign: 'right' },
+  // Data rows — label intrinsic width, value immediately after, gap: 8
+  dataRow:          { flexDirection: 'row', alignItems: 'center', paddingVertical: 5, gap: 8 },
+  dataLabel:        { fontSize: 13, color: BROWN },   // no fixed width — sizes to text
+  dataValue:        { fontSize: 13, fontWeight: '600', color: FOREST },
+  dataValueInline:  { flexShrink: 1 },               // non-overflow: shrinks if needed, no scroll
+  // Overflow rows: fill remaining space, clip at edge, scroll to reveal
+  dataOverflowWrap: { flex: 1, overflow: 'hidden' },
+  // Fade — thin cream sliver at the far right of the overflow container only
+  chevron: { fontSize: 13, color: '#BE9C2C', marginLeft: 2, lineHeight: 18, alignSelf: 'center' },
   smallNote: { fontSize: 10, color: MUTED, marginTop: 8, fontStyle: 'italic', lineHeight: 14 },
 
   // Two-column layout with divider
-  twoCol:    { flexDirection: 'row', gap: 0 },
-  colLeft:   { flex: 1, paddingRight: 8 },
-  colRight:  { flex: 1, paddingLeft: 8 },
-  colDivider:{ width: 1, backgroundColor: CARD_B, marginVertical: 2 },
+  twoCol:      { flexDirection: 'row', gap: 0 },
+  colLeft:     { flex: 1, paddingRight: 8 },
+  colRight:    { flex: 1, paddingLeft: 8 },
+  colDivider:  { width: 1, backgroundColor: CARD_B, marginVertical: 2 },
+  // Item Details columns — left sizes to content, right fills remainder
+  // PriceRow — used in Price Breakdown, full-width, value never clips
+  priceRow2:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 5 },
+  priceLabel2:   { fontSize: 13, color: BROWN, flex: 1, marginRight: 8 },
+  priceValue2:   { fontSize: 13, fontWeight: '600', color: FOREST, minWidth: 70, textAlign: 'right' },
+  priceRowDivider:{ height: 1, backgroundColor: CARD_B, marginVertical: 6 },
+
+  // ItemDetailRow — each pair is ONE flex row, so both sides share height automatically
+  itemDetailRow: {
+    flexDirection: 'row',
+    alignItems:    'stretch',    // both cells stretch to the taller side's height
+    paddingVertical: 2,
+  },
+  itemDetailDivider: {
+    width: 1,
+    backgroundColor: CARD_B,
+    marginHorizontal: 10,
+    alignSelf: 'stretch',
+  },
+  // Cell styles — flex is set dynamically via ItemDetailsGrid, not static
+  dataCell:      { justifyContent: 'center', paddingVertical: 4 },
+  dataCellInner: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  dataCellScroll:{ flex: 1, minWidth: 0 },
 
   // Half cards
   halfRow:  { flexDirection: 'row', marginHorizontal: 14, gap: 10, marginTop: 12 },
