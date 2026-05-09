@@ -41,7 +41,7 @@ export interface CapturedPhoto {
 
 // ─── Multi-photo types ────────────────────────────────────────────────────────
 
-export type PhotoSlot = 'front' | 'back' | 'tag';
+export type PhotoSlot = 'front' | 'tag' | 'detail';
 
 /**
  * Up to 3 photos. front is the primary photo sent to the backend.
@@ -50,17 +50,24 @@ export type PhotoSlot = 'front' | 'back' | 'tag';
  */
 export type CapturedPhotoSet = {
   front?:   CapturedPhoto;
-  back?:    CapturedPhoto;
+  detail?:  CapturedPhoto;  // formerly 'back' — flexible: back print, graphic, flaw, close-up
   tag?:     CapturedPhoto;
   primary?: CapturedPhoto;   // alias for front — use front for logic, primary for display
 };
 
-export const SLOT_ORDER: PhotoSlot[] = ['front', 'back', 'tag'];
+export const SLOT_ORDER: PhotoSlot[] = ['front', 'tag', 'detail'];
 
 export const SLOT_LABELS: Record<PhotoSlot, string> = {
-  front: 'Front',
-  back:  'Back',
-  tag:   'Tag',
+  front:  'Front',
+  tag:    'Tag',
+  detail: 'Detail',
+};
+
+// Slot helper text shown in camera UI
+export const SLOT_HELPER: Record<PhotoSlot, string> = {
+  front:  'Take a clear front photo.',
+  tag:    'Optional: brand, size, or care tag.',
+  detail: 'Optional: graphic, back print, flaw, logo, or close-up.',
 };
 
 // ─── Supported output formats ────────────────────────────────────────────────
@@ -253,7 +260,7 @@ export async function captureFromGallery(): Promise<CapturedPhoto | null> {
  * issues are handled identically to single-select gallery.
  *
  * Returns a CapturedPhoto[] (1–3 items) or null if cancelled/failed.
- * Maps to slots: index 0 = front, 1 = back, 2 = tag.
+ * Maps to slots: index 0 = front, 1 = tag, 2 = detail.
  */
 export async function captureMultipleFromGallery(max = 3): Promise<CapturedPhoto[] | null> {
   try {

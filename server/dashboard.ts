@@ -52,6 +52,7 @@ interface DashboardInput {
   entries:   Entry[];
   summary:   any;
   scanStats: any;
+  analytics: any;   // getAnalyticsSummary() output — may be empty object if no events yet
   secret:    string;
 }
 
@@ -162,9 +163,110 @@ const CSS = [
   ".bar { height: 8px; border-radius: 4px; background: #2d3748; margin-top: 8px; width: 200px; }",
   ".bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg,#f0c040,#e53e3e); }",
   "footer { text-align: center; color: #4a5568; font-size: 11px; padding: 32px; }",
+  ".analytics-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(200px,1fr)); gap: 10px; margin-bottom: 12px; }",
+  ".analytics-group { background: #131929; border: 1px solid #2d3748; border-radius: 8px; padding: 14px 16px; }",
+  ".analytics-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #718096; margin-bottom: 10px; }",
+  ".analytics-row { display: flex; justify-content: space-between; align-items: baseline; padding: 3px 0; border-bottom: 1px solid #1e2a40; }",
+  ".analytics-row:last-child { border-bottom: none; }",
+  ".analytics-label { font-size: 12px; color: #a0aec0; }",
+  ".analytics-value { font-size: 13px; font-weight: 500; color: #f0c040; }",
+  ".analytics-value.dim { color: #718096; }",
+  ".retention-bar { display: flex; gap: 12px; margin-top: 8px; }",
+  ".ret-item { flex: 1; background: #1a2035; border-radius: 6px; padding: 10px; text-align: center; }",
+  ".ret-pct { font-size: 22px; font-weight: 500; color: #f0c040; }",
+  ".ret-label { font-size: 10px; color: #718096; text-transform: uppercase; margin-top: 2px; }",
 ].join(" ");
 
-export function generateDashboard({ entries, summary, scanStats, secret }: DashboardInput): string {
+function aval(v: any, suffix = "", fallback = "—"): string {
+  if (v === null || v === undefined || v === "—") return '<span class="analytics-value dim">' + fallback + "</span>";
+  return '<span class="analytics-value">' + esc(String(v)) + esc(suffix) + "</span>";
+}
+function arow(label: string, value: any, suffix = "", fallback = "—"): string {
+  return '<div class="analytics-row"><span class="analytics-label">' + esc(label) + "</span>" + aval(value, suffix, fallback) + "</div>";
+}
+function agroup(title: string, rows: string): string {
+  return '<div class="analytics-group"><div class="analytics-group-title">' + esc(title) + "</div>" + rows + "</div>";
+}
+
+function generateAnalyticsSection(a: any): string {
+  // a = getAnalyticsSummary() result — may be sparse if no events yet
+  if (!a || a.totalEvents === 0) {
+    return '<p style="color:#718096;font-size:13px;padding:12px 0">' +
+      "No analytics events collected yet. Events will appear here once users open the app after this update is deployed." +
+      "</p>";
+  }
+
+  const fmtMs = (ms: number) => {
+    if (!ms) return "—";
+    if (ms < 60000) return Math.round(ms / 1000) + "s";
+    return Math.floor(ms / 60000) + "m " + Math.round((ms % 60000) / 1000) + "s";
+  };
+  const retPct = (ret: number, total: number) => total > 0 ? Math.round(ret / total * 100) + "%" : "—";
+
+  const userGroup = agroup("Users",
+    arow("Total unique users",   a.totalUniqueUsers) +
+    arow("DAU (today)",          a.dau) +
+    arow("WAU (last 7 days)",    a.wau) +
+    arow("New users today",      a.newUsersToday) +
+    arow("Returning users today",a.returningUsersToday)
+  );
+
+  const sessGroup = agroup("Sessions",
+    arow("Total sessions",       a.totalSessions) +
+    arow("Sessions today",       a.sessionsToday) +
+    arow("Avg session length",   a.avgSessionMs ? fmtMs(a.avgSessionMs) : null) +
+    arow("Sessions / user / day",a.sessPerUserDay)
+  );
+
+  const scanGroup = agroup("Scans",
+    arow("Started",              a.scanStarted) +
+    arow("Completed",            a.scanCompleted) +
+    arow("Failed",               a.scanFailed) +
+    arow("Completion rate",      a.scanStarted > 0 ? a.scanRate : null, "%") +
+    arow("Avg scans / user / day",a.avgScansPerDay) +
+    arow("Median scans / user / day",a.medianScansPerDay) +
+    arow("Users with 5+ scans/day",a.pct5PlusScans != null ? a.pct5PlusScans : null, "%")
+  );
+
+  const listGroup = agroup("Listings Generated",
+    arow("Total listings",       a.listingsTotal) +
+    arow("% of completed scans", a.listingRate, "%") +
+    arow("eBay listings",        a.ebayListings) +
+    arow("Depop listings",       a.depopListings) +
+    arow("eBay vs Depop",        (a.ebayListings || a.depopListings)
+      ? (a.ebayListings + " : " + a.depopListings) : null)
+  );
+
+  const fbGroup = agroup("Feedback",
+    arow("Feedback events",      a.feedbackEvents) +
+    arow("Feedback rate",        a.scanCompleted > 0 ? a.feedbackRate : null, "%") +
+    arow("Scan records saved",   a.totalScanRecords)
+  );
+
+  const ttvGroup = agroup("Time to Value",
+    arow("Avg open → first scan", a.avgTTVSeconds != null ? a.avgTTVSeconds + "s" : null) +
+    arow("Total events logged",  a.totalEvents)
+  );
+
+  const retSection = '<div style="margin-top:14px">' +
+    '<div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Retention</div>' +
+    '<div class="retention-bar">' +
+    '<div class="ret-item"><div class="ret-pct">' + retPct(a.day1Ret, a.day1Total)  + '</div><div class="ret-label">Day 1</div>' +
+      (a.day1Total  ? '<div style="font-size:10px;color:#4a5568;margin-top:2px">' + a.day1Ret  + "/" + a.day1Total  + "</div>" : "") + "</div>" +
+    '<div class="ret-item"><div class="ret-pct">' + retPct(a.day7Ret, a.day7Total)  + '</div><div class="ret-label">Day 7</div>' +
+      (a.day7Total  ? '<div style="font-size:10px;color:#4a5568;margin-top:2px">' + a.day7Ret  + "/" + a.day7Total  + "</div>" : "") + "</div>" +
+    '<div class="ret-item"><div class="ret-pct">' + retPct(a.day30Ret, a.day30Total) + '</div><div class="ret-label">Day 30</div>' +
+      (a.day30Total ? '<div style="font-size:10px;color:#4a5568;margin-top:2px">' + a.day30Ret + "/" + a.day30Total + "</div>" : "") + "</div>" +
+    "</div>" +
+    '<p style="font-size:11px;color:#4a5568;margin-top:6px">Retention = returned on that day after first use. Only counts cohorts old enough to measure.</p>' +
+    "</div>";
+
+  return '<div class="analytics-grid">' +
+    userGroup + sessGroup + scanGroup + listGroup + fbGroup + ttvGroup +
+    "</div>" + retSection;
+}
+
+export function generateDashboard({ entries, summary, scanStats, analytics, secret }: DashboardInput): string {
   const total   = entries.length;
   const now     = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
   const usedPct = Math.round(scanStats.globalScansUsedToday / scanStats.globalDailyLimit * 100);
@@ -288,6 +390,74 @@ export function generateDashboard({ entries, summary, scanStats, secret }: Dashb
     return td([esc(plat),String(es.length),avgConf+"%",avgD==null?"—":((avgD>=0?"+":"−")+"$"+Math.abs(avgD)),avgAbs]);
   });
 
+  // ── Brand analytics ────────────────────────────────────────────────────────
+  // Groups every feedback entry by brand. Shows trust score, pricing accuracy,
+  // and override rate so you can see at a glance which brands need prompt work.
+  // Sorted: unknowns and single-entry brands last, problem brands first.
+  const brandGroups: Record<string,Entry[]> = {};
+  entries.forEach(e => {
+    const b = (e.prediction.brand||"Unknown").trim();
+    if (!brandGroups[b]) brandGroups[b] = [];
+    brandGroups[b].push(e);
+  });
+
+  const brandRows = Object.entries(brandGroups)
+    .map(([brand, es]) => {
+      const withRating   = es.filter(e => e.feedback.accuracyRating);
+      const acc          = es.filter(e => e.feedback.accuracyRating === "accurate").length;
+      const som          = es.filter(e => e.feedback.accuracyRating === "somewhat").length;
+      const bad          = es.filter(e => e.feedback.accuracyRating === "bad").length;
+      const trust        = withRating.length > 0 ? Math.round((acc + som * 0.5) / withRating.length * 100) : null;
+      const we           = es.filter(e => getDiff(e).absDiff != null);
+      const avgAbsVal    = we.length ? Math.round(we.reduce((s,e) => s+(getDiff(e).absDiff??0), 0) / we.length) : null;
+      // Avg direction: positive = AI overestimates, negative = AI underestimates
+      const allD         = we.map(e => getDiff(e).diff ?? 0);
+      const avgDir       = allD.length ? Math.round(allD.reduce((a,b)=>a+b,0)/allD.length) : null;
+      const overrideCount= es.filter(e => {
+        const rec=e.prediction.recommendation??""; const dec=e.feedback.buyDecision; if(!dec) return false;
+        return (isBuyRec(rec)||isRiskyRec(rec))&&dec==="passed" || isSkipRec(rec)&&dec==="bought";
+      }).length;
+      const overridePct  = es.filter(e=>e.feedback.buyDecision).length > 0
+        ? Math.round(overrideCount / es.filter(e=>e.feedback.buyDecision).length * 100) : null;
+      const buyRate      = pct(es.filter(e=>e.feedback.buyDecision==="bought").length, es.filter(e=>e.feedback.buyDecision).length);
+      return { brand, total: es.length, trust, acc, bad, avgAbsVal, avgDir, overrideCount, overridePct, buyRate };
+    })
+    // Sort: most problematic first (lowest trust, most overrides). Unknowns always last.
+    .sort((a, b) => {
+      if (a.brand === "Unknown") return 1;
+      if (b.brand === "Unknown") return -1;
+      // Primary: trust score ascending (worst first). Null trust (no ratings) goes to bottom.
+      const tA = a.trust ?? 101;
+      const tB = b.trust ?? 101;
+      if (tA !== tB) return tA - tB;
+      // Secondary: count descending (more data = more signal)
+      return b.total - a.total;
+    })
+    .map(r => {
+      const trustCell = r.trust != null
+        ? '<span class="' + (r.trust < 50 ? "neg" : r.trust > 75 ? "pos" : "") + '">' + r.trust + "%</span>"
+        : "—";
+      const dirCell = r.avgDir == null ? "—"
+        : r.avgDir > 0 ? '<span class="pos">AI +$' + r.avgDir + " high</span>"
+        : r.avgDir < 0 ? '<span class="neg">AI −$' + Math.abs(r.avgDir) + " low</span>"
+        : '<span style="color:#718096">On target</span>';
+      const overrideCell = r.overridePct != null
+        ? (r.overridePct >= 50 ? '<span class="neg">' + r.overrideCount + " (" + r.overridePct + "%)</span>"
+          : r.overrideCount + " (" + r.overridePct + "%)")
+        : "—";
+      return td([
+        esc(r.brand),
+        String(r.total),
+        trustCell,
+        String(r.acc),
+        String(r.bad),
+        r.avgAbsVal != null ? fmt(r.avgAbsVal) : "—",
+        dirCell,
+        overrideCell,
+        r.buyRate,
+      ]);
+    });
+
   const missing = {
     itemTitle:      entries.filter(e=>!e.prediction.itemName).length,
     brand:          entries.filter(e=>!e.prediction.brand||e.prediction.brand==="Unknown").length,
@@ -315,7 +485,10 @@ export function generateDashboard({ entries, summary, scanStats, secret }: Dashb
     "<div class='exports' style='margin:16px 0'>",
     "<a href='/api/dev/feedback?secret=" + esc(secret) + "'>Raw JSON</a>",
     "<a href='/api/dev/feedback.csv?secret=" + esc(secret) + "'>Download CSV</a>",
+    "<a href='/api/dev/analytics?secret=" + esc(secret) + "'>Analytics JSON</a>",
+    "<a href='/api/dev/analytics.csv?secret=" + esc(secret) + "'>Analytics CSV</a>",
     "</div>",
+    section("Usage Analytics", generateAnalyticsSection(analytics ?? {})),
     section("Scan Budget",
       "<div class='scan-bar'>" +
       "<div><div class='sv'>" + scanStats.globalScansRemainingToday + "</div><div class='sl'>Left today</div></div>" +
@@ -351,6 +524,14 @@ export function generateDashboard({ entries, summary, scanStats, secret }: Dashb
       buildTable(["Time","Item","Brand","Category","AI Rec","User Decision","AI Est.","User Est.","Diff","Notes"],overrides.length>0?overrides:[])),
     section("Category Trust Score — Worst First",
       buildTable(["Category","Count","Trust Score","Accurate","Bad","Avg Abs Diff","Buy Rate"],catRows)),
+    section("Brand Performance — Worst First",
+      "<p style='font-size:12px;color:#718096;margin-bottom:8px'>" +
+      "Trust = (accurate + 0.5×somewhat) / rated. " +
+      "AI Bias = avg direction of pricing error (positive = AI overestimates). " +
+      "Override = user defied AI recommendation. " +
+      "Sorted worst trust first — Unknown brand always last." +
+      "</p>" +
+      buildTable(["Brand","Scans","Trust","Accurate","Bad","Avg $$ Off","AI Bias","Overrides","Buy Rate"],brandRows)),
     section("Confidence Calibration",
       buildTable(["Confidence Bucket","Count","Accurate Rate","Bad Rate","Avg Abs Diff"],confRows)),
     section("Platform Insights",

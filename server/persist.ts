@@ -9,6 +9,11 @@
  *
  * Data file: ${DATA_DIR}/flipstart-beta.json
  * Atomic writes: write to .tmp then rename (prevents corruption on crash).
+ *
+ * v3 additions:
+ *  - events[]     — analytics event stream (app/scan/listing/feedback events)
+ *  - sessions[]   — session records with duration + per-session counts
+ *  - scanRecords[] — full structured scan data for future AI memory system
  */
 
 import * as fs   from "fs";
@@ -28,7 +33,7 @@ if (!process.env.DATA_DIR) {
   console.log(`[persist] data file:      ${DATA_FILE}`);
 }
 
-// ─── Data shape ───────────────────────────────────────────────────────────────
+// ─── Data shapes ──────────────────────────────────────────────────────────────
 
 export interface ScanCounter {
   dateKey: string;   // "2026-05-06" in America/Chicago
@@ -68,9 +73,87 @@ export interface FeedbackEntry {
   };
 }
 
+// ─── NEW: Analytics event ─────────────────────────────────────────────────────
+
+export interface EventEntry {
+  eventId:         string;
+  eventName:       string;
+  anonymousUserId: string;
+  sessionId:       string;
+  timestamp:       number;
+  platform:        string;
+  metadata:        Record<string, unknown>;
+}
+
+// ─── NEW: Session record ──────────────────────────────────────────────────────
+
+export interface SessionEntry {
+  sessionId:             string;
+  anonymousUserId:       string;
+  startedAt:             number;
+  endedAt?:              number;
+  durationMs?:           number;
+  platform:              string;
+  scanCount:             number;
+  completedScanCount:    number;
+  failedScanCount:       number;
+  listingGeneratedCount: number;
+  feedbackSubmittedCount:number;
+}
+
+// ─── NEW: Scan record (for future AI memory / similarity matching) ─────────────
+//
+// This stores enough structured data so a future item-memory system can:
+//   1. Match new scans against historical scans by visual similarity
+//   2. Reuse cached AI analysis for near-identical items (saving latency + cost)
+//   3. Build a proprietary resale pricing dataset from real user outcomes
+//
+// DO NOT implement similarity matching yet. Structure only.
+
+export interface ScanRecord {
+  scanId:             string;
+  anonymousUserId:    string;
+  sessionId:          string;
+  timestamp:          number;
+  // Image references
+  imageUri:           string;
+  tagImagePresent:    boolean;
+  detailImagePresent: boolean;
+  // AI outputs
+  aiTitle:            string;
+  aiCategory:         string;
+  aiBrand:            string;
+  aiEra:              string;
+  aiMaterial:         string;
+  aiRecommendation:   string;
+  aiResaleLow:        number;
+  aiResaleHigh:       number;
+  aiEstimatedValue:   number;
+  aiPlatform:         string;
+  aiSellSpeed:        string;
+  aiDemand:           string;
+  aiConfidence:       number;
+  styleLabels:        string[];
+  riskFlags:          string[];
+  // Linked records (populated later)
+  feedbackId:         string | null;
+  listingIds:         string[];
+  // ── Future AI memory placeholders (DO NOT BUILD YET) ─────────────────────
+  imageEmbeddingId:   null;   // future: vector DB ID after embedding pipeline
+  visualFingerprint:  null;   // future: perceptual hash for near-duplicate detection
+  similarScanMatchId: null;   // future: scanId of the cached scan this matched
+  cacheHit:           boolean;// future: true if this result was served from cache
+  cacheConfidence:    null;   // future: 0–100 confidence of the cache match
+}
+
+// ─── Store ────────────────────────────────────────────────────────────────────
+
 interface Store {
   scanCounter: ScanCounter;
   feedback:    FeedbackEntry[];
+  events:      EventEntry[];     // NEW v3
+  sessions:    SessionEntry[];   // NEW v3
+  scanRecords: ScanRecord[];     // NEW v3
 }
 
 // ─── In-memory cache (write-through) ─────────────────────────────────────────
@@ -78,6 +161,9 @@ interface Store {
 const DEFAULT_STORE: Store = {
   scanCounter: { dateKey: "", count: 0 },
   feedback:    [],
+  events:      [],
+  sessions:    [],
+  scanRecords: [],
 };
 
 let _cache:  Store | null = null;
@@ -90,9 +176,22 @@ function load(): Store {
   _loaded = true;
   try {
     if (fs.existsSync(DATA_FILE)) {
-      const raw  = fs.readFileSync(DATA_FILE, "utf-8");
-      _cache     = JSON.parse(raw) as Store;
-      console.log(`[persist] loaded — scans today: ${_cache.scanCounter.count}, feedback entries: ${_cache.feedback.length}`);
+      const raw  = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
+      // Safe migration: existing files won't have events/sessions/scanRecords
+      _cache = {
+        scanCounter: raw.scanCounter ?? JSON.parse(JSON.stringify(DEFAULT_STORE.scanCounter)),
+        feedback:    Array.isArray(raw.feedback)    ? raw.feedback    : [],
+        events:      Array.isArray(raw.events)      ? raw.events      : [],
+        sessions:    Array.isArray(raw.sessions)    ? raw.sessions    : [],
+        scanRecords: Array.isArray(raw.scanRecords) ? raw.scanRecords : [],
+      };
+      console.log(
+        `[persist] loaded — scans today: ${_cache.scanCounter.count}, ` +
+        `feedback: ${_cache.feedback.length}, ` +
+        `events: ${_cache.events.length}, ` +
+        `sessions: ${_cache.sessions.length}, ` +
+        `scanRecords: ${_cache.scanRecords.length}`
+      );
     } else {
       _cache = JSON.parse(JSON.stringify(DEFAULT_STORE));
       console.log("[persist] no existing data file — starting fresh");
@@ -213,5 +312,270 @@ export function getFeedbackSummary() {
     avgUserEstimate:    countEstimated ? Math.round(totalEstimated / countEstimated) : null,
     topCategory:        Object.entries(cats).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
     categories:         cats,
+  };
+}
+
+// ─── Analytics Events API ─────────────────────────────────────────────────────
+
+export function logEvent(event: Omit<EventEntry, "eventId">): void {
+  try {
+    const store = load();
+    const entry: EventEntry = {
+      eventId: `ev_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      ...event,
+    };
+    store.events.push(entry);
+    // Soft cap: keep last 50,000 events — trim oldest if exceeded
+    if (store.events.length > 50000) {
+      store.events = store.events.slice(-50000);
+    }
+    save();
+  } catch (e) {
+    console.error("[persist] logEvent failed:", e);
+  }
+}
+
+export function getAllEvents(): EventEntry[] {
+  return load().events;
+}
+
+// ─── Sessions API ─────────────────────────────────────────────────────────────
+
+export function startSession(data: Omit<SessionEntry, "endedAt" | "durationMs" | "scanCount" | "completedScanCount" | "failedScanCount" | "listingGeneratedCount" | "feedbackSubmittedCount">): void {
+  try {
+    const store = load();
+    const entry: SessionEntry = {
+      ...data,
+      scanCount:             0,
+      completedScanCount:    0,
+      failedScanCount:       0,
+      listingGeneratedCount: 0,
+      feedbackSubmittedCount:0,
+    };
+    // Remove any unclosed session with same ID
+    const existingIdx = store.sessions.findIndex(s => s.sessionId === data.sessionId);
+    if (existingIdx !== -1) store.sessions.splice(existingIdx, 1);
+    store.sessions.push(entry);
+    save();
+  } catch (e) {
+    console.error("[persist] startSession failed:", e);
+  }
+}
+
+export function endSession(data: {
+  sessionId:             string;
+  anonymousUserId:       string;
+  endedAt:               number;
+  durationMs:            number;
+  scanCount:             number;
+  completedScanCount:    number;
+  failedScanCount:       number;
+  listingGeneratedCount: number;
+  feedbackSubmittedCount:number;
+}): void {
+  try {
+    const store = load();
+    const idx   = store.sessions.findIndex(s => s.sessionId === data.sessionId);
+    if (idx !== -1) {
+      store.sessions[idx] = { ...store.sessions[idx], ...data };
+    } else {
+      // Session start was missed (e.g. app restarted) — create a stub
+      store.sessions.push({
+        sessionId:             data.sessionId,
+        anonymousUserId:       data.anonymousUserId,
+        startedAt:             data.endedAt - data.durationMs,
+        endedAt:               data.endedAt,
+        durationMs:            data.durationMs,
+        platform:              "unknown",
+        scanCount:             data.scanCount,
+        completedScanCount:    data.completedScanCount,
+        failedScanCount:       data.failedScanCount,
+        listingGeneratedCount: data.listingGeneratedCount,
+        feedbackSubmittedCount:data.feedbackSubmittedCount,
+      });
+    }
+    save();
+  } catch (e) {
+    console.error("[persist] endSession failed:", e);
+  }
+}
+
+export function getAllSessions(): SessionEntry[] {
+  return load().sessions;
+}
+
+// ─── Scan Records API ─────────────────────────────────────────────────────────
+
+export function saveScanRecord(record: ScanRecord): void {
+  try {
+    const store = load();
+    // Upsert by scanId
+    const idx = store.scanRecords.findIndex(r => r.scanId === record.scanId);
+    if (idx !== -1) {
+      store.scanRecords[idx] = record;
+    } else {
+      store.scanRecords.push(record);
+    }
+    save();
+  } catch (e) {
+    console.error("[persist] saveScanRecord failed:", e);
+  }
+}
+
+export function getAllScanRecords(): ScanRecord[] {
+  return load().scanRecords;
+}
+
+// ─── Analytics summary (for dashboard) ───────────────────────────────────────
+
+export function getAnalyticsSummary() {
+  const store    = load();
+  const events   = store.events;
+  const sessions = store.sessions;
+  const records  = store.scanRecords;
+
+  const nowMs      = Date.now();
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayMs    = todayStart.getTime();
+  const weekMs     = nowMs - 7  * 24 * 60 * 60 * 1000;
+  const monthMs    = nowMs - 30 * 24 * 60 * 60 * 1000;
+
+  // ── User metrics ────────────────────────────────────────────────────────────
+  const allUsers      = new Set(events.map(e => e.anonymousUserId));
+  const todayUsers    = new Set(events.filter(e => e.timestamp >= todayMs).map(e => e.anonymousUserId));
+  const weekUsers     = new Set(events.filter(e => e.timestamp >= weekMs).map(e => e.anonymousUserId));
+
+  // First seen per user
+  const firstSeenMap: Record<string, number> = {};
+  for (const ev of events) {
+    const u = ev.anonymousUserId;
+    if (firstSeenMap[u] === undefined || ev.timestamp < firstSeenMap[u]) {
+      firstSeenMap[u] = ev.timestamp;
+    }
+  }
+  const newUsersToday      = [...todayUsers].filter(u => (firstSeenMap[u] ?? 0) >= todayMs).length;
+  const returningUsersToday = [...todayUsers].filter(u => (firstSeenMap[u] ?? 0) < todayMs).length;
+
+  // ── Session metrics ─────────────────────────────────────────────────────────
+  const closedSessions    = sessions.filter(s => s.durationMs != null);
+  const todaySessions     = sessions.filter(s => s.startedAt >= todayMs);
+  const avgSessionMs      = closedSessions.length
+    ? Math.round(closedSessions.reduce((s, x) => s + (x.durationMs ?? 0), 0) / closedSessions.length)
+    : 0;
+
+  // Sessions per user per day (last 7 days)
+  const last7DaySessions  = sessions.filter(s => s.startedAt >= weekMs);
+  const sessPerUserDay    = weekUsers.size > 0 ? (last7DaySessions.length / weekUsers.size / 7).toFixed(2) : "—";
+
+  // ── Scan metrics (from events) ──────────────────────────────────────────────
+  const scanStarted   = events.filter(e => e.eventName === "scan_started").length;
+  const scanCompleted = events.filter(e => e.eventName === "scan_completed").length;
+  const scanFailed    = events.filter(e => e.eventName === "scan_failed").length;
+  const scanRate      = scanStarted > 0 ? Math.round(scanCompleted / scanStarted * 100) : 0;
+
+  // Scans per user per day (last 7 days)
+  const scansLast7:  Record<string, number> = {};
+  events.filter(e => e.eventName === "scan_completed" && e.timestamp >= weekMs).forEach(e => {
+    scansLast7[e.anonymousUserId] = (scansLast7[e.anonymousUserId] ?? 0) + 1;
+  });
+  const scansPerUserValues = Object.values(scansLast7).map(n => n / 7);
+  const avgScansPerDay     = scansPerUserValues.length
+    ? (scansPerUserValues.reduce((a, b) => a + b, 0) / scansPerUserValues.length).toFixed(1)
+    : "—";
+  const sorted = [...scansPerUserValues].sort((a, b) => a - b);
+  const medianScansPerDay  = sorted.length
+    ? sorted[Math.floor(sorted.length / 2)].toFixed(1)
+    : "—";
+  const pct5PlusScans      = scansPerUserValues.length
+    ? Math.round(scansPerUserValues.filter(n => n >= 5).length / scansPerUserValues.length * 100)
+    : 0;
+
+  // ── Listing metrics ─────────────────────────────────────────────────────────
+  const listingsTotal  = events.filter(e => e.eventName === "listing_generation_completed").length;
+  const ebayListings   = events.filter(e => e.eventName === "ebay_listing_generated").length;
+  const depopListings  = events.filter(e => e.eventName === "depop_listing_generated").length;
+  const listingRate    = scanCompleted > 0 ? Math.round(listingsTotal / scanCompleted * 100) : 0;
+
+  // ── Feedback metrics ────────────────────────────────────────────────────────
+  const feedbackEvents = events.filter(e => e.eventName === "feedback_submitted").length;
+  const feedbackRate   = scanCompleted > 0 ? Math.round(feedbackEvents / scanCompleted * 100) : 0;
+
+  // ── Time-to-value (per session: app_opened → first scan_submitted) ──────────
+  // Group events by sessionId, find time delta between first open and first scan
+  const sessionEventMap: Record<string, EventEntry[]> = {};
+  for (const ev of events) {
+    if (!sessionEventMap[ev.sessionId]) sessionEventMap[ev.sessionId] = [];
+    sessionEventMap[ev.sessionId].push(ev);
+  }
+  const ttv: number[] = [];
+  for (const sess of Object.values(sessionEventMap)) {
+    const opens = sess.filter(e => e.eventName === "app_opened" || e.eventName === "app_session_started");
+    const submits = sess.filter(e => e.eventName === "scan_submitted");
+    if (opens.length && submits.length) {
+      const firstOpen   = Math.min(...opens.map(e => e.timestamp));
+      const firstSubmit = Math.min(...submits.map(e => e.timestamp));
+      if (firstSubmit > firstOpen) ttv.push(firstSubmit - firstOpen);
+    }
+  }
+  const avgTTV = ttv.length ? Math.round(ttv.reduce((a, b) => a + b, 0) / ttv.length / 1000) : null;
+
+  // ── Retention (simple cohort — group by first seen date) ───────────────────
+  // day1: returned on firstSeen + 1 day, day7: + 7 days, day30: + 30 days
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  let day1Total = 0, day1Ret = 0, day7Total = 0, day7Ret = 0, day30Total = 0, day30Ret = 0;
+
+  for (const [userId, firstSeen] of Object.entries(firstSeenMap)) {
+    const userEvents = events.filter(e => e.anonymousUserId === userId);
+    const d1Start = firstSeen + DAY_MS;
+    const d1End   = firstSeen + 2 * DAY_MS;
+    const d7Start = firstSeen + 6 * DAY_MS;
+    const d7End   = firstSeen + 8 * DAY_MS;
+    const d30Start= firstSeen + 29 * DAY_MS;
+    const d30End  = firstSeen + 31 * DAY_MS;
+
+    // Only count cohorts that had enough time to return
+    if (nowMs >= d1End)  { day1Total++;  if (userEvents.some(e => e.timestamp >= d1Start && e.timestamp < d1End))   day1Ret++;  }
+    if (nowMs >= d7End)  { day7Total++;  if (userEvents.some(e => e.timestamp >= d7Start && e.timestamp < d7End))   day7Ret++;  }
+    if (nowMs >= d30End) { day30Total++; if (userEvents.some(e => e.timestamp >= d30Start && e.timestamp < d30End)) day30Ret++; }
+  }
+
+  return {
+    // Users
+    totalUniqueUsers:     allUsers.size,
+    dau:                  todayUsers.size,
+    wau:                  weekUsers.size,
+    newUsersToday,
+    returningUsersToday,
+    // Sessions
+    totalSessions:        sessions.length,
+    sessionsToday:        todaySessions.length,
+    avgSessionMs,
+    sessPerUserDay,
+    // Scans
+    scanStarted,
+    scanCompleted,
+    scanFailed,
+    scanRate,
+    avgScansPerDay,
+    medianScansPerDay,
+    pct5PlusScans,
+    // Listings
+    listingsTotal,
+    ebayListings,
+    depopListings,
+    listingRate,
+    // Feedback
+    feedbackEvents,
+    feedbackRate,
+    // TTV
+    avgTTVSeconds: avgTTV,
+    // Retention
+    day1Total,  day1Ret,
+    day7Total,  day7Ret,
+    day30Total, day30Ret,
+    // Raw counts for export
+    totalEvents:      events.length,
+    totalScanRecords: records.length,
   };
 }

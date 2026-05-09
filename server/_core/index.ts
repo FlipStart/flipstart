@@ -80,11 +80,12 @@ async function startServer() {
     }
     try {
       const { generateDashboard } = require("../dashboard");
-      const { getAllFeedback, getFeedbackSummary, getScanStats } = require("../persist");
+      const { getAllFeedback, getFeedbackSummary, getScanStats, getAnalyticsSummary } = require("../persist");
       const html = generateDashboard({
         entries:   getAllFeedback(),
         summary:   getFeedbackSummary(),
         scanStats: getScanStats(),
+        analytics: getAnalyticsSummary(),
         secret:    req.query.secret as string,
       });
       res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -142,6 +143,157 @@ async function startServer() {
       res.send([header, ...rows].join("\n"));
     } catch (e: any) {
       res.status(500).json({ error: e?.message });
+    }
+  });
+
+  // ── Dev analytics JSON export ─────────────────────────────────────────────
+  app.get("/api/dev/analytics", (req, res) => {
+    const secret = process.env.DEV_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const { getAllEvents, getAllSessions, getAllScanRecords, getAnalyticsSummary } = require("../persist");
+      res.json({
+        summary:     getAnalyticsSummary(),
+        events:      getAllEvents(),
+        sessions:    getAllSessions(),
+        scanRecords: getAllScanRecords(),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  // ── Dev analytics CSV export ──────────────────────────────────────────────
+  app.get("/api/dev/analytics.csv", (req, res) => {
+    const secret = process.env.DEV_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const { getAllEvents } = require("../persist");
+      const events = getAllEvents();
+      const header = "eventId,eventName,anonymousUserId,sessionId,timestamp,platform,metadata";
+      const rows   = events.map((e: any) =>
+        [
+          e.eventId, e.eventName, e.anonymousUserId, e.sessionId,
+          new Date(e.timestamp).toISOString(), e.platform,
+          `"${JSON.stringify(e.metadata ?? {}).replace(/"/g, "'")}"`,
+        ].join(",")
+      );
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", "attachment; filename=flipstart-analytics.csv");
+      res.send([header, ...rows].join("\n"));
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  // ── Analytics ingest endpoints (called from client, no auth — anonymous data only) ──
+  // These are intentionally unauthenticated. All data is anonymous (no PII).
+  // POST /api/analytics/event
+  app.post("/api/analytics/event", (req, res) => {
+    try {
+      const { logEvent } = require("../persist");
+      const { eventName, anonymousUserId, sessionId, timestamp, platform, metadata } = req.body ?? {};
+      if (!eventName || !anonymousUserId) { res.json({ ok: false }); return; }
+      logEvent({
+        eventName:       String(eventName).slice(0, 64),
+        anonymousUserId: String(anonymousUserId).slice(0, 64),
+        sessionId:       String(sessionId ?? "no_session").slice(0, 64),
+        timestamp:       typeof timestamp === "number" ? timestamp : Date.now(),
+        platform:        String(platform ?? "unknown").slice(0, 16),
+        metadata:        (metadata && typeof metadata === "object") ? metadata : {},
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      // Swallow — analytics must never error the client
+      res.json({ ok: false });
+    }
+  });
+
+  // POST /api/analytics/session/start
+  app.post("/api/analytics/session/start", (req, res) => {
+    try {
+      const { startSession } = require("../persist");
+      const { sessionId, anonymousUserId, startedAt, platform } = req.body ?? {};
+      if (!sessionId || !anonymousUserId) { res.json({ ok: false }); return; }
+      startSession({
+        sessionId:       String(sessionId).slice(0, 64),
+        anonymousUserId: String(anonymousUserId).slice(0, 64),
+        startedAt:       typeof startedAt === "number" ? startedAt : Date.now(),
+        platform:        String(platform ?? "unknown").slice(0, 16),
+      });
+      res.json({ ok: true });
+    } catch {
+      res.json({ ok: false });
+    }
+  });
+
+  // POST /api/analytics/session/end
+  app.post("/api/analytics/session/end", (req, res) => {
+    try {
+      const { endSession } = require("../persist");
+      const b = req.body ?? {};
+      if (!b.sessionId || !b.anonymousUserId) { res.json({ ok: false }); return; }
+      endSession({
+        sessionId:             String(b.sessionId).slice(0, 64),
+        anonymousUserId:       String(b.anonymousUserId).slice(0, 64),
+        endedAt:               typeof b.endedAt   === "number" ? b.endedAt   : Date.now(),
+        durationMs:            typeof b.durationMs === "number" ? b.durationMs : 0,
+        scanCount:             Number(b.scanCount             ?? 0),
+        completedScanCount:    Number(b.completedScanCount    ?? 0),
+        failedScanCount:       Number(b.failedScanCount       ?? 0),
+        listingGeneratedCount: Number(b.listingGeneratedCount ?? 0),
+        feedbackSubmittedCount:Number(b.feedbackSubmittedCount?? 0),
+      });
+      res.json({ ok: true });
+    } catch {
+      res.json({ ok: false });
+    }
+  });
+
+  // POST /api/analytics/scan-record
+  app.post("/api/analytics/scan-record", (req, res) => {
+    try {
+      const { saveScanRecord } = require("../persist");
+      const b = req.body ?? {};
+      if (!b.scanId || !b.anonymousUserId) { res.json({ ok: false }); return; }
+      saveScanRecord({
+        scanId:             String(b.scanId).slice(0, 64),
+        anonymousUserId:    String(b.anonymousUserId).slice(0, 64),
+        sessionId:          String(b.sessionId ?? "no_session").slice(0, 64),
+        timestamp:          typeof b.timestamp === "number" ? b.timestamp : Date.now(),
+        imageUri:           String(b.imageUri ?? ""),
+        tagImagePresent:    Boolean(b.tagImagePresent),
+        detailImagePresent: Boolean(b.detailImagePresent),
+        aiTitle:            String(b.aiTitle         ?? ""),
+        aiCategory:         String(b.aiCategory      ?? ""),
+        aiBrand:            String(b.aiBrand         ?? ""),
+        aiEra:              String(b.aiEra            ?? ""),
+        aiMaterial:         String(b.aiMaterial       ?? ""),
+        aiRecommendation:   String(b.aiRecommendation ?? ""),
+        aiResaleLow:        Number(b.aiResaleLow      ?? 0),
+        aiResaleHigh:       Number(b.aiResaleHigh     ?? 0),
+        aiEstimatedValue:   Number(b.aiEstimatedValue ?? 0),
+        aiPlatform:         String(b.aiPlatform       ?? ""),
+        aiSellSpeed:        String(b.aiSellSpeed      ?? ""),
+        aiDemand:           String(b.aiDemand         ?? ""),
+        aiConfidence:       Number(b.aiConfidence     ?? 0),
+        styleLabels:        Array.isArray(b.styleLabels) ? b.styleLabels : [],
+        riskFlags:          Array.isArray(b.riskFlags)   ? b.riskFlags   : [],
+        feedbackId:         null,
+        listingIds:         [],
+        imageEmbeddingId:   null,
+        visualFingerprint:  null,
+        similarScanMatchId: null,
+        cacheHit:           false,
+        cacheConfidence:    null,
+      });
+      res.json({ ok: true });
+    } catch {
+      res.json({ ok: false });
     }
   });
 

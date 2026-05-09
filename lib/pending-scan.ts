@@ -5,7 +5,8 @@
  * We pass via module state (not router params) to avoid base64 serialization
  * blocking the JS thread.
  *
- * Supports front (required), back (optional), tag (optional).
+ * Supports front (required), tag (optional), detail (optional).
+ * 'detail' replaces old 'back' — flexible: back print, graphic, flaw, logo, close-up.
  */
 
 export interface PhotoData {
@@ -14,9 +15,9 @@ export interface PhotoData {
 }
 
 export interface PendingScan {
-  front: PhotoData;
-  back?: PhotoData;
-  tag?:  PhotoData;
+  front:   PhotoData;
+  tag?:    PhotoData;
+  detail?: PhotoData;   // formerly 'back' — back print, graphic, flaw, logo, close-up
 }
 
 let _pending: PendingScan | null = null;

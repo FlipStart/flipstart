@@ -15,8 +15,8 @@ const appRouter_scan = router({
         z.object({
           imageBase64:     z.string().min(1, "Image data is required"),
           mimeType:        z.string().default("image/jpeg"),
-          backImageBase64: z.string().optional(),
-          backMimeType:    z.string().optional(),
+          detailImageBase64: z.string().optional(),
+          detailMimeType:    z.string().optional(),
           tagImageBase64:  z.string().optional(),
           tagMimeType:     z.string().optional(),
         })
@@ -53,7 +53,7 @@ const appRouter_scan = router({
             analyzeItemFast(
               input.imageBase64,
               input.mimeType,
-              input.backImageBase64 ? { base64: input.backImageBase64, mimeType: input.backMimeType ?? 'image/jpeg' } : undefined,
+              input.detailImageBase64 ? { base64: input.detailImageBase64, mimeType: input.detailMimeType ?? 'image/jpeg' } : undefined,
               input.tagImageBase64  ? { base64: input.tagImageBase64,  mimeType: input.tagMimeType  ?? 'image/jpeg' } : undefined,
             ),
           ]);

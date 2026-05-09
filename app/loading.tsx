@@ -35,6 +35,7 @@ import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
 import { useAudioPlayer } from "expo-audio";
 import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
+import { logEvent, incrementSessionCount, saveScanRecord } from "@/lib/analytics";
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
@@ -123,9 +124,6 @@ export default function LoadingScreen() {
   }, [messages]);
 
   // ── Estimated confidence bar ──────────────────────────────────────────────
-  // Rises smoothly to CONFIDENCE_HOLD while the backend works.
-  // "Finalizing analysis..." shown from CONFIDENCE_HOLD until response arrives.
-  // Jumps to 100 right before navigation.
   const confidenceWidth = useSharedValue(0);
 
   useEffect(() => {
@@ -134,13 +132,12 @@ export default function LoadingScreen() {
       setConfidence(prev => {
         if (prev >= CONFIDENCE_HOLD) {
           if (!finalizing) setFinalizing(true);
-          return prev; // hold — backend not done yet
+          return prev;
         }
         const elapsed    = Date.now() - scanStartTime.current;
         const target     = Math.min(CONFIDENCE_HOLD, (elapsed / CONFIDENCE_CRUISE_MS) * CONFIDENCE_HOLD);
         const next       = Math.min(CONFIDENCE_HOLD, prev + (target - prev) * 0.12 + 0.4);
 
-        // Subtle haptic at milestones — only once per milestone
         for (const milestone of CONFIDENCE_HAPTIC_AT) {
           if (prev < milestone && next >= milestone && lastHapticAt.current !== milestone) {
             lastHapticAt.current = milestone;
@@ -232,20 +229,22 @@ export default function LoadingScreen() {
         return;
       }
 
-      // Cache for retry — consumePendingScan() clears the module store,
-      // so if the user retries we must use this cached version
+      // Cache for retry — consumePendingScan() clears the module store
       lastPendingScan.current = pending;
 
-      const { front, back, tag } = pending;
+      const { front, tag, detail } = pending;
       const imageBase64 = front.base64;
       const mimeType    = front.mimeType;
-      console.log(`[loading] images ready — front✓ back:${!!back} tag:${!!tag}`);
+      console.log(`[loading] images ready — front✓ tag:${!!tag} detail:${!!detail}`);
       console.log("[loading] analysis request start — timeout in", HARD_TIMEOUT_MS / 1000, "s");
 
+      // Analytics: scan submitted
       try {
-        // Cancellable timeout — stored in ref so we can clear it
-        // the MOMENT the backend responds (before confidence check).
-        // This prevents the timeout firing on slow-but-successful responses.
+        logEvent("scan_submitted", { tagPresent: !!tag, detailPresent: !!detail });
+        incrementSessionCount("scanCount");
+      } catch { /* never block analysis */ }
+
+      try {
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutIdRef.current = setTimeout(() => {
             console.log("[loading] hard timeout triggered after", HARD_TIMEOUT_MS / 1000, "s");
@@ -256,16 +255,16 @@ export default function LoadingScreen() {
         const result = await Promise.race([
           analyzeFastMutation.mutateAsync({
             imageBase64,
-            mimeType:       mimeType || "image/jpeg",
-            backImageBase64: back?.base64,
-            backMimeType:    back?.mimeType,
-            tagImageBase64:  tag?.base64,
-            tagMimeType:     tag?.mimeType,
+            mimeType:           mimeType || "image/jpeg",
+            tagImageBase64:     tag?.base64,
+            tagMimeType:        tag?.mimeType,
+            detailImageBase64:  detail?.base64,
+            detailMimeType:     detail?.mimeType,
           }),
           timeoutPromise,
         ]);
 
-        // Backend responded — cancel timeout immediately so it cannot fire later
+        // Backend responded — cancel timeout immediately
         if (timeoutIdRef.current !== null) {
           clearTimeout(timeoutIdRef.current);
           timeoutIdRef.current = null;
@@ -327,15 +326,18 @@ export default function LoadingScreen() {
           // listings intentionally omitted — undefined until user generates them
         };
 
-        // Low-confidence detection — show warning instead of full fail
+        // Low-confidence detection
         const matchConf = safeRiskAnalysis.match_confidence ?? 0;
         console.log("[loading] match_confidence:", matchConf);
 
         if (matchConf > 0 && matchConf < 35) {
-          // Very low confidence — treat as bad_input (no usable result)
           console.log("[loading] bad_input: confidence too low to use:", matchConf);
-          addScan(scanResult);  // store anyway so Continue Anyway is possible
+          addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
+          try {
+            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf });
+            incrementSessionCount("failedScanCount");
+          } catch { /* never block */ }
           setFailState({ type: "bad_input", message: "", confidence: matchConf });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -344,10 +346,13 @@ export default function LoadingScreen() {
         }
 
         if (matchConf > 0 && matchConf < 55) {
-          // Medium-low confidence — show warning screen but allow Continue Anyway
           console.log("[loading] low_confidence: showing warning screen:", matchConf);
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
+          try {
+            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf });
+            incrementSessionCount("failedScanCount");
+          } catch { /* never block */ }
           setFailState({ type: "low_confidence", message: "", confidence: matchConf });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
@@ -355,22 +360,47 @@ export default function LoadingScreen() {
           return;
         }
 
-        // matchConf === 0 means the AI didn't return a confidence score.
-        // Treat this as a normal result — zero is "unset", not "zero confidence".
-        // Only block on explicitly low non-zero values (1–54).
-
         addScan(scanResult);
 
         if (Platform.OS !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         }
 
-        // Animate confidence to 100% THEN navigate — never feels abrupt
+        // Analytics: scan completed + save structured scan record for future AI memory
+        try {
+          logEvent("scan_completed", {
+            confidence:      matchConf,
+            category:        safeIdentification.category,
+            brand:           safeIdentification.brand,
+            recommendation:  result.recommendation ?? "",
+          });
+          incrementSessionCount("completedScanCount");
+          saveScanRecord({
+            scanId:             scanResult.id,
+            imageUri:           scanResult.imageUri,
+            tagImagePresent:    !!tag,
+            detailImagePresent: !!detail,
+            aiTitle:            safeIdentification.item_name,
+            aiCategory:         safeIdentification.category,
+            aiBrand:            safeIdentification.brand,
+            aiEra:              safeIdentification.estimated_era,
+            aiMaterial:         safeIdentification.material_guess,
+            aiRecommendation:   result.recommendation ?? "",
+            aiResaleLow:        safeMarketData.estimated_resale_range.low,
+            aiResaleHigh:       safeMarketData.estimated_resale_range.high,
+            aiEstimatedValue:   safeMarketData.adjusted_estimated_value,
+            aiPlatform:         result.best_platform ?? "",
+            aiSellSpeed:        safeMarketData.sell_speed,
+            aiDemand:           safeMarketData.demand,
+            aiConfidence:       matchConf,
+            styleLabels:        safeIdentification.style_labels,
+            riskFlags:          safeRiskAnalysis.risk_flags,
+          });
+        } catch { /* never block navigation */ }
+
         setConfidence(100);
         try { player.pause(); } catch { /* ignore */ }
 
-        // Wait for the bar to visually reach 100% before transitioning
-        // Uses a short timeout that matches the bar animation duration
         setTimeout(() => {
           if (hasNavigated.current) return;
           hasNavigated.current = true;
@@ -379,7 +409,6 @@ export default function LoadingScreen() {
         }, 600);
 
       } catch (err: any) {
-        // Clear timeout if it hasn't fired yet (e.g. network error arrived before timeout)
         if (timeoutIdRef.current !== null) {
           clearTimeout(timeoutIdRef.current);
           timeoutIdRef.current = null;
@@ -389,6 +418,12 @@ export default function LoadingScreen() {
 
         const raw: string = err?.message ?? "";
 
+        // Analytics: scan failed
+        try {
+          logEvent("scan_failed", { errorType: raw === "__TIMEOUT__" ? "timeout" : "network", error: raw.slice(0, 80) });
+          incrementSessionCount("failedScanCount");
+        } catch { /* never block error handling */ }
+
         let failType: FailType = "network";
         if (raw === "__TIMEOUT__" || raw.toLowerCase().includes("timed out")) {
           failType = "timeout";
@@ -397,8 +432,7 @@ export default function LoadingScreen() {
           raw.includes("GLOBAL_SCAN_LIMIT_REACHED") ||
           raw.toLowerCase().includes("beta scan limit")
         ) {
-          // Global daily limit hit — show dedicated fail state
-          failType = "timeout";  // reuse timeout type with custom message
+          failType = "timeout";
           console.log("[loading] global scan limit reached");
           try { player.pause(); } catch {}
           setFailState({
@@ -408,7 +442,7 @@ export default function LoadingScreen() {
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
           }
-          return;   // exit early — don't fall through to generic error
+          return;
         } else if (
           raw.toLowerCase().includes("unsupported image") ||
           raw.toLowerCase().includes("image format") ||
@@ -440,8 +474,7 @@ export default function LoadingScreen() {
   const BANNER_TEXT_Y_RATIO        = 0.072;
   const CLOCK_CENTER_Y_RATIO       = 0.275;
   const STATUS_TEXT_Y_RATIO        = 0.505;
-  // Cancel sits below the treasure chest (~82% down the image area)
-  const CANCEL_BUTTON_Y_RATIO = 0.84;
+  const CANCEL_BUTTON_Y_RATIO      = 0.84;
 
   const imgH    = screenH - HEADER_H;
   const bannerY = imgH * BANNER_TEXT_Y_RATIO;
@@ -470,19 +503,14 @@ export default function LoadingScreen() {
   if (failState) {
     const handleRetry = () => {
       console.log("[loading] retry pressed — resetting state machine");
-      // Clear any pending timeout
       if (timeoutIdRef.current !== null) {
         clearTimeout(timeoutIdRef.current);
         timeoutIdRef.current = null;
       }
-      // If the pending scan was already consumed, restore from cache
-      // so doScan has data on retry
       if (lastPendingScan.current) {
-        // Re-inject into the module store so consumePendingScan() works again
         const { setPendingScan } = require("@/lib/pending-scan");
         setPendingScan(lastPendingScan.current);
       }
-      // Reset all state flags
       hasStartedRef.current = false;
       hasNavigated.current  = false;
       soundStarted.current  = false;
@@ -490,7 +518,6 @@ export default function LoadingScreen() {
       setFailState(null);
       setConfidence(0);
       setFinalizing(false);
-      // Incrementing scanKey re-runs the useEffect → re-fires doScan
       setScanKey(k => k + 1);
     };
     const handleRetake = () => {
@@ -501,11 +528,8 @@ export default function LoadingScreen() {
       }
       try { player.pause(); } catch { /* ignore */ }
       hasNavigated.current = true;
-      // Push to camera screen so user retakes immediately without extra taps
       router.replace("/camera" as any);
     };
-    // Continue Anyway available for both low_confidence and bad_input
-    // (result was stored via addScan before showing fail state in both cases)
     const handleContinueAnyway =
       (failState.type === "low_confidence" || failState.type === "bad_input")
         ? () => {
@@ -675,9 +699,9 @@ const s = StyleSheet.create({
     paddingHorizontal: 22,
     paddingVertical:    9,
     borderRadius:      50,
-    backgroundColor:   "rgba(10,15,8,0.52)",  // semi-transparent dark — ghost feel
+    backgroundColor:   "rgba(10,15,8,0.52)",
     borderWidth:       1,
-    borderColor:       "rgba(190,156,44,0.45)",  // soft gold rim
+    borderColor:       "rgba(190,156,44,0.45)",
     shadowColor:       "#000",
     shadowOffset:      { width: 0, height: 2 },
     shadowOpacity:     0.30,
@@ -688,11 +712,11 @@ const s = StyleSheet.create({
     fontFamily:    FONTS.serif,
     fontSize:      13,
     fontWeight:    "600",
-    color:         "rgba(236,231,211,0.88)",  // cream — legible but subtle
+    color:         "rgba(236,231,211,0.88)",
     letterSpacing: 0.5,
   },
 
-  // Error
+  // Error state (legacy — kept for safety, FailStateScreen handles errors now)
   errorContainer: { flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 32, backgroundColor: V.pageBg },
   errorIconWrap:  { width: 80, height: 80, borderRadius: 40, justifyContent: "center", alignItems: "center", marginBottom: 20 },
   errorTextBlock: { alignItems: "center", marginBottom: 32 },

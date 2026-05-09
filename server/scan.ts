@@ -33,7 +33,7 @@ export async function uploadScanImage(base64Data: string, mimeType: string): Pro
 
 // ─── Single Combined Prompt (optimized for speed) ────────────────────────────
 
-const FAST_ANALYSIS_PROMPT = `You are FlipStart, an AI resale analyst. You may receive 1–3 labeled photos: [FRONT], [BACK], and/or [TAG]. Use all available photos to produce the most accurate resale analysis. Tag photos are especially valuable for brand, material, era, and authenticity. Return a COMPLETE resale analysis as JSON.
+const FAST_ANALYSIS_PROMPT = `You are FlipStart, an AI resale analyst. You may receive 1–3 labeled photos: [FRONT], [TAG], and/or [DETAIL]. Use all available photos to produce the most accurate resale analysis. Tag photos are especially valuable for brand, material, era, and authenticity. Detail photos are flexible — treat them as supporting evidence regardless of angle. Return a COMPLETE resale analysis as JSON.
 
 IDENTIFICATION RULES:
 - Only describe what you can CLEARLY SEE in the image
@@ -81,7 +81,7 @@ IDENTIFICATION RULES:
     - "mini swoosh" / "embroidered logo" / "spellout"
     - "single stitch" / "heavyweight" / "faded" / "distressed"
     - "oversized" / "boxy" / "cropped"
-    - Color ONLY if obvious and it helps: "navy", "black", "grey" — skip if uncertain
+    - Color: OMIT unless unmistakably obvious AND confidence is extremely high. If there is ANY doubt about the color, omit it entirely. A wrong color destroys listing trust. When in doubt, leave it out.
 
   TARGET LENGTH: 4–11 words. Never shorter than 4. Never a SEO spam list.
 
@@ -105,6 +105,29 @@ IDENTIFICATION RULES:
 - No brand visible: lead with era + item type, e.g. "Vintage Graphic Crewneck" or "Y2K Knit Sweater"
 - material_guess: use "Unknown" only if fabric/material truly cannot be inferred
 - estimated_era: NEVER default to "Unknown" — use all available evidence (see ERA DETECTION below)
+
+COLOR SAFETY RULE — CRITICAL:
+Do NOT include item color in item_name, eBay title, Depop title, or any listing copy unless:
+  - The color is unmistakably, unambiguously obvious from the image
+  - You have extremely high confidence (>90%) in the exact color
+  - Getting the color wrong would not mislead a buyer
+
+Most colors are ambiguous under thrift store / user photography lighting. When uncertain:
+  - OMIT color from item_name and all titles/listings entirely
+  - Do NOT say "appears white" or "possibly gray" — just omit
+  - Do NOT guess at off-white, cream, beige, light gray — these are all easily confused
+  - Colors frequently confused: white/cream/gray, navy/black/dark blue, brown/tan/rust
+
+Safe to include color ONLY when:
+  - Item is a bold, saturated, unmistakable single color (e.g. fire-engine red graphic tee, bright yellow windbreaker)
+  - OR color is part of a recognizable named pattern ("striped", "plaid", "colorblock") that is visually confirmed
+  - OR color is printed on the tag and confirmed with high certainty
+
+Return colorConfidence field:
+  - "high": include color in titles/listings
+  - "medium": omit from titles, may note in description with caveat
+  - "low": omit color entirely from all output
+
 
 ERA DETECTION — CRITICAL. Determine era using every available clue:
 
@@ -189,7 +212,7 @@ CRITICAL PRICE ADJUSTMENT RULES:
 - Positive type="positive", negative type="negative"
 
 Return ONLY this JSON (no markdown, no explanation):
-{"identification":{"item_name":"","brand":"","category":"","estimated_era":"[required — use era label, not Unknown unless truly no evidence]","style_labels":[],"material_guess":""},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
+{"identification":{"item_name":"","brand":"","category":"","estimated_era":"[required — use era label, not Unknown unless truly no evidence]","style_labels":[],"material_guess":"","colorConfidence":"low|medium|high","color_note":"[only populate if colorConfidence is high; otherwise empty string]"},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
 
 /**
  * Single fast analysis — everything in one LLM call.
@@ -214,7 +237,7 @@ export async function analyzeItemFast(
 
   if (back?.base64) {
     imageParts.push(
-      { type: "text", text: "[BACK] This is the back of the item. Use it for condition details, stitching, construction quality, and any markings." },
+      { type: "text", text: "[DETAIL] This is a detail photo — flexible supporting evidence. It may show: the back of the item, a graphic close-up, embroidery, a flaw, logo, sleeve hit, texture, or any special feature. If it contains a graphic, logo, or character close-up, weight it heavily for identification and pricing." },
       { type: "image_url", image_url: { url: `data:${back.mimeType};base64,${back.base64}`, detail: "high" } },
     );
   }
@@ -273,6 +296,14 @@ export async function analyzeItemFast(
 
 const LISTING_PROMPT = `You are writing resale listings for two platforms. Match each platform's exact culture.
 
+
+COLOR SAFETY RULE (applies to ALL titles and descriptions):
+- Do NOT include item color in any title or listing copy unless colorConfidence is "high"
+- If colorConfidence is "medium" or "low": omit color completely
+- Do NOT say "appears white", "may be gray", or any hedged color language in listings
+- Buyers trust exact descriptions — wrong colors cause returns and bad reviews
+- When omitting color, simply write a better title without it
+
 EBAY:
 - Title: max 80 chars. [Brand] [Item Type] [Key Detail] [Size if known]
 - Description: 3-5 sentences. Professional resale tone. Cover condition, features, sizing.
@@ -280,7 +311,7 @@ EBAY:
 DEPOP — YOU ARE A REAL DEPOP RESELLER, NOT AN AI COPYWRITER:
 
 Title format (max 60 chars): start with the most recognizable descriptor.
-Good examples: "Vintage Harley Davidson long sleeve tee" / "Black Nike mini swoosh hoodie" / "Y2K Coogi knit sweater" / "Vintage Packers crewneck"
+Good examples: "Vintage Harley Davidson long sleeve tee" / "Nike mini swoosh hoodie" / "Y2K Coogi knit sweater" / "Vintage Packers crewneck"
 
 Description structure:
 1. Natural item ID (color + brand + type, add vintage/y2k if applicable)

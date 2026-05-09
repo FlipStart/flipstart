@@ -26,6 +26,7 @@ import { V } from '@/constants/vintage';
 import { captureFromCamera, captureMultipleFromGallery, type CapturedPhoto, type CapturedPhotoSet } from '@/lib/capture';
 import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
+import { logEvent } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { trpc } from '@/lib/trpc';
 import { isOnboardingComplete, completeOnboarding, getUserMode, setUserMode, type UserMode } from '@/lib/onboarding-storage';
@@ -305,7 +306,7 @@ export default function HomeScreen() {
     useCallback(() => {
       const set = consumePendingCaptureSet();
       if (set?.front) {
-        console.log('[home] consumed pending photo set — front✓ back:', !!set.back, 'tag:', !!set.tag);
+        console.log('[home] consumed pending photo set — front✓ detail:', !!set.detail, 'tag:', !!set.tag);
         setPhotoSet(set);
         setIsAnalyzing(false);
       }
@@ -362,10 +363,18 @@ export default function HomeScreen() {
     const primary = photoSet.front!;  // non-null: guarded by the check above
     setIsAnalyzing(true);
 
+    // Analytics: scan started — fire-and-forget, never blocks
+    try {
+      logEvent("scan_started", {
+        tagPresent:    !!photoSet.tag?.base64,
+        detailPresent: !!photoSet.detail?.base64,
+      });
+    } catch { /* never block scan */ }
+
     setPendingScan({
       front: { base64: primary.base64, mimeType: primary.mimeType },
-      ...(photoSet.back?.base64  ? { back: { base64: photoSet.back.base64,  mimeType: photoSet.back.mimeType  } } : {}),
-      ...(photoSet.tag?.base64   ? { tag:  { base64: photoSet.tag.base64,   mimeType: photoSet.tag.mimeType   } } : {}),
+      ...(photoSet.detail?.base64 ? { detail: { base64: photoSet.detail.base64, mimeType: photoSet.detail.mimeType } } : {}),
+      ...(photoSet.tag?.base64    ? { tag:    { base64: photoSet.tag.base64,    mimeType: photoSet.tag.mimeType    } } : {}),
     });
 
     const imageUri = primary.uri;
