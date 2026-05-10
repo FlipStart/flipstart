@@ -146,6 +146,30 @@ async function startServer() {
     }
   });
 
+  // ── Visual User Analytics Dashboard ─────────────────────────────────────
+  // GET /api/dev/analytics-dashboard?secret=DEV_SECRET
+  app.get("/api/dev/analytics-dashboard", (req, res) => {
+    const secret = process.env.DEV_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).send("<h1>401 Unauthorized</h1>");
+    }
+    try {
+      const { generateAnalyticsDashboard } = require("../analytics-dashboard");
+      const { getAllEvents, getAllSessions, getAllScanRecords, getAnalyticsSummary } = require("../persist");
+      const html = generateAnalyticsDashboard({
+        summary:     getAnalyticsSummary(),
+        events:      getAllEvents(),
+        sessions:    getAllSessions(),
+        scanRecords: getAllScanRecords(),
+        secret:      req.query.secret as string,
+      });
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (e: any) {
+      res.status(500).send("<pre>Analytics dashboard error: " + (e?.message ?? e) + "</pre>");
+    }
+  });
+
   // ── Dev analytics JSON export ─────────────────────────────────────────────
   app.get("/api/dev/analytics", (req, res) => {
     const secret = process.env.DEV_SECRET;
