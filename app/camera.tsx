@@ -9,7 +9,7 @@
 
 import { useState, useRef, useCallback } from 'react';
 import {
-  View, Text, Pressable, StyleSheet, Alert, Platform,
+  View, Text, Pressable, StyleSheet, Alert, Platform, Linking,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -130,27 +130,73 @@ export default function CameraScreen() {
     const photoSet: CapturedPhotoSet = {
       front:   slots.front,
       primary: slots.front,
-      back:    slots.back,
+      detail:  slots.detail,
       tag:     slots.tag,
     };
     setPendingCaptureSet(photoSet);
     haptic(Haptics.ImpactFeedbackStyle.Medium);
-    console.log('[camera] saved photo set — front✓ back:', !!slots.back, 'tag:', !!slots.tag);
-    router.back();
+    console.log('[camera] saved photo set — front✓ detail:', !!slots.detail, 'tag:', !!slots.tag);
+    // Always navigate to home tab so useFocusEffect fires and shows photo
+    // confirmation — regardless of which tab the user started the scan from.
+    // router.back() only works when camera was opened from home; this fixes
+    // History / Profile / Settings → camera → done → black hole bug.
+    router.replace('/(tabs)' as any);
   };
 
   // ── Permission screens ────────────────────────────────────────────────────
   if (!permission) return <View style={s.root} />;
 
   if (!permission.granted) {
+    const canAsk = permission.canAskAgain;
     return (
       <View style={[s.root, s.permWrap]}>
-        <MaterialIcons name="camera-alt" size={48} color={V.textMuted} />
-        <Text style={s.permText}>Camera access is required to scan items.</Text>
-        <Pressable onPress={requestPermission} style={s.permBtn}>
-          <Text style={s.permBtnText}>Grant Permission</Text>
+        {/* Back button */}
+        <Pressable
+          onPress={() => router.back()}
+          style={s.permBackBtn}
+          hitSlop={10}
+        >
+          <MaterialIcons name="close" size={22} color={CREAM} />
         </Pressable>
-        <Pressable onPress={() => router.back()} style={{ marginTop: 8 }}>
+
+        {/* Icon */}
+        <View style={s.permIconCircle}>
+          <MaterialIcons name="camera-alt" size={36} color={GOLD} />
+        </View>
+
+        {/* Title + explanation */}
+        <Text style={s.permTitle}>Camera Access</Text>
+        <Text style={s.permBody}>
+          FlipStart uses your camera to photograph thrifted items and estimate their resale value.
+        </Text>
+
+        {canAsk ? (
+          /* First ask — show request button */
+          <Pressable
+            onPress={requestPermission}
+            style={({ pressed }) => [s.permPrimaryBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={s.permPrimaryBtnText}>Allow Camera Access</Text>
+          </Pressable>
+        ) : (
+          /* Already denied — guide to Settings */
+          <>
+            <View style={s.permDeniedCard}>
+              <MaterialIcons name="info-outline" size={16} color={GOLD} />
+              <Text style={s.permDeniedText}>
+                Camera access was denied. You can enable it in your iPhone Settings.
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => Linking.openSettings()}
+              style={({ pressed }) => [s.permPrimaryBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Text style={s.permPrimaryBtnText}>Open Settings</Text>
+            </Pressable>
+          </>
+        )}
+
+        <Pressable onPress={() => router.back()} style={{ marginTop: 12 }}>
           <Text style={s.permBackText}>Go Back</Text>
         </Pressable>
       </View>
@@ -331,9 +377,50 @@ const s = StyleSheet.create({
 
   hint: { fontSize: 12, color: 'rgba(236,231,211,0.45)', marginTop: 10, textAlign: 'center' },
 
-  permWrap:    { justifyContent: 'center', alignItems: 'center', gap: 16, padding: 32, backgroundColor: V.pageBg },
-  permText:    { fontSize: 15, color: V.textMuted, textAlign: 'center', lineHeight: 22 },
-  permBtn:     { backgroundColor: V.green, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 50 },
-  permBtnText: { color: V.white, fontWeight: '700', fontSize: 15 },
-  permBackText:{ fontSize: 14, color: V.textMuted },
+  // ── Permission screen ──────────────────────────────────────────────────────
+  permWrap: {
+    justifyContent: 'center', alignItems: 'center',
+    gap: 14, padding: 32, backgroundColor: BG, flex: 1,
+  },
+  permBackBtn: {
+    position: 'absolute', top: Platform.OS === 'ios' ? 56 : 16, left: 16,
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  permIconCircle: {
+    width: 80, height: 80, borderRadius: 40,
+    backgroundColor: GOLD + '18',
+    borderWidth: 1.5, borderColor: GOLD + '40',
+    justifyContent: 'center', alignItems: 'center',
+    marginBottom: 4,
+  },
+  permTitle: {
+    fontFamily: FONTS.serif, fontSize: 24, fontWeight: '800',
+    color: CREAM, letterSpacing: -0.3,
+  },
+  permBody: {
+    fontSize: 15, color: 'rgba(236,231,211,0.70)',
+    textAlign: 'center', lineHeight: 22,
+    paddingHorizontal: 8,
+  },
+  permDeniedCard: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: GOLD + '14',
+    borderWidth: 1, borderColor: GOLD + '30',
+    borderRadius: 12, padding: 12,
+    marginTop: 4,
+  },
+  permDeniedText: {
+    flex: 1, fontSize: 13, color: 'rgba(236,231,211,0.75)', lineHeight: 19,
+  },
+  permPrimaryBtn: {
+    backgroundColor: GOLD,
+    paddingHorizontal: 28, paddingVertical: 14,
+    borderRadius: 50, marginTop: 4,
+  },
+  permPrimaryBtnText: {
+    color: '#1A2A1A', fontWeight: '800', fontSize: 15, letterSpacing: 0.2,
+  },
+  permBackText: { fontSize: 14, color: 'rgba(236,231,211,0.45)', marginTop: 4 },
 });

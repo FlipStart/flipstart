@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { Platform, AppState, AppStateStatus } from "react-native";
+import { Platform } from "react-native";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -20,7 +20,6 @@ import { trpc, createTRPCClient } from "@/lib/trpc";
 import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
 import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
-import { logEvent, startSession, endSession } from "@/lib/analytics";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -40,36 +39,6 @@ export default function RootLayout() {
     initManusRuntime();
   }, []);
 
-  // ── Analytics: app lifecycle + session tracking ──────────────────────────
-  // Fire-and-forget — analytics must never affect app behavior
-  useEffect(() => {
-    try {
-      // App opened — start first session
-      logEvent("app_opened");
-      startSession();
-    } catch { /* never throw */ }
-
-    const handleAppStateChange = (nextState: AppStateStatus) => {
-      try {
-        if (nextState === "active") {
-          logEvent("app_session_started");
-          startSession();
-        } else if (nextState === "background" || nextState === "inactive") {
-          logEvent("app_backgrounded");
-          endSession();
-        }
-      } catch { /* never throw */ }
-    };
-
-    const sub = AppState.addEventListener("change", handleAppStateChange);
-    return () => {
-      try {
-        endSession();
-        sub.remove();
-      } catch { /* never throw */ }
-    };
-  }, []);
-
   const handleSafeAreaUpdate = useCallback((metrics: Metrics) => {
     setInsets(metrics.insets);
     setFrame(metrics.frame);
@@ -87,9 +56,7 @@ export default function RootLayout() {
       new QueryClient({
         defaultOptions: {
           queries: {
-            // Disable automatic refetching on window focus for mobile
             refetchOnWindowFocus: false,
-            // Retry failed requests once
             retry: 1,
           },
         },
@@ -123,6 +90,8 @@ export default function RootLayout() {
             <Stack.Screen name="results" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
+            <Stack.Screen name="article" options={{ animation: "slide_from_right", headerShown: false }} />
+            <Stack.Screen name="about" options={{ animation: "slide_from_right", headerShown: false }} />
             <Stack.Screen name="oauth/callback" />
           </Stack>
           <StatusBar style="light" />

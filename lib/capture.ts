@@ -29,6 +29,7 @@
 
 import { Alert, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ export const SLOT_ORDER: PhotoSlot[] = ['front', 'tag', 'detail'];
 export const SLOT_LABELS: Record<PhotoSlot, string> = {
   front:  'Front',
   tag:    'Tag',
-  detail: 'Detail',
+  detail: 'Graphic',
 };
 
 // Slot helper text shown in camera UI
@@ -190,9 +191,12 @@ export async function captureFromCamera(): Promise<CapturedPhoto | null> {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert(
-        'Camera Permission Required',
-        'Please allow camera access in your device settings to scan items.',
-        [{ text: 'OK' }],
+        'Camera Access Needed',
+        'FlipStart uses your camera to scan thrifted items and estimate resale value. Enable it in Settings to continue.',
+        [
+          { text: 'Not Now', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
       );
       return null;
     }
@@ -228,6 +232,22 @@ export async function captureFromCamera(): Promise<CapturedPhoto | null> {
 export async function captureFromGallery(): Promise<CapturedPhoto | null> {
   try {
     haptic(Haptics.ImpactFeedbackStyle.Light);
+
+    // Request photo library permission with clear context before launching picker.
+    // expo-image-picker handles this internally too, but explicit request lets us
+    // show a friendly denied message with an "Open Settings" action.
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(
+        'Photo Library Access Needed',
+        'FlipStart uses your photo library so you can upload saved item photos for resale analysis. Enable it in Settings to continue.',
+        [
+          { text: 'Not Now', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return null;
+    }
 
     const result = await ImagePicker.launchImageLibraryAsync(GALLERY_OPTIONS);
     if (result.canceled || !result.assets?.[0]) return null;
@@ -265,6 +285,19 @@ export async function captureFromGallery(): Promise<CapturedPhoto | null> {
 export async function captureMultipleFromGallery(max = 3): Promise<CapturedPhoto[] | null> {
   try {
     haptic(Haptics.ImpactFeedbackStyle.Light);
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(
+        'Photo Library Access Needed',
+        'FlipStart uses your photo library so you can upload saved item photos for resale analysis. Enable it in Settings to continue.',
+        [
+          { text: 'Not Now', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return null;
+    }
 
     const result = await ImagePicker.launchImageLibraryAsync({
       ...GALLERY_OPTIONS,

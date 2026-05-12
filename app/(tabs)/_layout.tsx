@@ -1,4 +1,4 @@
-import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform, Alert } from 'react-native';
 import { Tabs, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
@@ -37,6 +37,17 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
     const isActive   = state.index === routeIndex;
 
     const onPress = () => {
+      if (item.name === 'leaderboard') {
+        if (Platform.OS !== 'web') {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        }
+        Alert.alert(
+          '🏆 Leaderboard',
+          'The Leaderboard launches in the global release — rankings, weekly challenges, and top flippers are on the way!',
+          [{ text: "Can't Wait!", style: 'default' }]
+        );
+        return;
+      }
       if (Platform.OS !== 'web') {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       }

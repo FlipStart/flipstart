@@ -89,7 +89,7 @@ export function PhotoReview({
 
   const getSlotPhoto = (slot: PhotoSlot): CapturedPhoto | undefined =>
     slot === 'front' ? photoSet.front
-    : slot === 'back'  ? photoSet.back
+    : slot === 'detail' ? photoSet.detail
     :                    photoSet.tag;
 
   const filledSlots  = SLOT_ORDER.filter(sl => !!getSlotPhoto(sl));
@@ -111,7 +111,7 @@ export function PhotoReview({
       Alert.alert('Remove Front Photo?', 'This is the primary photo.', [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Remove', style: 'destructive', onPress: () => {
-            onPhotoSetUpdate?.({ back: photoSet.back, tag: photoSet.tag });
+            onPhotoSetUpdate?.({ detail: photoSet.detail, tag: photoSet.tag });
             onRetake();
         }},
       ]);
@@ -288,10 +288,10 @@ export function PhotoReview({
               </Pressable>
               <Text style={[s.thumbLabel, active && s.thumbLabelActive]}>
                 {SLOT_LABELS[slot]}
-                {!photo && slot !== 'front' && (
-                  <Text style={s.thumbOptional}>{'\n'}optional</Text>
-                )}
               </Text>
+              {!photo && slot !== 'front' && (
+                <Text style={s.thumbOptional}>optional</Text>
+              )}
             </View>
           );
         })}
@@ -457,7 +457,7 @@ const s = StyleSheet.create({
 
   // Thumbnails
   thumbRow:  { flexDirection: 'row', justifyContent: 'center', gap: 12 },
-  thumbWrap: { alignItems: 'center', gap: 4, position: 'relative' },
+  thumbWrap: { alignItems: 'center', gap: 4, position: 'relative', width: 62 },
 
   removeBtn: {
     position:        'absolute',

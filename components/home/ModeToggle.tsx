@@ -8,7 +8,7 @@
 
 import { useRef, useEffect } from 'react';
 import {
-  View, Text, Pressable, StyleSheet, Animated, Platform,
+  View, Text, Pressable, StyleSheet, Animated, Platform, Alert,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import type { UserMode } from '@/lib/onboarding-storage';
@@ -44,6 +44,17 @@ export function ModeToggle({ value, onChange }: ModeToggleProps) {
 
   const handlePress = (mode: UserMode) => {
     if (mode === value) return;
+    if (mode === 'personal') {
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      }
+      Alert.alert(
+        '🛍️ Buy for Yourself',
+        'This mode is coming in the global release! For now, Flip for Profit mode gives you full AI-powered resale analysis.',
+        [{ text: 'Got it', style: 'default' }]
+      );
+      return;
+    }
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }

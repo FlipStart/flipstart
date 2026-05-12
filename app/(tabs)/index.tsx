@@ -26,7 +26,6 @@ import { V } from '@/constants/vintage';
 import { captureFromCamera, captureMultipleFromGallery, type CapturedPhoto, type CapturedPhotoSet } from '@/lib/capture';
 import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
-import { logEvent } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { trpc } from '@/lib/trpc';
 import { isOnboardingComplete, completeOnboarding, getUserMode, setUserMode, type UserMode } from '@/lib/onboarding-storage';
@@ -39,15 +38,51 @@ const BG_IMAGE_URL =
 // ─── Mock data ─────────────────────────────────────────────────────────────────
 
 const TOP_FLIPS: FlipCardData[] = [
-  { rank: 61, countryCode: 'US', userName: 'William', itemName: 'Akira Vintage Jeans',       thriftPrice: 3,  soldPrice: 200 },
-  { rank: 58, countryCode: 'GB', userName: 'Sophie',  itemName: 'Ralph Lauren Polo Vintage', thriftPrice: 4,  soldPrice: 85  },
-  { rank: 44, countryCode: 'CA', userName: 'Marcus',  itemName: "Levi's 501 Deadstock",      thriftPrice: 8,  soldPrice: 140 },
+  {
+    rank: 61, countryCode: 'US', userName: 'William',
+    itemName: 'Akira Vintage Jeans',
+    thriftPrice: 3,  soldPrice: 200,
+    imageUri: 'https://images.unsplash.com/photo-1542272604-787c3835535d?w=200&q=80',
+  },
+  {
+    rank: 58, countryCode: 'GB', userName: 'Sophie',
+    itemName: 'Ralph Lauren Polo Vintage',
+    thriftPrice: 4,  soldPrice: 85,
+    imageUri: 'https://images.unsplash.com/photo-1622445275463-afa2ab738c34?w=200&q=80',
+  },
+  {
+    rank: 44, countryCode: 'CA', userName: 'Marcus',
+    itemName: "Levi's 501 Deadstock",
+    thriftPrice: 8,  soldPrice: 140,
+    imageUri: 'https://images.unsplash.com/photo-1555689502-c4b22d76c56f?w=200&q=80',
+  },
 ];
 
 const ARTICLES: ArticleCardData[] = [
-  { id: 'a1', title: 'Thrift Stores Selling Hot Brands',    priceBadge: '$75',  badgeVariant: 'green', sourcePrice: '$75',  sourceName: 'ALFWACIEN \xb7 TCIY'   },
-  { id: 'a2', title: 'Spotting Fake Designer Items',         priceBadge: 'FAKE', badgeVariant: 'red',   sourcePrice: '$120', sourceName: 'ALKIRA LARILERNESS' },
-  { id: 'a3', title: 'Best Platforms for Flipping in 2025', priceBadge: 'NEW',  badgeVariant: 'gold',  sourcePrice: '$0',   sourceName: 'FLIPSTART GUIDES'   },
+  {
+    id: 'a1',
+    title: 'Thrift Brands Worth Real Money',
+    priceBadge: 'HOT',
+    badgeVariant: 'green',
+    sourceName: 'FLIPSTART GUIDES',
+    imageUri: 'https://images.unsplash.com/photo-1441984904996-e0b6ba687e04?w=400&q=80',
+  },
+  {
+    id: 'a2',
+    title: 'Spotting Fake Designer Items',
+    priceBadge: 'FAKE',
+    badgeVariant: 'red',
+    sourceName: 'FLIPSTART GUIDES',
+    imageUri: 'https://images.unsplash.com/photo-1548036328-c9fa89d128fa?w=400&q=80',
+  },
+  {
+    id: 'a3',
+    title: 'Best Platforms for Flipping in 2025',
+    priceBadge: 'NEW',
+    badgeVariant: 'gold',
+    sourceName: 'FLIPSTART GUIDES',
+    imageUri: 'https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=400&q=80',
+  },
 ];
 
 // ─── Hunt Mode Bar ────────────────────────────────────────────────────────────
@@ -363,18 +398,10 @@ export default function HomeScreen() {
     const primary = photoSet.front!;  // non-null: guarded by the check above
     setIsAnalyzing(true);
 
-    // Analytics: scan started — fire-and-forget, never blocks
-    try {
-      logEvent("scan_started", {
-        tagPresent:    !!photoSet.tag?.base64,
-        detailPresent: !!photoSet.detail?.base64,
-      });
-    } catch { /* never block scan */ }
-
     setPendingScan({
       front: { base64: primary.base64, mimeType: primary.mimeType },
       ...(photoSet.detail?.base64 ? { detail: { base64: photoSet.detail.base64, mimeType: photoSet.detail.mimeType } } : {}),
-      ...(photoSet.tag?.base64    ? { tag:    { base64: photoSet.tag.base64,    mimeType: photoSet.tag.mimeType    } } : {}),
+      ...(photoSet.tag?.base64   ? { tag:  { base64: photoSet.tag.base64,   mimeType: photoSet.tag.mimeType   } } : {}),
     });
 
     const imageUri = primary.uri;
@@ -404,6 +431,7 @@ export default function HomeScreen() {
   return (
     <ScreenContainer>
       <HomeHeader
+        onProfilePress={() => router.push('/(tabs)/profile' as any)}
         onSettingsPress={() => router.push('/(tabs)/settings' as any)}
         onModeToggle={() => setModeOpen(v => !v)}
         modeOpen={modeOpen}
@@ -467,24 +495,37 @@ export default function HomeScreen() {
         <View style={s.gap} />
 
         {/* 4 — Top Flips This Week */}
-        <SectionHeader title="Top Flips This Week" pillLabel="USA" />
+        <SectionHeader title="Top Flips This Week" />
         <View style={s.flipList}>
           {TOP_FLIPS.map((flip) => (
-            <FlipCard key={flip.rank} data={flip} />
+            <FlipCard
+              key={flip.rank}
+              data={flip}
+              onPress={() => Alert.alert(
+                '🏆 Top Flips',
+                'Full flip details and leaderboard launch in the global release!',
+                [{ text: 'Got it', style: 'default' }]
+              )}
+            />
           ))}
         </View>
 
         <View style={s.gap} />
 
         {/* 5 — Articles & Guides */}
-        <SectionHeader title="Articles & Guides" pillLabel="Global" />
+        <SectionHeader title="Articles & Guides" />
         <FlatList
           data={ARTICLES}
           keyExtractor={(item) => item.id}
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={s.articlesRow}
-          renderItem={({ item }) => <ArticleCard data={item} onPress={() => {}} />}
+          renderItem={({ item }) => (
+            <ArticleCard
+              data={item}
+              onPress={() => router.push({ pathname: '/article', params: { id: item.id } } as any)}
+            />
+          )}
         />
 
         <View style={{ height: 32 }} />

@@ -52,6 +52,12 @@ const config: ExpoConfig = {
     bundleIdentifier: env.iosBundleId,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
+      NSCameraUsageDescription:
+        "FlipStart uses your camera to photograph thrifted items and estimate their resale value.",
+      NSPhotoLibraryUsageDescription:
+        "FlipStart uses your photo library so you can upload saved item photos for resale analysis.",
+      NSMicrophoneUsageDescription:
+        "FlipStart uses your microphone for audio features in Hunt Mode.",
     },
   },
   android: {
@@ -90,7 +96,7 @@ const config: ExpoConfig = {
     [
       "expo-audio",
       {
-        microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
+        microphonePermission: "FlipStart uses your microphone for audio features in Hunt Mode.",
       },
     ],
     [
