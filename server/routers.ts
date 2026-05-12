@@ -44,7 +44,9 @@ const appRouter_scan = router({
         }
 
         try {
+          const callStart = Date.now();
           console.log("[analyze] image processing start");
+          console.log("[analyze] images — front:true detail:", !!input.detailImageBase64, "tag:", !!input.tagImageBase64);
           console.log("[analyze] AI request start");
 
           // Run S3 upload and AI analysis in PARALLEL
@@ -54,13 +56,12 @@ const appRouter_scan = router({
               input.imageBase64,
               input.mimeType,
               input.detailImageBase64 ? { base64: input.detailImageBase64, mimeType: input.detailMimeType ?? 'image/jpeg' } : undefined,
-              input.tagImageBase64  ? { base64: input.tagImageBase64,  mimeType: input.tagMimeType  ?? 'image/jpeg' } : undefined,
+              input.tagImageBase64    ? { base64: input.tagImageBase64,    mimeType: input.tagMimeType    ?? 'image/jpeg' } : undefined,
             ),
           ]);
 
-          console.log("[analyze] AI request complete");
-          console.log("[analyze] image processing complete");
-          console.log("[analyze] returning response");
+          const durationMs = Date.now() - callStart;
+          console.log(`[analyze] complete — ${durationMs}ms | confidence:${analysisResult?.risk_analysis?.match_confidence ?? '?'} | value:$${analysisResult?.market_data?.adjusted_estimated_value ?? '?'}`);
 
           return {
             imageUrl,
@@ -97,7 +98,11 @@ const appRouter_scan = router({
         })
       )
       .mutation(async ({ input }) => {
-        return generateItemListings(input);
+        const start = Date.now();
+        console.log(`[listings] generate — item:"${input.item_name}" brand:"${input.brand}"`);
+        const result = await generateItemListings(input);
+        console.log(`[listings] complete — ${Date.now() - start}ms`);
+        return result;
       }),
   })
 

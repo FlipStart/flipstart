@@ -322,5 +322,18 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     throw new Error(`LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`);
   }
 
-  return (await response.json()) as InvokeResult;
+  const result = (await response.json()) as InvokeResult;
+
+  // ── Cost/token logging (dev visibility only — never exposed to users) ──────
+  if (result.usage) {
+    const { prompt_tokens, completion_tokens, total_tokens } = result.usage;
+    // GPT-4o pricing as of 2025: ~$2.50/1M input, ~$10/1M output tokens
+    const estimatedCostUSD = (prompt_tokens * 0.0000025) + (completion_tokens * 0.00001);
+    console.log(
+      `[llm] tokens — prompt:${prompt_tokens} completion:${completion_tokens} total:${total_tokens}` +
+      ` | est_cost:$${estimatedCostUSD.toFixed(5)}`
+    );
+  }
+
+  return result;
 }

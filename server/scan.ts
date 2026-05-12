@@ -186,16 +186,72 @@ The following are NEVER profitable flips. Price at real garage-sale value:
 - Basic food containers / tupperware → max $8
 - If item appears worth under $10 resale: demand=Low, sell_speed=Slow, competition=High, match_confidence=45-60
 
-PRICING RULES — BE CONSERVATIVE:
-- Price for REAL secondhand resale (eBay, Depop, Poshmark)
+PRICING PHILOSOPHY — READ THIS BEFORE ESTIMATING ANY PRICE:
+You are NOT estimating the maximum theoretical resale value.
+You are estimating what a real buyer would realistically pay in a competitive secondhand marketplace today.
+
+BUYER TOTAL COST AWARENESS:
+A buyer does not experience your listed price in isolation. They experience:
+  - Your listed price
+  - PLUS shipping ($5–$9 typical)
+  - PLUS platform fees/taxes (perceived)
+  = Total psychological cost to the buyer
+
+This means a $30 listed item feels like a $38–$40 purchase to the buyer.
+Adjust your pricing expectations downward accordingly for common/saturated items.
+A $22 listing that sells in 3 days is better than a $30 listing that sits for 3 months.
+
+SELL-THROUGH PRICING vs LISTING PRICING:
+ALWAYS price based on what items ACTUALLY SOLD FOR — not what sellers are currently listing at.
+Unsold listings are worthless data. Completed/sold listings are your reference point.
+If a hoodie category shows listings at $35 but typical sold prices are $18–$22 → price at $18–$22.
+
+QUICK SALE MINDSET — CRITICAL:
+Ask yourself: "What would this realistically sell for within 2–3 weeks?"
+NOT: "What is the absolute maximum this could ever sell for?"
+Actionable, fast-moving prices build reseller trust. Fantasy pricing destroys it.
+
+CONFIDENCE-BASED PRICING:
+- match_confidence 80–100: You may price confidently based on strong comps
+- match_confidence 60–79: Apply a 10–15% conservative reduction to your estimate
+- match_confidence 35–59: Apply a 20–30% conservative reduction. Add risk_flags explaining uncertainty.
+- Low-confidence items should NEVER receive aggressive pricing. When uncertain, protect the reseller.
+
+SATURATION AWARENESS — APPLY THESE INTERNALLY:
+Items that are HIGHLY SATURATED (price conservatively — lean toward lower end of range):
+  - Basic hoodies and crewnecks from mall brands (Gap, Old Navy, H&M, AE, Hollister)
+  - Common graphic tees without a specific location, event, or licensed character
+  - Generic polo shirts (non-Polo Ralph Lauren, or basic modern RL)
+  - Athleisure from Nike/Adidas without specific collab or rare colorway
+  - Any item described as "common", "basic", or easily sourced
+  - Modern items from the last 5 years unless clearly rare
+
+Items that COMMAND STRONGER PRICING (price with more confidence):
+  - Specific location/event/character graphics (Harley Davidson Key West, Daytona Bike Week)
+  - Confirmed vintage with strong tag evidence (union label, Made in USA, single stitch)
+  - Collectible licenses (Disney, Looney Tunes, Marvel, licensed sports teams vintage)
+  - Rare collab pieces with documented resale demand
+  - Deadstock or near-deadstock condition on desirable items
+  - Fast-moving categories: vintage outerwear, vintage denim, vintage athletic
+
+PLATFORM-AWARE PRICING:
+Depop buyers: trend/aesthetic-driven, younger, more willing to pay premium for aesthetic but price-sensitive on basics
+eBay buyers: more research-driven, price-compare heavily, expect fair market pricing
+Common items sell better cheaper. Rare/aesthetic items can command more on Depop.
+Factor the recommended platform into your estimate subtly.
+
+PRICING RULES — CONCRETE GUARDRAILS:
+- Price for REAL secondhand resale (eBay, Depop, Poshmark sold comps — not listings)
 - Common mall brands (Ralph Lauren, Tommy, Gap, H&M, Zara, Old Navy, J.Crew, Hollister, AE) = LOW prices
-- Basic used Ralph Lauren polo = $8-18 NOT $30+
-- Basic used Tommy shirt = $8-15
-- Only price higher for rare tag, deadstock, collab, or licensed team gear
+- Basic used Ralph Lauren polo = $8–16 NOT $25+
+- Basic used Tommy shirt = $8–14
+- Basic used Gap hoodie = $10–18 NOT $28+
+- Modern Nike basics (non-collab, non-rare) = $12–20
+- Only price significantly higher for: rare tag, deadstock, confirmed vintage, collab, licensed team gear, strong graphic with location/event
 - Common basics: demand=Low/Medium, sell_speed=Slow/Moderate, competition=High
-- suggested_buy_price: 20-40% of adjusted_estimated_value based on demand
-- When confidence under 60%: price conservatively, add risk flags, lower buy price
-- UNDER-PROMISE rather than OVER-PROMISE
+- suggested_buy_price: 20–35% of adjusted_estimated_value for slow items, up to 40% for fast-moving
+- When confidence under 65%: price conservatively, add specific risk flags, lower buy price
+- UNDER-PROMISE rather than OVER-PROMISE — a reseller who trusts you comes back; one who loses money does not
 
 LISTING TITLE RULES:
 - eBay title (max 80 chars): [Brand] [Team/License] [Item Type] [Size if visible] [Key Detail]
@@ -211,8 +267,15 @@ CRITICAL PRICE ADJUSTMENT RULES:
 - Each adjustment: $2 minimum absolute value
 - Positive type="positive", negative type="negative"
 
+OUTPUT SIZE LIMITS:
+- item_name: max 70 chars
+- risk_flags: max 3 items, each max 60 chars
+- price_adjustments: max 2 items (most impactful factors only)
+- style_labels: max 4 items
+- All text fields: no padding, no filler sentences
+
 Return ONLY this JSON (no markdown, no explanation):
-{"identification":{"item_name":"","brand":"","category":"","estimated_era":"[required — use era label, not Unknown unless truly no evidence]","style_labels":[],"material_guess":"","colorConfidence":"low|medium|high","color_note":"[only populate if colorConfidence is high; otherwise empty string]"},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
+{"identification":{"item_name":"","brand":"","category":"","estimated_era":"[required]","style_labels":[],"material_guess":"","colorConfidence":"low|medium|high"},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
 
 /**
  * Single fast analysis — everything in one LLM call.
@@ -220,53 +283,37 @@ Return ONLY this JSON (no markdown, no explanation):
 export async function analyzeItemFast(
   base64Data: string,
   mimeType:   string,
-  back?:      { base64: string; mimeType: string },
+  detail?:    { base64: string; mimeType: string },
   tag?:       { base64: string; mimeType: string },
 ): Promise<any> {
-  // Build image parts — front always present, back/tag added when available
+  // Build image parts — front always present, detail/tag added when available
   const imageParts: any[] = [
-    {
-      type:      "text",
-      text:      "[FRONT] This is the front of the item. Use it for item type, style, shape, and general condition.",
-    },
-    {
-      type:      "image_url",
-      image_url: { url: `data:${mimeType};base64,${base64Data}`, detail: "high" },
-    },
+    { type: "text",      text: "[FRONT] Front of item." },
+    { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64Data}`, detail: "high" } },
   ];
 
-  if (back?.base64) {
+  if (detail?.base64) {
     imageParts.push(
-      { type: "text", text: "[DETAIL] This is a detail photo — flexible supporting evidence. It may show: the back of the item, a graphic close-up, embroidery, a flaw, logo, sleeve hit, texture, or any special feature. If it contains a graphic, logo, or character close-up, weight it heavily for identification and pricing." },
-      { type: "image_url", image_url: { url: `data:${back.mimeType};base64,${back.base64}`, detail: "high" } },
+      { type: "text",      text: "[DETAIL] Supporting detail — back graphic, close-up, embroidery, flaw, logo, or texture. Weight heavily for ID and pricing if it shows a graphic or brand mark." },
+      { type: "image_url", image_url: { url: `data:${detail.mimeType};base64,${detail.base64}`, detail: "high" } },
     );
   }
 
   if (tag?.base64) {
     imageParts.push(
-      { type: "text", text: "[TAG] This is the item's tag. Extract: brand, size, material composition, country of manufacture, RN/WPL/CA numbers, union labels, tag typography/style, care label layout. CRITICAL: Use all of this to determine the item's era. A tag is the single most reliable era indicator — do not ignore it." },
+      { type: "text",      text: "[TAG] Brand tag. Extract: brand, size, material, country of manufacture, RN/WPL numbers, union labels, tag style. Use all clues to determine era — tag is the single most reliable era indicator." },
       { type: "image_url", image_url: { url: `data:${tag.mimeType};base64,${tag.base64}`, detail: "high" } },
     );
   }
 
-  const photoCount = 1 + (back ? 1 : 0) + (tag ? 1 : 0);
-  imageParts.unshift({
-    type: "text",
-    text: `Analyze this item for resale using ${photoCount} photo${photoCount > 1 ? 's' : ''}. Be conservative. All price adjustments must be whole dollar amounts. Return JSON only.`,
-  });
-
+  const photoCount = 1 + (detail ? 1 : 0) + (tag ? 1 : 0);
   const response = await invokeLLM({
     messages: [
       { role: "system", content: FAST_ANALYSIS_PROMPT },
-      {
-        role:    "user",
-        content: imageParts,
-      },
+      { role: "user",   content: imageParts },
     ],
     response_format: { type: "json_object" },
-    // Tight token limit — the analysis JSON is ~350-500 tokens.
-    // 800 gives a safety margin without the 32K reservation overhead.
-    max_tokens: 800,
+    max_tokens: 650,
   });
 
   const rawContent = response?.choices?.[0]?.message?.content;
@@ -366,7 +413,7 @@ export async function generateItemListings(input: ListingInput): Promise<{
       { role: "user",   content: userMessage },
     ],
     response_format: { type: "json_object" },
-    max_tokens: 500,
+    max_tokens: 380,
   });
 
   const rawContent = response?.choices?.[0]?.message?.content;
@@ -467,6 +514,47 @@ function sanitizeFullResult(raw: any): any {
   const isCommonMallBrand = /ralph lauren|polo|tommy hilfiger|gap|aeropostale|h&m|zara|old navy|j\.?crew|american eagle|hollister|abercrombie/i.test(brand);
   const isBasicItem = /polo shirt|t-shirt|tee|basic|plain|crew neck|v-neck/i.test(itemName);
   const isHighCompetition = /high|saturated/i.test(competitionLevel);
+  const matchConf = Math.min(100, Math.max(0, Math.round(Number(ra.match_confidence) || 50)));
+
+  // ── CONFIDENCE-BASED DAMPENING ──────────────────────────────────────────────
+  // Low confidence = uncertain item = higher risk for reseller = more conservative price.
+  // Applied BEFORE other corrections so all downstream caps still apply.
+  if (matchConf < 65 && adjustedValue > 15) {
+    let dampFactor: number;
+    if (matchConf < 40)      dampFactor = 0.70;  // very uncertain — 30% reduction
+    else if (matchConf < 55) dampFactor = 0.80;  // uncertain — 20% reduction
+    else                     dampFactor = 0.88;  // somewhat uncertain — 12% reduction
+
+    const dampTarget  = Math.round(adjustedValue * dampFactor);
+    const dampImpact  = dampTarget - adjustedValue;
+    if (dampImpact !== 0) {
+      adjustments.push({
+        reason: `Low identification confidence (${matchConf}%) — conservative pricing applied`,
+        impact: dampImpact,
+        type:   "negative",
+      });
+      adjustedValue = dampTarget;
+    }
+  }
+
+  // ── SHIPPING PSYCHOLOGY CORRECTION ──────────────────────────────────────────
+  // Buyer total cost = listed price + shipping (~$7 avg) + perceived fees.
+  // For saturated/common items, buyers comparison-shop heavily and will not
+  // pay a price that makes their total cost feel unreasonable.
+  // Apply a shipping-awareness discount for common/saturated items above $20.
+  const isSaturatedCommon = (isCommonMallBrand || isHighCompetition) && adjustedValue > 20;
+  if (isSaturatedCommon) {
+    // Reduce by ~10% to account for buyer shipping psychology on price-sensitive items
+    const shippingAdj = -Math.round(adjustedValue * 0.10);
+    if (shippingAdj < -1) {
+      adjustments.push({
+        reason: "Buyer shipping cost awareness — competitive market pricing",
+        impact: shippingAdj,
+        type:   "negative",
+      });
+      adjustedValue += shippingAdj;
+    }
+  }
 
   // Hard cap for provably low-value items — server-side safety net even if
   // the model ignores the prompt guardrails
@@ -520,17 +608,21 @@ function sanitizeFullResult(raw: any): any {
   const avgSold = Math.round(Number(md.average_sold_price) || adjustedValue);
   const finalAvgSold = Math.min(avgSold, Math.round(adjustedValue * 1.1));
 
-  // Conservative buy price
+  // Conservative buy price — lower ratios for uncertain or slow-moving items
   let buyPriceRatio: number;
   if (demand === "Low" || sellSpeed === "Slow") {
-    buyPriceRatio = 0.25;
+    buyPriceRatio = 0.20;
   } else if (demand === "Medium" || sellSpeed === "Moderate") {
-    buyPriceRatio = 0.35;
+    buyPriceRatio = 0.30;
   } else {
-    buyPriceRatio = 0.45;
+    buyPriceRatio = 0.40;
   }
   if (isCommonMallBrand && isHighCompetition) {
-    buyPriceRatio *= 0.8;
+    buyPriceRatio *= 0.75;
+  }
+  // Low-confidence items: buy even cheaper — higher risk
+  if (matchConf < 55) {
+    buyPriceRatio *= 0.80;
   }
   const suggestedBuyPrice = Math.max(1, Math.round(adjustedValue * buyPriceRatio));
 
@@ -562,7 +654,7 @@ function sanitizeFullResult(raw: any): any {
       adjusted_estimated_value: adjustedValue,
     },
     risk_analysis: {
-      match_confidence: Math.min(100, Math.max(0, Math.round(Number(ra.match_confidence) || 50))),
+      match_confidence: matchConf,
       risk_flags: Array.isArray(ra.risk_flags) ? ra.risk_flags.map(String) : [],
     },
     listings: {
