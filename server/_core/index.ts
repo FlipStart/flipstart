@@ -380,35 +380,20 @@ async function startServer() {
       return res.status(403).json({ ok: false, error: "Incorrect passcode." });
     }
     try {
+      // Backup the file first
       const DATA_DIR  = process.env.DATA_DIR ?? "/tmp";
       const DATA_FILE = path.join(DATA_DIR, "flipstart-beta.json");
-      const TMP_FILE  = DATA_FILE + ".tmp";
-
-      if (!fs.existsSync(DATA_FILE)) {
-        return res.json({ ok: true, message: "No data file found — already clean." });
+      if (fs.existsSync(DATA_FILE)) {
+        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        fs.copyFileSync(DATA_FILE, path.join(DATA_DIR, `flipstart-beta-backup-${ts}.json`));
       }
 
-      const current = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) as Record<string, unknown>;
+      // Clear both in-memory cache AND disk in one call
+      const { resetAnalyticsData } = require("../persist");
+      const before = resetAnalyticsData();
 
-      // Backup before clearing
-      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const backupFile = path.join(DATA_DIR, `flipstart-beta-backup-${ts}.json`);
-      fs.copyFileSync(DATA_FILE, backupFile);
-
-      const before = {
-        feedback:    Array.isArray(current.feedback)    ? (current.feedback as unknown[]).length    : 0,
-        events:      Array.isArray(current.events)      ? (current.events as unknown[]).length      : 0,
-        sessions:    Array.isArray(current.sessions)    ? (current.sessions as unknown[]).length    : 0,
-        scanRecords: Array.isArray(current.scanRecords) ? (current.scanRecords as unknown[]).length : 0,
-      };
-
-      // Clear analytics arrays, preserve everything else (scanCounter, unknown keys)
-      const reset = { ...current, feedback: [], events: [], sessions: [], scanRecords: [] };
-      fs.writeFileSync(TMP_FILE, JSON.stringify(reset, null, 2), "utf-8");
-      fs.renameSync(TMP_FILE, DATA_FILE);
-
-      console.log("[reset] Analytics cleared by dashboard emergency reset. Before:", before);
-      return res.json({ ok: true, before, backup: backupFile });
+      console.log("[reset] Emergency reset complete. Before:", before);
+      return res.json({ ok: true, before });
     } catch (e: any) {
       console.error("[reset] Failed:", e);
       return res.status(500).json({ ok: false, error: e?.message ?? "Reset failed" });

@@ -641,3 +641,32 @@ export function getAnalyticsSummary() {
     totalScanRecords: records.length,
   };
 }
+// ─── Emergency analytics reset ────────────────────────────────────────────────
+// Clears feedback[], events[], sessions[], scanRecords[] from both
+// the in-memory cache AND the file on disk. scanCounter and unknown
+// keys are preserved. Returns before-counts for logging.
+
+export function resetAnalyticsData(): {
+  feedback: number; events: number; sessions: number; scanRecords: number;
+} {
+  const store = load();
+
+  const before = {
+    feedback:    store.feedback.length,
+    events:      store.events.length,
+    sessions:    store.sessions.length,
+    scanRecords: store.scanRecords.length,
+  };
+
+  // Clear in-memory cache immediately
+  store.feedback    = [];
+  store.events      = [];
+  store.sessions    = [];
+  store.scanRecords = [];
+
+  // Persist cleared state to disk
+  save();
+
+  console.log("[persist] resetAnalyticsData — cleared:", before);
+  return before;
+}
