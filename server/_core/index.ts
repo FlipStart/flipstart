@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import * as fs from "fs";
+import * as path from "path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
@@ -36,9 +38,6 @@ function runStartupResetIfRequested(): void {
   if (process.env.RESET_ON_STARTUP !== "true") return;
 
   try {
-    const fs   = require("fs")  as typeof import("fs");
-    const path = require("path") as typeof import("path");
-
     const DATA_DIR  = process.env.DATA_DIR ?? "/tmp";
     const DATA_FILE = path.join(DATA_DIR, "flipstart-beta.json");
     const TMP_FILE  = DATA_FILE + ".tmp";
@@ -381,9 +380,6 @@ async function startServer() {
       return res.status(403).json({ ok: false, error: "Incorrect passcode." });
     }
     try {
-      const fs   = require("fs")   as typeof import("fs");
-      const path = require("path") as typeof import("path");
-
       const DATA_DIR  = process.env.DATA_DIR ?? "/tmp";
       const DATA_FILE = path.join(DATA_DIR, "flipstart-beta.json");
       const TMP_FILE  = DATA_FILE + ".tmp";
