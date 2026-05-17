@@ -19,7 +19,6 @@ import { HomeHeader } from '@/components/home/HomeHeader';
 import { ScanCTA } from '@/components/home/ScanCTA';
 import { FeatureCard } from '@/components/home/FeatureCard';
 import { SectionHeader } from '@/components/home/SectionHeader';
-import { FlipCard, type FlipCardData } from '@/components/home/FlipCard';
 import { ArticleCard, type ArticleCardData } from '@/components/home/ArticleCard';
 import { V } from '@/constants/vintage';
 import { captureFromCamera, captureMultipleFromGallery, type CapturedPhoto, type CapturedPhotoSet } from '@/lib/capture';
@@ -36,27 +35,6 @@ const BG_IMAGE_URL =
   'https://d2xsxph8kpxj0f.cloudfront.net/310519663494407970/gaMDCnzoMJG8V9dwmhqrAK/flipstart-bg-Qs6A8FzK7XtL97Ca6AEdJU.webp';
 
 // ─── Mock data ─────────────────────────────────────────────────────────────────
-
-const TOP_FLIPS: FlipCardData[] = [
-  {
-    rank: 61, countryCode: 'US', userName: 'William',
-    itemName: 'Akira Vintage Jeans',
-    thriftPrice: 3,  soldPrice: 200,
-    imageUri: 'https://images.unsplash.com/photo-1542272604-787c3835535d?w=200&q=80',
-  },
-  {
-    rank: 58, countryCode: 'GB', userName: 'Sophie',
-    itemName: 'Ralph Lauren Polo Vintage',
-    thriftPrice: 4,  soldPrice: 85,
-    imageUri: 'https://images.unsplash.com/photo-1622445275463-afa2ab738c34?w=200&q=80',
-  },
-  {
-    rank: 44, countryCode: 'CA', userName: 'Marcus',
-    itemName: "Levi's 501 Deadstock",
-    thriftPrice: 8,  soldPrice: 140,
-    imageUri: 'https://images.unsplash.com/photo-1555689502-c4b22d76c56f?w=200&q=80',
-  },
-];
 
 const ARTICLES: ArticleCardData[] = [
   {
@@ -413,37 +391,8 @@ export default function HomeScreen() {
 
         <View style={s.gap} />
 
-        {/* 3 — Flip Feed */}
-        <FeatureCard
-          title="Flip Feed"
-          subtitle="See what other flippers are scoring right now."
-          iconName="dynamic-feed"
-          accentColor={V.gold}
-          onPress={() => Alert.alert('Flip Feed', 'Coming soon!')}
-        />
-
-        <View style={s.gap} />
-
-        {/* 4 — Top Flips This Week */}
-        <SectionHeader title="Top Flips This Week" />
-        <View style={s.flipList}>
-          {TOP_FLIPS.map((flip) => (
-            <FlipCard
-              key={flip.rank}
-              data={flip}
-              onPress={() => Alert.alert(
-                '🏆 Top Flips',
-                'Full flip details and leaderboard launch in the global release!',
-                [{ text: 'Got it', style: 'default' }]
-              )}
-            />
-          ))}
-        </View>
-
-        <View style={s.gap} />
-
-        {/* 5 — Articles & Guides */}
-        <SectionHeader title="Articles & Guides" />
+        {/* 3 — Articles & Guides */}
+        <SectionHeader title="Articles &amp; Guides" />
         <FlatList
           data={ARTICLES}
           keyExtractor={(item) => item.id}

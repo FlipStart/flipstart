@@ -356,17 +356,25 @@ export async function captureMultipleFromGallery(max = 3): Promise<CapturedPhoto
   try {
     haptic(Haptics.ImpactFeedbackStyle.Light);
 
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert(
-        'Photo Library Access Needed',
-        'FlipStart uses your photo library so you can upload saved item photos for resale analysis. Enable it in Settings to continue.',
-        [
-          { text: 'Not Now', style: 'cancel' },
-          { text: 'Open Settings', onPress: () => Linking.openSettings() },
-        ],
-      );
-      return null;
+    const existing = await ImagePicker.getMediaLibraryPermissionsAsync();
+    if (!existing.granted) {
+      if (!existing.canAskAgain) {
+        // Permanently denied — send straight to Settings, no system popup
+        Alert.alert(
+          'Photo Library Access Denied',
+          'To upload photos, enable Photo Library access in Settings → FlipStart.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ],
+        );
+        return null;
+      }
+      // Not yet asked — request native popup
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        return null;
+      }
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({

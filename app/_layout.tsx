@@ -34,9 +34,12 @@ export default function RootLayout() {
 
   const [insets, setInsets] = useState<EdgeInsets>(initialInsets);
   const [frame, setFrame] = useState<Rect>(initialFrame);
-  // Initialize Manus runtime for cookie injection from parent container
+  // Initialize Manus runtime in development only.
+  // This is a dev-environment tool and must never run in a production build.
   useEffect(() => {
-    initManusRuntime();
+    if (__DEV__) {
+      initManusRuntime();
+    }
   }, []);
 
   const handleSafeAreaUpdate = useCallback((metrics: Metrics) => {

@@ -1,11 +1,8 @@
-import { View, Text, StyleSheet, Pressable, Alert, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ScreenContainer } from '@/components/screen-container';
-import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
-import { resetOnboarding } from '@/lib/onboarding-storage';
 import { useFlipStore } from '@/lib/useFlipStore';
 
 const FOREST = '#2A4A2A';
@@ -23,7 +20,7 @@ export default function ProfileScreen() {
   const insets  = useSafeAreaInsets();
   const { flips } = useFlipStore();
 
-  // ── Beta stats derived from scan history ───────────────────────────────────
+  // ── Stats derived from scan history ───────────────────────────────────────
   const totalScans  = flips.length;
   const totalProfit = flips.reduce((sum, f) => sum + (f.profit ?? 0), 0);
   const topFlip     = flips.reduce<typeof flips[0] | null>(
@@ -33,11 +30,6 @@ export default function ProfileScreen() {
   const catCount: Record<string, number> = {};
   flips.forEach(f => { if (f.category) catCount[f.category] = (catCount[f.category] ?? 0) + 1; });
   const topCategory = Object.entries(catCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-
-  const handleResetOnboarding = async () => {
-    await resetOnboarding();
-    Alert.alert('Onboarding Reset', 'Restart the app to see onboarding again.');
-  };
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
@@ -67,35 +59,18 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Beta Stats */}
+        {/* Stats */}
         {totalScans > 0 ? (
           <>
-            <Text style={s.sectionLabel}>YOUR BETA STATS</Text>
+            <Text style={s.sectionLabel}>YOUR STATS</Text>
             <View style={s.statsGrid}>
-              <StatCard
-                icon="photo-camera"
-                value={String(totalScans)}
-                label="Items Scanned"
-              />
-              <StatCard
-                icon="trending-up"
-                value={`$${Math.round(totalProfit)}`}
-                label="Est. Total Profit"
-              />
+              <StatCard icon="photo-camera" value={String(totalScans)} label="Items Scanned" />
+              <StatCard icon="trending-up" value={`$${Math.round(totalProfit)}`} label="Est. Total Profit" />
               {topFlip && (
-                <StatCard
-                  icon="star"
-                  value={`$${Math.round(topFlip.profit ?? 0)}`}
-                  label="Best Flip"
-                />
+                <StatCard icon="star" value={`$${Math.round(topFlip.profit ?? 0)}`} label="Best Flip" />
               )}
               {topCategory && (
-                <StatCard
-                  icon="label"
-                  value={topCategory}
-                  label="Top Category"
-                  small
-                />
+                <StatCard icon="label" value={topCategory} label="Top Category" small />
               )}
             </View>
           </>
@@ -105,18 +80,6 @@ export default function ProfileScreen() {
             <Text style={s.emptyText}>Scan your first item to see stats here.</Text>
           </View>
         )}
-
-        {/* Dev section */}
-        <Text style={[s.sectionLabel, { marginTop: 24 }]}>DEV OPTIONS</Text>
-        <View style={s.devCard}>
-          <Pressable
-            onPress={handleResetOnboarding}
-            style={({ pressed }) => [s.devRow, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialIcons name="restart-alt" size={16} color={MUTED} />
-            <Text style={s.devRowText}>Reset Onboarding</Text>
-          </Pressable>
-        </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -158,17 +121,14 @@ const s = StyleSheet.create({
   scroll: { paddingHorizontal: 16, paddingTop: 20 },
 
   avatarBlock: { alignItems: 'center', gap: 8, marginBottom: 24 },
-  avatar:      {
+  avatar: {
     width: 80, height: 80, borderRadius: 40,
     backgroundColor: TAN, borderWidth: 2, borderColor: GOLD,
     justifyContent: 'center', alignItems: 'center',
   },
   avatarEmoji: { fontSize: 36 },
   name:        { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: BROWN },
-  betaBadge:   {
-    backgroundColor: FOREST, borderRadius: 20,
-    paddingHorizontal: 12, paddingVertical: 4,
-  },
+  betaBadge:   { backgroundColor: FOREST, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 4 },
   betaBadgeText: { fontFamily: FONTS.serif, fontSize: 9, fontWeight: '700', color: GOLD, letterSpacing: 1.5 },
 
   sectionLabel: {
@@ -176,9 +136,7 @@ const s = StyleSheet.create({
     letterSpacing: 1.4, marginBottom: 8, marginLeft: 2,
   },
 
-  statsGrid: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 8,
-  },
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 8 },
   statCard: {
     width: '47%', backgroundColor: CARD, borderRadius: 12,
     borderWidth: 1, borderColor: CARD_B,
@@ -195,14 +153,4 @@ const s = StyleSheet.create({
 
   emptyBlock: { alignItems: 'center', gap: 10, paddingVertical: 32 },
   emptyText:  { fontSize: 13, color: MUTED, textAlign: 'center' },
-
-  devCard: {
-    backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: CARD_B,
-    marginBottom: 10, overflow: 'hidden',
-  },
-  devRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 16, paddingVertical: 12,
-  },
-  devRowText: { fontSize: 13, color: MUTED, fontWeight: '600' },
 });

@@ -22,6 +22,8 @@ const config: ExpoConfig = {
         "FlipStart uses your camera to photograph thrifted items and estimate their resale value.",
       NSPhotoLibraryUsageDescription:
         "FlipStart uses your photo library so you can upload saved item photos for resale analysis.",
+      NSLocationWhenInUseUsageDescription:
+        "FlipStart uses your location in Hunt Mode to help label thrift sessions by store or area.",
     },
   },
 
@@ -35,7 +37,7 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled:             true,
     predictiveBackGestureEnabled:  false,
     package:                       bundleId,
-    permissions:                   ["POST_NOTIFICATIONS"],
+    permissions:                   [],
     intentFilters: [
       {
         action:     "VIEW",
@@ -56,13 +58,6 @@ const config: ExpoConfig = {
     "expo-router",
     "expo-font",
     "expo-audio",
-    [
-      "expo-video",
-      {
-        supportsBackgroundPlayback: true,
-        supportsPictureInPicture:   true,
-      },
-    ],
     [
       "expo-splash-screen",
       {

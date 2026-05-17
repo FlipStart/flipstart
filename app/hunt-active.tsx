@@ -335,22 +335,15 @@ export default function HuntActiveScreen() {
 
     const fetchLocation = async () => {
       try {
-        // Check existing permission first — avoid re-prompting if already granted
         const existing = await Location.getForegroundPermissionsAsync();
 
         if (existing.status !== 'granted') {
-          // Show explanation before the system prompt
-          await new Promise<void>(resolve => {
-            Alert.alert(
-              '📍 Hunt Location',
-              'FlipStart uses your approximate location to label your thrift hunt — like "Goodwill" or "House Hunt". We never show your exact home address.',
-              [
-                { text: 'Skip', style: 'cancel', onPress: () => { if (!cancelled) setLocationLabel('Thrift Hunt'); resolve(); } },
-                { text: 'Allow', onPress: () => resolve() },
-              ]
-            );
-          });
-
+          // If iOS has permanently blocked it, don't re-prompt — just fall back
+          if (!existing.canAskAgain) {
+            if (!cancelled) setLocationLabel('Thrift Hunt');
+            return;
+          }
+          // First time — request native popup directly (no pre-prompt Alert)
           const { status } = await Location.requestForegroundPermissionsAsync();
           if (status !== 'granted') {
             if (!cancelled) setLocationLabel('Thrift Hunt');
