@@ -501,24 +501,75 @@ export function getAnalyticsSummary() {
   const feedbackEvents = events.filter(e => e.eventName === "feedback_submitted").length;
   const feedbackRate   = scanCompleted > 0 ? Math.round(feedbackEvents / scanCompleted * 100) : 0;
 
-  // ── Time-to-value (per session: app_opened → first scan_submitted) ──────────
-  // Group events by sessionId, find time delta between first open and first scan
-  const sessionEventMap: Record<string, EventEntry[]> = {};
-  for (const ev of events) {
-    if (!sessionEventMap[ev.sessionId]) sessionEventMap[ev.sessionId] = [];
-    sessionEventMap[ev.sessionId].push(ev);
-  }
-  const ttv: number[] = [];
-  for (const sess of Object.values(sessionEventMap)) {
-    const opens = sess.filter(e => e.eventName === "app_opened" || e.eventName === "app_session_started");
-    const submits = sess.filter(e => e.eventName === "scan_submitted");
-    if (opens.length && submits.length) {
-      const firstOpen   = Math.min(...opens.map(e => e.timestamp));
-      const firstSubmit = Math.min(...submits.map(e => e.timestamp));
-      if (firstSubmit > firstOpen) ttv.push(firstSubmit - firstOpen);
+  // ── Time-to-value (per user: first session start → first scan_completed with isFirstScan flag) ──
+  // Uses metadata.isFirstScan:true + metadata.ttvMs set by the client on the user's first scan.
+  // Falls back to per-session calculation for users without the new metadata.
+  const firstScanEvents = events.filter(e => e.eventName === "scan_completed" && e.metadata?.isFirstScan === true);
+  const ttvValues: number[] = firstScanEvents
+    .map(e => Number(e.metadata?.ttvMs))
+    .filter(n => !isNaN(n) && n > 0 && n < 30 * 60 * 1000); // cap at 30 min to exclude outliers
+
+  // Legacy fallback: per-session TTV for older events without isFirstScan metadata
+  if (ttvValues.length === 0) {
+    const sessionEventMap: Record<string, EventEntry[]> = {};
+    for (const ev of events) {
+      if (!sessionEventMap[ev.sessionId]) sessionEventMap[ev.sessionId] = [];
+      sessionEventMap[ev.sessionId].push(ev);
+    }
+    for (const sess of Object.values(sessionEventMap)) {
+      const opens   = sess.filter(e => e.eventName === "app_opened" || e.eventName === "app_session_started");
+      const submits = sess.filter(e => e.eventName === "scan_submitted" || e.eventName === "scan_completed");
+      if (opens.length && submits.length) {
+        const firstOpen   = Math.min(...opens.map(e => e.timestamp));
+        const firstSubmit = Math.min(...submits.map(e => e.timestamp));
+        if (firstSubmit > firstOpen) ttvValues.push(firstSubmit - firstOpen);
+      }
     }
   }
-  const avgTTV = ttv.length ? Math.round(ttv.reduce((a, b) => a + b, 0) / ttv.length / 1000) : null;
+
+  const avgTTV = ttvValues.length
+    ? Math.round(ttvValues.reduce((a, b) => a + b, 0) / ttvValues.length / 1000)
+    : null;
+
+  // ── Hunt Mode metrics ───────────────────────────────────────────────────────
+  const huntModeOpened   = events.filter(e => e.eventName === "hunt_mode_opened").length;
+  const huntStarted      = events.filter(e => e.eventName === "hunt_started").length;
+  const huntScanStarted  = events.filter(e => e.eventName === "hunt_scan_started").length;
+  const huntItemSaved    = events.filter(e => e.eventName === "hunt_item_saved").length;
+  const huntItemRemoved  = events.filter(e => e.eventName === "hunt_item_removed").length;
+  const huntEndedEvents  = events.filter(e => e.eventName === "hunt_ended");
+
+  // Conversion: Hunt Mode opened → hunt actually started
+  const huntConversionRate = huntModeOpened > 0
+    ? Math.round(huntStarted / huntModeOpened * 100) : 0;
+
+  // Conversion: scan started in hunt → item saved to hunt
+  const huntScanSaveRate = huntScanStarted > 0
+    ? Math.round(huntItemSaved / huntScanStarted * 100) : 0;
+
+  // Average profit per hunt (from hunt_ended metadata)
+  const huntProfits = huntEndedEvents
+    .map(e => Number(e.metadata?.estimatedProfit))
+    .filter(n => !isNaN(n));
+  const avgHuntProfit = huntProfits.length
+    ? Math.round(huntProfits.reduce((a, b) => a + b, 0) / huntProfits.length)
+    : null;
+
+  // Average hunt duration (ms)
+  const huntDurations = huntEndedEvents
+    .map(e => Number(e.metadata?.durationMs))
+    .filter(n => !isNaN(n) && n > 0);
+  const avgHuntDurationMs = huntDurations.length
+    ? Math.round(huntDurations.reduce((a, b) => a + b, 0) / huntDurations.length)
+    : null;
+
+  // Average items saved per hunt
+  const keptCounts = huntEndedEvents
+    .map(e => Number(e.metadata?.keptCount))
+    .filter(n => !isNaN(n));
+  const avgSavedPerHunt = keptCounts.length
+    ? (keptCounts.reduce((a, b) => a + b, 0) / keptCounts.length).toFixed(1)
+    : null;
 
   // ── Retention (simple cohort — group by first seen date) ───────────────────
   // day1: returned on firstSeen + 1 day, day7: + 7 days, day30: + 30 days
@@ -574,6 +625,17 @@ export function getAnalyticsSummary() {
     day1Total,  day1Ret,
     day7Total,  day7Ret,
     day30Total, day30Ret,
+    // Hunt Mode
+    huntModeOpened,
+    huntStarted,
+    huntScanStarted,
+    huntItemSaved,
+    huntItemRemoved,
+    huntConversionRate,
+    huntScanSaveRate,
+    avgHuntProfit,
+    avgHuntDurationMs,
+    avgSavedPerHunt,
     // Raw counts for export
     totalEvents:      events.length,
     totalScanRecords: records.length,

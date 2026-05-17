@@ -31,6 +31,7 @@ import {
   toggleHuntItemKept, type HuntItem, type HuntRating,
   consumeReturningFromHuntItemDetail,
 } from '@/lib/hunt-context';
+import { logHuntScanStarted, logHuntEnded } from '@/lib/analytics';
 import { FONTS } from '@/constants/typography';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -420,6 +421,13 @@ export default function HuntActiveScreen() {
             text: 'End Hunt', style: 'destructive',
             onPress: () => {
               allowNavRef.current = true;
+              const huntStats = getHuntStats(getActiveHunt()!);
+              logHuntEnded({
+                durationMs:      Date.now() - (getActiveHunt()?.startedAt ?? Date.now()),
+                scannedCount:    huntStats.scanned,
+                keptCount:       huntStats.kept,
+                estimatedProfit: huntStats.estimatedProfit,
+              });
               endHunt();
               router.replace('/(tabs)' as any);
             },
@@ -452,6 +460,7 @@ export default function HuntActiveScreen() {
 
   const handleScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    logHuntScanStarted(stats.scanned);
     router.push('/camera' as any);
   };
 

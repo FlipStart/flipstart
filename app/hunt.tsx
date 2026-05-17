@@ -11,16 +11,17 @@
 import {
   View, Text, TextInput, Pressable, StyleSheet,
   ImageBackground, Animated, Platform, Keyboard,
-  Modal, KeyboardAvoidingView, TouchableWithoutFeedback, Dimensions,
+  Modal, TouchableWithoutFeedback, Dimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAudioPlayer } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 
 import { startHunt } from '@/lib/hunt-context';
+import { logHuntModeOpened, logHuntStarted } from '@/lib/analytics';
 import { FONTS } from '@/constants/typography';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
@@ -55,6 +56,11 @@ export default function HuntScreen() {
   const [starting, setStarting]   = useState(false);
 
   const inputRef = useRef<TextInput>(null);
+
+  // Track Hunt Mode screen open — fires once on mount
+  useEffect(() => {
+    logHuntModeOpened();
+  }, []);
 
   // ── Screen entrance animation ──────────────────────────────────────────────
   const screenFade = useRef(new Animated.Value(0)).current;
@@ -105,7 +111,8 @@ export default function HuntScreen() {
     try { player.seekTo(0); player.play(); } catch { /* never crash */ }
 
     const session = startHunt(huntName);
-    console.log(`[hunt] session started — id:${session.id} name:"${session.name}"`);
+    logHuntStarted(huntName || 'Unnamed Hunt');
+    if (__DEV__) console.log(`[hunt] session started — id:${session.id} name:"${session.name}"`);
 
     router.replace('/hunt-active' as any);
     setStarting(false);
@@ -192,12 +199,8 @@ export default function HuntScreen() {
           <View style={s.modalOverlay} />
         </TouchableWithoutFeedback>
 
-        {/* KeyboardAvoidingView floats the popup above the keyboard */}
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'position' : 'height'}
-          style={s.kavWrap}
-          pointerEvents="box-none"
-        >
+        {/* Plain View — popup is above keyboard zone, no KAV shifting needed */}
+        <View style={s.kavWrap} pointerEvents="box-none">
           <View style={s.popup}>
             {/* Title */}
             <Text style={s.popupTitle}>Name Your Hunt</Text>
@@ -234,7 +237,7 @@ export default function HuntScreen() {
               </Pressable>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </Animated.View>
   );

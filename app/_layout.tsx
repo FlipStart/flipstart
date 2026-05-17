@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { Platform } from "react-native";
+import { Platform, AppState, AppStateStatus } from "react-native";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -20,6 +20,7 @@ import { trpc, createTRPCClient } from "@/lib/trpc";
 import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
 import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
+import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@/lib/analytics";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -34,12 +35,38 @@ export default function RootLayout() {
 
   const [insets, setInsets] = useState<EdgeInsets>(initialInsets);
   const [frame, setFrame] = useState<Rect>(initialFrame);
-  // Initialize Manus runtime in development only.
-  // This is a dev-environment tool and must never run in a production build.
+  // Initialize Manus runtime for cookie injection from parent container
   useEffect(() => {
-    if (__DEV__) {
-      initManusRuntime();
-    }
+    initManusRuntime();
+  }, []);
+
+  // ── Analytics: app lifecycle + session tracking ──────────────────────────
+  // 30-minute timeout: returning from background within 30 min resumes the
+  // same session instead of creating a new one. This prevents session count
+  // inflation from quick phone checks.
+  useEffect(() => {
+    try {
+      logEvent("app_opened");
+      resumeOrStartSession();   // cold launch — always starts fresh session
+    } catch { /* never throw */ }
+
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      try {
+        if (nextState === "active") {
+          resumeOrStartSession();   // resumes if < 30 min, starts new if > 30 min
+        } else if (nextState === "background" || nextState === "inactive") {
+          backgroundSession();      // notes backgrounded time, does NOT end session yet
+        }
+      } catch { /* never throw */ }
+    };
+
+    const sub = AppState.addEventListener("change", handleAppStateChange);
+    return () => {
+      try {
+        endSession();   // app unmounting — force-close session
+        sub.remove();
+      } catch { /* never throw */ }
+    };
   }, []);
 
   const handleSafeAreaUpdate = useCallback((metrics: Metrics) => {
@@ -95,11 +122,6 @@ export default function RootLayout() {
             <Stack.Screen name="results" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
-            <Stack.Screen name="hunt" options={{ animation: "fade", headerShown: false, presentation: "fullScreenModal" }} />
-            <Stack.Screen name="hunt-active" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
-            <Stack.Screen name="hunt-item-detail" options={{ animation: "slide_from_right", headerShown: false, presentation: "fullScreenModal" }} />
-            <Stack.Screen name="article" options={{ animation: "slide_from_right", headerShown: false }} />
-            <Stack.Screen name="about" options={{ animation: "slide_from_right", headerShown: false }} />
             <Stack.Screen name="oauth/callback" />
           </Stack>
           <StatusBar style="light" />
