@@ -26,7 +26,72 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
+// ─── One-time analytics reset ─────────────────────────────────────────────────
+// Set RESET_ON_STARTUP=true in Railway Variables to wipe analytics on next boot.
+// Remove the variable immediately after deploy — it runs ONCE then you delete it.
+// Clears: feedback[], events[], sessions[], scanRecords[]
+// Preserves: scanCounter, unknown keys, Railway volume
+
+function runStartupResetIfRequested(): void {
+  if (process.env.RESET_ON_STARTUP !== "true") return;
+
+  try {
+    const fs   = require("fs")  as typeof import("fs");
+    const path = require("path") as typeof import("path");
+
+    const DATA_DIR  = process.env.DATA_DIR ?? "/tmp";
+    const DATA_FILE = path.join(DATA_DIR, "flipstart-beta.json");
+    const TMP_FILE  = DATA_FILE + ".tmp";
+
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("  ⚠️  RESET_ON_STARTUP=true detected");
+    console.log("  Running analytics reset before server starts...");
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    if (!fs.existsSync(DATA_FILE)) {
+      console.log("  No data file found — nothing to reset. Starting fresh.");
+      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      return;
+    }
+
+    const current = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) as Record<string, unknown>;
+
+    // Print before counts
+    console.log("  BEFORE:");
+    console.log(`    feedback[]    : ${Array.isArray(current.feedback)    ? (current.feedback as unknown[]).length    : 0}`);
+    console.log(`    events[]      : ${Array.isArray(current.events)      ? (current.events as unknown[]).length      : 0}`);
+    console.log(`    sessions[]    : ${Array.isArray(current.sessions)    ? (current.sessions as unknown[]).length    : 0}`);
+    console.log(`    scanRecords[] : ${Array.isArray(current.scanRecords) ? (current.scanRecords as unknown[]).length : 0}`);
+
+    // Backup first
+    const timestamp  = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const backupFile = path.join(DATA_DIR, `flipstart-beta-backup-${timestamp}.json`);
+    fs.copyFileSync(DATA_FILE, backupFile);
+    console.log(`  Backup saved: ${backupFile}`);
+
+    // Clear analytics, preserve everything else
+    const reset = { ...current, feedback: [], events: [], sessions: [], scanRecords: [] };
+    fs.writeFileSync(TMP_FILE, JSON.stringify(reset, null, 2), "utf-8");
+    fs.renameSync(TMP_FILE, DATA_FILE);
+
+    console.log("  AFTER:");
+    console.log("    feedback[]    : 0");
+    console.log("    events[]      : 0");
+    console.log("    sessions[]    : 0");
+    console.log("    scanRecords[] : 0");
+    console.log("  ✅ Analytics reset complete. Remove RESET_ON_STARTUP from Railway Variables now.");
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  } catch (e) {
+    console.error("  ❌ Reset failed:", e);
+    console.error("  Server will continue starting with existing data.");
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  }
+}
+
 async function startServer() {
+  // Run reset before anything else if requested
+  runStartupResetIfRequested();
+
   const app = express();
   const server = createServer(app);
 
@@ -62,7 +127,6 @@ async function startServer() {
   });
 
   // ── Scan stats REST endpoint ────────────────────────────────────────────────
-  // Reads from persist.ts — survives redeploys via Railway volume.
   app.get("/api/scan-stats", (_req, res) => {
     try {
       const { getScanStats } = require("../persist");
@@ -95,9 +159,6 @@ async function startServer() {
     }
   });
 
-    // ── Dev feedback inspector — GET /api/dev/feedback ──────────────────────────
-  // Protected by DEV_SECRET env var. Set this in Railway environment variables.
-  // Access: /api/dev/feedback?secret=YOUR_SECRET
   app.get("/api/dev/feedback", (req, res) => {
     const secret = process.env.DEV_SECRET;
     if (!secret || req.query.secret !== secret) {
@@ -105,16 +166,12 @@ async function startServer() {
     }
     try {
       const { getAllFeedback, getFeedbackSummary } = require("../persist");
-      res.json({
-        summary: getFeedbackSummary(),
-        entries: getAllFeedback(),
-      });
+      res.json({ summary: getFeedbackSummary(), entries: getAllFeedback() });
     } catch (e: any) {
       res.status(500).json({ error: e?.message ?? "persist module not loaded" });
     }
   });
 
-  // ── Dev feedback CSV export ───────────────────────────────────────────────
   app.get("/api/dev/feedback.csv", (req, res) => {
     const secret = process.env.DEV_SECRET;
     if (!secret || req.query.secret !== secret) {
@@ -146,8 +203,6 @@ async function startServer() {
     }
   });
 
-  // ── Visual User Analytics Dashboard ─────────────────────────────────────
-  // GET /api/dev/analytics-dashboard?secret=DEV_SECRET
   app.get("/api/dev/analytics-dashboard", (req, res) => {
     const secret = process.env.DEV_SECRET;
     if (!secret || req.query.secret !== secret) {
@@ -170,7 +225,6 @@ async function startServer() {
     }
   });
 
-  // ── Dev analytics JSON export ─────────────────────────────────────────────
   app.get("/api/dev/analytics", (req, res) => {
     const secret = process.env.DEV_SECRET;
     if (!secret || req.query.secret !== secret) {
@@ -189,7 +243,6 @@ async function startServer() {
     }
   });
 
-  // ── Dev analytics CSV export ──────────────────────────────────────────────
   app.get("/api/dev/analytics.csv", (req, res) => {
     const secret = process.env.DEV_SECRET;
     if (!secret || req.query.secret !== secret) {
@@ -214,9 +267,6 @@ async function startServer() {
     }
   });
 
-  // ── Analytics ingest endpoints (called from client, no auth — anonymous data only) ──
-  // These are intentionally unauthenticated. All data is anonymous (no PII).
-  // POST /api/analytics/event
   app.post("/api/analytics/event", (req, res) => {
     try {
       const { logEvent } = require("../persist");
@@ -231,13 +281,11 @@ async function startServer() {
         metadata:        (metadata && typeof metadata === "object") ? metadata : {},
       });
       res.json({ ok: true });
-    } catch (e: any) {
-      // Swallow — analytics must never error the client
+    } catch {
       res.json({ ok: false });
     }
   });
 
-  // POST /api/analytics/session/start
   app.post("/api/analytics/session/start", (req, res) => {
     try {
       const { startSession } = require("../persist");
@@ -255,7 +303,6 @@ async function startServer() {
     }
   });
 
-  // POST /api/analytics/session/end
   app.post("/api/analytics/session/end", (req, res) => {
     try {
       const { endSession } = require("../persist");
@@ -264,13 +311,13 @@ async function startServer() {
       endSession({
         sessionId:             String(b.sessionId).slice(0, 64),
         anonymousUserId:       String(b.anonymousUserId).slice(0, 64),
-        endedAt:               typeof b.endedAt   === "number" ? b.endedAt   : Date.now(),
-        durationMs:            typeof b.durationMs === "number" ? b.durationMs : 0,
-        scanCount:             Number(b.scanCount             ?? 0),
-        completedScanCount:    Number(b.completedScanCount    ?? 0),
-        failedScanCount:       Number(b.failedScanCount       ?? 0),
-        listingGeneratedCount: Number(b.listingGeneratedCount ?? 0),
-        feedbackSubmittedCount:Number(b.feedbackSubmittedCount?? 0),
+        endedAt:               typeof b.endedAt    === "number" ? b.endedAt    : Date.now(),
+        durationMs:            typeof b.durationMs  === "number" ? b.durationMs  : 0,
+        scanCount:             Number(b.scanCount              ?? 0),
+        completedScanCount:    Number(b.completedScanCount     ?? 0),
+        failedScanCount:       Number(b.failedScanCount        ?? 0),
+        listingGeneratedCount: Number(b.listingGeneratedCount  ?? 0),
+        feedbackSubmittedCount:Number(b.feedbackSubmittedCount ?? 0),
       });
       res.json({ ok: true });
     } catch {
@@ -278,7 +325,6 @@ async function startServer() {
     }
   });
 
-  // POST /api/analytics/scan-record
   app.post("/api/analytics/scan-record", (req, res) => {
     try {
       const { saveScanRecord } = require("../persist");
@@ -289,22 +335,22 @@ async function startServer() {
         anonymousUserId:    String(b.anonymousUserId).slice(0, 64),
         sessionId:          String(b.sessionId ?? "no_session").slice(0, 64),
         timestamp:          typeof b.timestamp === "number" ? b.timestamp : Date.now(),
-        imageUri:           String(b.imageUri ?? ""),
+        imageUri:           String(b.imageUri         ?? ""),
         tagImagePresent:    Boolean(b.tagImagePresent),
         detailImagePresent: Boolean(b.detailImagePresent),
-        aiTitle:            String(b.aiTitle         ?? ""),
-        aiCategory:         String(b.aiCategory      ?? ""),
-        aiBrand:            String(b.aiBrand         ?? ""),
-        aiEra:              String(b.aiEra            ?? ""),
-        aiMaterial:         String(b.aiMaterial       ?? ""),
-        aiRecommendation:   String(b.aiRecommendation ?? ""),
-        aiResaleLow:        Number(b.aiResaleLow      ?? 0),
-        aiResaleHigh:       Number(b.aiResaleHigh     ?? 0),
-        aiEstimatedValue:   Number(b.aiEstimatedValue ?? 0),
-        aiPlatform:         String(b.aiPlatform       ?? ""),
-        aiSellSpeed:        String(b.aiSellSpeed      ?? ""),
-        aiDemand:           String(b.aiDemand         ?? ""),
-        aiConfidence:       Number(b.aiConfidence     ?? 0),
+        aiTitle:            String(b.aiTitle          ?? ""),
+        aiCategory:         String(b.aiCategory       ?? ""),
+        aiBrand:            String(b.aiBrand          ?? ""),
+        aiEra:              String(b.aiEra             ?? ""),
+        aiMaterial:         String(b.aiMaterial        ?? ""),
+        aiRecommendation:   String(b.aiRecommendation  ?? ""),
+        aiResaleLow:        Number(b.aiResaleLow       ?? 0),
+        aiResaleHigh:       Number(b.aiResaleHigh      ?? 0),
+        aiEstimatedValue:   Number(b.aiEstimatedValue  ?? 0),
+        aiPlatform:         String(b.aiPlatform        ?? ""),
+        aiSellSpeed:        String(b.aiSellSpeed       ?? ""),
+        aiDemand:           String(b.aiDemand          ?? ""),
+        aiConfidence:       Number(b.aiConfidence      ?? 0),
         styleLabels:        Array.isArray(b.styleLabels) ? b.styleLabels : [],
         riskFlags:          Array.isArray(b.riskFlags)   ? b.riskFlags   : [],
         feedbackId:         null,
@@ -321,9 +367,6 @@ async function startServer() {
     }
   });
 
-
-  // ── Founder Analytics Dashboard ───────────────────────────────────────────
-  // GET /api/dev/dashboard?secret=DEV_SECRET
   app.use(
     "/api/trpc",
     createExpressMiddleware({
@@ -340,7 +383,7 @@ async function startServer() {
   }
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`[api] server listening on http://0.0.0.0:${port} — reachable at http://YOUR_LAN_IP:${port}`);
+    console.log(`[api] server listening on http://0.0.0.0:${port}`);
   });
 }
 
