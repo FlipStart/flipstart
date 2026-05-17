@@ -10,14 +10,15 @@
 
 import {
   Text, View, FlatList, Pressable, Platform,
-  StyleSheet, TextInput, Animated, PanResponder,
+  StyleSheet, TextInput,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useCallback } from 'react';
+import Swipeable from 'react-native-gesture-handler/Swipeable';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useFlipStore } from '@/lib/useFlipStore';
@@ -59,124 +60,146 @@ const rb = StyleSheet.create({
   text:  { fontSize: 13, fontWeight: '800' },
 });
 
-// ─── Scan card ────────────────────────────────────────────────────────────────
+// ─── Swipeable scan card ──────────────────────────────────────────────────────
+//
+// Uses Swipeable from react-native-gesture-handler — native gesture recognizers
+// cooperate correctly with FlatList scroll. No PanResponder conflicts.
+//
+// Behavior:
+//   - Partial swipe left → reveals red Delete action (ACTION_WIDTH wide)
+//   - Swiping reveals the delete button; tap it to confirm delete
+//   - Only one row open at a time — openSwipeableRef tracks the active row
+//   - Tapping the card when row is open closes it instead of navigating
 
-const DELETE_WIDTH = 80;
+const ACTION_WIDTH = 88;
+const ACTION_GAP   = 10;  // gap between card right edge and red delete zone
+
+// Module-level ref tracks the currently open Swipeable so we can close it
+// when a new row opens. Shared across all FlipCard instances.
+let openSwipeableRef: Swipeable | null = null;
 
 function FlipCard({
   item, onPress, onDelete,
 }: { item: FlipResult; onPress: () => void; onDelete: () => void }) {
 
-  const translateX = useRef(new Animated.Value(0)).current;
-  const swipeOpen  = useRef(false);
+  const swipeableRef = useRef<Swipeable>(null);
 
-  const snapOpen = () =>
-    Animated.spring(translateX, { toValue: -DELETE_WIDTH, useNativeDriver: true, bounciness: 4 })
-      .start(() => { swipeOpen.current = true; });
+  const handleOpen = useCallback(() => {
+    if (openSwipeableRef && openSwipeableRef !== swipeableRef.current) {
+      openSwipeableRef.close();
+    }
+    openSwipeableRef = swipeableRef.current;
+  }, []);
 
-  const snapClosed = () =>
-    Animated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 4 })
-      .start(() => { swipeOpen.current = false; });
+  const handleClose = useCallback(() => {
+    if (openSwipeableRef === swipeableRef.current) openSwipeableRef = null;
+  }, []);
 
-  const pan = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) =>
-        Math.abs(g.dx) > 6 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-      onPanResponderMove: (_, g) => {
-        const base = swipeOpen.current ? -DELETE_WIDTH : 0;
-        translateX.setValue(Math.min(0, Math.max(-DELETE_WIDTH, base + g.dx)));
-      },
-      onPanResponderRelease: (_, g) => {
-        const base  = swipeOpen.current ? -DELETE_WIDTH : 0;
-        const total = base + g.dx;
-        total < -DELETE_WIDTH / 2 ? snapOpen() : snapClosed();
-      },
-      onPanResponderTerminate: () => snapClosed(),
-    })
-  ).current;
+  const renderRightActions = useCallback(() => (
+    // Transparent wrapper is ACTION_WIDTH + ACTION_GAP wide so Swipeable
+    // slides the card far enough to fully reveal the red zone.
+    // The gap is purely visual — the red button still fills ACTION_WIDTH.
+    <View style={fc.deleteWrapper}>
+      <Pressable
+        style={fc.deleteAction}
+        onPress={() => {
+          swipeableRef.current?.close();
+          if (Platform.OS !== 'web') {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+          }
+          setTimeout(onDelete, 160);
+        }}
+      >
+        <MaterialIcons name="delete-outline" size={24} color="#FFF" />
+        <Text style={fc.deleteText}>Delete</Text>
+      </Pressable>
+    </View>
+  ), [onDelete]);
 
   const profitColor = item.profit >= 15 ? V.green : item.profit >= 0 ? V.greenMuted : V.error;
 
   return (
-    <View style={fc.wrapper}>
-      {/* Delete zone behind card */}
-      <View style={fc.deleteZone}>
-        <Pressable
-          style={fc.deleteBtn}
-          onPress={() => {
-            if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-            snapClosed();
-            setTimeout(onDelete, 180);
-          }}
-        >
-          <MaterialIcons name="delete-outline" size={22} color={V.white} />
-          <Text style={fc.deleteText}>Delete</Text>
-        </Pressable>
-      </View>
-
-      <Animated.View
-        style={[fc.surface, { transform: [{ translateX }] }]}
-        {...pan.panHandlers}
+    <Swipeable
+      ref={swipeableRef}
+      renderRightActions={renderRightActions}
+      rightThreshold={ACTION_WIDTH * 0.35}
+      overshootRight={false}
+      friction={2}
+      onSwipeableOpen={handleOpen}
+      onSwipeableClose={handleClose}
+      onSwipeableWillOpen={() => {
+        if (Platform.OS !== 'web') {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        }
+      }}
+    >
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [fc.card, pressed && { opacity: 0.88 }]}
       >
-        <Pressable
-          onPress={() => swipeOpen.current ? snapClosed() : onPress()}
-          style={({ pressed }) => [fc.card, pressed && !swipeOpen.current && { opacity: 0.88 }]}
-        >
-          {/* Thumbnail */}
-          <View style={fc.thumbWrap}>
-            {item.imageUri ? (
-              <Image source={{ uri: item.imageUri }} style={fc.thumb} contentFit="cover" />
-            ) : (
-              <View style={[fc.thumb, fc.thumbFallback]}>
-                <MaterialIcons name="checkroom" size={22} color={V.textMuted} />
-              </View>
-            )}
-          </View>
-
-          {/* Content */}
-          <View style={fc.content}>
-            <Text style={fc.name} numberOfLines={1}>{item.itemName}</Text>
-            <Text style={fc.brand} numberOfLines={1}>{item.brand} · {item.category}</Text>
-            {/* Shows user-entered thrift price, NOT max buy */}
-            <Text style={fc.thrift}>Bought at: ${item.thriftPrice}</Text>
-            <Text style={fc.date}>{formatDate(item.timestamp)}</Text>
-          </View>
-
-          {/* Right */}
-          <View style={fc.right}>
-            <Text style={[fc.profit, { color: profitColor }]}>
-              {item.profit >= 0 ? `+$${item.profit}` : `-$${Math.abs(item.profit)}`}
-            </Text>
-            <View style={[fc.labelPill, { borderColor: profitColor + '55' }]}>
-              <Text style={[fc.labelPillText, { color: profitColor }]} numberOfLines={1}>
-                {item.buyLabel}
-              </Text>
+        {/* Thumbnail */}
+        <View style={fc.thumbWrap}>
+          {item.imageUri ? (
+            <Image source={{ uri: item.imageUri }} style={fc.thumb} contentFit="cover" />
+          ) : (
+            <View style={[fc.thumb, fc.thumbFallback]}>
+              <MaterialIcons name="checkroom" size={22} color={V.textMuted} />
             </View>
+          )}
+        </View>
+
+        {/* Content */}
+        <View style={fc.content}>
+          <Text style={fc.name} numberOfLines={1}>{item.itemName}</Text>
+          <Text style={fc.brand} numberOfLines={1}>{item.brand} · {item.category}</Text>
+          <Text style={fc.thrift}>Bought at: ${item.thriftPrice}</Text>
+          <Text style={fc.date}>{formatDate(item.timestamp)}</Text>
+        </View>
+
+        {/* Right */}
+        <View style={fc.right}>
+          <Text style={[fc.profit, { color: profitColor }]}>
+            {item.profit >= 0 ? `+$${item.profit}` : `-$${Math.abs(item.profit)}`}
+          </Text>
+          <View style={[fc.labelPill, { borderColor: profitColor + '55' }]}>
+            <Text style={[fc.labelPillText, { color: profitColor }]} numberOfLines={1}>
+              {item.buyLabel}
+            </Text>
           </View>
-        </Pressable>
-      </Animated.View>
-    </View>
+        </View>
+      </Pressable>
+    </Swipeable>
   );
 }
 
 const fc = StyleSheet.create({
-  wrapper:    { marginBottom: 10, borderRadius: 14, overflow: 'hidden' },
-  deleteZone: { position: 'absolute', top: 0, bottom: 0, right: 0, width: DELETE_WIDTH, backgroundColor: '#8B2A1A', justifyContent: 'center', alignItems: 'center' },
-  deleteBtn:  { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', gap: 4 },
-  deleteText: { fontSize: 10, fontWeight: '700', color: V.white },
-  surface:    { backgroundColor: V.pageBg, borderRadius: 14 },
-  card:       { flexDirection: 'row', alignItems: 'center', backgroundColor: V.cardBg, borderRadius: 14, borderWidth: 1, borderColor: V.border, padding: 12, gap: 11, shadowColor: V.textDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
-  thumbWrap:  { borderRadius: 11, overflow: 'hidden', borderWidth: 1, borderColor: V.border },
-  thumb:      { width: 56, height: 56, borderRadius: 10 },
+  deleteWrapper: {
+    // Transparent container — total width drives how far Swipeable slides the card
+    width: ACTION_WIDTH + ACTION_GAP,
+    paddingLeft: ACTION_GAP,        // gap between card and red zone
+    marginBottom: 10,               // matches card marginBottom so heights align
+  },
+  deleteAction: {
+    flex: 1,                        // fills the wrapper minus the gap
+    backgroundColor: '#8B2A1A',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: 14,               // all 4 corners rounded — floats as its own element
+  },
+  deleteText:    { fontSize: 11, fontWeight: '700', color: '#FFF', letterSpacing: 0.2 },
+  card:          { flexDirection: 'row', alignItems: 'center', backgroundColor: V.cardBg, borderRadius: 14, borderWidth: 1, borderColor: V.border, padding: 12, gap: 11, marginBottom: 10, shadowColor: V.textDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
+  thumbWrap:     { borderRadius: 11, overflow: 'hidden', borderWidth: 1, borderColor: V.border },
+  thumb:         { width: 56, height: 56, borderRadius: 10 },
   thumbFallback: { backgroundColor: V.tan, justifyContent: 'center', alignItems: 'center' },
-  content:    { flex: 1, gap: 2 },
-  name:       { fontSize: 14, fontWeight: '700', color: V.textDark },
-  brand:      { fontSize: 11, color: V.textMuted },
-  thrift:     { fontSize: 11, color: V.textMuted },
-  date:       { fontSize: 10, color: V.textSubtle, marginTop: 1 },
-  right:      { alignItems: 'flex-end', gap: 4, minWidth: 64 },
-  profit:     { fontSize: 17, fontWeight: '900' },
-  labelPill:  { borderWidth: 1, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 6, maxWidth: 88 },
+  content:       { flex: 1, gap: 2 },
+  name:          { fontSize: 14, fontWeight: '700', color: V.textDark },
+  brand:         { fontSize: 11, color: V.textMuted },
+  thrift:        { fontSize: 11, color: V.textMuted },
+  date:          { fontSize: 10, color: V.textSubtle, marginTop: 1 },
+  right:         { alignItems: 'flex-end', gap: 4, minWidth: 64 },
+  profit:        { fontSize: 17, fontWeight: '900' },
+  labelPill:     { borderWidth: 1, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 6, maxWidth: 88 },
   labelPillText: { fontSize: 9, fontWeight: '700' },
 });
 

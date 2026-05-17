@@ -21,11 +21,11 @@ import { FeatureCard } from '@/components/home/FeatureCard';
 import { SectionHeader } from '@/components/home/SectionHeader';
 import { FlipCard, type FlipCardData } from '@/components/home/FlipCard';
 import { ArticleCard, type ArticleCardData } from '@/components/home/ArticleCard';
-import { PhotoReview } from '@/components/home/PhotoReview';
 import { V } from '@/constants/vintage';
 import { captureFromCamera, captureMultipleFromGallery, type CapturedPhoto, type CapturedPhotoSet } from '@/lib/capture';
 import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
+import { logEvent } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { trpc } from '@/lib/trpc';
 import { isOnboardingComplete, completeOnboarding, getUserMode, setUserMode, type UserMode } from '@/lib/onboarding-storage';
@@ -121,18 +121,10 @@ function HuntModeBar({ onPress }: { onPress: () => void }) {
         pressed && { opacity: 0.75 },
       ]}
     >
-      {/* ── Claw marks — three diagonal scratches across the strip ──────── */}
-      {/* Claw 1 — leftmost, slightly steeper */}
-      <View style={hm.claw1} />
-      {/* Claw 2 — middle */}
-      <View style={hm.claw2} />
-      {/* Claw 3 — rightmost, slightly shallower */}
-      <View style={hm.claw3} />
-
       {/* Lion icon */}
       <View style={hm.iconFrame}>
         <View style={hm.iconInner}>
-          <Image source={LION_IMAGE} style={hm.lionImage} resizeMode="cover" />
+          <Image source={LION_IMAGE} style={hm.lionImage} resizeMode="contain" />
         </View>
       </View>
 
@@ -153,18 +145,6 @@ function HuntModeBar({ onPress }: { onPress: () => void }) {
         <Text style={hm.chevron}>›</Text>
       </View>
 
-      {/* ── Safari grass — tall reeds growing from the bottom edge ────────── */}
-      {/* Left cluster */}
-      <View style={[hm.blade, { left: 18,  height: 18, transform: [{ rotate: '-8deg'  }] }]} />
-      <View style={[hm.blade, { left: 24,  height: 22, transform: [{ rotate: '4deg'   }] }]} />
-      <View style={[hm.blade, { left: 30,  height: 16, transform: [{ rotate: '-3deg'  }] }]} />
-      {/* Mid-left cluster */}
-      <View style={[hm.blade, { left: 72,  height: 14, transform: [{ rotate: '6deg'   }] }]} />
-      <View style={[hm.blade, { left: 78,  height: 19, transform: [{ rotate: '-5deg'  }] }]} />
-      {/* Right cluster */}
-      <View style={[hm.blade, { right: 60, height: 17, transform: [{ rotate: '7deg'   }] }]} />
-      <View style={[hm.blade, { right: 66, height: 21, transform: [{ rotate: '-4deg'  }] }]} />
-      <View style={[hm.blade, { right: 72, height: 13, transform: [{ rotate: '3deg'   }] }]} />
     </Pressable>
   );
 }
@@ -180,57 +160,24 @@ const hm = StyleSheet.create({
     overflow:          'hidden',
   },
 
-  // ── Claw marks — three long diagonal scratches in the top-right area ──────
-  // Each is a thin rotated View, slightly offset so they fan like real claws.
-  // rgba white at low opacity so they read as surface scratches, not paint.
-  claw1: {
-    position:        'absolute',
-    top:             -4,
-    right:           52,
-    width:           40,
-    height:          1.2,
-    borderRadius:    1,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    transform:       [{ rotate: '70deg' }],
-  },
-  claw2: {
-    position:        'absolute',
-    top:             -4,
-    right:           40,
-    width:           40,
-    height:          1.2,
-    borderRadius:    1,
-    backgroundColor: 'rgba(255,255,255,0.16)',
-    transform:       [{ rotate: '70deg' }],
-  },
-  claw3: {
-    position:        'absolute',
-    top:             -4,
-    right:           28,
-    width:           40,
-    height:          1.2,
-    borderRadius:    1,
-    backgroundColor: 'rgba(255,255,255,0.11)',
-    transform:       [{ rotate: '70deg' }],
-  },
-
   iconFrame: {
-    width:           36,
-    height:          36,
-    borderRadius:    8,
-    backgroundColor: HUNT_GOLD,
-    padding:         2,
+    width:           48,
+    height:          48,
+    borderRadius:    12,
+    backgroundColor: 'transparent',  // image has its own border — no gold frame needed
+    padding:         0,
   },
   iconInner: {
-    width:           32,
-    height:          32,
-    borderRadius:    5,
-    backgroundColor: HUNT_PARCHMENT,
+    width:           48,
+    height:          48,
+    borderRadius:    12,
+    backgroundColor: '#1A1208',  // matches the dark corner tone of hunt-lion.png
     overflow:        'hidden',
   },
   lionImage: {
-    width:  32,
-    height: 32,
+    width:    48,
+    height:   48,
+    // contain shows the full square image — cover was cropping the corners/border
   },
   divider: {
     width:           1,
@@ -276,15 +223,6 @@ const hm = StyleSheet.create({
     marginRight: 1,
   },
 
-  // Safari grass blades — thin reeds anchored to bottom edge
-  blade: {
-    position:        'absolute',
-    bottom:          0,
-    width:           2.5,
-    borderRadius:    2,
-    backgroundColor: '#2A5A1A',
-    opacity:         0.55,
-  },
 });
 
 // ─── Component ─────────────────────────────────────────────────────────────────
@@ -395,13 +333,17 @@ export default function HomeScreen() {
     if (!photoSet?.front || isAnalyzing) return;
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 
-    const primary = photoSet.front!;  // non-null: guarded by the check above
+    const primary = photoSet.front!;
     setIsAnalyzing(true);
+
+    try {
+      logEvent('scan_started', { tagPresent: !!photoSet.tag?.base64, detailPresent: !!photoSet.detail?.base64 });
+    } catch { /* never block scan */ }
 
     setPendingScan({
       front: { base64: primary.base64, mimeType: primary.mimeType },
       ...(photoSet.detail?.base64 ? { detail: { base64: photoSet.detail.base64, mimeType: photoSet.detail.mimeType } } : {}),
-      ...(photoSet.tag?.base64   ? { tag:  { base64: photoSet.tag.base64,   mimeType: photoSet.tag.mimeType   } } : {}),
+      ...(photoSet.tag?.base64    ? { tag:    { base64: photoSet.tag.base64,    mimeType: photoSet.tag.mimeType    } } : {}),
     });
 
     const imageUri = primary.uri;
@@ -415,18 +357,6 @@ export default function HomeScreen() {
   };
 
   // ─── Photo review ──────────────────────────────────────────────────────────
-  if (photoSet?.front) {
-    return (
-      <PhotoReview
-        photoSet={photoSet}
-        onAnalyze={handleAnalyze}
-        onRetake={handleRetake}
-        isAnalyzing={isAnalyzing}
-        onPhotoSetUpdate={(updated) => setPhotoSet(updated)}
-      />
-    );
-  }
-
   // ─── Home feed ─────────────────────────────────────────────────────────────
   return (
     <ScreenContainer>
@@ -478,7 +408,7 @@ export default function HomeScreen() {
           <ScanCTA onPress={handleScanItem} attached />
           {/* Thin warm gold separator — visually links but distinguishes the two */}
           <View style={s.scanHuntDivider} />
-          <HuntModeBar onPress={() => Alert.alert('Hunt Mode', 'Coming soon — track your full store haul!')} />
+          <HuntModeBar onPress={() => router.push('/hunt' as any)} />
         </View>
 
         <View style={s.gap} />

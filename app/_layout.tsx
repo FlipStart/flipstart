@@ -56,7 +56,9 @@ export default function RootLayout() {
       new QueryClient({
         defaultOptions: {
           queries: {
+            // Disable automatic refetching on window focus for mobile
             refetchOnWindowFocus: false,
+            // Retry failed requests once
             retry: 1,
           },
         },
@@ -90,6 +92,9 @@ export default function RootLayout() {
             <Stack.Screen name="results" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
+            <Stack.Screen name="hunt" options={{ animation: "fade", headerShown: false, presentation: "fullScreenModal" }} />
+            <Stack.Screen name="hunt-active" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
+            <Stack.Screen name="hunt-item-detail" options={{ animation: "slide_from_right", headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="article" options={{ animation: "slide_from_right", headerShown: false }} />
             <Stack.Screen name="about" options={{ animation: "slide_from_right", headerShown: false }} />
             <Stack.Screen name="oauth/callback" />

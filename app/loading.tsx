@@ -30,12 +30,12 @@ import { useColors } from "@/hooks/use-colors";
 import { useScanContext } from "@/lib/scan-context";
 import { trpc } from "@/lib/trpc";
 import { consumePendingScan } from "@/lib/pending-scan";
+import { isHuntActive }       from "@/lib/hunt-context";
 import { ScanResult } from "@/lib/types";
 import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
 import { useAudioPlayer } from "expo-audio";
 import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
-import { logEvent, incrementSessionCount, saveScanRecord } from "@/lib/analytics";
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
@@ -238,12 +238,6 @@ export default function LoadingScreen() {
       console.log(`[loading] images ready — front✓ tag:${!!tag} detail:${!!detail}`);
       console.log("[loading] analysis request start — timeout in", HARD_TIMEOUT_MS / 1000, "s");
 
-      // Analytics: scan submitted
-      try {
-        logEvent("scan_submitted", { tagPresent: !!tag, detailPresent: !!detail });
-        incrementSessionCount("scanCount");
-      } catch { /* never block analysis */ }
-
       try {
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutIdRef.current = setTimeout(() => {
@@ -334,10 +328,6 @@ export default function LoadingScreen() {
           console.log("[loading] bad_input: confidence too low to use:", matchConf);
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
-          try {
-            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf });
-            incrementSessionCount("failedScanCount");
-          } catch { /* never block */ }
           setFailState({ type: "bad_input", message: "", confidence: matchConf });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -349,10 +339,6 @@ export default function LoadingScreen() {
           console.log("[loading] low_confidence: showing warning screen:", matchConf);
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
-          try {
-            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf });
-            incrementSessionCount("failedScanCount");
-          } catch { /* never block */ }
           setFailState({ type: "low_confidence", message: "", confidence: matchConf });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
@@ -366,46 +352,16 @@ export default function LoadingScreen() {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         }
 
-        // Analytics: scan completed + save structured scan record for future AI memory
-        try {
-          logEvent("scan_completed", {
-            confidence:      matchConf,
-            category:        safeIdentification.category,
-            brand:           safeIdentification.brand,
-            recommendation:  result.recommendation ?? "",
-          });
-          incrementSessionCount("completedScanCount");
-          saveScanRecord({
-            scanId:             scanResult.id,
-            imageUri:           scanResult.imageUri,
-            tagImagePresent:    !!tag,
-            detailImagePresent: !!detail,
-            aiTitle:            safeIdentification.item_name,
-            aiCategory:         safeIdentification.category,
-            aiBrand:            safeIdentification.brand,
-            aiEra:              safeIdentification.estimated_era,
-            aiMaterial:         safeIdentification.material_guess,
-            aiRecommendation:   result.recommendation ?? "",
-            aiResaleLow:        safeMarketData.estimated_resale_range.low,
-            aiResaleHigh:       safeMarketData.estimated_resale_range.high,
-            aiEstimatedValue:   safeMarketData.adjusted_estimated_value,
-            aiPlatform:         result.best_platform ?? "",
-            aiSellSpeed:        safeMarketData.sell_speed,
-            aiDemand:           safeMarketData.demand,
-            aiConfidence:       matchConf,
-            styleLabels:        safeIdentification.style_labels,
-            riskFlags:          safeRiskAnalysis.risk_flags,
-          });
-        } catch { /* never block navigation */ }
-
         setConfidence(100);
         try { player.pause(); } catch { /* ignore */ }
 
         setTimeout(() => {
           if (hasNavigated.current) return;
           hasNavigated.current = true;
-          console.log("[loading] navigating to results — confidence:", matchConf);
-          router.replace("/results" as any);
+          // Hunt Mode: go to dedicated Hunt Item Detail screen
+          const dest = isHuntActive() ? '/hunt-item-detail' : '/results';
+          console.log('[loading] navigating to', dest, '— confidence:', matchConf);
+          router.replace(dest as any);
         }, 600);
 
       } catch (err: any) {
@@ -417,12 +373,6 @@ export default function LoadingScreen() {
         try { player.pause(); } catch { /* ignore */ }
 
         const raw: string = err?.message ?? "";
-
-        // Analytics: scan failed
-        try {
-          logEvent("scan_failed", { errorType: raw === "__TIMEOUT__" ? "timeout" : "network", error: raw.slice(0, 80) });
-          incrementSessionCount("failedScanCount");
-        } catch { /* never block error handling */ }
 
         let failType: FailType = "network";
         if (raw === "__TIMEOUT__" || raw.toLowerCase().includes("timed out")) {
@@ -533,9 +483,9 @@ export default function LoadingScreen() {
     const handleContinueAnyway =
       (failState.type === "low_confidence" || failState.type === "bad_input")
         ? () => {
-            console.log("[loading] user continuing anyway from fail state:", failState.type);
+            console.log('[loading] user continuing anyway from fail state:', failState.type);
             hasNavigated.current = true;
-            router.replace("/results" as any);
+            router.replace((isHuntActive() ? '/hunt-item-detail' : '/results') as any);
           }
         : undefined;
 

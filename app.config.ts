@@ -1,135 +1,97 @@
-// Load environment variables with proper priority (system > .env)
-try { require("./scripts/load-env.js"); } catch {}
 import type { ExpoConfig } from "expo/config";
 
-// Bundle ID format: space.manus.<project_name_dots>.<timestamp>
-// e.g., "my-app" created at 2024-01-15 10:30:45 -> "space.manus.my.app.t20240115103045"
-// Bundle ID can only contain letters, numbers, and dots
-// Android requires each dot-separated segment to start with a letter
-const rawBundleId = "space.manus.flipstart.t20260401221451";
-const bundleId =
-  rawBundleId
-    .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
-    .replace(/[^a-zA-Z0-9.]/g, "") // Remove invalid chars
-    .replace(/\.+/g, ".") // Collapse consecutive dots
-    .replace(/^\.+|\.+$/g, "") // Trim leading/trailing dots
-    .toLowerCase()
-    .split(".")
-    .map((segment) => {
-      // Android requires each segment to start with a letter
-      // Prefix with 'x' if segment starts with a digit
-      return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
-    })
-    .join(".") || "space.manus.app";
-// Extract timestamp from bundle ID and prefix with "manus" for deep link scheme
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
-
-const env = {
-  // App branding - update these values directly (do not use env vars)
-  appName: "FlipStart",
-  appSlug: "flipstart",
-  // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
-  // Leave empty to use the default icon from assets/images/icon.png
-  logoUrl: "https://d2xsxph8kpxj0f.cloudfront.net/310519663494407970/gaMDCnzoMJG8V9dwmhqrAK/flipstart-icon-VY35ePAfnqRLWeuQQQUq5q.png",
-  scheme: schemeFromBundleId,
-  iosBundleId: bundleId,
-  androidPackage: bundleId,
-};
+const bundleId = "com.flipstart.app";
+const scheme   = "flipstart";
 
 const config: ExpoConfig = {
-  name: env.appName,
-  slug: env.appSlug,
-  version: "1.0.0",
-  orientation: "portrait",
-  icon: "./assets/images/icon.png",
-  scheme: env.scheme,
-  userInterfaceStyle: "automatic",
-  newArchEnabled: true,
+  name:                "FlipStart",
+  slug:                "flipstart",
+  version:             "1.0.0",
+  orientation:         "portrait",
+  icon:                "./assets/images/icon.png",
+  scheme,
+  userInterfaceStyle:  "automatic",
+  newArchEnabled:      true,
+
   ios: {
-    supportsTablet: true,
-    bundleIdentifier: env.iosBundleId,
+    supportsTablet:    true,
+    bundleIdentifier:  bundleId,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
       NSCameraUsageDescription:
         "FlipStart uses your camera to photograph thrifted items and estimate their resale value.",
       NSPhotoLibraryUsageDescription:
         "FlipStart uses your photo library so you can upload saved item photos for resale analysis.",
-      NSMicrophoneUsageDescription:
-        "FlipStart uses your microphone for audio features in Hunt Mode.",
     },
   },
+
   android: {
     adaptiveIcon: {
-      backgroundColor: "#0D0D0D",
-      foregroundImage: "./assets/images/android-icon-foreground.png",
-      backgroundImage: "./assets/images/android-icon-background.png",
-      monochromeImage: "./assets/images/android-icon-monochrome.png",
+      backgroundColor:   "#0D0D0D",
+      foregroundImage:   "./assets/images/android-icon-foreground.png",
+      backgroundImage:   "./assets/images/android-icon-background.png",
+      monochromeImage:   "./assets/images/android-icon-monochrome.png",
     },
-    edgeToEdgeEnabled: true,
-    predictiveBackGestureEnabled: false,
-    package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS"],
+    edgeToEdgeEnabled:             true,
+    predictiveBackGestureEnabled:  false,
+    package:                       bundleId,
+    permissions:                   ["POST_NOTIFICATIONS"],
     intentFilters: [
       {
-        action: "VIEW",
+        action:     "VIEW",
         autoVerify: true,
-        data: [
-          {
-            scheme: env.scheme,
-            host: "*",
-          },
-        ],
-        category: ["BROWSABLE", "DEFAULT"],
+        data: [{ scheme, host: "*" }],
+        category:   ["BROWSABLE", "DEFAULT"],
       },
     ],
   },
+
   web: {
     bundler: "metro",
-    output: "static",
+    output:  "static",
     favicon: "./assets/images/favicon.png",
   },
+
   plugins: [
     "expo-router",
     "expo-font",
-    [
-      "expo-audio",
-      {
-        microphonePermission: "FlipStart uses your microphone for audio features in Hunt Mode.",
-      },
-    ],
+    "expo-audio",
     [
       "expo-video",
       {
         supportsBackgroundPlayback: true,
-        supportsPictureInPicture: true,
+        supportsPictureInPicture:   true,
       },
     ],
     [
       "expo-splash-screen",
       {
-        image: "./assets/images/flipstart-splash.png",
+        image:      "./assets/images/flipstart-splash.png",
         resizeMode: "cover",
         backgroundColor: "#E8C99A",
-        dark: {
-          backgroundColor: "#E8C99A",
-        },
+        dark: { backgroundColor: "#E8C99A" },
       },
     ],
     [
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["armeabi-v7a", "arm64-v8a"],
+          buildArchs:    ["armeabi-v7a", "arm64-v8a"],
           minSdkVersion: 24,
         },
       },
     ],
   ],
+
+  extra: {
+    eas: {
+      projectId: "617d4f3e-29db-49d5-8ee8-142b6a0949b2",
+    },
+  },
+
   experiments: {
-    typedRoutes: true,
-    reactCompiler: true,
+    typedRoutes:     true,
+    reactCompiler:   true,
   },
 };
 

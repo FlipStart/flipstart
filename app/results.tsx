@@ -7,17 +7,18 @@
 
 import {
   Text, View, ScrollView, Pressable, Platform, Modal,
-  StyleSheet, TextInput, Alert, KeyboardAvoidingView, Clipboard,
+  StyleSheet, TextInput, Alert, KeyboardAvoidingView, Clipboard, BackHandler,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useScanContext } from '@/lib/scan-context';
+import { isHuntActive, addItemToHunt, computeHuntRating } from '@/lib/hunt-context';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
@@ -261,6 +262,16 @@ export default function ResultsScreen() {
      _md?.demand, _md?.sell_speed],
   );
 
+  // backHandlerRef + BackHandler useEffect MUST also be before the early return.
+  // The ref is updated below (after early return) where handleConfirm is accessible.
+  // Using a ref ensures the BackHandler callback always calls the latest version
+  // without needing to re-register the listener on every state change.
+  const backHandlerRef = useRef<() => boolean>(() => true);
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => backHandlerRef.current());
+    return () => sub.remove();
+  }, []);   // stable — ref is always current
+
   // Early return AFTER all hooks — safe now
   if (!currentScan) {
     return (
@@ -321,6 +332,26 @@ export default function ResultsScreen() {
         : null,
     };
     addFlip(flip);
+
+    // If a hunt is active, add this item to the hunt session too
+    if (isHuntActive()) {
+      try {
+        addItemToHunt({
+          scanId:         currentScan.id,
+          itemName:       id.item_name,
+          brand:          id.brand,
+          category:       id.category,
+          imageUri:       currentScan.imageUri,
+          estimatedValue: md.adjusted_estimated_value,
+          thriftPrice:    calc.thriftPrice,
+          profit:         calc.profit,
+          kept:           true,       // saved = kept by default
+          huntRating:     computeHuntRating(calc.profit, ra.match_confidence),
+          addedAt:        Date.now(),
+        });
+      } catch { /* never block navigation */ }
+    }
+
     setCurrentScan(null);
     router.replace('/(tabs)' as any);
   };
@@ -335,6 +366,38 @@ export default function ResultsScreen() {
       }},
     ]);
   };
+
+  // Update the back handler ref with current state — runs on every render
+  // so the ref always reflects the latest isSaved value and handleConfirm closure.
+  backHandlerRef.current = () => {
+    if (isSaved) {
+      router.canGoBack() ? router.back() : router.replace('/(tabs)' as any);
+      return true;
+    }
+    Alert.alert(
+      'Save this analysis?',
+      'Do you want to save this scan to history before leaving?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setCurrentScan(null);
+            router.replace('/(tabs)' as any);
+          },
+        },
+        {
+          text: 'Save',
+          onPress: handleConfirm,
+        },
+      ]
+    );
+    return true;
+  };
+
+  // Plain function used by the back arrow Pressable
+  const handleBackPress = () => backHandlerRef.current();
 
   const handleGenerateListings = async () => {
     if (hasGeneratedListings(currentScan.listings)) {
@@ -409,7 +472,7 @@ export default function ResultsScreen() {
       {/* Header — outside ScrollView so safe area is not double-applied */}
       <View style={[s.header, { paddingTop: insets.top + 4 }]}>
         <Pressable
-          onPress={() => router.canGoBack() ? router.back() : router.replace('/(tabs)' as any)}
+          onPress={handleBackPress}
           hitSlop={8} style={({ pressed }) => [pressed && { opacity: 0.6 }]}
         >
           <MaterialIcons name="arrow-back" size={22} color={CREAM} />

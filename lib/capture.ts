@@ -27,10 +27,10 @@
  * installing expo-image-manipulator or any other extra dependency.
  */
 
-import { Alert, Platform } from 'react-native';
+import { Alert, Platform, Linking } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { Linking } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -109,35 +109,109 @@ function detectMimeFromBase64(b64: string): string | null {
   return null;
 }
 
-// ─── Core normalization ───────────────────────────────────────────────────────
+// ─── Camera normalization (unchanged) ────────────────────────────────────────
 //
-// Called with every asset from both camera and gallery.
-// Returns a guaranteed-supported CapturedPhoto, or null if all attempts fail.
+// Camera always outputs JPEG — just verify magic bytes and return.
+// No resize needed: camera quality is already controlled by CAMERA_OPTIONS.
 
 async function normalizeAsset(
   asset: ImagePicker.ImagePickerAsset,
 ): Promise<CapturedPhoto | null> {
   if (!asset.uri) return null;
 
-  const rawBase64 = asset.base64 ?? '';
-
-  // Step 1: detect actual format from magic bytes (ignore picker mimeType)
+  const rawBase64   = asset.base64 ?? '';
   const detectedMime = rawBase64 ? detectMimeFromBase64(rawBase64) : null;
 
   if (detectedMime) {
-    // Format is supported — override mimeType to match detected format.
-    // This fixes the case where iOS returns mimeType:'image/heic' but the
-    // actual compressed bytes are JPEG (happens when quality < 1).
-    return {
-      uri:      asset.uri,
-      base64:   rawBase64,
-      mimeType: detectedMime,
-    };
+    console.log(`[capture:camera] format:${detectedMime} size:~${Math.round(rawBase64.length * 0.75 / 1024)}KB`);
+    return { uri: asset.uri, base64: rawBase64, mimeType: detectedMime };
   }
 
-  // Step 2: base64 was empty or format unrecognised.
-  // Return null — caller will show a clean error message.
+  // Camera should never hit this path — log and surface error
+  console.warn('[capture:camera] unexpected format — magic bytes undetected');
   return null;
+}
+
+// ─── Gallery normalization — resize + compress always ────────────────────────
+//
+// Gallery images (HEIC, JPEG, PNG) are processed through ImageManipulator
+// unconditionally. This solves two problems:
+//
+//   1. FORMAT — HEIC/HEIF is converted to JPEG (required by AI API)
+//   2. SIZE   — Full-res iPhone photos (12MP, 4032×3024, 3–5MB base64) are
+//               the primary cause of scan timeouts. Downsizing to 1280px
+//               reduces payload by ~70–80% while preserving tag/logo readability.
+//
+// Camera photos do NOT go through this path — camera output is already
+// controlled by CAMERA_OPTIONS and is never the source of timeouts.
+
+const GALLERY_MAX_PX  = 1280;  // max long-edge pixels — sharp enough for tags at arm's length
+const GALLERY_QUALITY = 0.82;  // ~80% size reduction vs raw; tags/logos remain crisp
+
+async function normalizeGalleryAsset(
+  asset: ImagePicker.ImagePickerAsset,
+  label = 'gallery',
+): Promise<CapturedPhoto | null> {
+  if (!asset.uri) return null;
+
+  const startMs = Date.now();
+  const origW   = asset.width  ?? 0;
+  const origH   = asset.height ?? 0;
+  const origMime = (asset.mimeType ?? 'unknown').toLowerCase();
+
+  console.log(
+    `[capture:${label}] original — ${origW}×${origH} mime:${origMime}`
+  );
+
+  // Only downsize — never upscale. Resize the longest edge to GALLERY_MAX_PX.
+  const actions: ImageManipulator.Action[] = [];
+  if (origW > GALLERY_MAX_PX || origH > GALLERY_MAX_PX) {
+    if (origW >= origH) {
+      actions.push({ resize: { width: GALLERY_MAX_PX } });
+    } else {
+      actions.push({ resize: { height: GALLERY_MAX_PX } });
+    }
+  }
+
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      asset.uri,
+      actions,
+      {
+        compress: GALLERY_QUALITY,
+        format:   ImageManipulator.SaveFormat.JPEG,
+        base64:   true,
+      },
+    );
+
+    if (!result.base64) {
+      console.warn(`[capture:${label}] manipulator returned no base64`);
+      return null;
+    }
+
+    const finalKB   = Math.round((result.base64.length * 3) / 4 / 1024);
+    const durationMs = Date.now() - startMs;
+
+    console.log(
+      `[capture:${label}] done — ${result.width ?? '?'}×${result.height ?? '?'}` +
+      ` ~${finalKB}KB jpeg:${GALLERY_QUALITY} ${durationMs}ms` +
+      `${actions.length ? ` (resized from ${origW}×${origH})` : ' (no resize needed)'}`
+    );
+
+    // Safety check — if final image is still unreasonably large, warn loudly
+    if (finalKB > 1800) {
+      console.warn(`[capture:${label}] WARNING: final size ${finalKB}KB may cause timeouts`);
+    }
+
+    return {
+      uri:      result.uri,
+      base64:   result.base64,
+      mimeType: 'image/jpeg',
+    };
+  } catch (err) {
+    console.error(`[capture:${label}] ImageManipulator failed:`, err);
+    return null;
+  }
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -252,16 +326,12 @@ export async function captureFromGallery(): Promise<CapturedPhoto | null> {
     const result = await ImagePicker.launchImageLibraryAsync(GALLERY_OPTIONS);
     if (result.canceled || !result.assets?.[0]) return null;
 
-    const photo = await normalizeAsset(result.assets[0]);
-
-    if (photo) {
-      console.log(`[capture] gallery ready — mimeType: ${photo.mimeType}, base64 length: ${photo.base64.length}`);
-    }
+    const photo = await normalizeGalleryAsset(result.assets[0], 'gallery-single');
 
     if (!photo) {
       Alert.alert(
-        'Image Format Not Supported',
-        "We couldn't convert that image to a supported format. Try taking a photo instead, or choose a JPEG or PNG image.",
+        'Could Not Process Photo',
+        "We couldn't prepare that photo for analysis. Try selecting a different image or take a new photo.",
       );
       return null;
     }
@@ -310,20 +380,22 @@ export async function captureMultipleFromGallery(max = 3): Promise<CapturedPhoto
     if (result.canceled || !result.assets?.length) return null;
 
     const photos: CapturedPhoto[] = [];
-    for (const asset of result.assets.slice(0, max)) {
-      const photo = await normalizeAsset(asset);
+    for (let i = 0; i < result.assets.slice(0, max).length; i++) {
+      const asset = result.assets[i];
+      const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][i] ?? `gallery-${i}`;
+      const photo = await normalizeGalleryAsset(asset, label);
       if (photo) photos.push(photo);
     }
 
     if (photos.length === 0) {
       Alert.alert(
-        'Image Format Not Supported',
-        "We couldn't convert those images. Try JPEG or PNG photos.",
+        'Could Not Process Photos',
+        "We couldn't prepare those photos for analysis. Try selecting different images or take new photos.",
       );
       return null;
     }
 
-    console.log(`[capture] multi-gallery — ${photos.length} photo(s) normalised`);
+    console.log(`[capture] multi-gallery — ${photos.length} photo(s) ready`);
     return photos;
 
   } catch (err) {

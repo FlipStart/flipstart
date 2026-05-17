@@ -6,8 +6,11 @@ import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 import { V } from '@/constants/vintage';
+import { isHuntActive } from '@/lib/hunt-context';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
+// Original nav: Home | History | [camera] | Leaderboard | Profile
+// Hunt Mode is NOT a nav tab — it is entered from the Home screen only.
 
 const TAB_ITEMS = [
   { name: 'index',       label: 'Home',        icon: 'home'        },
@@ -26,9 +29,14 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   const insets    = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
 
+  // Center button becomes a safari crosshair ONLY during an active hunt session.
+  // It does NOT change based on which tab is visible — only actual hunt state.
+  const huntActive = isHuntActive();
+
   const handleCenterScan = () => {
-    // Opens the custom camera screen — same as the Home "Scan Item" button.
-    // Gallery upload is available inside the camera screen.
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    }
     router.push('/camera' as any);
   };
 
@@ -82,15 +90,20 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
         <View style={styles.tabGroup}>{leftTabs.map(renderTab)}</View>
 
         {/* Center floating scan button */}
+        {/* Becomes safari crosshair only when a Hunt session is active */}
         <View style={styles.centerSlot}>
           <Pressable
             onPress={handleCenterScan}
             style={({ pressed }) => [
               styles.centerButton,
+              huntActive && styles.centerButtonHunt,
               pressed && { transform: [{ scale: 0.93 }], opacity: 0.9 },
             ]}
           >
-            <MaterialIcons name="photo-camera" size={26} color={V.white} />
+            {huntActive
+              ? <MaterialIcons name="track-changes" size={27} color="#F2E8D0" />
+              : <MaterialIcons name="photo-camera"  size={26} color={V.white} />
+            }
           </Pressable>
         </View>
 
@@ -166,6 +179,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     marginTop:      -22,
   },
+  // Default: FlipStart green camera button
   centerButton: {
     width:           58,
     height:          58,
@@ -180,5 +194,13 @@ const styles = StyleSheet.create({
     shadowOpacity:   0.35,
     shadowRadius:    10,
     elevation:       8,
+  },
+  // Hunt session active: deep safari green + gold border crosshair
+  centerButtonHunt: {
+    backgroundColor: '#1E3A1E',
+    borderColor:     '#C4972A',
+    borderWidth:     2.5,
+    shadowColor:     '#0A1A0A',
+    shadowOpacity:   0.50,
   },
 });
