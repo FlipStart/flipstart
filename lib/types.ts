@@ -1,6 +1,7 @@
 export interface ScanResult {
   id: string;
   imageUri: string;
+  allImageUris?: string[];  // all photos captured — front + tag + detail URIs
   timestamp: number;
   identification: {
     item_name: string;

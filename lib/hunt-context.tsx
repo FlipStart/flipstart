@@ -1,27 +1,31 @@
 /**
  * lib/hunt-context.tsx
  *
- * Module-level hunt session state for V1.
+ * Module-level hunt session state.
  * No React context overhead — module memory survives tab switches.
- * Future: add persistence, XP, badges, leaderboard hooks.
  */
+
+import type { ScanResult } from './types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type HuntRating = 'legendary' | 'treasure' | 'risky' | 'trash';
 
 export interface HuntItem {
-  scanId:         string;
+  huntItemId:     string;       // stable unique ID — used for route params
+  scanId:         string;       // matches ScanResult.id
   itemName:       string;
   brand:          string;
   category:       string;
   imageUri:       string;
+  allImageUris:   string[];     // all photos for carousel
   estimatedValue: number;
   thriftPrice:    number;
   profit:         number;
-  kept:           boolean;
+  kept:           boolean;      // true = kept, false = removed/skipped
   huntRating:     HuntRating;
   addedAt:        number;
+  scanSnapshot:   ScanResult;   // full scan data for read-only Discovery Analysis
 }
 
 export interface HuntSession {
@@ -50,6 +54,20 @@ export function computeHuntRating(profit: number, confidence: number): HuntRatin
   return 'trash';
 }
 
+/**
+ * Map the AI recommendation label (from computeFlipCalc) to a HuntRating.
+ * This ensures the rating shown on the item card in Live Hunt
+ * matches the badge shown on Discovery Analysis.
+ */
+export function recLabelToHuntRating(recLabel: string | undefined): HuntRating {
+  switch (recLabel) {
+    case 'STRONG_BUY': return 'legendary';
+    case 'BUY':        return 'treasure';
+    case 'RISKY_BUY':  return 'risky';
+    default:           return 'trash';   // SKIP and anything unknown
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export function startHunt(name?: string): HuntSession {
@@ -74,13 +92,49 @@ export function isHuntActive(): boolean {
 
 export function addItemToHunt(item: HuntItem): void {
   if (!_activeHunt) return;
+  // Deduplicate by scanId — one scan can only produce one hunt item
   const idx = _activeHunt.items.findIndex(i => i.scanId === item.scanId);
   if (idx !== -1) {
-    _activeHunt.items[idx] = item;
+    _activeHunt.items[idx] = item;   // update in place (e.g. kept→removed or price change)
   } else {
     _activeHunt.items.unshift(item); // newest first
   }
   _notify();
+}
+
+/** Look up a hunt item by its stable huntItemId across kept + removed. */
+export function getHuntItemById(huntItemId: string): HuntItem | null {
+  if (!_activeHunt) return null;
+  return _activeHunt.items.find(i => i.huntItemId === huntItemId) ?? null;
+}
+
+/** Move a kept item to the removed list (swipe-delete in Live Hunt). */
+export function moveHuntItemToRemoved(scanId: string): void {
+  if (!_activeHunt) return;
+  const item = _activeHunt.items.find(i => i.scanId === scanId);
+  if (item) {
+    item.kept = false;
+    // Force new session reference so React re-renders subscribers
+    _activeHunt = { ..._activeHunt, items: [..._activeHunt.items] };
+    _notify();
+  }
+}
+
+/** Move a removed/skipped item back to kept. */
+export function restoreHuntItem(huntItemId: string): void {
+  if (!_activeHunt) return;
+  const item = _activeHunt.items.find(i => i.huntItemId === huntItemId);
+  if (item) {
+    item.kept = true;
+    // Move to front of list so it appears as most recent kept item
+    const reordered = [
+      item,
+      ..._activeHunt.items.filter(i => i.huntItemId !== huntItemId),
+    ];
+    // Force new session reference so React re-renders subscribers
+    _activeHunt = { ..._activeHunt, items: reordered };
+    _notify();
+  }
 }
 
 export function toggleHuntItemKept(scanId: string): void {
@@ -119,13 +173,6 @@ export function getHuntStats(session: HuntSession) {
 }
 
 // ─── Hunt Item Detail → Live Hunt return intent flag ──────────────────────────
-// Used to prevent the "End Hunt?" modal from appearing when the user
-// intentionally returns to Live Hunt after confirming Save or Remove on
-// the Hunt Item Detail screen.
-//
-// mark  → called immediately before router.back() in handleSave / handleRemove
-// consume → called once inside hunt-active's beforeRemove; reads AND resets
-//           atomically so the flag can never accidentally stay true.
 
 let _huntItemDetailReturnPending = false;
 
@@ -135,6 +182,6 @@ export function markReturningFromHuntItemDetail(): void {
 
 export function consumeReturningFromHuntItemDetail(): boolean {
   const was = _huntItemDetailReturnPending;
-  _huntItemDetailReturnPending = false; // reset immediately — single-use
+  _huntItemDetailReturnPending = false;
   return was;
 }

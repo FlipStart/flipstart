@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { Platform, AppState, AppStateStatus } from "react-native";
+import * as SplashScreen from "expo-splash-screen";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -25,6 +26,11 @@ import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 
+// Keep the native splash visible until we explicitly hide it.
+// Called at module level so it runs before the first render —
+// this is the only way to guarantee the splash doesn't flash.
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
 export const unstable_settings = {
   anchor: "(tabs)",
 };
@@ -35,6 +41,16 @@ export default function RootLayout() {
 
   const [insets, setInsets] = useState<EdgeInsets>(initialInsets);
   const [frame, setFrame] = useState<Rect>(initialFrame);
+
+  // ── Splash screen: hide after 1.5s with fade ──────────────────────────────
+  // preventAutoHideAsync() is called at module level above.
+  // Here we wait for the minimum display time then fade out.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, []);
   // Initialize Manus runtime for cookie injection from parent container
   useEffect(() => {
     initManusRuntime();
@@ -118,10 +134,19 @@ export default function RootLayout() {
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false }} />
-            <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+            <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade", gestureEnabled: false }} />
             <Stack.Screen name="results" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
+            <Stack.Screen name="hunt" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
+            <Stack.Screen name="hunt-active" options={{ animation: "slide_from_bottom", headerShown: false, gestureEnabled: false }} />
+            <Stack.Screen name="hunt-complete" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
+            <Stack.Screen name="hunt-xp-reveal" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
+            <Stack.Screen name="hunt-item-detail" options={{ animation: "slide_from_right", headerShown: false, presentation: "card", gestureEnabled: false }} />
+            <Stack.Screen name="hunt-removed" options={{ animation: "slide_from_right", headerShown: false }} />
+            <Stack.Screen name="hunt-history" options={{ animation: "slide_from_right", headerShown: false }} />
+            <Stack.Screen name="article" options={{ animation: "slide_from_right", headerShown: false }} />
+            <Stack.Screen name="about" options={{ animation: "slide_from_right", headerShown: false }} />
             <Stack.Screen name="oauth/callback" />
           </Stack>
           <StatusBar style="light" />

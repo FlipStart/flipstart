@@ -27,8 +27,7 @@ import { setPendingScan } from '@/lib/pending-scan';
 import { logEvent } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { trpc } from '@/lib/trpc';
-import { isOnboardingComplete, completeOnboarding, getUserMode, setUserMode, type UserMode } from '@/lib/onboarding-storage';
-import { ModeToggle } from '@/components/home/ModeToggle';
+import { isOnboardingComplete, completeOnboarding } from '@/lib/onboarding-storage';
 
 // ─── Background image (hanger / clothing lifestyle photo) ────────────────────
 const BG_IMAGE_URL =
@@ -210,24 +209,12 @@ export default function HomeScreen() {
 
   // Onboarding overlay — null = checking, true = show onboarding, false = skip
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
-  // User mode — loaded from storage, defaults to onboarding choice or 'resell'
-  const [userMode,   setUserModeState] = useState<UserMode>('resell');
-  const [modeOpen,   setModeOpen]       = useState(false);
-
+  // ── Load onboarding status ────────────────────────────────────────────────
   useEffect(() => {
-    // Load onboarding status and saved mode in parallel
-    Promise.all([isOnboardingComplete(), getUserMode()]).then(([done, savedMode]) => {
-      if (savedMode) setUserModeState(savedMode);
-      setShowOnboarding(!done);
-    });
+    isOnboardingComplete().then(done => setShowOnboarding(!done));
   }, []);
 
   // ScanBalancePill fetches its own scan stats — no query needed here
-
-  const handleModeChange = (mode: UserMode) => {
-    setUserModeState(mode);
-    setUserMode(mode);  // persist immediately
-  };
 
   const [photoSet, setPhotoSet] = useState<CapturedPhotoSet | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -341,11 +328,7 @@ export default function HomeScreen() {
       <HomeHeader
         onProfilePress={() => router.push('/(tabs)/profile' as any)}
         onSettingsPress={() => router.push('/(tabs)/settings' as any)}
-        onModeToggle={() => setModeOpen(v => !v)}
-        modeOpen={modeOpen}
       />
-      {/* Collapsible mode toggle — slides in under header when modeOpen */}
-      {modeOpen && <ModeToggle value={userMode} onChange={handleModeChange} />}
 
       <ScrollView
         style={s.scroll}
@@ -425,8 +408,6 @@ export default function HomeScreen() {
 // ─── Inline onboarding overlay ────────────────────────────────────────────────
 
 function OnboardingOverlay({ onComplete }: { onComplete: () => void }) {
-  const [step,   setStep]   = useState<1 | 2>(1);
-  const [mode,   setMode]   = useState<'resell' | 'personal' | null>(null);
   const [saving, setSaving] = useState(false);
 
   const BG     = '#F0E8D4';
@@ -441,7 +422,7 @@ function OnboardingOverlay({ onComplete }: { onComplete: () => void }) {
   const handleFinish = async () => {
     if (saving) return;
     setSaving(true);
-    await completeOnboarding(mode ?? 'resell');
+    await completeOnboarding('resell');   // always resell mode
     onComplete();
   };
 
@@ -453,73 +434,40 @@ function OnboardingOverlay({ onComplete }: { onComplete: () => void }) {
         <Text style={{ fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 2 }}>✦ THRIFT INTELLIGENCE ✦</Text>
       </View>
 
-      {step === 1 ? (
-        <>
-          <View style={{ alignItems: 'center', gap: 8, marginBottom: 28 }}>
-            <Text style={{ fontSize: 22, fontWeight: '700', color: FOREST, textAlign: 'center', lineHeight: 30 }}>
-              {'What are you using\nFlipStart for?'}
-            </Text>
-            <Text style={{ fontSize: 14, color: MUTED, textAlign: 'center' }}>Choose how you want the app to help you.</Text>
+      <>
+        <View style={{ alignItems: 'center', marginBottom: 28 }}>
+          <View style={{ width: 96, height: 96, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginBottom: 24 }}>
+            <Text style={{ fontSize: 44 }}>📷</Text>
           </View>
-          {([
-            { m: 'resell'   as const, icon: '📈', label: 'Flip for Profit',  desc: 'Check resale value, profit, comps, and sell speed' },
-            { m: 'personal' as const, icon: '🛍️', label: 'Buy for Myself',   desc: 'See if an item is worth the price' },
-          ]).map(item => (
-            <Pressable
-              key={item.m}
-              onPress={() => { setMode(item.m); setStep(2); }}
-              style={({ pressed }) => ({
-                flexDirection: 'row', alignItems: 'center', gap: 14,
-                backgroundColor: pressed ? '#F5EDDA' : CARD,
-                borderRadius: 16, borderWidth: 1.5, borderColor: pressed ? GOLD : CARD_B,
-                padding: 18, marginBottom: 12,
-              })}
-            >
-              <Text style={{ fontSize: 28 }}>{item.icon}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 16, fontWeight: '700', color: FOREST, marginBottom: 3 }}>{item.label}</Text>
-                <Text style={{ fontSize: 12, color: MUTED, lineHeight: 17 }}>{item.desc}</Text>
+          <Text style={{ fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 12 }}>Scan. Decide. Profit.</Text>
+          <Text style={{ fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22 }}>Scan any item to instantly see value, profit, and whether it's worth buying.</Text>
+        </View>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 36 }}>
+          {[
+            { icon: '⚡', label: 'Instant\nAnalysis' },
+            { icon: '💰', label: 'Resale\nValue'    },
+            { icon: '👍', label: 'Buy /\nSkip'       },
+          ].map(f => (
+            <View key={f.label} style={{ alignItems: 'center', gap: 8 }}>
+              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: FOREST + '10', justifyContent: 'center', alignItems: 'center' }}>
+                <Text style={{ fontSize: 20 }}>{f.icon}</Text>
               </View>
-              <Text style={{ fontSize: 18, color: GOLD }}>{'›'}</Text>
-            </Pressable>
-          ))}
-          <Text style={{ fontSize: 11, color: MUTED, textAlign: 'center', marginTop: 8 }}>You can change this later in Settings.</Text>
-        </>
-      ) : (
-        <>
-          <View style={{ alignItems: 'center', marginBottom: 28 }}>
-            <View style={{ width: 96, height: 96, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginBottom: 24 }}>
-              <Text style={{ fontSize: 44 }}>📷</Text>
+              <Text style={{ fontSize: 11, fontWeight: '600', color: FOREST, textAlign: 'center' }}>{f.label}</Text>
             </View>
-            <Text style={{ fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 12 }}>Scan. Decide. Profit.</Text>
-            <Text style={{ fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22 }}>Scan any item to instantly see value, profit, and whether it's worth buying.</Text>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 36 }}>
-            {[
-              { icon: '⚡', label: 'Instant\nAnalysis' },
-              { icon: '💰', label: 'Resale\nValue'    },
-              { icon: '👍', label: 'Buy /\nSkip'       },
-            ].map(f => (
-              <View key={f.label} style={{ alignItems: 'center', gap: 8 }}>
-                <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: FOREST + '10', justifyContent: 'center', alignItems: 'center' }}>
-                  <Text style={{ fontSize: 20 }}>{f.icon}</Text>
-                </View>
-                <Text style={{ fontSize: 11, fontWeight: '600', color: FOREST, textAlign: 'center' }}>{f.label.replace('\\n', '\n')}</Text>
-              </View>
-            ))}
-          </View>
-          <Pressable
-            onPress={handleFinish}
-            disabled={saving}
-            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: FOREST, borderRadius: 50, paddingVertical: 18, opacity: pressed || saving ? 0.85 : 1 })}
-          >
-            <Text style={{ fontSize: 17, fontWeight: '700', color: CREAM }}>{saving ? 'Starting…' : 'Start Scanning'}</Text>
-          </Pressable>
-        </>
-      )}
+          ))}
+        </View>
+        <Pressable
+          onPress={handleFinish}
+          disabled={saving}
+          style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: FOREST, borderRadius: 50, paddingVertical: 18, opacity: pressed || saving ? 0.85 : 1 })}
+        >
+          <Text style={{ fontSize: 17, fontWeight: '700', color: CREAM }}>{saving ? 'Starting…' : 'Start Scanning'}</Text>
+        </Pressable>
+      </>
     </View>
   );
 }
+
 
 
 // ─── Styles ───────────────────────────────────────────────────────────────────

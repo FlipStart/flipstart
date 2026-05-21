@@ -21,7 +21,7 @@ import React, {
   useCallback, useMemo,
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { FlipResult } from '@/types/flip';
+import { FlipResult, HuntBundle, HistoryEntry, isHuntBundle } from '@/types/flip';
 import { deriveGlobalStats, calcGlobalRank } from '@/utils/flipCalculations';
 import type { GlobalStats, GlobalRank } from '@/types/flip';
 
@@ -32,7 +32,7 @@ const STORAGE_KEY = 'flipstart_confirmed_flips';
 // ─── State ────────────────────────────────────────────────────────────────────
 
 interface FlipStoreState {
-  flips:    FlipResult[];
+  flips:    HistoryEntry[];
   isLoaded: boolean;
 
   /**
@@ -47,12 +47,13 @@ interface FlipStoreState {
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 type FlipAction =
-  | { type: 'LOAD';              payload: FlipResult[] }
+  | { type: 'LOAD';              payload: HistoryEntry[] }
   | { type: 'ADD_FLIP';          payload: FlipResult }
   | { type: 'REMOVE_FLIP';       payload: string }       // by id
   | { type: 'UPDATE_FLIP';       payload: { id: string; updates: Partial<FlipResult> } }
   | { type: 'SET_THRIFT_PRICE';  payload: { id: string; price: string } }
   | { type: 'CLEAR_THRIFT_PRICE'; payload: string }      // by id
+  | { type: 'ADD_HUNT_BUNDLE'; payload: HuntBundle }
   | { type: 'CLEAR_ALL' };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
@@ -72,6 +73,14 @@ function reducer(state: FlipStoreState, action: FlipAction): FlipStoreState {
       const pendingThriftPrices = { ...state.pendingThriftPrices };
       delete pendingThriftPrices[action.payload.id];
       return { ...state, flips, pendingThriftPrices };
+    }
+
+    case 'ADD_HUNT_BUNDLE': {
+      const exists = state.flips.some(f => f.id === action.payload.id);
+      const flips  = exists
+        ? state.flips.map(f => f.id === action.payload.id ? action.payload : f)
+        : [action.payload, ...state.flips];
+      return { ...state, flips };
     }
 
     case 'REMOVE_FLIP':
@@ -116,12 +125,13 @@ function reducer(state: FlipStoreState, action: FlipAction): FlipStoreState {
 
 interface FlipStoreValue {
   // State
-  flips:    FlipResult[];
+  flips:    HistoryEntry[];
   isLoaded: boolean;
   pendingThriftPrices: Record<string, string>;
 
   // Actions
   addFlip:            (flip: FlipResult) => void;
+  addHuntBundle:      (bundle: HuntBundle) => void;
   removeFlip:         (id: string) => void;
   clearAllFlips:      () => void;
   updateFlip:         (id: string, updates: Partial<FlipResult>) => void;
@@ -152,7 +162,7 @@ export function FlipStoreProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.getItem(STORAGE_KEY)
       .then(raw => {
         if (raw) {
-          const parsed = JSON.parse(raw) as FlipResult[];
+          const parsed = JSON.parse(raw) as HistoryEntry[];
           dispatch({ type: 'LOAD', payload: parsed });
         } else {
           dispatch({ type: 'LOAD', payload: [] });
@@ -170,6 +180,10 @@ export function FlipStoreProvider({ children }: { children: React.ReactNode }) {
   // ── Actions ────────────────────────────────────────────────────────────────
   const addFlip = useCallback((flip: FlipResult) => {
     dispatch({ type: 'ADD_FLIP', payload: flip });
+  }, []);
+
+  const addHuntBundle = useCallback((bundle: HuntBundle) => {
+    dispatch({ type: 'ADD_HUNT_BUNDLE', payload: bundle });
   }, []);
 
   const removeFlip = useCallback((id: string) => {
@@ -193,11 +207,43 @@ export function FlipStoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ── Derived values (computed via flipCalculations — zero inline formulas) ──
-  const globalStats = useMemo(() => deriveGlobalStats(state.flips), [state.flips]);
+  // ── Derive global stats — includes hunt bundle contributions ─────────────────
+  // deriveGlobalStats operates on FlipResult[], so we compute normal-scan stats
+  // first then fold in hunt bundle data (kept items only) on top.
+  const globalStats = useMemo((): GlobalStats => {
+    const normalFlips  = state.flips.filter((f): f is FlipResult => !isHuntBundle(f));
+    const base         = deriveGlobalStats(normalFlips);
+
+    // Aggregate kept-item data from all hunt bundles
+    const bundles      = state.flips.filter(isHuntBundle);
+    let bundleProfit   = 0;
+    let bundleCost     = 0;
+    let bundleFlips    = 0;   // count of kept items across all bundles
+    let bundleWins     = 0;   // kept items with positive profit (analogous to win)
+
+    for (const b of bundles) {
+      bundleProfit += Math.max(0, b.totalEstimatedProfit);
+      bundleCost   += b.totalCost;
+      bundleFlips  += b.keptItemCount;
+      // A kept item "wins" if its individual profit > 0
+      bundleWins   += b.keptItems.filter(i => i.profit > 0).length;
+    }
+
+    const totalFlips  = base.totalFlips + bundleFlips;
+    const totalProfit = base.totalProfit + bundleProfit;
+    const totalCost   = base.totalCost   + bundleCost;
+    const totalWins   = Math.round((base.winRate / 100) * base.totalFlips) + bundleWins;
+
+    const lifetimeRoi = totalCost   > 0 ? Math.round((totalProfit / totalCost)   * 100) : 0;
+    const avgProfit   = totalFlips  > 0 ? Math.round(totalProfit / totalFlips)          : 0;
+    const winRate     = totalFlips  > 0 ? Math.round((totalWins  / totalFlips)   * 100) : 0;
+
+    return { totalFlips, totalProfit, totalCost, lifetimeRoi, avgProfit, winRate };
+  }, [state.flips]);
   const globalRank  = useMemo(() => calcGlobalRank(globalStats), [globalStats]);
 
   const getFlipById = useCallback(
-    (id: string) => state.flips.find(f => f.id === id),
+    (id: string) => state.flips.find((f): f is FlipResult => !isHuntBundle(f) && f.id === id),
     [state.flips],
   );
 
@@ -208,6 +254,7 @@ export function FlipStoreProvider({ children }: { children: React.ReactNode }) {
         isLoaded: state.isLoaded,
         pendingThriftPrices: state.pendingThriftPrices,
         addFlip,
+        addHuntBundle,
         removeFlip,
         clearAllFlips,
         updateFlip,

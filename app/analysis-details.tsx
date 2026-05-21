@@ -247,7 +247,8 @@ export default function AnalysisDetailsScreen() {
     try { return JSON.parse(snapshot) as FlipResult; } catch { return undefined; }
   })() : undefined);
 
-  const isHistory = source === 'history' || (!!storedFlip && source !== 'results');
+  const isHistory     = source === 'history' || source === 'hunt_history' || (!!storedFlip && source !== 'results');
+  const isHuntHistory = source === 'hunt_history';
 
   const [thriftStr,     setThriftStr]     = useState(isHistory && baseFlip ? String(baseFlip.thriftPrice) : '');
   const [thriftEditing, setThriftEditing] = useState(false);
@@ -441,8 +442,8 @@ export default function AnalysisDetailsScreen() {
             </View>
           </View>
 
-          {/* History: editable thrift price */}
-          {isHistory && (
+          {/* History: editable thrift price — not shown for hunt_history (price is fixed) */}
+          {isHistory && !isHuntHistory && (
             <View style={d.card}>
               <SectionHead icon="✏️" title="UPDATE THRIFT PRICE" />
               <View style={d.priceRow}>

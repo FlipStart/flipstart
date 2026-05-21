@@ -61,10 +61,11 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        image:      "./assets/images/flipstart-splash.png",
-        resizeMode: "cover",
+        image:           "./assets/images/flipstart-splash.png",
+        resizeMode:      "cover",
         backgroundColor: "#E8C99A",
         dark: { backgroundColor: "#E8C99A" },
+        fade: true,
       },
     ],
     [

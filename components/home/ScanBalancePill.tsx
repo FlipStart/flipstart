@@ -66,8 +66,8 @@ export function ScanBalancePill() {
   const color  = isZero || isLow ? WARNING : FOREST;
 
   const tooltipText = loading
-    ? 'Checking today\'s beta scan limit…'
-    : `${remaining} global beta scans left today. This shared daily limit helps us control AI costs before the official launch.`;
+    ? 'Checking scan balance…'
+    : `${remaining} scans remaining today.`;
 
   return (
     <View style={s.wrap}>

@@ -2,8 +2,8 @@
  * app/about.tsx
  *
  * About FlipStart — polished product overview screen.
- * Explains the app, AI analysis, scan flow, Hunt Mode vision,
- * beta status, and supported marketplaces.
+ * Explains the app, AI analysis, scan flow, Hunt Mode,
+ * and supported marketplaces.
  * Vintage/premium aesthetic matching FlipStart branding.
  */
 
@@ -104,9 +104,7 @@ export default function AboutScreen() {
           <Text style={s.heroDesc}>
             AI-powered resale analysis for thrift store shoppers. Know what's worth buying before you leave the rack.
           </Text>
-          <View style={s.betaBadge}>
-            <Text style={s.betaBadgeText}>CLOSED BETA · v1.0.0</Text>
-          </View>
+          <Text style={{ fontSize: 12, color: '#8A7050', letterSpacing: 1.5, fontWeight: '700', marginTop: 4 }}>THRIFT INTELLIGENCE</Text>
         </View>
 
         {/* What FlipStart does */}
@@ -163,26 +161,33 @@ export default function AboutScreen() {
         </View>
 
         {/* Hunt Mode */}
-        <SectionLabel text="HUNT MODE (COMING SOON)" />
+        <SectionLabel text="HUNT MODE" />
         <View style={[s.card, s.huntCard]}>
           <View style={s.huntHeader}>
             <Text style={s.huntIcon}>🦁</Text>
             <View style={s.huntTitleBlock}>
               <Text style={s.huntTitle}>Hunt Mode</Text>
               <View style={s.huntBadge}>
-                <Text style={s.huntBadgeText}>GLOBAL RELEASE</Text>
+                <Text style={s.huntBadgeText}>AVAILABLE NOW</Text>
               </View>
             </View>
           </View>
           <Text style={s.huntBody}>
-            Hunt Mode turns FlipStart into a full store session tracker. Scan everything you find, track your haul, and get an end-of-session profit summary before you check out.
+            Hunt Mode transforms FlipStart into a full thrift session companion. Start a named hunt, scan every item you find, and FlipStart tracks your entire haul in real time — separating what you kept from what you passed on.
+          </Text>
+          <Text style={[s.huntBody, { marginTop: 8 }]}>
+            At the end of your session, save the whole hunt as one history bundle. See your total estimated profit, cost spent, best finds, and how long you hunted. Every hunt earns XP toward your rank on the FlipStart progression ladder.
           </Text>
           <View style={s.huntFeatures}>
             {[
-              'Full haul tracking across a single thrift session',
-              'Session profit estimate before checkout',
-              'Best-of-haul ranking to help prioritize limited budget',
-              'Hunt history and session comparison over time',
+              'Live kept / removed item tracking across your whole session',
+              'Thrift price entry with instant profit calculation per item',
+              'Top Finds podium — best 3 items ranked by estimated profit',
+              'Hunt completion screen with full session summary',
+              'XP rewards — base, rarity, profit milestone, streak, and discovery bonuses',
+              '23-rank progression ladder from Dung Beetle Scout to Lion King',
+              'Hunt history saved as one bundle — not scattered across your scan history',
+              'Read-only item review from past hunts with Generate Listings support',
             ].map((f, i) => (
               <View key={i} style={s.huntFeatureRow}>
                 <View style={s.huntBullet} />
@@ -205,24 +210,7 @@ export default function AboutScreen() {
             <MarketplacePill name="Grailed"  emoji="👕" />
           </View>
           <Text style={s.cardSubText}>
-            More marketplace integrations — including direct listing push — are planned for the global release.
-          </Text>
-        </View>
-
-        {/* Beta disclaimer */}
-        <SectionLabel text="BETA PROGRAM" />
-        <View style={[s.card, s.betaCard]}>
-          <MaterialIcons name="science" size={22} color={GOLD} style={{ marginBottom: 8 }} />
-          <Text style={s.betaTitle}>You're in the Closed Beta</Text>
-          <Text style={s.betaBody}>
-            FlipStart is currently in a closed beta program. AI accuracy improves with every scan and every piece of feedback you submit. Your scans are actively shaping the product.
-          </Text>
-          <Text style={s.betaBody}>
-            Features may change, pricing is not final, and some screens are intentionally marked as coming in the global release. Thank you for being here early.
-          </Text>
-          <View style={s.betaDivider} />
-          <Text style={s.betaContact}>
-            Feedback: <Text style={s.betaContactLink}>flipstartapp@gmail.com</Text>
+            FlipStart optimizes listings and pricing for these platforms. More integrations coming soon.
           </Text>
         </View>
 
@@ -281,14 +269,6 @@ const s = StyleSheet.create({
   heroDesc: {
     fontSize: 15, color: MUTED, textAlign: 'center',
     lineHeight: 22, paddingHorizontal: 12, marginTop: 4,
-  },
-  betaBadge: {
-    backgroundColor: FOREST, borderRadius: 20,
-    paddingHorizontal: 14, paddingVertical: 5, marginTop: 4,
-  },
-  betaBadgeText: {
-    fontFamily: FONTS.serif, fontSize: 9, fontWeight: '700',
-    color: GOLD, letterSpacing: 1.5,
   },
 
   // ── Section label ──────────────────────────────────────────────────────────
@@ -393,19 +373,6 @@ const s = StyleSheet.create({
   marketplaceName: {
     fontSize: 13, fontWeight: '700', color: BROWN,
   },
-
-  // ── Beta card ──────────────────────────────────────────────────────────────
-  betaCard: { padding: 16 },
-  betaTitle: {
-    fontFamily: FONTS.serif, fontSize: 16, fontWeight: '800',
-    color: BROWN, marginBottom: 8,
-  },
-  betaBody: {
-    fontSize: 13, color: MUTED, lineHeight: 20, marginBottom: 8,
-  },
-  betaDivider: { height: 1, backgroundColor: CARD_B, marginVertical: 12 },
-  betaContact: { fontSize: 12, color: MUTED },
-  betaContactLink: { color: FOREST, fontWeight: '700' },
 
   // ── Footer ─────────────────────────────────────────────────────────────────
   footer: {

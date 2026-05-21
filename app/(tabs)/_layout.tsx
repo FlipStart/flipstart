@@ -1,4 +1,4 @@
-import { View, Text, Pressable, StyleSheet, Platform, Alert } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import { Tabs, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
@@ -6,21 +6,17 @@ import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 import { V } from '@/constants/vintage';
-import { isHuntActive } from '@/lib/hunt-context';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
-// Original nav: Home | History | [camera] | Leaderboard | Profile
-// Hunt Mode is NOT a nav tab — it is entered from the Home screen only.
 
 const TAB_ITEMS = [
-  { name: 'index',       label: 'Home',        icon: 'home'        },
-  { name: 'history',     label: 'History',     icon: 'history'     },
-  { name: 'leaderboard', label: 'Leaderboard', icon: 'leaderboard' },
-  { name: 'profile',     label: 'Profile',     icon: 'person'      },
+  { name: 'index',   label: 'Home',    icon: 'home'    },
+  { name: 'history', label: 'History', icon: 'history' },
+  { name: 'profile', label: 'Profile', icon: 'person'  },
 ] as const;
 
-const leftTabs  = TAB_ITEMS.slice(0, 2);
-const rightTabs = TAB_ITEMS.slice(2);
+const leftTabs  = TAB_ITEMS.slice(0, 2);   // Home, History
+const rightTabs = TAB_ITEMS.slice(2);      // Profile
 
 // ─── Custom tab bar ───────────────────────────────────────────────────────────
 
@@ -29,14 +25,9 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   const insets    = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
 
-  // Center button becomes a safari crosshair ONLY during an active hunt session.
-  // It does NOT change based on which tab is visible — only actual hunt state.
-  const huntActive = isHuntActive();
-
   const handleCenterScan = () => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    }
+    // Opens the custom camera screen — same as the Home "Scan Item" button.
+    // Gallery upload is available inside the camera screen.
     router.push('/camera' as any);
   };
 
@@ -45,17 +36,6 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
     const isActive   = state.index === routeIndex;
 
     const onPress = () => {
-      if (item.name === 'leaderboard') {
-        if (Platform.OS !== 'web') {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-        }
-        Alert.alert(
-          '🏆 Leaderboard',
-          'The Leaderboard launches in the global release — rankings, weekly challenges, and top flippers are on the way!',
-          [{ text: "Can't Wait!", style: 'default' }]
-        );
-        return;
-      }
       if (Platform.OS !== 'web') {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       }
@@ -90,20 +70,15 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
         <View style={styles.tabGroup}>{leftTabs.map(renderTab)}</View>
 
         {/* Center floating scan button */}
-        {/* Becomes safari crosshair only when a Hunt session is active */}
         <View style={styles.centerSlot}>
           <Pressable
             onPress={handleCenterScan}
             style={({ pressed }) => [
               styles.centerButton,
-              huntActive && styles.centerButtonHunt,
               pressed && { transform: [{ scale: 0.93 }], opacity: 0.9 },
             ]}
           >
-            {huntActive
-              ? <MaterialIcons name="track-changes" size={27} color="#F2E8D0" />
-              : <MaterialIcons name="photo-camera"  size={26} color={V.white} />
-            }
+            <MaterialIcons name="photo-camera" size={26} color={V.white} />
           </Pressable>
         </View>
 
@@ -121,11 +96,11 @@ export default function TabLayout() {
       tabBar={(props) => <VintageTabBar {...props} />}
       screenOptions={{ headerShown: false }}
     >
-      <Tabs.Screen name="index"       options={{ title: 'Home'        }} />
-      <Tabs.Screen name="history"     options={{ title: 'History'     }} />
-      <Tabs.Screen name="leaderboard" options={{ title: 'Leaderboard' }} />
-      <Tabs.Screen name="profile"     options={{ title: 'Profile'     }} />
-      <Tabs.Screen name="settings"    options={{ href: null           }} />
+      <Tabs.Screen name="index"    options={{ title: 'Home'    }} />
+      <Tabs.Screen name="history"  options={{ title: 'History' }} />
+      <Tabs.Screen name="profile"  options={{ title: 'Profile' }} />
+      <Tabs.Screen name="settings" options={{ href: null       }} />
+      <Tabs.Screen name="leaderboard" options={{ href: null    }} />
     </Tabs>
   );
 }
@@ -179,7 +154,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     marginTop:      -22,
   },
-  // Default: FlipStart green camera button
   centerButton: {
     width:           58,
     height:          58,
@@ -194,13 +168,5 @@ const styles = StyleSheet.create({
     shadowOpacity:   0.35,
     shadowRadius:    10,
     elevation:       8,
-  },
-  // Hunt session active: deep safari green + gold border crosshair
-  centerButtonHunt: {
-    backgroundColor: '#1E3A1E',
-    borderColor:     '#C4972A',
-    borderWidth:     2.5,
-    shadowColor:     '#0A1A0A',
-    shadowOpacity:   0.50,
   },
 });

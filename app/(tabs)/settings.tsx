@@ -192,7 +192,7 @@ export default function SettingsScreen() {
             </View>
             <View style={s.rowText}>
               <Text style={s.rowLabel}>Version</Text>
-              <Text style={s.rowSub}>1.0.0 Beta</Text>
+              <Text style={s.rowSub}>1.0.0</Text>
             </View>
           </View>
         </View>

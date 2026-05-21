@@ -7,15 +7,11 @@ import { FONTS, FONT_SIZES } from '@/constants/typography';
 interface HomeHeaderProps {
   onProfilePress?:  () => void;
   onSettingsPress?: () => void;
-  onModeToggle?:    () => void;
-  modeOpen?:        boolean;
 }
 
 export function HomeHeader({
   onProfilePress,
   onSettingsPress,
-  onModeToggle,
-  modeOpen = false,
 }: HomeHeaderProps) {
   return (
     <View style={s.root}>
@@ -32,24 +28,13 @@ export function HomeHeader({
           </View>
         </Pressable>
 
-        {/* Center — wordmark box (tappable) */}
+        {/* Center — wordmark (static, no toggle) */}
         <View style={s.wordmarkBox}>
-          <Pressable
-            onPress={onModeToggle}
-            hitSlop={12}
-            style={({ pressed }) => [s.wordmarkRow, pressed && { opacity: 0.72 }]}
-          >
+          <View style={s.wordmarkRow}>
             <Text style={s.wordmarkStar}>✦</Text>
             <Text style={s.wordmark}>FlipStart</Text>
             <Text style={s.wordmarkStar}>✦</Text>
-            <View style={[s.chevronPill, modeOpen && s.chevronPillOpen]}>
-              <MaterialIcons
-                name={modeOpen ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
-                size={16}
-                color={modeOpen ? V.gold : '#FFFFFF'}
-              />
-            </View>
-          </Pressable>
+          </View>
         </View>
 
         {/* Right — scan balance pill */}

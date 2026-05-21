@@ -14,7 +14,7 @@
  */
 
 import {
-  View, Text, Pressable, StyleSheet, Alert, Platform, Image, Animated,
+  View, Text, Pressable, StyleSheet, Alert, Platform, Image, Animated, PanResponder, Modal,
 } from 'react-native';
 import { useRouter, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,10 +28,13 @@ const HUNT_SCAN_ICON = require('@/assets/images/hunt-scan-icon.png');
 
 import {
   getActiveHunt, endHunt, getHuntStats, subscribeToHunt,
-  toggleHuntItemKept, type HuntItem, type HuntRating,
+  toggleHuntItemKept, moveHuntItemToRemoved, type HuntItem, type HuntRating,
   consumeReturningFromHuntItemDetail,
 } from '@/lib/hunt-context';
 import { logHuntScanStarted, logHuntEnded } from '@/lib/analytics';
+import { applyHuntXp, setLastCompletionResult } from '@/lib/huntXp';
+import { useFlipStore } from '@/lib/useFlipStore';
+import { isHuntBundle, type HuntBundle, type HuntBundleItem } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -55,7 +58,7 @@ const RATING_CFG: Record<HuntRating, {
   color: string; bg: string; border: string; glow?: string;
 }> = {
   legendary: {
-    label: 'Legendary', emoji: '👑',
+    label: 'Legendary Loot', emoji: '👑',
     color: GOLD_L, bg: '#2A1E04', border: GOLD_L, glow: GOLD_L + '55',
   },
   treasure: {
@@ -67,67 +70,115 @@ const RATING_CFG: Record<HuntRating, {
     color: '#C89020', bg: '#221604', border: '#C8902088',
   },
   trash: {
-    label: 'Trash', emoji: '🤮',
-    color: '#888', bg: '#1A1A1A', border: '#444',
+    label: 'Skip', emoji: '✕',
+    color: '#FFDADA', bg: '#6B1414', border: '#E05555',
   },
 };
 
 // ─── Item card ────────────────────────────────────────────────────────────────
 
+// ─── Item card with swipe-to-remove ──────────────────────────────────────────
+
+const SWIPE_WIDTH = 80;
+
 function ItemCard({ item }: { item: HuntItem }) {
-  const cfg        = RATING_CFG[item.huntRating];
-  const profitStr  = item.profit >= 0 ? `+$${item.profit}` : `-$${Math.abs(item.profit)}`;
+  const router      = useRouter();
+  const cfg         = RATING_CFG[item.huntRating] ?? RATING_CFG.trash;
+  const profitStr   = item.profit >= 0 ? `+$${item.profit}` : `-$${Math.abs(item.profit)}`;
   const profitColor = item.profit > 0 ? '#3A7A3A' : '#8A2A1A';
+
+  const translateX = useRef(new Animated.Value(0)).current;
+  const swipeOpen  = useRef(false);
+
+  const snapOpen = () =>
+    Animated.spring(translateX, { toValue: -SWIPE_WIDTH, useNativeDriver: true, bounciness: 4 })
+      .start(() => { swipeOpen.current = true; });
+
+  const snapClosed = () =>
+    Animated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 4 })
+      .start(() => { swipeOpen.current = false; });
+
+  const pan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) =>
+        Math.abs(g.dx) > 6 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+      onPanResponderMove: (_, g) => {
+        const base = swipeOpen.current ? -SWIPE_WIDTH : 0;
+        translateX.setValue(Math.min(0, Math.max(-SWIPE_WIDTH, base + g.dx)));
+      },
+      onPanResponderRelease: (_, g) => {
+        const base  = swipeOpen.current ? -SWIPE_WIDTH : 0;
+        const total = base + g.dx;
+        total < -SWIPE_WIDTH / 2 ? snapOpen() : snapClosed();
+      },
+      onPanResponderTerminate: () => snapClosed(),
+    })
+  ).current;
 
   const glowStyle = cfg.glow
     ? { shadowColor: cfg.glow, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 1, shadowRadius: 8, elevation: 6 }
     : {};
 
   return (
-    <View style={[ic.card, { borderColor: cfg.border }, glowStyle]}>
-      <View style={ic.imgWrap}>
-        {item.imageUri ? (
-          <Image source={{ uri: item.imageUri }} style={ic.img} resizeMode="cover" />
-        ) : (
-          <View style={[ic.img, ic.imgFallback]}>
-            <MaterialIcons name="checkroom" size={18} color={MUTED} />
-          </View>
-        )}
-      </View>
-
-      <View style={ic.info}>
-        <Text style={ic.name} numberOfLines={1}>{item.itemName}</Text>
-        {item.thriftPrice > 0 && (
-          <Text style={ic.price}>${item.thriftPrice.toFixed(2)}</Text>
-        )}
-        <View style={[ic.ratingPill, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
-          <Text style={ic.ratingEmoji}>{cfg.emoji}</Text>
-          <Text style={[ic.ratingLabel, { color: cfg.color }]}>
-            {cfg.label.toUpperCase()}
-          </Text>
-        </View>
-      </View>
-
-      <View style={ic.right}>
-        <Text style={[ic.profit, { color: profitColor }]}>{profitStr}</Text>
+    <View style={[ic.wrapper, glowStyle]}>
+      {/* Remove zone — revealed by swipe left */}
+      <View style={ic.deleteZone}>
         <Pressable
+          style={ic.deleteBtn}
           onPress={() => {
-            if (Platform.OS !== 'web') {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-            }
-            toggleHuntItemKept(item.scanId);
+            if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+            snapClosed();
+            setTimeout(() => moveHuntItemToRemoved(item.scanId), 180);
           }}
-          style={({ pressed }) => [
-            ic.keepBtn,
-            item.kept ? ic.keepActive : ic.keepInactive,
-            pressed && { opacity: 0.75 },
-          ]}
         >
-          <Text style={[ic.keepText, item.kept ? ic.keepTextActive : ic.keepTextInactive]}>
-            {item.kept ? 'KEEP' : 'PASS'}
-          </Text>
+          <MaterialIcons name="delete-outline" size={20} color="#FFF" />
+          <Text style={ic.deleteText}>Remove</Text>
         </Pressable>
       </View>
+
+      <Animated.View
+        style={[ic.surface, { transform: [{ translateX }] }]}
+        {...pan.panHandlers}
+      >
+        <Pressable
+          onPress={() => swipeOpen.current
+            ? snapClosed()
+            : router.push(`/hunt-item-detail?mode=readonly&huntItemId=${item.huntItemId}` as any)
+          }
+          style={({ pressed }) => [ic.card, { borderColor: cfg.border }, pressed && !swipeOpen.current && { opacity: 0.80 }]}
+        >
+          <View style={ic.imgWrap}>
+            {item.imageUri ? (
+              <Image source={{ uri: item.imageUri }} style={ic.img} resizeMode="cover" />
+            ) : (
+              <View style={[ic.img, ic.imgFallback]}>
+                <MaterialIcons name="checkroom" size={18} color={MUTED} />
+              </View>
+            )}
+          </View>
+
+          <View style={ic.info}>
+            <Text style={ic.name} numberOfLines={1}>{item.itemName}</Text>
+            {item.thriftPrice > 0 && (
+              <Text style={ic.price}>-${item.thriftPrice.toFixed(2)}</Text>
+            )}
+            <View style={[ic.ratingPill, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
+              <Text style={ic.ratingEmoji}>{cfg.emoji}</Text>
+              <Text style={[ic.ratingLabel, { color: cfg.color }]}>
+                {cfg.label.toUpperCase()}
+              </Text>
+            </View>
+          </View>
+
+          <View style={ic.right}>
+            <Text style={[ic.profit, { color: profitColor }]}>{profitStr}</Text>
+            {/* KEPT: status-only pill, not interactive */}
+            <View style={ic.keptPill}>
+              <Text style={ic.keptText}>KEPT</Text>
+            </View>
+          </View>
+        </Pressable>
+      </Animated.View>
     </View>
   );
 }
@@ -153,12 +204,18 @@ const ic = StyleSheet.create({
   ratingLabel: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
   right:       { alignItems: 'flex-end', gap: 5 },
   profit:      { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '800' },
-  keepBtn:     { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 6, borderWidth: 1.5 },
-  keepActive:  { backgroundColor: FOREST, borderColor: FOREST },
-  keepInactive:{ backgroundColor: 'transparent', borderColor: CARD_B },
-  keepText:    { fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
-  keepTextActive:  { color: CREAM },
-  keepTextInactive:{ color: MUTED },
+  // Swipe-delete layout
+  wrapper:    { overflow: 'hidden', borderRadius: 12, marginBottom: 0 },
+  deleteZone: {
+    position: 'absolute', right: 0, top: 0, bottom: 0, width: SWIPE_WIDTH,
+    backgroundColor: '#7A1F1F', justifyContent: 'center', alignItems: 'center',
+  },
+  deleteBtn:  { flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', gap: 2 },
+  deleteText: { fontSize: 10, fontWeight: '700', color: '#FFF' },
+  surface:    { backgroundColor: CARD_BG },
+  // KEPT status pill — display only
+  keptPill:  { backgroundColor: FOREST + '22', borderWidth: 1, borderColor: FOREST + '66', borderRadius: 6, paddingHorizontal: 9, paddingVertical: 5 },
+  keptText:  { fontSize: 9, fontWeight: '800', color: FOREST, letterSpacing: 0.5 },
 });
 
 // ─── Animated paw prints ─────────────────────────────────────────────────────
@@ -304,7 +361,36 @@ export default function HuntActiveScreen() {
   const insets     = useSafeAreaInsets();
 
   // Re-render whenever hunt state changes
+  const { addHuntBundle, flips } = useFlipStore();
+
+// ─── Auto-hunt name helper ────────────────────────────────────────────────────
+// Generates "Thrift Hunt", "Thrift Hunt #2", "Thrift Hunt #3" etc.
+// Only counts existing bundles with auto-generated names (not custom ones).
+// Custom names are never modified.
+
+function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEntry[]): string {
+  const BASE = 'Thrift Hunt';
+  // Collect all numbers already used by auto-generated hunts
+  const usedNumbers = new Set<number>();
+  for (const entry of existingBundles) {
+    if (!isHuntBundle(entry)) continue;
+    const title = entry.huntTitle ?? '';
+    if (title === BASE) {
+      usedNumbers.add(1);
+    } else {
+      const match = title.match(/^Thrift Hunt #(\d+)$/);
+      if (match) usedNumbers.add(parseInt(match[1], 10));
+    }
+  }
+  // Find the next unused number
+  if (!usedNumbers.has(1)) return BASE;
+  let n = 2;
+  while (usedNumbers.has(n)) n++;
+  return `${BASE} #${n}`;
+}
   const [, forceUpdate] = useState(0);
+  const [saveConfirmVisible, setSaveConfirmVisible] = useState(false);
+  const [endConfirmVisible, setEndConfirmVisible] = useState(false);
   useEffect(() => {
     const unsub = subscribeToHunt(() => forceUpdate(n => n + 1));
     return unsub;
@@ -412,28 +498,7 @@ export default function HuntActiveScreen() {
       if (consumeReturningFromHuntItemDetail()) return;
 
       e.preventDefault();
-      Alert.alert(
-        'End Hunt?',
-        'Do you want to end this hunt or keep hunting?',
-        [
-          { text: 'Stay',     style: 'cancel' },
-          {
-            text: 'End Hunt', style: 'destructive',
-            onPress: () => {
-              allowNavRef.current = true;
-              const huntStats = getHuntStats(getActiveHunt()!);
-              logHuntEnded({
-                durationMs:      Date.now() - (getActiveHunt()?.startedAt ?? Date.now()),
-                scannedCount:    huntStats.scanned,
-                keptCount:       huntStats.kept,
-                estimatedProfit: huntStats.estimatedProfit,
-              });
-              endHunt();
-              router.replace('/(tabs)' as any);
-            },
-          },
-        ]
-      );
+      setEndConfirmVisible(true);
     });
     return unsub;
   }, [navigation]);
@@ -458,15 +523,15 @@ export default function HuntActiveScreen() {
   const recentItems = session.items.slice(0, 4);
   const profitColor = stats.estimatedProfit >= 0 ? '#3A7A3A' : '#8A2A1A';
 
+  // H/I: split into kept and removed lists
+  const keptItems    = session.items.filter(i => i.kept);
+  const removedItems = session.items.filter(i => !i.kept);
+  const recentKept   = keptItems.slice(0, 4);
+
   const handleScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
     logHuntScanStarted(stats.scanned);
     router.push('/camera' as any);
-  };
-
-  const handleFullList = () => {
-    Alert.alert('📋 Full Item List', 'Full organized item list coming soon!',
-      [{ text: 'Got it' }]);
   };
 
   return (
@@ -475,7 +540,7 @@ export default function HuntActiveScreen() {
       {/* ── Header ── */}
       <View style={s.header}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => setEndConfirmVisible(true)}
           hitSlop={10}
           style={s.headerBtn}
         >
@@ -486,11 +551,11 @@ export default function HuntActiveScreen() {
           <Text style={s.headerSub}>LIVE HUNT</Text>
         </View>
         <Pressable
-          onPress={() => Alert.alert('🗺️ Map', 'Map system coming soon in the global release!', [{ text: 'Got it' }])}
+          onPress={() => setSaveConfirmVisible(true)}
           hitSlop={10}
           style={s.headerBtn}
         >
-          <MaterialIcons name="map" size={22} color={BROWN} />
+          <MaterialIcons name="check-circle-outline" size={24} color={FOREST} />
         </Pressable>
       </View>
 
@@ -526,32 +591,193 @@ export default function HuntActiveScreen() {
         </View>
       </View>
 
-      {/* ── Scanned Items header ── */}
+      {/* ── Kept Items header ── */}
       <View style={s.sectionRow}>
-        <Text style={s.sectionTitle}>SCANNED ITEMS</Text>
-        <Pressable onPress={handleFullList} style={s.sectionLink} hitSlop={8}>
-          {session.items.length > 0 && (
-            <Text style={s.sectionCount}>{session.items.length}</Text>
-          )}
-          <MaterialIcons name="chevron-right" size={18} color={GOLD} />
-        </Pressable>
+        <Text style={s.sectionTitle}>KEPT ITEMS</Text>
+        {keptItems.length > 0 && (
+          <View style={s.sectionLink}>
+            <Text style={s.sectionCount}>{keptItems.length}</Text>
+            <MaterialIcons name="chevron-right" size={18} color={GOLD} />
+          </View>
+        )}
       </View>
 
-      {/* ── Item list or empty state ── */}
+      {/* ── Kept item list or empty state ── */}
       <View style={s.itemList}>
-        {recentItems.length === 0 ? (
+        {recentKept.length === 0 ? (
           <View style={s.emptyState}>
             <PawPrints />
             <Text style={s.emptyTitle}>No treasures found yet.</Text>
             <Text style={s.emptySub}>Tap scan to start the hunt.</Text>
           </View>
         ) : (
-          recentItems.map(item => <ItemCard key={item.scanId} item={item} />)
+          recentKept.map(item => <ItemCard key={item.huntItemId} item={item} />)
         )}
       </View>
 
+      {/* I: Removed items row — subtle but tappable */}
+      {removedItems.length > 0 && (
+        <Pressable
+          onPress={() => router.push('/hunt-removed' as any)}
+          style={({ pressed }) => [s.removedRow, pressed && { opacity: 0.75 }]}
+        >
+          <MaterialIcons name="remove-circle-outline" size={16} color={MUTED} />
+          <Text style={s.removedRowText}>Removed Items</Text>
+          <Text style={s.removedRowCount}>{removedItems.length} skipped</Text>
+          <MaterialIcons name="chevron-right" size={16} color={MUTED} />
+        </Pressable>
+      )}
+
       {/* ── Hunt bottom zone: sonar glow + safari details + scan button ── */}
       <HuntBottomZone onPress={handleScan} />
+
+      {/* ── Save Hunt confirmation modal (checkmark button) ── */}
+      <Modal
+        visible={saveConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSaveConfirmVisible(false)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>End and save this hunt?</Text>
+            <Text style={s.modalSub}>
+              {`Save your "${session.name || 'Thrift Hunt'}" hunt to Scan History as one bundle. All kept and removed items will be included.`}
+            </Text>
+            <Pressable
+              onPress={async () => {
+                setSaveConfirmVisible(false);
+                const now      = Date.now();
+                const hunt     = getActiveHunt();
+                if (!hunt) return;
+                const keptItems: HuntBundleItem[]    = hunt.items.filter(i => i.kept).map(i => ({
+                  huntItemId:   i.huntItemId,
+                  scanId:       i.scanId,
+                  itemName:     i.itemName,
+                  brand:        i.brand,
+                  category:     i.category,
+                  imageUri:     i.imageUri,
+                  thriftPrice:  i.thriftPrice,
+                  profit:       i.profit,
+                  huntRating:   i.huntRating,
+                  kept:         true,
+                  scanSnapshot: i.scanSnapshot,
+                }));
+                const removedItems: HuntBundleItem[] = hunt.items.filter(i => !i.kept).map(i => ({
+                  huntItemId:   i.huntItemId,
+                  scanId:       i.scanId,
+                  itemName:     i.itemName,
+                  brand:        i.brand,
+                  category:     i.category,
+                  imageUri:     i.imageUri,
+                  thriftPrice:  i.thriftPrice,
+                  profit:       i.profit,
+                  huntRating:   i.huntRating,
+                  kept:         false,
+                  scanSnapshot: i.scanSnapshot,
+                }));
+                const totalCost    = keptItems.reduce((s, i) => s + i.thriftPrice, 0);
+                const totalProfit  = keptItems.reduce((s, i) => s + i.profit, 0);
+                const estimatedROI = totalCost > 0 ? Math.round((totalProfit / totalCost) * 100) : 0;
+                const durationMs   = now - hunt.startedAt;
+
+                // Build base bundle first (without XP)
+                const baseBundle: HuntBundle = {
+                  type:                'hunt_bundle',
+                  id:                  hunt.id,
+                  huntTitle:           hunt.name?.trim() || generateAutoHuntName(flips),
+                  timestamp:           now,
+                  startedAt:           hunt.startedAt,
+                  endedAt:             now,
+                  durationMs,
+                  keptItems,
+                  removedItems,
+                  keptItemCount:       keptItems.length,
+                  removedItemCount:    removedItems.length,
+                  totalCost,
+                  totalEstimatedProfit: totalProfit,
+                  estimatedROI,
+                };
+
+                // Calculate and apply XP — updates AsyncStorage profile atomically
+                // Must happen BEFORE addHuntBundle so bundle stores xpEarned/xpBreakdown
+                let xpResult: import('@/lib/huntXp').HuntXpResult | null = null;
+                try {
+                  xpResult = await applyHuntXp(baseBundle);
+                } catch { /* never block save on XP failure */ }
+
+                // Attach XP to bundle before persisting to history
+                const bundle: HuntBundle = xpResult
+                  ? { ...baseBundle, xpEarned: xpResult.totalXpEarned, xpBreakdown: xpResult.breakdown }
+                  : baseBundle;
+
+                addHuntBundle(bundle);
+                logHuntEnded({
+                  durationMs,
+                  scannedCount:    hunt.items.length,
+                  keptCount:       keptItems.length,
+                  estimatedProfit: Math.round(totalProfit),
+                });
+                // Store XP result for hunt-complete to consume on mount
+                if (xpResult) setLastCompletionResult(xpResult);
+                endHunt();
+                allowNavRef.current = true;
+                // Navigate to XP reveal screen first — then user continues to hunt-complete
+                router.replace(`/hunt-xp-reveal?bundleId=${bundle.id}` as any);
+              }}
+              style={({ pressed }) => [s.modalSave, pressed && { opacity: 0.85 }]}
+            >
+              <Text style={s.modalSaveText}>Save Hunt</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setSaveConfirmVisible(false)}
+              style={({ pressed }) => [s.modalCancel, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={s.modalCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── End Hunt confirmation modal (back arrow) ── */}
+      <Modal
+        visible={endConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEndConfirmVisible(false)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>End this hunt?</Text>
+            <Text style={s.modalSub}>
+              Are you sure you want to leave? Your current hunt progress may be lost.
+            </Text>
+            <Pressable
+              onPress={() => {
+                setEndConfirmVisible(false);
+                allowNavRef.current = true;
+                logHuntEnded({
+                  durationMs:      Date.now() - (getActiveHunt()?.startedAt ?? Date.now()),
+                  scannedCount:    stats.scanned,
+                  keptCount:       stats.kept,
+                  estimatedProfit: stats.estimatedProfit,
+                });
+                endHunt();
+                router.replace('/(tabs)' as any);
+              }}
+              style={({ pressed }) => [s.modalLeave, pressed && { opacity: 0.85 }]}
+            >
+              <Text style={s.modalLeaveText}>Leave Hunt</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setEndConfirmVisible(false)}
+              style={({ pressed }) => [s.modalCancel, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={s.modalCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
     </View>
   );
@@ -643,6 +869,9 @@ const s = StyleSheet.create({
   sectionRow:      { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginTop: 14, marginBottom: 8 },
   sectionTitle:    { flex: 1, fontFamily: FONTS.serif, fontSize: 11, fontWeight: '700', color: MUTED, letterSpacing: 1.2 },
   sectionLink:     { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  removedRow:      { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginTop: 8, paddingVertical: 11, paddingHorizontal: 14, backgroundColor: CARD_BG, borderRadius: 10, borderWidth: 1, borderColor: CARD_B + '80' },
+  removedRowText:  { flex: 1, fontSize: 13, color: MUTED, fontWeight: '600' },
+  removedRowCount: { fontSize: 12, color: MUTED + 'AA' },
   sectionCount:    { fontSize: 11, fontWeight: '700', color: GOLD },
 
   itemList:        { flex: 1, paddingHorizontal: 16, paddingBottom: 8, gap: 8 },
@@ -655,4 +884,16 @@ const s = StyleSheet.create({
   safetyTitle:     { fontFamily: FONTS.serif, fontSize: 20, color: BROWN },
   safetyBtn:       { backgroundColor: FOREST, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 },
   safetyBtnText:   { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '700', color: CREAM },
+
+  // End Hunt confirmation modal
+  modalOverlay:   { flex: 1, backgroundColor: 'rgba(10,6,2,0.70)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
+  modalCard:      { width: '100%', backgroundColor: CARD_BG, borderRadius: 20, padding: 24, gap: 14, borderWidth: 1, borderColor: CARD_B },
+  modalTitle:     { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: BROWN, textAlign: 'center' },
+  modalSub:       { fontSize: 13, color: MUTED, textAlign: 'center', lineHeight: 20 },
+  modalLeave:     { backgroundColor: '#7A1F1F', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  modalLeaveText: { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: CREAM, letterSpacing: 0.5 },
+  modalSave:      { backgroundColor: FOREST, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  modalSaveText:  { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: CREAM, letterSpacing: 0.5 },
+  modalCancel:    { alignItems: 'center', paddingVertical: 8 },
+  modalCancelText:{ fontSize: 14, color: MUTED },
 });

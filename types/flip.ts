@@ -7,6 +7,9 @@
  * GlobalRank    → rank label + score
  */
 
+import type { ScanResult } from '@/lib/types';
+import type { XpBreakdownItem } from '@/lib/huntXp';
+
 // ─── Persisted (stored in useFlipStore) ──────────────────────────────────────
 
 export interface FlipResult {
@@ -126,3 +129,52 @@ export const WIN_LABELS: BuyLabel[] = [
   '💰 STRONG BUY',
   '✅ BUY',
 ];import type { Recommendation } from '@/utils/recommendation';
+// ─── Hunt Bundle (Pass 2) ─────────────────────────────────────────────────────
+// Represents a complete Hunt Mode session saved as ONE history entry.
+// Stored in the same flips[] array as FlipResult but discriminated by `type`.
+
+/** One item inside a saved hunt bundle. Preserves full scan data for reopening. */
+export interface HuntBundleItem {
+  huntItemId:   string;
+  scanId:       string;
+  itemName:     string;
+  brand:        string;
+  category:     string;
+  imageUri:     string;
+  thriftPrice:  number;
+  profit:       number;
+  huntRating:   'legendary' | 'treasure' | 'risky' | 'trash';
+  kept:         boolean;
+  scanSnapshot: ScanResult;   // full AI result — used to reopen Discovery Analysis
+}
+
+/** A complete Hunt Mode session saved as one Scan History bundle. */
+export interface HuntBundle {
+  type:               'hunt_bundle';  // discriminator — absent on old FlipResult entries
+  id:                 string;         // = huntId
+  huntTitle:          string;
+  timestamp:          number;         // = endedAt — used for chronological sort
+  startedAt:          number;
+  endedAt:            number;
+  durationMs:         number;
+  keptItems:          HuntBundleItem[];
+  removedItems:       HuntBundleItem[];
+  keptItemCount:      number;
+  removedItemCount:   number;
+  totalCost:          number;         // sum of thriftPrice for kept items
+  totalEstimatedProfit: number;       // sum of profit for kept items
+  estimatedROI:       number;         // (totalEstimatedProfit / totalCost) * 100
+  xpEarned?:          number;         // XP awarded when this hunt was saved
+  xpBreakdown?:       XpBreakdownItem[]; // line-by-line XP breakdown for history detail UI
+}
+
+/**
+ * Discriminated union of all history entry types.
+ * Old FlipResult entries have no `type` field — treated as 'scan' by default.
+ */
+export type HistoryEntry = FlipResult | HuntBundle;
+
+/** Type guard — true if entry is a hunt bundle, false if regular scan. */
+export function isHuntBundle(entry: HistoryEntry): entry is HuntBundle {
+  return (entry as HuntBundle).type === 'hunt_bundle';
+}

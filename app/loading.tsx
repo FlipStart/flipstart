@@ -30,12 +30,13 @@ import { useColors } from "@/hooks/use-colors";
 import { useScanContext } from "@/lib/scan-context";
 import { trpc } from "@/lib/trpc";
 import { consumePendingScan } from "@/lib/pending-scan";
-import { isHuntActive }       from "@/lib/hunt-context";
 import { ScanResult } from "@/lib/types";
 import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
 import { useAudioPlayer } from "expo-audio";
 import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
+import { logEvent, incrementSessionCount, saveScanRecord } from "@/lib/analytics";
+import { isHuntActive } from "@/lib/hunt-context";
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
@@ -95,6 +96,7 @@ export default function LoadingScreen() {
   const [confidence,   setConfidence]   = useState(0);
   const [finalizing,   setFinalizing]   = useState(false);
   const [scanKey,  setScanKey]   = useState(0);   // increment to re-trigger doScan
+  const [retryCount, setRetryCount] = useState(0); // auto-retry attempts made
   const [failState, setFailState] = useState<{
     type:        FailType;
     message:     string;
@@ -107,6 +109,7 @@ export default function LoadingScreen() {
   const lastHapticAt    = useRef(0);
   const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPendingScan = useRef<import('@/lib/pending-scan').PendingScan | null>(null);
+  const retryAttemptRef = useRef(0);   // tracks auto-retry attempts for exponential backoff
 
   // ── Audio ─────────────────────────────────────────────────────────────────
   const player       = useAudioPlayer(COIN_SOUND);
@@ -238,6 +241,12 @@ export default function LoadingScreen() {
       console.log(`[loading] images ready — front✓ tag:${!!tag} detail:${!!detail}`);
       console.log("[loading] analysis request start — timeout in", HARD_TIMEOUT_MS / 1000, "s");
 
+      // Analytics: scan submitted
+      try {
+        logEvent("scan_submitted", { tagPresent: !!tag, detailPresent: !!detail });
+        incrementSessionCount("scanCount");
+      } catch { /* never block analysis */ }
+
       try {
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutIdRef.current = setTimeout(() => {
@@ -313,6 +322,9 @@ export default function LoadingScreen() {
         const scanResult: ScanResult = {
           id:             scanId,
           imageUri:       result.imageUrl || imageUri || "",
+          allImageUris:   [
+            result.imageUrl || imageUri || "",
+          ].filter(Boolean) as string[],
           timestamp:      Date.now(),
           identification: safeIdentification,
           market_data:    safeMarketData,
@@ -328,6 +340,10 @@ export default function LoadingScreen() {
           console.log("[loading] bad_input: confidence too low to use:", matchConf);
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
+          try {
+            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf });
+            incrementSessionCount("failedScanCount");
+          } catch { /* never block */ }
           setFailState({ type: "bad_input", message: "", confidence: matchConf });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -339,6 +355,10 @@ export default function LoadingScreen() {
           console.log("[loading] low_confidence: showing warning screen:", matchConf);
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
+          try {
+            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf });
+            incrementSessionCount("failedScanCount");
+          } catch { /* never block */ }
           setFailState({ type: "low_confidence", message: "", confidence: matchConf });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
@@ -352,16 +372,51 @@ export default function LoadingScreen() {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         }
 
+        // Analytics: scan completed + save structured scan record for future AI memory
+        try {
+          logEvent("scan_completed", {
+            confidence:      matchConf,
+            category:        safeIdentification.category,
+            brand:           safeIdentification.brand,
+            recommendation:  result.recommendation ?? "",
+          });
+          incrementSessionCount("completedScanCount");
+          saveScanRecord({
+            scanId:             scanResult.id,
+            imageUri:           scanResult.imageUri,
+            tagImagePresent:    !!tag,
+            detailImagePresent: !!detail,
+            aiTitle:            safeIdentification.item_name,
+            aiCategory:         safeIdentification.category,
+            aiBrand:            safeIdentification.brand,
+            aiEra:              safeIdentification.estimated_era,
+            aiMaterial:         safeIdentification.material_guess,
+            aiRecommendation:   result.recommendation ?? "",
+            aiResaleLow:        safeMarketData.estimated_resale_range.low,
+            aiResaleHigh:       safeMarketData.estimated_resale_range.high,
+            aiEstimatedValue:   safeMarketData.adjusted_estimated_value,
+            aiPlatform:         result.best_platform ?? "",
+            aiSellSpeed:        safeMarketData.sell_speed,
+            aiDemand:           safeMarketData.demand,
+            aiConfidence:       matchConf,
+            styleLabels:        safeIdentification.style_labels,
+            riskFlags:          safeRiskAnalysis.risk_flags,
+          });
+        } catch { /* never block navigation */ }
+
         setConfidence(100);
         try { player.pause(); } catch { /* ignore */ }
 
         setTimeout(() => {
           if (hasNavigated.current) return;
           hasNavigated.current = true;
-          // Hunt Mode: go to dedicated Hunt Item Detail screen
-          const dest = isHuntActive() ? '/hunt-item-detail' : '/results';
-          console.log('[loading] navigating to', dest, '— confidence:', matchConf);
-          router.replace(dest as any);
+          if (isHuntActive()) {
+            // Replace loading with hunt-item-detail — keeps stack clean so
+            // back() from Discovery Analysis returns to hunt-active, not loading
+            router.replace("/hunt-item-detail" as any);
+          } else {
+            router.replace("/results" as any);
+          }
         }, 600);
 
       } catch (err: any) {
@@ -369,43 +424,109 @@ export default function LoadingScreen() {
           clearTimeout(timeoutIdRef.current);
           timeoutIdRef.current = null;
         }
-        console.error("[loading] error caught:", err);
         try { player.pause(); } catch { /* ignore */ }
 
         const raw: string = err?.message ?? "";
+        const durationMs  = Date.now() - scanStartTime.current;
 
-        let failType: FailType = "network";
+        // ── Classify error type ────────────────────────────────────────────
+        let failType: FailType;
+
         if (raw === "__TIMEOUT__" || raw.toLowerCase().includes("timed out")) {
           failType = "timeout";
-          console.log("[loading] hard timeout triggered after", HARD_TIMEOUT_MS / 1000, "s");
         } else if (
           raw.includes("GLOBAL_SCAN_LIMIT_REACHED") ||
-          raw.toLowerCase().includes("beta scan limit")
+          raw.toLowerCase().includes("scan limit")
         ) {
-          failType = "timeout";
-          console.log("[loading] global scan limit reached");
+          // Scan limit — show immediately, do not auto-retry
           try { player.pause(); } catch {}
-          setFailState({
-            type: "timeout",
-            message: "FlipStart hit today's beta scan limit. Try again tomorrow.",
-          });
+          setFailState({ type: "timeout", message: "Daily scan limit reached. Try again tomorrow." });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
           }
           return;
+        } else if (
+          raw.toLowerCase().includes("network request failed") ||
+          raw.toLowerCase().includes("network error") ||
+          raw.toLowerCase().includes("failed to fetch") ||
+          raw.toLowerCase().includes("connection refused") ||
+          raw.toLowerCase().includes("no internet") ||
+          raw.toLowerCase().includes("offline")
+        ) {
+          failType = "offline";
         } else if (
           raw.toLowerCase().includes("unsupported image") ||
           raw.toLowerCase().includes("image format") ||
           raw.toLowerCase().includes("heic")
         ) {
           failType = "bad_input";
-        } else if (raw.toLowerCase().includes("timeout")) {
-          failType = "timeout";
+        } else if (
+          raw.toLowerCase().includes("transform") ||
+          raw.toLowerCase().includes("trpc") ||
+          raw.toLowerCase().includes("internal server error") ||
+          raw.toLowerCase().includes("500") ||
+          raw.toLowerCase().includes("502") ||
+          raw.toLowerCase().includes("503") ||
+          raw.toLowerCase().includes("504") ||
+          raw.toLowerCase().includes("service unavailable") ||
+          raw.toLowerCase().includes("bad gateway") ||
+          raw.toLowerCase().includes("railway")
+        ) {
+          failType = "server";
+        } else {
+          failType = "server"; // default unknown → server, most recoverable
         }
 
-        console.log("[loading] error fail state — type:", failType, "raw:", raw.substring(0, 80));
+        // ── Exponential auto-retry (server/offline/timeout only) ───────────
+        // Attempt 1 → immediate, Attempt 2 → +2s, Attempt 3 → +5s
+        // Bad input / low confidence → never auto-retry (user action needed)
+        const shouldAutoRetry = (failType === "server" || failType === "timeout" || failType === "offline")
+          && retryAttemptRef.current < 3;
+
+        if (shouldAutoRetry) {
+          const attempt = retryAttemptRef.current;
+          retryAttemptRef.current += 1;
+          const delayMs = attempt === 0 ? 0 : attempt === 1 ? 2000 : 5000;
+
+          console.log(`[loading] auto-retry ${attempt + 1}/3 in ${delayMs}ms — type: ${failType}`);
+          try {
+            logEvent("scan_auto_retry", {
+              attempt:     attempt + 1,
+              failType,
+              delayMs,
+              errorRaw:    raw.slice(0, 80),
+            });
+          } catch { /* never block */ }
+
+          await new Promise(res => setTimeout(res, delayMs));
+
+          // Restore pending scan for retry and re-run doScan
+          if (lastPendingScan.current) {
+            const { setPendingScan } = require("@/lib/pending-scan");
+            setPendingScan(lastPendingScan.current);
+          }
+          hasStartedRef.current = false;
+          setScanKey(k => k + 1);
+          return;
+        }
+
+        // ── All retries exhausted — show fail screen ────────────────────────
+        const totalAttempts = retryAttemptRef.current;
+        console.error(`[loading] all retries exhausted (${totalAttempts} auto + manual) — showing fail screen. type: ${failType} raw: ${raw.substring(0, 80)}`);
+
+        try {
+          logEvent("scan_failed", {
+            errorType:     failType,
+            autoRetries:   totalAttempts,
+            durationMs,
+            errorRaw:      raw.slice(0, 80),
+          });
+          incrementSessionCount("failedScanCount");
+        } catch { /* never block */ }
+
         const safeMsg = (raw.length > 0 && raw.length < 120 && !raw.startsWith("{") && raw !== "__TIMEOUT__")
           ? raw : "";
+        setRetryCount(totalAttempts);
         setFailState({ type: failType, message: safeMsg });
 
         if (Platform.OS !== "web") {
@@ -452,7 +573,7 @@ export default function LoadingScreen() {
   // ── Error state ───────────────────────────────────────────────────────────
   if (failState) {
     const handleRetry = () => {
-      console.log("[loading] retry pressed — resetting state machine");
+      console.log("[loading] manual retry pressed — resetting state machine");
       if (timeoutIdRef.current !== null) {
         clearTimeout(timeoutIdRef.current);
         timeoutIdRef.current = null;
@@ -461,10 +582,13 @@ export default function LoadingScreen() {
         const { setPendingScan } = require("@/lib/pending-scan");
         setPendingScan(lastPendingScan.current);
       }
+      // Reset all state for a clean retry
+      retryAttemptRef.current = 0;
       hasStartedRef.current = false;
       hasNavigated.current  = false;
       soundStarted.current  = false;
       lastHapticAt.current  = 0;
+      setRetryCount(0);
       setFailState(null);
       setConfidence(0);
       setFinalizing(false);
@@ -483,19 +607,34 @@ export default function LoadingScreen() {
     const handleContinueAnyway =
       (failState.type === "low_confidence" || failState.type === "bad_input")
         ? () => {
-            console.log('[loading] user continuing anyway from fail state:', failState.type);
             hasNavigated.current = true;
-            router.replace((isHuntActive() ? '/hunt-item-detail' : '/results') as any);
+            if (isHuntActive()) {
+              router.replace("/hunt-item-detail" as any);
+            } else {
+              router.replace("/results" as any);
+            }
           }
         : undefined;
+
+    // Return to Hunt — preserve all hunt progress, just go back to live hunt
+    const handleReturnToHunt = isHuntActive()
+      ? () => {
+          console.log("[loading] returning to hunt — preserving all hunt progress");
+          try { player.pause(); } catch { /* ignore */ }
+          hasNavigated.current = true;
+          router.replace("/hunt-active" as any);
+        }
+      : undefined;
 
     return (
       <FailStateScreen
         type={failState.type}
         message={failState.message}
         confidence={failState.confidence}
+        retryCount={retryCount}
         onRetry={handleRetry}
         onRetake={handleRetake}
+        onReturnToHunt={handleReturnToHunt}
         onContinueAnyway={handleContinueAnyway}
       />
     );
