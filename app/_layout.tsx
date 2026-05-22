@@ -49,26 +49,45 @@ export default function RootLayout() {
   const [frame, setFrame] = useState<Rect>(initialFrame);
 
   // ── Cinematic splash → app transition ────────────────────────────────────
-  // 1. App renders with opacity 0 immediately (nothing visible to user yet)
-  // 2. Once layout is ready (onLayout fires), we have a real frame to fade into
-  // 3. We hide the native splash — it fades out via the plugin's fade:true
-  // 4. Simultaneously we fade the app in from 0→1 over 350ms
-  // Result: one continuous crossfade, no flash, no jump cut
-  const appOpacity  = useRef(new Animated.Value(0)).current;
-  const [layoutReady, setLayoutReady] = useState(false);
+  // Strategy: hold splash until BOTH conditions are met:
+  //   (a) root layout has painted its first frame (onLayout fires)
+  //   (b) a minimum of 1800ms has elapsed (feels intentional, not frozen)
+  // whichever takes longer wins — usually the 1800ms timer on fast devices.
+  // This eliminates the "flash then jump" by ensuring the app is visually
+  // ready before the native splash fades out.
+  const appOpacity   = useRef(new Animated.Value(0)).current;
+  const layoutFired  = useRef(false);
+  const timerFired   = useRef(false);
+  const hideCalled   = useRef(false);
 
-  const onRootLayout = useCallback(() => {
-    if (layoutReady) return;
-    setLayoutReady(true);
-    // Hide native splash (fade is handled by plugin's fade:true on iOS)
+  const triggerTransition = useCallback(() => {
+    if (!layoutFired.current || !timerFired.current) return;
+    if (hideCalled.current) return;
+    hideCalled.current = true;
+    // Hide native splash — setOptions({fade,duration}) configured at module level
     SplashScreen.hideAsync().catch(() => {});
-    // Fade app in simultaneously
+    // Simultaneously fade app in from invisible → visible
     Animated.timing(appOpacity, {
       toValue:         1,
-      duration:        350,
+      duration:        400,
       useNativeDriver: true,
     }).start();
-  }, [layoutReady]);
+  }, []);
+
+  // Arm the minimum-time gate (1800ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      timerFired.current = true;
+      triggerTransition();
+    }, 1800);
+    return () => clearTimeout(timer);
+  }, [triggerTransition]);
+
+  const onRootLayout = useCallback(() => {
+    if (layoutFired.current) return;
+    layoutFired.current = true;
+    triggerTransition();
+  }, [triggerTransition]);
   // Initialize Manus runtime for cookie injection from parent container
   useEffect(() => {
     initManusRuntime();

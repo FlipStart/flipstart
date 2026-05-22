@@ -61,19 +61,29 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        "ios": {
-          "image":           "./assets/images/flipstart-splash.png",
-          "resizeMode":      "cover",
-          "backgroundColor": "#E8C99A"
+        // enableFullScreenImage_legacy: true is required for iOS to generate
+        // a full-bleed launch storyboard. Without this the plugin generates
+        // a centered constrained image view regardless of resizeMode.
+        enableFullScreenImage_legacy: true,
+
+        // resizeMode MUST be at the top level — placing it inside the ios{}
+        // object causes the plugin to silently override it back to "contain"
+        // when generating the iOS launch storyboard. (Known SDK 51-54 bug)
+        resizeMode: "cover",
+
+        backgroundColor: "#E8C99A",
+
+        ios: {
+          image:           "./assets/images/flipstart-splash.png",
+          backgroundColor: "#E8C99A",
         },
-        "android": {
-          "image":           "./assets/images/flipstart-splash.png",
-          "resizeMode":      "cover",
-          "backgroundColor": "#E8C99A"
+        android: {
+          image:           "./assets/images/flipstart-splash.png",
+          backgroundColor: "#E8C99A",
         },
         dark: {
-          "ios":     { "image": "./assets/images/flipstart-splash.png", "backgroundColor": "#E8C99A" },
-          "android": { "image": "./assets/images/flipstart-splash.png", "backgroundColor": "#E8C99A" }
+          ios:     { image: "./assets/images/flipstart-splash.png", backgroundColor: "#E8C99A" },
+          android: { image: "./assets/images/flipstart-splash.png", backgroundColor: "#E8C99A" },
         },
       },
     ],
