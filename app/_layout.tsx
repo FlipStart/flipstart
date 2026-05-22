@@ -2,10 +2,10 @@ import "@/global.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { Platform, AppState, AppStateStatus } from "react-native";
+import { Platform, AppState, AppStateStatus, Animated } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
@@ -31,6 +31,12 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 // this is the only way to guarantee the splash doesn't flash.
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
+// Configure native fade animation on hide — SDK 51 API.
+// setOptions must be called at module level, not inside a component.
+if (typeof SplashScreen.setOptions === 'function') {
+  SplashScreen.setOptions({ fade: true, duration: 400 });
+}
+
 export const unstable_settings = {
   anchor: "(tabs)",
 };
@@ -42,15 +48,27 @@ export default function RootLayout() {
   const [insets, setInsets] = useState<EdgeInsets>(initialInsets);
   const [frame, setFrame] = useState<Rect>(initialFrame);
 
-  // ── Splash screen: hide after 1.5s with fade ──────────────────────────────
-  // preventAutoHideAsync() is called at module level above.
-  // Here we wait for the minimum display time then fade out.
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      SplashScreen.hideAsync().catch(() => {});
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, []);
+  // ── Cinematic splash → app transition ────────────────────────────────────
+  // 1. App renders with opacity 0 immediately (nothing visible to user yet)
+  // 2. Once layout is ready (onLayout fires), we have a real frame to fade into
+  // 3. We hide the native splash — it fades out via the plugin's fade:true
+  // 4. Simultaneously we fade the app in from 0→1 over 350ms
+  // Result: one continuous crossfade, no flash, no jump cut
+  const appOpacity  = useRef(new Animated.Value(0)).current;
+  const [layoutReady, setLayoutReady] = useState(false);
+
+  const onRootLayout = useCallback(() => {
+    if (layoutReady) return;
+    setLayoutReady(true);
+    // Hide native splash (fade is handled by plugin's fade:true on iOS)
+    SplashScreen.hideAsync().catch(() => {});
+    // Fade app in simultaneously
+    Animated.timing(appOpacity, {
+      toValue:         1,
+      duration:        350,
+      useNativeDriver: true,
+    }).start();
+  }, [layoutReady]);
   // Initialize Manus runtime for cookie injection from parent container
   useEffect(() => {
     initManusRuntime();
@@ -126,6 +144,10 @@ export default function RootLayout() {
   }, [initialInsets, initialFrame]);
 
   const content = (
+    <Animated.View
+      style={{ flex: 1, opacity: appOpacity }}
+      onLayout={onRootLayout}
+    >
     <GestureHandlerRootView style={{ flex: 1 }}>
       <FlipStoreProvider>
       <ScanProvider>
@@ -134,19 +156,10 @@ export default function RootLayout() {
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false }} />
-            <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade", gestureEnabled: false }} />
+            <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="results" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
-            <Stack.Screen name="hunt" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
-            <Stack.Screen name="hunt-active" options={{ animation: "slide_from_bottom", headerShown: false, gestureEnabled: false }} />
-            <Stack.Screen name="hunt-complete" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
-            <Stack.Screen name="hunt-xp-reveal" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
-            <Stack.Screen name="hunt-item-detail" options={{ animation: "slide_from_right", headerShown: false, presentation: "card", gestureEnabled: false }} />
-            <Stack.Screen name="hunt-removed" options={{ animation: "slide_from_right", headerShown: false }} />
-            <Stack.Screen name="hunt-history" options={{ animation: "slide_from_right", headerShown: false }} />
-            <Stack.Screen name="article" options={{ animation: "slide_from_right", headerShown: false }} />
-            <Stack.Screen name="about" options={{ animation: "slide_from_right", headerShown: false }} />
             <Stack.Screen name="oauth/callback" />
           </Stack>
           <StatusBar style="light" />
@@ -155,6 +168,7 @@ export default function RootLayout() {
       </ScanProvider>
       </FlipStoreProvider>
     </GestureHandlerRootView>
+    </Animated.View>
   );
 
   const shouldOverrideSafeArea = Platform.OS === "web";

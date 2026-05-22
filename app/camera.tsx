@@ -475,19 +475,14 @@ export default function CameraScreen() {
     })
   ).current;
 
-  // ── Permission screen (unchanged) ─────────────────────────────────────────
+  // ── Permission screen ───────────────────────────────────────────────────────
   if (!permission) return <View style={s.root} />;
 
   if (!permission.granted) {
     const canAsk = permission.canAskAgain;
     return (
       <View style={[s.root, s.permWrap]}>
-        <Pressable
-          onPress={() => router.back()}
-          style={[s.permBackBtn, { top: Platform.OS === 'ios' ? 56 : 16 }]}
-        >
-          <MaterialIcons name="close" size={22} color={CREAM} />
-        </Pressable>
+        {/* No X or Go Back before the native prompt — Apple Guideline 5.1.1(iv) */}
         <View style={s.permIconCircle}>
           <MaterialIcons name="camera-alt" size={36} color={GOLD} />
         </View>
@@ -496,25 +491,27 @@ export default function CameraScreen() {
           FlipStart uses your camera to photograph thrifted items and estimate their resale value.
         </Text>
         {canAsk ? (
+          // Pre-permission state: neutral "Continue" only — no Allow/Grant/Enable wording
           <Pressable onPress={requestPermission} style={s.permPrimaryBtn}>
-            <Text style={s.permPrimaryBtnText}>Allow Camera Access</Text>
+            <Text style={s.permPrimaryBtnText}>Continue</Text>
           </Pressable>
         ) : (
+          // Denied state: native prompt can no longer appear, so Settings redirect is allowed
           <>
             <View style={s.permDeniedCard}>
               <MaterialIcons name="info-outline" size={16} color={GOLD} />
               <Text style={s.permDeniedText}>
-                Camera access was denied. Enable it in your iPhone Settings.
+                Camera access was denied. You can enable it in your iPhone Settings.
               </Text>
             </View>
             <Pressable onPress={() => Linking.openSettings()} style={s.permPrimaryBtn}>
               <Text style={s.permPrimaryBtnText}>Open Settings</Text>
             </Pressable>
+            <Pressable onPress={() => router.back()} style={{ marginTop: 12 }}>
+              <Text style={s.permBackText}>Go Back</Text>
+            </Pressable>
           </>
         )}
-        <Pressable onPress={() => router.back()} style={{ marginTop: 12 }}>
-          <Text style={s.permBackText}>Go Back</Text>
-        </Pressable>
       </View>
     );
   }
