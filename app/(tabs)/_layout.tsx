@@ -1,22 +1,37 @@
+/**
+ * app/(tabs)/_layout.tsx
+ *
+ * Tab bar: Home | History | [Camera center] | Hunt Mode | Progress
+ * Profile removed from bottom tabs — accessible via header icon.
+ */
+
 import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import { Tabs, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { Image } from 'expo-image';
 
 import { V } from '@/constants/vintage';
+import { FONTS } from '@/constants/typography';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
+// leftTabs: left of center camera button
+// rightTabs: right of center camera button
 
-const TAB_ITEMS = [
-  { name: 'index',   label: 'Home',    icon: 'home'    },
-  { name: 'history', label: 'History', icon: 'history' },
-  { name: 'profile', label: 'Profile', icon: 'person'  },
+const LEFT_TABS = [
+  { name: 'index',    label: 'Home',    icon: 'home'    },
+  { name: 'history',  label: 'History', icon: 'history' },
 ] as const;
 
-const leftTabs  = TAB_ITEMS.slice(0, 2);   // Home, History
-const rightTabs = TAB_ITEMS.slice(2);      // Profile
+const RIGHT_TABS = [
+  { name: 'hunt-tab',  label: 'Hunt Mode', icon: 'pets'       },
+  { name: 'progress',  label: 'Progress',  icon: 'bar-chart'  },
+] as const;
+
+type LeftTab  = typeof LEFT_TABS[number];
+type RightTab = typeof RIGHT_TABS[number];
 
 // ─── Custom tab bar ───────────────────────────────────────────────────────────
 
@@ -26,40 +41,42 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   const bottomPad = Math.max(insets.bottom, 8);
 
   const handleCenterScan = () => {
-    // Opens the custom camera screen — same as the Home "Scan Item" button.
-    // Gallery upload is available inside the camera screen.
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     router.push('/camera' as any);
   };
 
-  const renderTab = (item: typeof TAB_ITEMS[number]) => {
+  const renderTab = (item: LeftTab | RightTab) => {
     const routeIndex = state.routes.findIndex(r => r.name === item.name);
     const isActive   = state.index === routeIndex;
+    const color      = isActive ? V.green : V.textMuted;
 
     const onPress = () => {
-      if (Platform.OS !== 'web') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      // Hunt-tab navigates to the hunt entry screen, not a tab screen
+      if (item.name === 'hunt-tab') {
+        router.push('/hunt' as any);
+        return;
       }
       navigation.navigate(item.name);
     };
+
+    // Hunt Mode gets a lion icon
+    const isHunt = item.name === 'hunt-tab';
 
     return (
       <Pressable
         key={item.name}
         onPress={onPress}
-        style={({ pressed }) => [
-          styles.tabItem,
-          pressed && { opacity: 0.7 },
-        ]}
+        style={({ pressed }) => [styles.tabItem, pressed && { opacity: 0.7 }]}
       >
-        <MaterialIcons
-          name={item.icon as any}
-          size={22}
-          color={isActive ? V.green : V.textMuted}
-        />
-        <Text style={[styles.tabLabel, { color: isActive ? V.green : V.textMuted }]}>
-          {item.label}
-        </Text>
-        {isActive && <View style={[styles.activeBar, { backgroundColor: V.green }]} />}
+        {isHunt ? (
+          // Lion paw icon for Hunt Mode
+          <MaterialIcons name="pets" size={22} color={color} />
+        ) : (
+          <MaterialIcons name={(item as any).icon} size={22} color={color} />
+        )}
+        <Text style={[styles.tabLabel, { color }]}>{item.label}</Text>
+        {isActive && !isHunt && <View style={[styles.activeBar, { backgroundColor: V.green }]} />}
       </Pressable>
     );
   };
@@ -67,9 +84,12 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   return (
     <View style={[styles.barWrapper, { paddingBottom: bottomPad }]}>
       <View style={styles.bar}>
-        <View style={styles.tabGroup}>{leftTabs.map(renderTab)}</View>
+        {/* Left: Home, History */}
+        <View style={styles.tabGroup}>
+          {LEFT_TABS.map(renderTab)}
+        </View>
 
-        {/* Center floating scan button */}
+        {/* Center: floating camera button */}
         <View style={styles.centerSlot}>
           <Pressable
             onPress={handleCenterScan}
@@ -82,7 +102,10 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
           </Pressable>
         </View>
 
-        <View style={styles.tabGroup}>{rightTabs.map(renderTab)}</View>
+        {/* Right: Hunt Mode, Progress */}
+        <View style={styles.tabGroup}>
+          {RIGHT_TABS.map(renderTab)}
+        </View>
       </View>
     </View>
   );
@@ -96,11 +119,13 @@ export default function TabLayout() {
       tabBar={(props) => <VintageTabBar {...props} />}
       screenOptions={{ headerShown: false }}
     >
-      <Tabs.Screen name="index"    options={{ title: 'Home'    }} />
-      <Tabs.Screen name="history"  options={{ title: 'History' }} />
-      <Tabs.Screen name="profile"  options={{ title: 'Profile' }} />
-      <Tabs.Screen name="settings" options={{ href: null       }} />
-      <Tabs.Screen name="leaderboard" options={{ href: null    }} />
+      <Tabs.Screen name="index"       options={{ title: 'Home'      }} />
+      <Tabs.Screen name="history"     options={{ title: 'History'   }} />
+      <Tabs.Screen name="progress"    options={{ title: 'Progress'  }} />
+      <Tabs.Screen name="hunt-tab"    options={{ href: null         }} />
+      <Tabs.Screen name="profile"     options={{ href: null         }} />
+      <Tabs.Screen name="settings"    options={{ href: null         }} />
+      <Tabs.Screen name="leaderboard" options={{ href: null         }} />
     </Tabs>
   );
 }
@@ -137,9 +162,10 @@ const styles = StyleSheet.create({
     position:        'relative',
   },
   tabLabel: {
-    fontSize:      10,
+    fontSize:      9,
     fontWeight:    '600',
     letterSpacing: 0.2,
+    fontFamily:    FONTS.serif,
   },
   activeBar: {
     position:     'absolute',
