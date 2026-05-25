@@ -551,9 +551,19 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
           <Text style={s.headerSub}>LIVE HUNT</Text>
         </View>
         <Pressable
-          onPress={() => setSaveConfirmVisible(true)}
+          onPress={() => {
+            if (keptItems.length === 0) {
+              // No kept items — show subtle feedback, block save
+              if (Platform.OS !== 'web') {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+              }
+              Alert.alert('', 'Save at least 1 item to finish your hunt.');
+              return;
+            }
+            setSaveConfirmVisible(true);
+          }}
           hitSlop={10}
-          style={s.headerBtn}
+          style={[s.headerBtn, keptItems.length === 0 && { opacity: 0.4 }]}
         >
           <MaterialIcons name="check-circle-outline" size={24} color={FOREST} />
         </Pressable>

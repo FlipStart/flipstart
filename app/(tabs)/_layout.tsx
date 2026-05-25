@@ -12,9 +12,13 @@ import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image } from 'expo-image';
+import { useAudioPlayer } from 'expo-audio';
 
 import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
+
+// ─── Assets ───────────────────────────────────────────────────────────────────
+const ROAR_SOUND = require('@/assets/images/lion-roar.m4a');
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 // leftTabs: left of center camera button
@@ -39,6 +43,7 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   const router    = useRouter();
   const insets    = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
+  const roar      = useAudioPlayer(ROAR_SOUND);
 
   const handleCenterScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -54,6 +59,7 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
       if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       // Hunt-tab navigates to the hunt entry screen, not a tab screen
       if (item.name === 'hunt-tab') {
+        try { roar.seekTo(0); roar.play(); } catch { /* never crash */ }
         router.push('/hunt' as any);
         return;
       }

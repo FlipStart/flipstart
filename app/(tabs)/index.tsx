@@ -40,7 +40,7 @@ const LION_CARD_BG = require('@/assets/images/ScanItem-Lion.png');
 
 // ─── Palette — matched to reference image exactly ────────────────────────────
 const FOREST    = '#2A4A2A';   // wordmark, section headers, text
-const SCAN_DARK = '#162D1A';   // scan card + scan pill bg — deep predator green
+const SCAN_DARK = '#152815';   // exact bg green sampled from ScanItem-Lion3.png
 const CREAM     = '#F4EED8';   // text on dark cards
 const PARCHMENT = '#F0E8D4';   // page background — warm tan
 const CARD_B    = '#DDD0B0';   // card borders
@@ -90,6 +90,7 @@ export default function HomeScreen() {
 
   // ── Onboarding ──────────────────────────────────────────────────────────────
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
+  const [showScanModal,  setShowScanModal]  = useState(false);
   useEffect(() => {
     isOnboardingComplete().then(done => setShowOnboarding(!done));
   }, []);
@@ -167,13 +168,6 @@ export default function HomeScreen() {
           >
             <MaterialIcons name="person" size={22} color={FOREST} />
           </Pressable>
-          <Pressable
-            onPress={() => router.push('/(tabs)/settings' as any)}
-            style={({ pressed }) => [s.settingsBtn, pressed && { opacity: 0.6 }]}
-            hitSlop={12}
-          >
-            <MaterialIcons name="settings" size={22} color={BROWN} />
-          </Pressable>
         </View>
 
         {/* Center: FlipStart title with decorative stars */}
@@ -187,6 +181,7 @@ export default function HomeScreen() {
 
         {/* Right: scans pill — premium, taller, larger text */}
         <Pressable
+          onPress={() => setShowScanModal(true)}
           style={[s.scanPill, { borderColor: (isZero || isLow ? '#B85450' : GOLD) + '60', marginLeft: 10 }]}
           hitSlop={6}
         >
@@ -229,20 +224,9 @@ export default function HomeScreen() {
 
         {/* Left content */}
         <View style={s.scanCardContent}>
-          {/* Camera icon with radial rays */}
-          <View style={s.cameraIconWrap}>
-            {/* Radial ray lines */}
-            {[0,45,90,135,180,225,270,315].map(deg => (
-              <View
-                key={deg}
-                style={[s.ray, {
-                  transform: [{ rotate: `${deg}deg` }],
-                }]}
-              />
-            ))}
-            <View style={s.cameraIconBox}>
-              <MaterialIcons name="photo-camera" size={38} color={CREAM} />
-            </View>
+          {/* Camera icon */}
+          <View style={[s.cameraIconBox, { marginLeft: 42, marginBottom: 10 }]}>
+            <MaterialIcons name="photo-camera" size={38} color={CREAM} />
           </View>
           <Text style={s.scanCardTitle}>Scan Item</Text>
           <Text style={s.scanCardSub}>
@@ -274,6 +258,9 @@ export default function HomeScreen() {
             </Text>
           </View>
         </View>
+
+        {/* Vertical separator between XP section and Hunt streak */}
+        <View style={s.progressSep} />
 
         {/* Center: streak */}
         <View style={s.streakBlock}>
@@ -326,6 +313,58 @@ export default function HomeScreen() {
           ))}
         </ScrollView>
       </View>
+
+      {/* ── Scan balance modal ─────────────────────────────────────────────── */}
+      <Modal
+        visible={showScanModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowScanModal(false)}
+      >
+        <Pressable style={sm.backdrop} onPress={() => setShowScanModal(false)}>
+          <Pressable style={sm.card} onPress={e => e.stopPropagation()}>
+            {/* Header */}
+            <View style={sm.header}>
+              <MaterialIcons name="bolt" size={22} color={GOLD} />
+              <Text style={sm.title}>Scans Remaining</Text>
+            </View>
+
+            {/* Big number */}
+            <Text style={sm.count}>{scanLoading ? '…' : remaining}</Text>
+            <Text style={sm.subtitle}>
+              Global Premium Scans{'\n'}Remaining Today
+            </Text>
+
+            {/* Divider */}
+            <View style={sm.divider} />
+
+            {/* Explanation */}
+            <Text style={sm.body}>
+              Each item you scan uses one daily scan. Scans reset every day at midnight.
+            </Text>
+
+            {/* Low / zero warning */}
+            {(isLow || isZero) && (
+              <View style={sm.warningRow}>
+                <MaterialIcons name="info-outline" size={14} color="#B85450" />
+                <Text style={sm.warningText}>
+                  {isZero
+                    ? 'Daily scan limit reached. Check back tomorrow.'
+                    : 'Running low on scans for today.'}
+                </Text>
+              </View>
+            )}
+
+            {/* Dismiss */}
+            <Pressable
+              onPress={() => setShowScanModal(false)}
+              style={({ pressed }) => [sm.dismissBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Text style={sm.dismissText}>Got it</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* ── Onboarding overlay ─────────────────────────────────────────────── */}
       <Modal visible={showOnboarding === true} animationType="fade" statusBarTranslucent>
@@ -397,7 +436,7 @@ const s = StyleSheet.create({
     paddingTop:        IS_SMALL ? 6 : 8,
     paddingBottom:     IS_SMALL ? 6 : 8,
   },
-  headerLeft:  { flexDirection: 'row', alignItems: 'center', gap: 8, width: 82 },
+  headerLeft:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 15, width: 65 },
 
   // Profile — vintage circle, slightly smaller than previous pass
   avatarCircle: {
@@ -427,7 +466,7 @@ const s = StyleSheet.create({
   wordmarkRow:  { flexDirection: 'row', alignItems: 'center', gap: 4 },
   wordmark: {
     fontFamily:    FONTS.serif,
-    fontSize:      IS_SMALL ? 32 : 36,
+    fontSize:      IS_SMALL ? 27 : 36,
     fontWeight:    '900',
     color:         FOREST,
     letterSpacing: -1.2,   // tighter spacing keeps width in check while size grows
@@ -448,7 +487,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical:   3,
     borderWidth:       1,
-    marginRight:       6,
+    marginRight:       0,
     shadowColor:       '#0A1A0A',
     shadowOffset:      { width: 0, height: 3 },
     shadowOpacity:     0.45,
@@ -647,7 +686,7 @@ const s = StyleSheet.create({
     backgroundColor: BROWN,
     marginVertical:  6,
     marginHorizontal: 4,
-    opacity:         0.35,
+    opacity:         0.6,
   },
 
   streakBlock:  { alignItems: 'center', paddingHorizontal: 10 },
@@ -705,4 +744,99 @@ const s = StyleSheet.create({
   articlesRow:    { flexDirection: 'row', gap: 6 },
   articlesScroll: { gap: 8, paddingRight: 12, alignItems: 'stretch' },
   articleCardWrap: { width: ARTICLE_W, flex: 1 },
+});
+
+// ─── Scan modal styles ────────────────────────────────────────────────────────
+const sm = StyleSheet.create({
+  backdrop: {
+    flex:            1,
+    backgroundColor: 'rgba(10,18,10,0.55)',
+    justifyContent:  'center',
+    alignItems:      'center',
+    paddingHorizontal: 32,
+  },
+  card: {
+    width:           '100%',
+    backgroundColor: '#F0E8D4',
+    borderRadius:    20,
+    padding:         24,
+    borderWidth:     1,
+    borderColor:     '#DDD0B0',
+    shadowColor:     '#0A120A',
+    shadowOffset:    { width: 0, height: 6 },
+    shadowOpacity:   0.25,
+    shadowRadius:    16,
+    elevation:       10,
+    alignItems:      'center',
+  },
+  header: {
+    flexDirection:  'row',
+    alignItems:     'center',
+    gap:            8,
+    marginBottom:   12,
+  },
+  title: {
+    fontFamily:    FONTS.serif,
+    fontSize:      18,
+    fontWeight:    '800',
+    color:         FOREST,
+  },
+  count: {
+    fontFamily:    FONTS.serif,
+    fontSize:      52,
+    fontWeight:    '900',
+    color:         SCAN_DARK,
+    lineHeight:    58,
+  },
+  subtitle: {
+    fontSize:      13,
+    fontWeight:    '700',
+    color:         MUTED,
+    textAlign:     'center',
+    letterSpacing: 0.3,
+    marginBottom:  16,
+    lineHeight:    19,
+  },
+  divider: {
+    width:           '100%',
+    height:          1,
+    backgroundColor: '#DDD0B0',
+    marginBottom:    14,
+  },
+  body: {
+    fontSize:    13,
+    color:       '#5A3A1A',
+    textAlign:   'center',
+    lineHeight:  20,
+    marginBottom: 12,
+  },
+  warningRow: {
+    flexDirection:  'row',
+    alignItems:     'center',
+    gap:            6,
+    backgroundColor: 'rgba(184,84,80,0.10)',
+    borderRadius:   8,
+    paddingHorizontal: 12,
+    paddingVertical:   8,
+    marginBottom:   12,
+  },
+  warningText: {
+    fontSize:  12,
+    color:     '#B85450',
+    fontWeight: '600',
+    flex:       1,
+  },
+  dismissBtn: {
+    backgroundColor: SCAN_DARK,
+    borderRadius:    50,
+    paddingVertical: 12,
+    paddingHorizontal: 40,
+    marginTop:       4,
+  },
+  dismissText: {
+    fontFamily:  FONTS.serif,
+    fontSize:    15,
+    fontWeight:  '700',
+    color:       '#F4EED8',
+  },
 });
