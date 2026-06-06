@@ -6,7 +6,7 @@ const scheme   = "flipstart";
 const config: ExpoConfig = {
   name:                "FlipStart",
   slug:                "flipstart",
-  version:             "1.0.1",
+  version:             "1.1.0",
   orientation:         "portrait",
   icon:                "./assets/images/icon.png",
   scheme,
