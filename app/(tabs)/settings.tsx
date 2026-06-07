@@ -6,6 +6,8 @@ import * as MailComposer from 'expo-mail-composer';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useFlipStore } from '@/lib/useFlipStore';
+import { useAuth } from '@/lib/auth-context';
+import { resetOnboarding } from '@/lib/onboarding-storage';
 import { FONTS } from '@/constants/typography';
 import { useState, useEffect } from 'react';
 import { Camera } from 'expo-camera';
@@ -36,6 +38,7 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { clearAllFlips, flips } = useFlipStore();
+  const { user, profile, signOut } = useAuth();
 
   const [cameraStatus,   setCameraStatus]   = useState<PermStatus>('Not Asked');
   const [photoStatus,    setPhotoStatus]    = useState<PermStatus>('Not Asked');
@@ -198,6 +201,69 @@ export default function SettingsScreen() {
         </View>
 
         <View style={{ height: 40 }} />
+
+        {/* ── Account ─────────────────────────────────────────────── */}
+        {user ? (
+          <View style={s.card}>
+            <Pressable
+              onPress={() => Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Sign Out', style: 'destructive', onPress: () => signOut().catch(() => {}) },
+              ])}
+              style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}
+            >
+              <View style={[s.iconWrap, { backgroundColor: '#B8545418' }]}>
+                <MaterialIcons name="logout" size={18} color="#B85450" />
+              </View>
+              <View style={s.rowText}>
+                <Text style={[s.rowLabel, { color: '#B85450' }]}>Sign Out</Text>
+                <Text style={s.rowSub}>{profile?.username ? `@${profile.username}` : user.email ?? ''}</Text>
+              </View>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={s.card}>
+            <Pressable
+              onPress={() => router.push({ pathname: '/auth', params: { mode: 'signup' } } as any)}
+              style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}
+            >
+              <View style={[s.iconWrap, { backgroundColor: FOREST + '18' }]}>
+                <MaterialIcons name="person-add" size={18} color={FOREST} />
+              </View>
+              <View style={s.rowText}>
+                <Text style={s.rowLabel}>Create Account</Text>
+                <Text style={s.rowSub}>Save your progress across devices</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={18} color={MUTED} />
+            </Pressable>
+            <View style={s.divider} />
+            <Pressable
+              onPress={() => router.push({ pathname: '/auth', params: { mode: 'login' } } as any)}
+              style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}
+            >
+              <View style={[s.iconWrap, { backgroundColor: GOLD + '18' }]}>
+                <MaterialIcons name="login" size={18} color={GOLD} />
+              </View>
+              <View style={s.rowText}>
+                <Text style={s.rowLabel}>Log In</Text>
+                <Text style={s.rowSub}>Access your existing account</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={18} color={MUTED} />
+            </Pressable>
+          </View>
+        )}
+
+        {/* DEV — reset onboarding */}
+        {__DEV__ && (
+          <Pressable
+            onPress={() => resetOnboarding().then(() => Alert.alert('Reset', 'Onboarding reset. Restart the app.')).catch(() => {})}
+            style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }, { marginBottom: 8 }]}
+          >
+            <Text style={[s.rowLabel, { color: '#B85450' }]}>Reset Onboarding (Dev)</Text>
+          </Pressable>
+        )}
+
+        <View style={{ height: 16 }} />
       </ScrollView>
     </View>
   );

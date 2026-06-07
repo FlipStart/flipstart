@@ -22,6 +22,10 @@ import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-run
 import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
 import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@/lib/analytics";
+import { AuthProvider } from "@/lib/auth-context";
+import * as Linking from "expo-linking";
+import * as ExpoLinking from "expo-linking";
+import { supabase } from "@/lib/supabase";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -122,6 +126,25 @@ export default function RootLayout() {
     };
   }, []);
 
+  // ── Email confirmation deep link handler ─────────────────────────────────
+  // Handles flipstart://auth/callback?token_hash=xxx&type=email
+  // Must be in RootLayout so it fires before any screen renders.
+  useEffect(() => {
+    const handleUrl = async (url: string) => {
+      try {
+        const parsed     = ExpoLinking.parse(url);
+        const token_hash = parsed.queryParams?.token_hash as string | undefined;
+        const type       = parsed.queryParams?.type       as string | undefined;
+        if (token_hash && type) {
+          await supabase.auth.verifyOtp({ token_hash, type: type as any });
+        }
+      } catch { /* never crash */ }
+    };
+    const sub = Linking.addEventListener("url", ({ url }) => handleUrl(url));
+    Linking.getInitialURL().then(url => { if (url) handleUrl(url); }).catch(() => {});
+    return () => sub.remove();
+  }, []);
+
   const handleSafeAreaUpdate = useCallback((metrics: Metrics) => {
     setInsets(metrics.insets);
     setFrame(metrics.frame);
@@ -168,6 +191,7 @@ export default function RootLayout() {
       onLayout={onRootLayout}
     >
     <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
       <FlipStoreProvider>
       <ScanProvider>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
@@ -180,12 +204,16 @@ export default function RootLayout() {
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="oauth/callback" />
+            <Stack.Screen name="auth" options={{ headerShown: false, presentation: "modal" }} />
+            <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
+            <Stack.Screen name="username-setup" options={{ headerShown: false, presentation: "fullScreenModal" }} />
           </Stack>
           <StatusBar style="light" />
         </QueryClientProvider>
       </trpc.Provider>
       </ScanProvider>
       </FlipStoreProvider>
+      </AuthProvider>
     </GestureHandlerRootView>
     </Animated.View>
   );

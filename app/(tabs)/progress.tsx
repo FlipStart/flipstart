@@ -18,6 +18,7 @@ import {
   loadXpProfile, getCurrentRank, getNextRank,
   getRankProgress, RANK_LADDER, type HuntXpProfile,
 } from '@/lib/huntXp';
+import { useAuth } from '@/lib/auth-context';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 const FOREST  = '#2A4A2A';
@@ -31,11 +32,36 @@ const MUTED   = '#8A7050';
 export default function ProgressScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const [profile, setProfile] = useState<HuntXpProfile | null>(null);
 
   useFocusEffect(useCallback(() => {
-    loadXpProfile().then(setProfile).catch(() => {});
-  }, []));
+    if (user) loadXpProfile().then(setProfile).catch(() => {});
+  }, [user]));
+
+  // Login gate — show before full render
+  if (!authLoading && !user) {
+    return (
+      <View style={{ flex: 1, backgroundColor: PARCHMENT, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+        <MaterialIcons name="bar-chart" size={48} color={MUTED} style={{ marginBottom: 16 }} />
+        <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 }}>
+          Track Your Progress
+        </Text>
+        <Text style={{ fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 21, marginBottom: 28 }}>
+          Create an account to track your XP, rank, and hunt streaks across sessions.
+        </Text>
+        <Pressable
+          onPress={() => router.push({ pathname: '/auth', params: { mode: 'signup' } } as any)}
+          style={{ backgroundColor: FOREST, borderRadius: 50, paddingVertical: 14, paddingHorizontal: 36, marginBottom: 12 }}
+        >
+          <Text style={{ color: CREAM, fontSize: 15, fontWeight: '700', fontFamily: FONTS.serif }}>Create Account</Text>
+        </Pressable>
+        <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'login' } } as any)}>
+          <Text style={{ color: MUTED, fontSize: 14, textDecorationLine: 'underline' }}>Log In</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   const totalXp     = profile?.totalXp      ?? 0;
   const streak      = profile?.huntStreak   ?? 0;

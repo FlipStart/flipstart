@@ -21,6 +21,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRef, useState, useEffect } from 'react';
 
 import { startHunt } from '@/lib/hunt-context';
+import { useAuth } from '@/lib/auth-context';
 import { logHuntModeOpened, logHuntStarted } from '@/lib/analytics';
 import { FONTS } from '@/constants/typography';
 
@@ -47,6 +48,7 @@ export default function HuntScreen() {
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
   const player  = useAudioPlayer(ROAR_SOUND);
+  const { user, loading: authLoading } = useAuth();
 
   // Confirmed hunt name shown on the card
   const [huntName, setHuntName] = useState('');
@@ -119,6 +121,32 @@ export default function HuntScreen() {
   };
 
   const handleBack = () => router.back();
+
+  // ── Login gate ─────────────────────────────────────────────────────────────
+  if (!authLoading && !user) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#F0E8D4', justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+        <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 }}>
+          Hunt Mode
+        </Text>
+        <Text style={{ fontSize: 14, color: '#8A7050', textAlign: 'center', lineHeight: 21, marginBottom: 28 }}>
+          Create an account to save your hunts, XP, and streaks.
+        </Text>
+        <Pressable
+          onPress={() => router.push({ pathname: '/auth', params: { mode: 'signup' } } as any)}
+          style={{ backgroundColor: FOREST, borderRadius: 50, paddingVertical: 14, paddingHorizontal: 36, marginBottom: 12 }}
+        >
+          <Text style={{ color: CREAM, fontSize: 15, fontWeight: '700', fontFamily: FONTS.serif }}>Create Account</Text>
+        </Pressable>
+        <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'login' } } as any)}>
+          <Text style={{ color: '#8A7050', fontSize: 14, textDecorationLine: 'underline' }}>Log In</Text>
+        </Pressable>
+        <Pressable onPress={() => router.back()} style={{ marginTop: 20 }}>
+          <Text style={{ color: '#8A7050', fontSize: 13 }}>← Go Back</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <Animated.View style={[s.screenWrap, { opacity: screenFade }]}>
