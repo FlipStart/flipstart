@@ -22,10 +22,9 @@ import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-run
 import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
 import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@/lib/analytics";
-// DIAGNOSTIC: auth imports removed — testing if startup crash is from auth/supabase imports
-// import { AuthProvider } from "@/lib/auth-context";
+import { AuthProvider } from "@/lib/auth-context";
+// Deep link auth handler remains disabled until AuthProvider boot is confirmed stable.
 // import * as Linking from "expo-linking";
-// import { supabase } from "@/lib/supabase";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -190,8 +189,7 @@ export default function RootLayout() {
       onLayout={onRootLayout}
     >
     <GestureHandlerRootView style={{ flex: 1 }}>
-      {/* DIAGNOSTIC: AuthProvider disabled — testing if startup Supabase code crashes */}
-      {/* <AuthProvider> */}
+      <AuthProvider>
       <FlipStoreProvider>
       <ScanProvider>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
@@ -214,7 +212,7 @@ export default function RootLayout() {
       </trpc.Provider>
       </ScanProvider>
       </FlipStoreProvider>
-      {/* </AuthProvider> */}
+      </AuthProvider>
     </GestureHandlerRootView>
     </Animated.View>
   );
