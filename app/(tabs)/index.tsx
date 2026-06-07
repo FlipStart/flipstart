@@ -30,7 +30,6 @@ import { setPendingScan } from '@/lib/pending-scan';
 import { logEvent } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { isOnboardingComplete, completeOnboarding } from '@/lib/onboarding-storage';
-import { useAuth } from '@/lib/auth-context';
 import {
   loadXpProfile, getCurrentRank, getNextRank,
   getRankProgress, RANK_LADDER, type HuntXpProfile,
@@ -90,23 +89,12 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
 
   // ── Onboarding ──────────────────────────────────────────────────────────────
-  const { user, profile, loading: authLoading, profileChecked } = useAuth();
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
   const [showScanModal,  setShowScanModal]  = useState(false);
   useEffect(() => {
     isOnboardingComplete().then(done => setShowOnboarding(!done));
   }, []);
 
-  // Auth-based routing — waits for profileChecked before acting
-  useEffect(() => {
-    if (authLoading || !profileChecked) return;
-    if (!user) return; // guest uses local onboarding gate
-    if (profile?.onboarding_complete) {
-      setShowOnboarding(false); // complete account → home
-    } else {
-      router.replace('/username-setup' as any); // needs username
-    }
-  }, [authLoading, profileChecked, user, profile]);
 
   // ── Scan balance ────────────────────────────────────────────────────────────
   const { remaining, loading: scanLoading } = useScansRemaining();
