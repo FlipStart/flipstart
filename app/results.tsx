@@ -337,17 +337,20 @@ export default function ResultsScreen() {
     if (isHuntActive()) {
       try {
         addItemToHunt({
+          huntItemId:     currentScan.id,
           scanId:         currentScan.id,
           itemName:       id.item_name,
           brand:          id.brand,
           category:       id.category,
           imageUri:       currentScan.imageUri,
+          allImageUris:   currentScan.allImageUris ?? [currentScan.imageUri],
           estimatedValue: md.adjusted_estimated_value,
           thriftPrice:    calc.thriftPrice,
           profit:         calc.profit,
-          kept:           true,       // saved = kept by default
+          kept:           true,
           huntRating:     computeHuntRating(calc.profit, ra.match_confidence),
           addedAt:        Date.now(),
+          scanSnapshot:   currentScan,
         });
       } catch { /* never block navigation */ }
     }
