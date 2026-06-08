@@ -21,6 +21,11 @@ import { completeOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
 import { PENDING_USERNAME_KEY } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
+
+// Complete any pending auth sessions on mount (required by expo-web-browser)
+WebBrowser.maybeCompleteAuthSession();
 
 const FOREST    = '#2A4A2A';
 const SCAN_DARK = '#152815';
@@ -48,6 +53,8 @@ export default function AuthScreen() {
   const [error,        setError]        = useState<string | null>(null);
   const [resendMsg,    setResendMsg]    = useState<string | null>(null);
   const [cooldown,     setCooldown]     = useState(0);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleError,   setGoogleError]   = useState<string | null>(null);
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Username availability
@@ -90,6 +97,45 @@ export default function AuthScreen() {
   };
 
   const clearError = () => { setError(null); setResendMsg(null); };
+
+  // ── Google Sign-In ──────────────────────────────────────────────────────────
+  const handleGoogleSignIn = async () => {
+    if (googleLoading || saving) return;
+    setGoogleLoading(true);
+    setGoogleError(null);
+    try {
+      const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: 'flipstart://auth/callback', skipBrowserRedirect: true },
+      });
+      if (oauthError || !data?.url) {
+        setGoogleError('Could not start Google Sign-In. Please try again.');
+        return;
+      }
+      const result = await WebBrowser.openAuthSessionAsync(data.url, 'flipstart://');
+      if (result.type !== 'success') return; // user cancelled — no error
+
+      const parsed = Linking.parse(result.url);
+      const code = parsed.queryParams?.code as string | undefined;
+      if (!code) {
+        setGoogleError('Google Sign-In did not return a code. Please try again.');
+        return;
+      }
+      const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
+      if (sessionError) {
+        setGoogleError(`Sign-In failed: ${sessionError.message}`);
+        return;
+      }
+      // SIGNED_IN fires → AuthProvider → ensureProfile
+      // index.tsx profileChecked gate routes to username-setup or home
+      await refreshProfile().catch(() => {});
+      router.replace('/(tabs)' as any);
+    } catch (err) {
+      setGoogleError('Google Sign-In failed. Please try again.');
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
 
   // ── Sign Up ────────────────────────────────────────────────────────────────
   const handleSignUp = async () => {
@@ -271,6 +317,40 @@ export default function AuthScreen() {
             <Text style={s.switchTextBold}>{isSignUp ? 'Log In' : 'Sign Up'}</Text>
           </Text>
         </Pressable>
+
+        {/* ── Google Sign-In ─────────────────────────────────────── */}
+        <View style={s.dividerRow}>
+          <View style={s.dividerLine} /><Text style={s.dividerText}>or</Text><View style={s.dividerLine} />
+        </View>
+
+        {googleError && (
+          <View style={[s.errorBox, { marginBottom: 10 }]}>
+            <MaterialIcons name="error-outline" size={14} color="#721C24" />
+            <Text style={s.errorText}>{googleError}</Text>
+          </View>
+        )}
+
+        <Pressable
+          onPress={handleGoogleSignIn}
+          disabled={googleLoading || saving}
+          style={({ pressed }) => [s.googleBtn, (pressed || googleLoading) && { opacity: 0.8 }]}
+        >
+          {googleLoading ? (
+            <ActivityIndicator color="#3C4043" size="small" />
+          ) : (
+            <>
+              <Text style={s.googleG}>
+                <Text style={{ color: '#4285F4' }}>G</Text>
+                <Text style={{ color: '#EA4335' }}>o</Text>
+                <Text style={{ color: '#FBBC05' }}>o</Text>
+                <Text style={{ color: '#4285F4' }}>g</Text>
+                <Text style={{ color: '#34A853' }}>l</Text>
+                <Text style={{ color: '#EA4335' }}>e</Text>
+              </Text>
+              <Text style={s.googleBtnText}>Continue with Google</Text>
+            </>
+          )}
+        </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -298,4 +378,10 @@ const s = StyleSheet.create({
   switchBtn:      { alignItems: 'center', paddingVertical: 16 },
   switchText:     { fontSize: 14, color: MUTED },
   switchTextBold: { fontWeight: '700', color: BROWN, textDecorationLine: 'underline' },
+  dividerRow:     { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  dividerLine:    { flex: 1, height: 1, backgroundColor: CARD_B },
+  dividerText:    { fontSize: 12, color: MUTED, fontWeight: '600' },
+  googleBtn:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: '#FFFFFF', borderRadius: 50, paddingVertical: 15, borderWidth: 1.5, borderColor: '#DADCE0' },
+  googleG:        { fontSize: 15, fontWeight: '800' },
+  googleBtnText:  { fontSize: 15, fontWeight: '600', color: '#3C4043' },
 });
