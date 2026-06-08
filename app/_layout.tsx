@@ -202,10 +202,9 @@ export default function RootLayout() {
             <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="oauth/callback" />
-            {/* DIAGNOSTIC: auth screens registered but unreachable — no AuthProvider mounted */}
-            {/* <Stack.Screen name="auth" options={{ headerShown: false, presentation: "modal" }} /> */}
-            {/* <Stack.Screen name="auth/callback" options={{ headerShown: false }} /> */}
-            {/* <Stack.Screen name="username-setup" options={{ headerShown: false, presentation: "fullScreenModal" }} /> */}
+            <Stack.Screen name="auth" options={{ headerShown: false, presentation: "modal" }} />
+            <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
+            <Stack.Screen name="username-setup" options={{ headerShown: false, presentation: "fullScreenModal" }} />
           </Stack>
           <StatusBar style="light" />
         </QueryClientProvider>
