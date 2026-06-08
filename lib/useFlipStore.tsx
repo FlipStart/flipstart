@@ -24,10 +24,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FlipResult, HuntBundle, HistoryEntry, isHuntBundle } from '@/types/flip';
 import { deriveGlobalStats, calcGlobalRank } from '@/utils/flipCalculations';
 import type { GlobalStats, GlobalRank } from '@/types/flip';
+import { upsertScan, deleteScan, deleteAllScans, fetchScans, mergeScans } from '@/lib/scanSync';
+import { upsertHuntBundle, deleteHuntBundle, deleteAllHuntBundles, fetchHuntBundles, mergeHuntBundles } from '@/lib/huntBundleSync';
 
-// ─── Storage key ──────────────────────────────────────────────────────────────
+// ─── Storage keys ─────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'flipstart_confirmed_flips';
+const GUEST_KEY  = 'flipstart_confirmed_flips';           // legacy / guest
+const userKey    = (uid: string) => `flipstart_flips:${uid}`; // per-user
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -107,7 +110,7 @@ function reducer(state: FlipStoreState, action: FlipAction): FlipStoreState {
       };
 
     case 'CLEAR_ALL':
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([])).catch(() => {});
+      AsyncStorage.setItem(GUEST_KEY, JSON.stringify([])).catch(() => {});
       return { ...state, flips: [], pendingThriftPrices: {} };
 
     case 'CLEAR_THRIFT_PRICE': {
@@ -150,49 +153,108 @@ const FlipStoreContext = createContext<FlipStoreValue | undefined>(undefined);
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
-export function FlipStoreProvider({ children }: { children: React.ReactNode }) {
+export function FlipStoreProvider({
+  children,
+  userId,
+}: {
+  children: React.ReactNode;
+  userId?: string | null;
+}) {
   const [state, dispatch] = useReducer(reducer, {
     flips:    [],
     isLoaded: false,
     pendingThriftPrices: {},
   });
 
-  // ── Load from AsyncStorage on mount ────────────────────────────────────────
+  // ── Load from AsyncStorage on mount / when userId changes ──────────────────
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
+    const key = userId ? userKey(userId) : GUEST_KEY;
+    AsyncStorage.getItem(key)
       .then(raw => {
-        if (raw) {
-          const parsed = JSON.parse(raw) as HistoryEntry[];
-          dispatch({ type: 'LOAD', payload: parsed });
-        } else {
-          dispatch({ type: 'LOAD', payload: [] });
-        }
+        const parsed = raw ? (JSON.parse(raw) as HistoryEntry[]) : [];
+        dispatch({ type: 'LOAD', payload: parsed });
       })
       .catch(() => dispatch({ type: 'LOAD', payload: [] }));
-  }, []);
+  }, [userId]);
 
   // ── Persist to AsyncStorage whenever flips change ──────────────────────────
   useEffect(() => {
     if (!state.isLoaded) return;
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state.flips)).catch(() => {});
-  }, [state.flips, state.isLoaded]);
+    const key = userId ? userKey(userId) : GUEST_KEY;
+    AsyncStorage.setItem(key, JSON.stringify(state.flips)).catch(() => {});
+  }, [state.flips, state.isLoaded, userId]);
+
+  // ── Cloud sync on login: migrate guest → user, pull cloud, merge ─────────
+  useEffect(() => {
+    if (!userId || !state.isLoaded) return;
+    (async () => {
+      try {
+        const key      = userKey(userId);
+        const guestRaw = await AsyncStorage.getItem(GUEST_KEY).catch(() => null);
+        const guestEntries: HistoryEntry[] = guestRaw ? JSON.parse(guestRaw) : [];
+
+        // Push guest scans to cloud (migration)
+        const guestScans   = guestEntries.filter((e): e is FlipResult => !isHuntBundle(e));
+        const guestBundles = guestEntries.filter(isHuntBundle);
+        for (const s of guestScans)   upsertScan(s, userId).catch(() => {});
+        for (const b of guestBundles) upsertHuntBundle(b, userId).catch(() => {});
+
+        // Fetch cloud data and merge
+        const [cloudScans, cloudBundles] = await Promise.all([
+          fetchScans(userId),
+          fetchHuntBundles(userId),
+        ]);
+
+        const localRaw     = await AsyncStorage.getItem(key).catch(() => null);
+        const localEntries: HistoryEntry[] = localRaw ? JSON.parse(localRaw) : guestEntries;
+        const localScans   = localEntries.filter((e): e is FlipResult => !isHuntBundle(e));
+        const localBundles = localEntries.filter(isHuntBundle);
+
+        const mergedScans   = mergeScans(localScans, cloudScans);
+        const mergedBundles = mergeHuntBundles(localBundles, cloudBundles);
+        const merged        = [...mergedScans, ...mergedBundles];
+
+        dispatch({ type: 'LOAD', payload: merged });
+        AsyncStorage.setItem(key, JSON.stringify(merged)).catch(() => {});
+
+        // Clear guest key after migration
+        if (guestEntries.length > 0) {
+          AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
+        }
+      } catch (err) {
+        if (__DEV__) console.warn('[useFlipStore] sync effect threw:', err);
+      }
+    })();
+  }, [userId, state.isLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const addFlip = useCallback((flip: FlipResult) => {
     dispatch({ type: 'ADD_FLIP', payload: flip });
-  }, []);
+    if (userId) upsertScan(flip, userId).catch(() => {});
+  }, [userId]);
 
   const addHuntBundle = useCallback((bundle: HuntBundle) => {
     dispatch({ type: 'ADD_HUNT_BUNDLE', payload: bundle });
-  }, []);
+    if (userId) upsertHuntBundle(bundle, userId).catch(() => {});
+  }, [userId]);
 
   const removeFlip = useCallback((id: string) => {
+    // Determine type before dispatch removes it
+    const entry = state.flips.find(f => f.id === id);
     dispatch({ type: 'REMOVE_FLIP', payload: id });
-  }, []);
+    if (userId && entry) {
+      if (isHuntBundle(entry)) deleteHuntBundle(id, userId).catch(() => {});
+      else                     deleteScan(id, userId).catch(() => {});
+    }
+  }, [userId, state.flips]);
 
   const clearAllFlips = useCallback(() => {
     dispatch({ type: 'CLEAR_ALL' });
-  }, []);
+    if (userId) {
+      deleteAllScans(userId).catch(() => {});
+      deleteAllHuntBundles(userId).catch(() => {});
+    }
+  }, [userId]);
 
   const updateFlip = useCallback((id: string, updates: Partial<FlipResult>) => {
     dispatch({ type: 'UPDATE_FLIP', payload: { id, updates } });

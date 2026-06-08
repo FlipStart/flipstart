@@ -97,17 +97,28 @@ export default function HomeScreen() {
     isOnboardingComplete().then(done => setShowOnboarding(!done));
   }, []);
 
-  // ── Auth routing gate ────────────────────────────────────────────────────────
-  // Waits for profileChecked=true (Supabase lazy-loaded and getSession resolved)
-  // before making any routing decision. Prevents race condition where
-  // user is set but profile fetch is still in flight.
+  // ── XP sync on login ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (authLoading || !profileChecked || !user?.id) return;
+    // Fire-and-forget — never blocks UI, never crashes app
+    import('@/lib/huntXp').then(({ syncXpOnLogin }) => {
+      syncXpOnLogin(user.id).catch(() => {});
+    }).catch(() => {});
+  }, [authLoading, profileChecked, user?.id]);
+  // routedForUser prevents re-routing when profile state updates after
+  // username setup completes — without this guard a stale profile causes a loop.
+  const routedForUser = useRef<string | null>(null);
   useEffect(() => {
     if (authLoading || !profileChecked) return;
-    if (!user) return; // guest — handled by local onboarding gate
+    if (!user) { routedForUser.current = null; return; } // reset on sign-out
+    if (routedForUser.current === user.id) return;       // already routed this session
+
     if (profile?.onboarding_complete) {
-      setShowOnboarding(false);            // fully onboarded → home
+      routedForUser.current = user.id;
+      setShowOnboarding(false);
     } else {
-      router.replace('/username-setup' as any); // needs username
+      routedForUser.current = user.id;
+      router.replace('/username-setup' as any);
     }
   }, [authLoading, profileChecked, user, profile]);
 

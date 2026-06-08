@@ -395,10 +395,39 @@ export async function loadXpProfile(): Promise<HuntXpProfile> {
   }
 }
 
-export async function saveXpProfile(profile: HuntXpProfile): Promise<void> {
+export async function saveXpProfile(profile: HuntXpProfile, userId?: string | null): Promise<void> {
   try {
     await AsyncStorage.setItem(XP_PROFILE_KEY, JSON.stringify(profile));
   } catch { /* never block app flow */ }
+  // Fire-and-forget cloud sync if logged in
+  if (userId) {
+    import('@/lib/xpSync').then(({ saveXpProfile: cloudSave }) => {
+      cloudSave(profile, userId).catch(() => {});
+    }).catch(() => {});
+  }
+}
+
+/**
+ * syncXpOnLogin — called once after auth resolves for a logged-in user.
+ * Pulls cloud XP, merges with local (higher progress wins), saves merged.
+ */
+export async function syncXpOnLogin(userId: string): Promise<void> {
+  try {
+    const { fetchXpProfile, saveXpProfile: cloudSave, mergeXpProfiles } = await import('@/lib/xpSync');
+    const [local, cloud] = await Promise.all([
+      loadXpProfile(),
+      fetchXpProfile(userId),
+    ]);
+    if (!cloud) {
+      // No cloud record yet — push local up
+      cloudSave(local, userId).catch(() => {});
+      return;
+    }
+    const merged = mergeXpProfiles(local, cloud);
+    await saveXpProfile(merged, userId);
+  } catch (err) {
+    if (__DEV__) console.warn('[huntXp] syncXpOnLogin threw:', err);
+  }
 }
 
 // ─── applyHuntXp — loads profile, calculates, saves, returns result ───────────

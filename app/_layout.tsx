@@ -22,12 +22,25 @@ import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-run
 import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
 import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@/lib/analytics";
-import { AuthProvider } from "@/lib/auth-context";
+import { AuthProvider, useAuth } from "@/lib/auth-context";
 // Deep link auth handler remains disabled until AuthProvider boot is confirmed stable.
 // import * as Linking from "expo-linking";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
+
+// AuthBridge: reads userId from AuthProvider (safe — no supabase import here)
+// and passes it to FlipStoreProvider so scan/bundle sync knows the current user.
+function AppProviders({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  return (
+    <FlipStoreProvider userId={user?.id ?? null}>
+      <ScanProvider>
+        {children}
+      </ScanProvider>
+    </FlipStoreProvider>
+  );
+}
 
 // Keep the native splash visible until we explicitly hide it.
 // Called at module level so it runs before the first render —
@@ -190,8 +203,7 @@ export default function RootLayout() {
     >
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
-      <FlipStoreProvider>
-      <ScanProvider>
+      <AppProviders>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
           <Stack screenOptions={{ headerShown: false }}>
@@ -209,8 +221,7 @@ export default function RootLayout() {
           <StatusBar style="light" />
         </QueryClientProvider>
       </trpc.Provider>
-      </ScanProvider>
-      </FlipStoreProvider>
+      </AppProviders>
       </AuthProvider>
     </GestureHandlerRootView>
     </Animated.View>

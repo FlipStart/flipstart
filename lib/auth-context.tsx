@@ -73,14 +73,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile,        setProfile]        = useState<Profile | null>(null);
   const [loading,        setLoading]        = useState(true);
   const [profileChecked, setProfileChecked] = useState(false);
-  const [signOutFn,      setSignOutFn]      = useState<() => Promise<void>>(() => async () => {});
-  const [refreshFn,      setRefreshFn]      = useState<() => Promise<void>>(() => async () => {});
+  // signOut and refreshProfile are useCallbacks using refs — no stale closures
+
+  // refreshProfile and signOut are defined as useCallbacks that read from refs
+  // so they always have the current user/supabase even after lazy init().
+  const refreshProfile = useCallback(async (): Promise<void> => {
+    const userId = userRef.current?.id;
+    if (userId && ensureProfileRef.current) {
+      try { await ensureProfileRef.current(userId); } catch { /* ok */ }
+    }
+  }, []);
+
+  const signOut = useCallback(async (): Promise<void> => {
+    try {
+      if (supabaseRef.current) await supabaseRef.current.auth.signOut();
+    } catch { /* ok */ }
+  }, []);
 
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+
+  // Refs so refreshProfile/signOut always have the current user and ensureProfile
+  // without depending on stale closures from the lazy init() useEffect.
+  const userRef           = useRef<User | null>(null);
+  const ensureProfileRef  = useRef<((userId: string) => Promise<void>) | null>(null);
+  const supabaseRef       = useRef<any>(null);
+
+  // Keep userRef in sync with user state
+  useEffect(() => { userRef.current = user; }, [user]);
 
   const safe = {
     setLoading:        (v: boolean)        => { if (mounted.current) setLoading(v); },
@@ -183,14 +206,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       };
 
-      // ── Step 4: wire up signOut and refreshProfile ───────────────────────
-      setSignOutFn(() => async () => {
-        try { await supabase.auth.signOut(); } catch { /* ok */ }
-      });
-      setRefreshFn(() => async () => {
-        const snap = user;
-        if (snap?.id) { try { await ensureProfile(snap.id); } catch { /* ok */ } }
-      });
+      // ── Step 4: wire up refs so refreshProfile/signOut have live access ────
+      supabaseRef.current      = supabase;
+      ensureProfileRef.current = ensureProfile;
 
       // ── Step 5: subscribe to auth state changes ──────────────────────────
       try {
@@ -258,8 +276,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value: AuthState = {
     session, user, profile, loading, profileChecked,
-    signOut:        signOutFn,
-    refreshProfile: refreshFn,
+    signOut,
+    refreshProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
