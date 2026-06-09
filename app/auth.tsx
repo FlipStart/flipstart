@@ -55,6 +55,8 @@ export default function AuthScreen() {
   const [cooldown,     setCooldown]     = useState(0);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [googleError,   setGoogleError]   = useState<string | null>(null);
+  const [appleLoading,  setAppleLoading]  = useState(false);
+  const [appleError,    setAppleError]    = useState<string | null>(null);
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Username availability
@@ -134,6 +136,70 @@ export default function AuthScreen() {
       setGoogleError('Google Sign-In failed. Please try again.');
     } finally {
       setGoogleLoading(false);
+    }
+  };
+
+  // ── Apple Sign-In ──────────────────────────────────────────────────────────
+  // expo-apple-authentication is dynamically imported — never at module level.
+  // This means zero Apple code runs at startup, avoiding the previous crash.
+  const handleAppleSignIn = async () => {
+    if (appleLoading || saving) return;
+    setAppleLoading(true);
+    setAppleError(null);
+    try {
+      // Dynamic import — only loads when user taps the button
+      const AppleAuth = await import('expo-apple-authentication');
+
+      // Check availability (iOS 13+ only)
+      const available = await AppleAuth.isAvailableAsync();
+      if (!available) {
+        setAppleError('Apple Sign-In is not available on this device.');
+        return;
+      }
+
+      // Show native Apple sheet
+      const credential = await AppleAuth.signInAsync({
+        requestedScopes: [
+          AppleAuth.AppleAuthenticationScope.FULL_NAME,
+          AppleAuth.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      const { identityToken, fullName } = credential;
+      if (!identityToken) {
+        setAppleError('Apple Sign-In failed. Please try again.');
+        return;
+      }
+
+      // Exchange with Supabase — no browser, no redirects
+      const { error: sessionError } = await supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token:    identityToken,
+      });
+
+      if (sessionError) {
+        setAppleError(`Sign-In failed: ${sessionError.message}`);
+        return;
+      }
+
+      // Save full name to metadata on first sign-in (Apple only sends it once)
+      if (fullName?.givenName || fullName?.familyName) {
+        const displayName = [fullName.givenName, fullName.familyName]
+          .filter(Boolean).join(' ');
+        supabase.auth.updateUser({ data: { full_name: displayName } }).catch(() => {});
+      }
+
+      // SIGNED_IN fires → AuthProvider → ensureProfile
+      // index.tsx profileChecked gate routes to username-setup or home
+      await refreshProfile().catch(() => {});
+      router.replace('/(tabs)' as any);
+
+    } catch (err: any) {
+      // User cancelled — silent, no error shown
+      if (err?.code === 'ERR_REQUEST_CANCELED' || err?.code === 'ERR_CANCELED') return;
+      setAppleError('Apple Sign-In failed. Please try again.');
+    } finally {
+      setAppleLoading(false);
     }
   };
 
@@ -351,6 +417,24 @@ export default function AuthScreen() {
             </>
           )}
         </Pressable>
+
+        {/* Apple Sign-In — iOS only, shown always (isAvailableAsync checked inside handler) */}
+        {appleError && (
+          <View style={[s.errorBox, { marginTop: 10 }]}>
+            <MaterialIcons name="error-outline" size={14} color="#721C24" />
+            <Text style={s.errorText}>{appleError}</Text>
+          </View>
+        )}
+        <Pressable
+          onPress={handleAppleSignIn}
+          disabled={appleLoading || saving}
+          style={({ pressed }) => [s.appleBtn, (pressed || appleLoading) && { opacity: 0.8 }]}
+        >
+          {appleLoading
+            ? <ActivityIndicator color="#FFFFFF" size="small" />
+            : <Text style={s.appleBtnText}> Continue with Apple</Text>
+          }
+        </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -384,4 +468,6 @@ const s = StyleSheet.create({
   googleBtn:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: '#FFFFFF', borderRadius: 50, paddingVertical: 15, borderWidth: 1.5, borderColor: '#DADCE0' },
   googleG:        { fontSize: 15, fontWeight: '800' },
   googleBtnText:  { fontSize: 15, fontWeight: '600', color: '#3C4043' },
+  appleBtn:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#000000', borderRadius: 50, paddingVertical: 15, marginTop: 10 },
+  appleBtnText:   { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
 });

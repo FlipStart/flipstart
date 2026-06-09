@@ -16,6 +16,7 @@ const config: ExpoConfig = {
   ios: {
     supportsTablet:    false,
     bundleIdentifier:  bundleId,
+    usesAppleSignIn:   true,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
       NSCameraUsageDescription:
@@ -58,6 +59,8 @@ const config: ExpoConfig = {
     "expo-router",
     "expo-font",
     "expo-audio",
+    "expo-web-browser",
+    "expo-apple-authentication",
     [
       "expo-splash-screen",
       {
