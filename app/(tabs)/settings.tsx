@@ -189,6 +189,26 @@ export default function SettingsScreen() {
             onPress={() => router.push('/about' as any)}
           />
           <View style={s.divider} />
+          <SettingsRow
+            icon="star-rate"
+            label="Review FlipStart"
+            sub="Leave a quick App Store rating to help the mission."
+            color={GOLD}
+            onPress={async () => {
+              try {
+                const StoreReview = await import('expo-store-review');
+                const available   = await StoreReview.isAvailableAsync();
+                if (available) {
+                  await StoreReview.requestReview();
+                } else {
+                  Alert.alert('Thanks!', 'We appreciate your support. You can find us on the App Store to leave a review.');
+                }
+              } catch {
+                Alert.alert('Thanks!', 'We appreciate your support.');
+              }
+            }}
+          />
+          <View style={s.divider} />
           <View style={s.row}>
             <View style={[s.iconWrap, { backgroundColor: GOLD + '18' }]}>
               <MaterialIcons name="tag" size={18} color={GOLD} />

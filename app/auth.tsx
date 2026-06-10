@@ -34,6 +34,7 @@ const PARCHMENT = '#F0E8D4';
 const CARD_B    = '#DDD0B0';
 const BROWN     = '#5A3A1A';
 const MUTED     = '#8A7050';
+const GOLD      = '#BE9C2C';
 
 export default function AuthScreen() {
   const router  = useRouter();
@@ -41,8 +42,10 @@ export default function AuthScreen() {
   const params  = useLocalSearchParams<{ mode?: string }>();
   const { refreshProfile } = useAuth();
 
-  const [mode,         setMode]         = useState<'signup' | 'login' | 'confirm'>(
-    params.mode === 'login' ? 'login' : 'signup'
+  const [mode, setMode] = useState<'entry' | 'signup' | 'login' | 'confirm'>(
+    params.mode === 'login'  ? 'login'  :
+    params.mode === 'signup' ? 'signup' :
+    'entry'  // default: show polished entry screen
   );
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
@@ -55,7 +58,8 @@ export default function AuthScreen() {
   const [cooldown,     setCooldown]     = useState(0);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [googleError,   setGoogleError]   = useState<string | null>(null);
-  const [appleLoading,  setAppleLoading]  = useState(false);
+  // 'idle' | 'opening' | 'signing' | 'loading'
+  const [appleStep,     setAppleStep]     = useState<'idle'|'opening'|'signing'|'loading'>('idle');
   const [appleError,    setAppleError]    = useState<string | null>(null);
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -102,7 +106,7 @@ export default function AuthScreen() {
 
   // ── Google Sign-In ──────────────────────────────────────────────────────────
   const handleGoogleSignIn = async () => {
-    if (googleLoading || saving) return;
+    if (googleLoading || saving || appleStep !== 'idle') return;
     setGoogleLoading(true);
     setGoogleError(null);
     try {
@@ -140,20 +144,17 @@ export default function AuthScreen() {
   };
 
   // ── Apple Sign-In ──────────────────────────────────────────────────────────
-  // expo-apple-authentication is dynamically imported — never at module level.
-  // This means zero Apple code runs at startup, avoiding the previous crash.
   const handleAppleSignIn = async () => {
-    if (appleLoading || saving) return;
-    setAppleLoading(true);
+    if (appleStep !== 'idle' || saving || googleLoading) return; // prevent double-tap / race
+    setAppleStep('opening');
     setAppleError(null);
     try {
-      // Dynamic import — only loads when user taps the button
       const AppleAuth = await import('expo-apple-authentication');
 
-      // Check availability (iOS 13+ only)
       const available = await AppleAuth.isAvailableAsync();
       if (!available) {
         setAppleError('Apple Sign-In is not available on this device.');
+        setAppleStep('idle');
         return;
       }
 
@@ -165,13 +166,15 @@ export default function AuthScreen() {
         ],
       });
 
+      setAppleStep('signing'); // sheet returned, now exchange with Supabase
+
       const { identityToken, fullName } = credential;
       if (!identityToken) {
         setAppleError('Apple Sign-In failed. Please try again.');
+        setAppleStep('idle');
         return;
       }
 
-      // Exchange with Supabase — no browser, no redirects
       const { error: sessionError } = await supabase.auth.signInWithIdToken({
         provider: 'apple',
         token:    identityToken,
@@ -179,8 +182,11 @@ export default function AuthScreen() {
 
       if (sessionError) {
         setAppleError(`Sign-In failed: ${sessionError.message}`);
+        setAppleStep('idle');
         return;
       }
+
+      setAppleStep('loading'); // session created, loading profile
 
       // Save full name to metadata on first sign-in (Apple only sends it once)
       if (fullName?.givenName || fullName?.familyName) {
@@ -189,18 +195,19 @@ export default function AuthScreen() {
         supabase.auth.updateUser({ data: { full_name: displayName } }).catch(() => {});
       }
 
-      // SIGNED_IN fires → AuthProvider → ensureProfile
-      // index.tsx profileChecked gate routes to username-setup or home
+      // Wait for profile to load before navigating
       await refreshProfile().catch(() => {});
       router.replace('/(tabs)' as any);
 
     } catch (err: any) {
-      // User cancelled — silent, no error shown
-      if (err?.code === 'ERR_REQUEST_CANCELED' || err?.code === 'ERR_CANCELED') return;
+      if (err?.code === 'ERR_REQUEST_CANCELED' || err?.code === 'ERR_CANCELED') {
+        setAppleStep('idle'); // cancelled silently
+        return;
+      }
       setAppleError('Apple Sign-In failed. Please try again.');
-    } finally {
-      setAppleLoading(false);
+      setAppleStep('idle');
     }
+    // Note: don't reset in finally — 'loading' state persists briefly until navigation
   };
 
   // ── Sign Up ────────────────────────────────────────────────────────────────
@@ -293,6 +300,127 @@ export default function AuthScreen() {
     finally { setResending(false); }
   };
 
+  // ── Entry screen — polished account landing ──────────────────────────────────
+  if (mode === 'entry') {
+    const anyLoading = googleLoading || appleStep !== 'idle';
+    return (
+      <View style={[e.root, { paddingTop: insets.top }]}>
+        <ScrollView
+          contentContainerStyle={e.scroll}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Back / dismiss */}
+          <Pressable onPress={() => router.back()} hitSlop={12}
+            style={({ pressed }) => [{ alignSelf: 'flex-start', marginBottom: 8, opacity: pressed ? 0.5 : 1 }]}>
+            <MaterialIcons name="close" size={22} color={MUTED} />
+          </Pressable>
+
+          {/* Header */}
+          <View style={e.headerBlock}>
+            <Text style={e.wordmark}>FlipStart</Text>
+            <Text style={e.tagline}>Flip smarter.{'\n'}Track everything.</Text>
+          </View>
+
+          {/* Benefits */}
+          <View style={e.benefitsCard}>
+            {[
+              { icon: 'sync',           text: 'Sync scans across all your devices'   },
+              { icon: 'emoji-events',   text: 'Earn XP, climb ranks, build streaks'  },
+              { icon: 'travel-explore', text: 'Save Hunt Mode progress automatically' },
+              { icon: 'lock',           text: 'Secure account backup, always safe'   },
+            ].map(({ icon, text }) => (
+              <View key={text} style={e.benefitRow}>
+                <MaterialIcons name={icon as any} size={18} color={GOLD} />
+                <Text style={e.benefitText}>{text}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Primary CTAs */}
+          <View style={e.ctaBlock}>
+            <Pressable
+              onPress={() => { setError(null); setMode('signup'); }}
+              disabled={anyLoading}
+              style={({ pressed }) => [e.createBtn, pressed && { opacity: 0.87 }]}
+            >
+              <Text style={e.createBtnText}>Create Account</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => { setError(null); setMode('login'); }}
+              disabled={anyLoading}
+              style={({ pressed }) => [e.loginBtn, pressed && { opacity: 0.87 }]}
+            >
+              <Text style={e.loginBtnText}>Log In</Text>
+            </Pressable>
+          </View>
+
+          {/* Divider */}
+          <View style={s.dividerRow}>
+            <View style={s.dividerLine} />
+            <Text style={s.dividerText}>or continue with</Text>
+            <View style={s.dividerLine} />
+          </View>
+
+          {/* Social buttons */}
+          {googleError && (
+            <View style={[s.errorBox, { marginBottom: 8 }]}>
+              <MaterialIcons name="error-outline" size={14} color="#721C24" />
+              <Text style={s.errorText}>{googleError}</Text>
+            </View>
+          )}
+          {appleError && (
+            <View style={[s.errorBox, { marginBottom: 8 }]}>
+              <MaterialIcons name="error-outline" size={14} color="#721C24" />
+              <Text style={s.errorText}>{appleError}</Text>
+            </View>
+          )}
+
+          <Pressable
+            onPress={handleGoogleSignIn}
+            disabled={anyLoading}
+            style={({ pressed }) => [s.googleBtn, (pressed || googleLoading) && { opacity: 0.8 }]}
+          >
+            {googleLoading ? <ActivityIndicator color="#3C4043" size="small" /> : (
+              <>
+                <Text style={s.googleG}>
+                  <Text style={{ color: '#4285F4' }}>G</Text>
+                  <Text style={{ color: '#EA4335' }}>o</Text>
+                  <Text style={{ color: '#FBBC05' }}>o</Text>
+                  <Text style={{ color: '#4285F4' }}>g</Text>
+                  <Text style={{ color: '#34A853' }}>l</Text>
+                  <Text style={{ color: '#EA4335' }}>e</Text>
+                </Text>
+                <Text style={s.googleBtnText}>Continue with Google</Text>
+              </>
+            )}
+          </Pressable>
+
+          <Pressable
+            onPress={handleAppleSignIn}
+            disabled={anyLoading}
+            style={({ pressed }) => [s.appleBtn, { marginTop: 10 }, (pressed || appleStep !== 'idle') && { opacity: 0.8 }]}
+          >
+            {appleStep !== 'idle'
+              ? <ActivityIndicator color="#FFFFFF" size="small" />
+              : <Text style={s.appleBtnText}> Continue with Apple</Text>
+            }
+          </Pressable>
+
+          {/* Guest skip */}
+          <Pressable
+            onPress={() => router.back()}
+            disabled={anyLoading}
+            style={({ pressed }) => [e.guestBtn, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={e.guestText}>Continue as guest</Text>
+          </Pressable>
+        </ScrollView>
+      </View>
+    );
+  }
+
   // ── Confirm state ─────────────────────────────────────────────────────────
   if (mode === 'confirm') {
     return (
@@ -325,7 +453,7 @@ export default function AuthScreen() {
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={[s.root, { paddingTop: insets.top + 16 }]} keyboardShouldPersistTaps="handled">
-        <Pressable onPress={() => router.back()} hitSlop={12} style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.6 }]}>
+        <Pressable onPress={() => { setMode('entry'); setError(null); }} hitSlop={12} style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.6 }]}>
           <MaterialIcons name="arrow-back" size={22} color={FOREST} />
         </Pressable>
         <View style={s.headerBlock}>
@@ -333,7 +461,7 @@ export default function AuthScreen() {
           <Text style={s.subtitle}>{isSignUp ? 'Create your account' : 'Welcome back'}</Text>
         </View>
 
-        {/* Email-exists special error */}
+        {/* Email-exists special error — sign up attempted with existing account */}
         {error === '__EMAIL_EXISTS__' ? (
           <View style={s.emailExistsBox}>
             <Text style={s.emailExistsText}>An account with this email already exists.</Text>
@@ -347,6 +475,18 @@ export default function AuthScreen() {
             <Text style={s.errorText}>{error}</Text>
           </View>
         ) : null}
+
+        {/* Login failed nudge — if on login screen with an error, remind them they can sign up */}
+        {!isSignUp && error && error !== '__EMAIL_EXISTS__' && (
+          <Pressable
+            onPress={() => { setMode('signup'); setError(null); }}
+            style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }, { marginTop: -8, marginBottom: 4 }]}
+          >
+            <Text style={s.switchText}>
+              No account? <Text style={s.switchTextBold}>Create one instead →</Text>
+            </Text>
+          </Pressable>
+        )}
 
         <TextInput style={s.input} placeholder="Email" placeholderTextColor={MUTED} value={email}
           onChangeText={v => { setEmail(v); clearError(); }} autoCapitalize="none" keyboardType="email-address" autoCorrect={false} editable={!saving} />
@@ -398,7 +538,7 @@ export default function AuthScreen() {
 
         <Pressable
           onPress={handleGoogleSignIn}
-          disabled={googleLoading || saving}
+          disabled={googleLoading || saving || appleStep !== 'idle'}
           style={({ pressed }) => [s.googleBtn, (pressed || googleLoading) && { opacity: 0.8 }]}
         >
           {googleLoading ? (
@@ -427,12 +567,16 @@ export default function AuthScreen() {
         )}
         <Pressable
           onPress={handleAppleSignIn}
-          disabled={appleLoading || saving}
-          style={({ pressed }) => [s.appleBtn, (pressed || appleLoading) && { opacity: 0.8 }]}
+          disabled={appleStep !== 'idle' || saving || googleLoading}
+          style={({ pressed }) => [s.appleBtn, (pressed || appleStep !== 'idle') && { opacity: 0.8 }]}
         >
-          {appleLoading
+          {appleStep === 'idle'
+            ? <Text style={s.appleBtnText}> Continue with Apple</Text>
+            : appleStep === 'opening'
             ? <ActivityIndicator color="#FFFFFF" size="small" />
-            : <Text style={s.appleBtnText}> Continue with Apple</Text>
+            : appleStep === 'signing'
+            ? <Text style={s.appleBtnText}>Signing you in…</Text>
+            : <Text style={s.appleBtnText}>Loading profile…</Text>
           }
         </Pressable>
       </ScrollView>
@@ -470,4 +614,23 @@ const s = StyleSheet.create({
   googleBtnText:  { fontSize: 15, fontWeight: '600', color: '#3C4043' },
   appleBtn:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#000000', borderRadius: 50, paddingVertical: 15, marginTop: 10 },
   appleBtnText:   { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
+});
+
+// ─── Entry screen styles ──────────────────────────────────────────────────────
+const e = StyleSheet.create({
+  root:          { flex: 1, backgroundColor: PARCHMENT },
+  scroll:        { paddingHorizontal: 24, paddingBottom: 48, paddingTop: 12 },
+  headerBlock:   { alignItems: 'center', marginBottom: 28, marginTop: 16 },
+  wordmark:      { fontFamily: FONTS.serif, fontSize: 42, fontWeight: '900', color: FOREST, letterSpacing: -0.5, marginBottom: 14 },
+  tagline:       { fontFamily: FONTS.serif, fontSize: 24, fontWeight: '700', color: SCAN_DARK, textAlign: 'center', lineHeight: 32 },
+  benefitsCard:  { backgroundColor: '#EDE0C4', borderRadius: 18, padding: 20, marginBottom: 28, gap: 14, borderWidth: 1, borderColor: CARD_B },
+  benefitRow:    { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  benefitText:   { fontSize: 14, color: BROWN, flex: 1, lineHeight: 20 },
+  ctaBlock:      { gap: 12, marginBottom: 24 },
+  createBtn:     { backgroundColor: SCAN_DARK, borderRadius: 50, paddingVertical: 18, alignItems: 'center', justifyContent: 'center' },
+  createBtnText: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: CREAM, letterSpacing: 0.2 },
+  loginBtn:      { borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: FOREST },
+  loginBtnText:  { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: FOREST },
+  guestBtn:      { alignItems: 'center', paddingVertical: 20 },
+  guestText:     { fontSize: 13, color: MUTED, textDecorationLine: 'underline' },
 });

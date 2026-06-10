@@ -396,7 +396,15 @@ export default function HomeScreen() {
 
       {/* ── Onboarding overlay ─────────────────────────────────────────────── */}
       <Modal visible={showOnboarding === true} animationType="fade" statusBarTranslucent>
-        <OnboardingOverlay onComplete={() => setShowOnboarding(false)} />
+        <OnboardingOverlay
+          onComplete={() => setShowOnboarding(false)}
+          onGoToAuth={(mode) => {
+            // Complete onboarding locally first so it doesn't re-show on return
+            completeOnboarding('resell').catch(() => {});
+            setShowOnboarding(false);
+            router.push({ pathname: '/auth', params: { mode } } as any);
+          }}
+        />
       </Modal>
     </View>
   );
@@ -404,45 +412,147 @@ export default function HomeScreen() {
 
 // ─── Onboarding overlay ───────────────────────────────────────────────────────
 
-function OnboardingOverlay({ onComplete }: { onComplete: () => void }) {
+function OnboardingOverlay({
+  onComplete,
+  onGoToAuth,
+}: {
+  onComplete: () => void;
+  onGoToAuth: (mode: string) => void;
+}) {
+  const insets   = useSafeAreaInsets();
+  const [step, setStep] = useState<'intro' | 'account'>('intro');
   const [saving, setSaving] = useState(false);
 
-  const handleFinish = async () => {
+  // Guest path — mark onboarding done and go home
+  const handleGuest = async () => {
     if (saving) return;
     setSaving(true);
-    await completeOnboarding('resell');
+    await completeOnboarding('resell').catch(() => {});
     onComplete();
   };
 
-  return (
-    <View style={{ flex: 1, backgroundColor: PARCHMENT, justifyContent: 'center', paddingHorizontal: 24 }}>
-      <View style={{ alignItems: 'center', gap: 4, marginBottom: 32 }}>
-        <Text style={{ fontFamily: FONTS.serif, fontSize: 32, fontWeight: '800', color: FOREST }}>FlipStart</Text>
-        <Text style={{ fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 2 }}>✦ THRIFT INTELLIGENCE ✦</Text>
-      </View>
-      <View style={{ alignItems: 'center', marginBottom: 28 }}>
-        <View style={{ width: 96, height: 96, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginBottom: 24 }}>
-          <Text style={{ fontSize: 44 }}>📷</Text>
+  // ── Step 1: Intro ─────────────────────────────────────────────────────────
+  if (step === 'intro') {
+    return (
+      <View style={{ flex: 1, backgroundColor: PARCHMENT, paddingTop: insets.top, paddingHorizontal: 24, justifyContent: 'center' }}>
+        {/* Logo */}
+        <View style={{ alignItems: 'center', gap: 4, marginBottom: 32 }}>
+          <Text style={{ fontFamily: FONTS.serif, fontSize: 36, fontWeight: '800', color: FOREST }}>FlipStart</Text>
+          <Text style={{ fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 2 }}>✦ THRIFT INTELLIGENCE ✦</Text>
         </View>
-        <Text style={{ fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 12 }}>Scan. Decide. Profit.</Text>
-        <Text style={{ fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22 }}>Scan any item to instantly see value, profit, and whether it's worth buying.</Text>
-      </View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 36 }}>
-        {[{ icon: '⚡', label: 'Instant\nAnalysis' }, { icon: '💰', label: 'Resale\nValue' }, { icon: '👍', label: 'Buy /\nSkip' }].map(f => (
-          <View key={f.label} style={{ alignItems: 'center', gap: 8 }}>
-            <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: FOREST + '10', justifyContent: 'center', alignItems: 'center' }}>
-              <Text style={{ fontSize: 20 }}>{f.icon}</Text>
-            </View>
-            <Text style={{ fontSize: 11, fontWeight: '600', color: FOREST, textAlign: 'center' }}>{f.label}</Text>
+
+        {/* Icon + headline */}
+        <View style={{ alignItems: 'center', marginBottom: 28 }}>
+          <View style={{ width: 96, height: 96, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginBottom: 24 }}>
+            <Text style={{ fontSize: 44 }}>📷</Text>
           </View>
-        ))}
+          <Text style={{ fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 12 }}>
+            Scan. Decide. Profit.
+          </Text>
+          <Text style={{ fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22 }}>
+            Scan any item to instantly see value, profit, and whether it's worth buying.
+          </Text>
+        </View>
+
+        {/* Feature pills */}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 36 }}>
+          {[
+            { icon: '⚡', label: 'Instant\nAnalysis' },
+            { icon: '💰', label: 'Resale\nValue'    },
+            { icon: '👍', label: 'Buy /\nSkip'      },
+          ].map(f => (
+            <View key={f.label} style={{ alignItems: 'center', gap: 8 }}>
+              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: FOREST + '10', justifyContent: 'center', alignItems: 'center' }}>
+                <Text style={{ fontSize: 20 }}>{f.icon}</Text>
+              </View>
+              <Text style={{ fontSize: 11, fontWeight: '600', color: FOREST, textAlign: 'center' }}>{f.label}</Text>
+            </View>
+          ))}
+        </View>
+
+        {/* Next → */}
+        <Pressable
+          onPress={() => setStep('account')}
+          style={({ pressed }) => ({
+            flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+            gap: 8, backgroundColor: FOREST, borderRadius: 50, paddingVertical: 18,
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <Text style={{ fontSize: 17, fontWeight: '700', color: CREAM }}>Next</Text>
+          <MaterialIcons name="arrow-forward" size={18} color={CREAM} />
+        </Pressable>
       </View>
+    );
+  }
+
+  // ── Step 2: Account ───────────────────────────────────────────────────────
+  return (
+    <View style={{ flex: 1, backgroundColor: SCAN_DARK, paddingTop: insets.top, paddingHorizontal: 24, justifyContent: 'center' }}>
+      {/* Back to intro */}
       <Pressable
-        onPress={handleFinish}
-        disabled={saving}
-        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: FOREST, borderRadius: 50, paddingVertical: 18, opacity: pressed || saving ? 0.85 : 1 })}
+        onPress={() => setStep('intro')}
+        hitSlop={12}
+        style={({ pressed }) => ({ alignSelf: 'flex-start', marginBottom: 24, opacity: pressed ? 0.5 : 1 })}
       >
-        <Text style={{ fontSize: 17, fontWeight: '700', color: CREAM }}>{saving ? 'Starting…' : 'Start Scanning'}</Text>
+        <MaterialIcons name="arrow-back" size={22} color={CREAM + 'AA'} />
+      </Pressable>
+
+      {/* Header */}
+      <View style={{ alignItems: 'center', marginBottom: 36 }}>
+        <Text style={{ fontFamily: FONTS.serif, fontSize: 34, fontWeight: '900', color: CREAM, marginBottom: 10 }}>
+          FlipStart
+        </Text>
+        <Text style={{ fontFamily: FONTS.serif, fontSize: 20, fontWeight: '700', color: GOLD, textAlign: 'center', lineHeight: 28, marginBottom: 10 }}>
+          Save your progress.{'\n'}Build your empire.
+        </Text>
+        <Text style={{ fontSize: 14, color: CREAM + 'BB', textAlign: 'center', lineHeight: 21 }}>
+          Sync scans across devices, track XP and ranks, and unlock Hunt Mode with a free account.
+        </Text>
+      </View>
+
+      {/* CTAs */}
+      <View style={{ gap: 12, marginBottom: 28 }}>
+        {/* Create Account */}
+        <Pressable
+          onPress={() => onGoToAuth('signup')}
+          disabled={saving}
+          style={({ pressed }) => ({
+            backgroundColor: GOLD, borderRadius: 50,
+            paddingVertical: 18, alignItems: 'center',
+            opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <Text style={{ fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: SCAN_DARK }}>
+            Create Account
+          </Text>
+        </Pressable>
+
+        {/* Log In */}
+        <Pressable
+          onPress={() => onGoToAuth('login')}
+          disabled={saving}
+          style={({ pressed }) => ({
+            borderRadius: 50, paddingVertical: 17, alignItems: 'center',
+            borderWidth: 1.5, borderColor: CREAM + '60',
+            opacity: pressed ? 0.7 : 1,
+          })}
+        >
+          <Text style={{ fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: CREAM }}>
+            Log In
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Guest skip */}
+      <Pressable
+        onPress={handleGuest}
+        disabled={saving}
+        style={({ pressed }) => ({ alignItems: 'center', paddingVertical: 8, opacity: pressed || saving ? 0.5 : 1 })}
+      >
+        <Text style={{ fontSize: 14, color: CREAM + '70', textDecorationLine: 'underline' }}>
+          {saving ? 'Setting up…' : 'Continue as guest'}
+        </Text>
       </Pressable>
     </View>
   );

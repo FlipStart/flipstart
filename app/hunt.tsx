@@ -125,17 +125,24 @@ export default function HuntScreen() {
   if (!authLoading && !user) {
     return (
       <View style={{ flex: 1, backgroundColor: '#F0E8D4', justifyContent: 'center', alignItems: 'center', padding: 32 }}>
-        <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 }}>Hunt Mode</Text>
-        <Text style={{ fontSize: 14, color: '#8A7050', textAlign: 'center', lineHeight: 21, marginBottom: 28 }}>Create an account to save hunts, XP, and streaks.</Text>
-        <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'signup' } } as any)}
-          style={{ backgroundColor: FOREST, borderRadius: 50, paddingVertical: 14, paddingHorizontal: 36, marginBottom: 12 }}>
-          <Text style={{ color: CREAM, fontSize: 15, fontWeight: '700', fontFamily: FONTS.serif }}>Create Account</Text>
+        <MaterialIcons name="travel-explore" size={48} color="#2A4A2A" style={{ marginBottom: 16 }} />
+        <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: '#2A4A2A', textAlign: 'center', marginBottom: 10 }}>
+          Hunt Mode
+        </Text>
+        <Text style={{ fontSize: 14, color: '#8A7050', textAlign: 'center', lineHeight: 21, marginBottom: 28 }}>
+          Track XP, rank up, and save your hunt progress across every session. Requires a free FlipStart account.
+        </Text>
+        <Pressable
+          onPress={() => router.push('/auth' as any)}
+          style={{ backgroundColor: '#152815', borderRadius: 50, paddingVertical: 16, paddingHorizontal: 40, marginBottom: 12 }}
+        >
+          <Text style={{ color: '#F4EED8', fontSize: 16, fontWeight: '800', fontFamily: FONTS.serif }}>Create Account</Text>
         </Pressable>
         <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'login' } } as any)}>
-          <Text style={{ color: '#8A7050', fontSize: 14, textDecorationLine: 'underline' }}>Log In</Text>
+          <Text style={{ color: '#8A7050', fontSize: 14, textDecorationLine: 'underline' }}>Already have an account? Log in</Text>
         </Pressable>
         <Pressable onPress={() => router.back()} style={{ marginTop: 20 }}>
-          <Text style={{ color: '#8A7050', fontSize: 13 }}>Go Back</Text>
+          <Text style={{ color: '#8A7050', fontSize: 13 }}>Continue as guest</Text>
         </Pressable>
       </View>
     );

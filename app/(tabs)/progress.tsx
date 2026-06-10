@@ -42,15 +42,21 @@ export default function ProgressScreen() {
   if (!authLoading && !user) {
     return (
       <View style={{ flex: 1, backgroundColor: PARCHMENT, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
-        <MaterialIcons name="bar-chart" size={48} color={MUTED} style={{ marginBottom: 16 }} />
-        <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 }}>Track Your Progress</Text>
-        <Text style={{ fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 21, marginBottom: 28 }}>Create an account to track XP, rank, and hunt streaks.</Text>
-        <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'signup' } } as any)}
-          style={{ backgroundColor: FOREST, borderRadius: 50, paddingVertical: 14, paddingHorizontal: 36, marginBottom: 12 }}>
-          <Text style={{ color: CREAM, fontSize: 15, fontWeight: '700', fontFamily: FONTS.serif }}>Create Account</Text>
+        <MaterialIcons name="emoji-events" size={48} color={GOLD} style={{ marginBottom: 16 }} />
+        <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 }}>
+          Track Your Progress
+        </Text>
+        <Text style={{ fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 21, marginBottom: 28 }}>
+          Earn XP, climb the ranks, and build hunt streaks. Your progress syncs automatically with a free account.
+        </Text>
+        <Pressable
+          onPress={() => router.push('/auth' as any)}
+          style={{ backgroundColor: FOREST, borderRadius: 50, paddingVertical: 16, paddingHorizontal: 40, marginBottom: 12 }}
+        >
+          <Text style={{ color: CREAM, fontSize: 16, fontWeight: '800', fontFamily: FONTS.serif }}>Create Account</Text>
         </Pressable>
         <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'login' } } as any)}>
-          <Text style={{ color: MUTED, fontSize: 14, textDecorationLine: 'underline' }}>Log In</Text>
+          <Text style={{ color: MUTED, fontSize: 14, textDecorationLine: 'underline' }}>Already have an account? Log in</Text>
         </Pressable>
       </View>
     );

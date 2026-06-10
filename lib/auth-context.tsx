@@ -85,10 +85,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async (): Promise<void> => {
+    if (__DEV__) console.log('[auth] signOut: tapped');
+
+    // ── Step 1: Optimistic clear — instant UI response ─────────────────────
+    // State setters from useState are stable references — safe to call in
+    // useCallback with [] deps. This re-renders the UI to logged-out state
+    // immediately without waiting for the network call.
+    setSession(null);
+    setUser(null);
+    setProfile(null);
+    setProfileChecked(true);
+    if (__DEV__) console.log('[auth] signOut: local state cleared (UI now logged-out)');
+
+    // ── Step 2: Background — tell Supabase to invalidate server session ────
+    // Fire-and-forget. Failure is non-fatal — user is already shown logged out.
+    if (__DEV__) console.log('[auth] signOut: calling Supabase signOut');
     try {
-      if (supabaseRef.current) await supabaseRef.current.auth.signOut();
-    } catch { /* ok */ }
-  }, []);
+      if (supabaseRef.current) {
+        await supabaseRef.current.auth.signOut();
+        if (__DEV__) console.log('[auth] signOut: Supabase signOut complete');
+      }
+    } catch (err) {
+      if (__DEV__) console.warn('[auth] signOut: Supabase signOut failed (non-fatal):', err);
+      // Non-fatal — local state is already cleared. Server session will
+      // expire naturally. User cannot get stuck in logged-in UI.
+    }
+    if (__DEV__) console.log('[auth] signOut: done');
+  }, []); // setSession/setUser/setProfile/setProfileChecked are stable React setters
 
   const mounted = useRef(true);
   useEffect(() => {
