@@ -34,13 +34,31 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 function AppProviders({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
 
+  // Dedup guard: tracks which userId we've already run syncXpOnLogin for
+  // this session. Prevents double-sync on profileChecked bounces or re-renders.
+  const syncedForUserRef = useRef<string | null>(null);
+
   // Keep XP module in sync with auth state.
   // setXpUserId must fire before any screen loads XP so all reads/writes
   // target the correct account-scoped key (or guest key when null).
+  // syncXpOnLogin is consolidated here (previously split into index.tsx) so all
+  // XP auth wiring lives in one place and fires regardless of which tab is active.
   useEffect(() => {
     const uid = user?.id ?? null;
-    import('@/lib/huntXp').then(({ setXpUserId }) => {
+    import('@/lib/huntXp').then(({ setXpUserId, syncXpOnLogin }) => {
+      // Always update the active storage key first
       setXpUserId(uid);
+
+      if (uid && syncedForUserRef.current !== uid) {
+        // First time seeing this userId this session — run cloud merge
+        syncedForUserRef.current = uid;
+        syncXpOnLogin(uid).catch(() => {});
+      }
+
+      if (!uid) {
+        // Signed out — reset so next login triggers sync again
+        syncedForUserRef.current = null;
+      }
     }).catch(() => {});
   }, [user?.id]);
 

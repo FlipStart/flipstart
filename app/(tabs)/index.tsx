@@ -97,14 +97,6 @@ export default function HomeScreen() {
     isOnboardingComplete().then(done => setShowOnboarding(!done));
   }, []);
 
-  // ── XP sync on login ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (authLoading || !profileChecked || !user?.id) return;
-    // Fire-and-forget — never blocks UI, never crashes app
-    import('@/lib/huntXp').then(({ syncXpOnLogin }) => {
-      syncXpOnLogin(user.id).catch(() => {});
-    }).catch(() => {});
-  }, [authLoading, profileChecked, user?.id]);
   // routedForUser prevents re-routing when profile state updates after
   // username setup completes — without this guard a stale profile causes a loop.
   const routedForUser = useRef<string | null>(null);
@@ -246,21 +238,9 @@ export default function HomeScreen() {
         onPress={handleScanItem}
         style={({ pressed }) => [s.scanCard, pressed && { opacity: 0.92 }]}
       >
-        {/* Abstract scan/resale art — right side decoration, no lion */}
-        <View style={s.scanArt} pointerEvents="none">
-          <MaterialIcons name="photo-camera"   size={112} color={CREAM} style={{ opacity: 0.07, position: 'absolute', right: -8,  top:    8 }} />
-          <MaterialIcons name="sell"           size={58}  color={GOLD}  style={{ opacity: 0.18, position: 'absolute', right: 22,  bottom: 18 }} />
-          <MaterialIcons name="document-scanner" size={40} color={CREAM} style={{ opacity: 0.13, position: 'absolute', right: 88,  top:    22 }} />
-          <View style={{ position: 'absolute', right: 18,  top:    60, width: 7,  height: 7,  borderRadius: 4, backgroundColor: GOLD,  opacity: 0.32 }} />
-          <View style={{ position: 'absolute', right: 44,  top:    42, width: 5,  height: 5,  borderRadius: 3, backgroundColor: CREAM, opacity: 0.20 }} />
-          <View style={{ position: 'absolute', right: 68,  top:    84, width: 6,  height: 6,  borderRadius: 3, backgroundColor: GOLD,  opacity: 0.22 }} />
-          <View style={{ position: 'absolute', right: 100, top:   150, width: 4,  height: 4,  borderRadius: 2, backgroundColor: CREAM, opacity: 0.15 }} />
-        </View>
-
-        {/* Left content */}
+        {/* Content — centered vertically, left-aligned */}
         <View style={s.scanCardContent}>
-          {/* Camera icon */}
-          <View style={[s.cameraIconBox, { marginLeft: 42, marginBottom: 10 }]}>
+          <View style={s.cameraIconBox}>
             <MaterialIcons name="photo-camera" size={38} color={CREAM} />
           </View>
           <Text style={s.scanCardTitle}>Scan Item</Text>
@@ -690,10 +670,10 @@ const s = StyleSheet.create({
     backgroundColor:  SCAN_DARK,
     height:           IS_SMALL ? 205 : 238,
     flexDirection:    'row',
-    alignItems:       'flex-end',
+    alignItems:       'stretch',          // children fill full card height
     marginBottom:     IS_SMALL ? 8 : 10,
     borderWidth:      1.5,
-    borderColor:      GOLD + '55',   // stronger gold border for vintage frame feel
+    borderColor:      GOLD + '55',
     shadowColor:      '#0A1A0A',
     shadowOffset:     { width: 0, height: 5 },
     shadowOpacity:    0.5,
@@ -714,10 +694,11 @@ const s = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   scanCardContent: {
-    flex:          1,
-    padding:       20,
-    paddingBottom: 20,
-    zIndex:        2,
+    flex:            1,
+    padding:         20,
+    paddingRight:    48,
+    justifyContent:  'center',
+    alignItems:      'center',
   },
 
   // Camera icon with compass/radar rays OUTSIDE the box
@@ -739,39 +720,28 @@ const s = StyleSheet.create({
     alignItems:       'center',
     borderWidth:      1.5,
     borderColor:      'rgba(255,255,255,0.22)',
-    zIndex:           2,
+    marginBottom:     14,
   },
-  ray: {
-    position:        'absolute',
-    width:           2,
-    height:          12,
-    backgroundColor: GOLD,
-    opacity:         0.45,
-    borderRadius:    1,
-    top:             0,
-    left:            '50%',
-    marginLeft:      -1,
-    transformOrigin: '50% 48px',  // radius = half of cameraIconWrap — rays orbit outside box
-  },
-
   scanCardTitle: {
     fontFamily:   FONTS.serif,
     fontSize:     IS_SMALL ? 26 : 30,
     fontWeight:   '800',
     color:        CREAM,
-    marginBottom: 6,
+    textAlign:    'center',
+    marginBottom: 8,
   },
   scanCardSub: {
     fontSize:   12,
     color:      CREAM,
     opacity:    0.80,
-    lineHeight: 17,
+    lineHeight: 18,
+    textAlign:  'center',
   },
   scanCardChevron: {
     position:  'absolute',
     right:     14,
-    bottom:    '50%',
-    transform: [{ translateY: 15 }],
+    top:       '50%',
+    transform: [{ translateY: -15 }],     // center vertically (half of chevron height ~30)
     zIndex:    2,
   },
 
