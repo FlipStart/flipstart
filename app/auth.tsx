@@ -67,8 +67,12 @@ export default function AuthScreen() {
   const [unameStatus, setUnameStatus] = useState<'idle'|'checking'|'available'|'taken'|'invalid'>('idle');
   const unameDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Username: 3–24 chars, letters/numbers/underscores/periods/hyphens,
+  // must start+end with letter or number, no consecutive special chars.
+  const USERNAME_RE = /^(?!.*[._-]{2})[A-Za-z0-9][A-Za-z0-9._-]{1,22}[A-Za-z0-9]$|^[A-Za-z0-9]{3,4}$/;
+
   const checkUnameAvailability = useCallback(async (value: string) => {
-    if (!/^[a-z0-9_]{3,20}$/.test(value)) { setUnameStatus('invalid'); return; }
+    if (!USERNAME_RE.test(value)) { setUnameStatus('invalid'); return; }
     setUnameStatus('checking');
     try {
       const { data, error } = await supabase.rpc('check_username_available', { uname: value });
@@ -219,7 +223,7 @@ export default function AuthScreen() {
     if (!trimPassword) { setError('Password is required.'); return; }
     if (!trimUsername) { setError('Username is required.'); return; }
     if (trimPassword.length < 6) { setError('Password must be at least 6 characters.'); return; }
-    if (!/^[a-z0-9_]{3,20}$/.test(trimUsername)) { setError('Username: 3–20 characters, letters/numbers/underscores only.'); return; }
+    if (!USERNAME_RE.test(trimUsername)) { setError('3–24 characters: letters, numbers, underscores, periods, or hyphens. Must start and end with a letter or number.'); return; }
     if (saving) return;
     setSaving(true); setError(null);
     try {
@@ -498,16 +502,16 @@ export default function AuthScreen() {
             <View style={s.unameRow}>
               <TextInput style={[s.input, { flex: 1, marginBottom: 0 }]} placeholder="Username"
                 placeholderTextColor={MUTED} value={username}
-                onChangeText={v => { setUsername(v.toLowerCase().replace(/[^a-z0-9_]/g, '')); clearError(); }}
-                autoCapitalize="none" autoCorrect={false} maxLength={20} editable={!saving} />
+                onChangeText={v => { setUsername(v.replace(/[^A-Za-z0-9._-]/g, '')); clearError(); }}
+                autoCapitalize="none" autoCorrect={false} maxLength={24} editable={!saving} />
               {unameStatus === 'checking'  && <ActivityIndicator size="small" color={MUTED} style={s.unameIcon} />}
               {unameStatus === 'available' && <MaterialIcons name="check-circle" size={20} color="#2A7A3A" style={s.unameIcon} />}
               {unameStatus === 'taken'     && <MaterialIcons name="cancel"       size={20} color="#B85450" style={s.unameIcon} />}
             </View>
             {unameStatus === 'available' && <Text style={[s.unameHint, { color: '#2A7A3A' }]}>Available</Text>}
             {unameStatus === 'taken'     && <Text style={[s.unameHint, { color: '#B85450' }]}>Username already taken</Text>}
-            {unameStatus === 'invalid' && username.trim().length > 0 && <Text style={[s.unameHint, { color: MUTED }]}>Use 3–20 letters, numbers, or underscores</Text>}
-            {!['available','taken','invalid'].includes(unameStatus) && <Text style={s.fieldHint}>3–20 characters · letters, numbers, underscores</Text>}
+            {unameStatus === 'invalid' && username.trim().length > 0 && <Text style={[s.unameHint, { color: MUTED }]}>3–24 chars · letters, numbers, _ . - · must start and end with letter or number</Text>}
+            {!['available','taken','invalid'].includes(unameStatus) && <Text style={s.fieldHint}>3–24 characters · letters, numbers, underscores, periods, or hyphens</Text>}
           </>
         )}
 

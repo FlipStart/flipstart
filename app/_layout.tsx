@@ -33,6 +33,17 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 // and passes it to FlipStoreProvider so scan/bundle sync knows the current user.
 function AppProviders({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+
+  // Keep XP module in sync with auth state.
+  // setXpUserId must fire before any screen loads XP so all reads/writes
+  // target the correct account-scoped key (or guest key when null).
+  useEffect(() => {
+    const uid = user?.id ?? null;
+    import('@/lib/huntXp').then(({ setXpUserId }) => {
+      setXpUserId(uid);
+    }).catch(() => {});
+  }, [user?.id]);
+
   return (
     <FlipStoreProvider userId={user?.id ?? null}>
       <ScanProvider>

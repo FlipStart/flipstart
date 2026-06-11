@@ -13,7 +13,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Platform, Image,
+  View, Text, StyleSheet, Pressable, Platform,
   Dimensions, Modal, Animated, ScrollView,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -37,7 +37,7 @@ import {
 } from '@/lib/huntXp';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
-const LION_CARD_BG = require('@/assets/images/ScanItem-Lion.png');
+// Scan card — no lion; abstract scan/resale icon art decorates the right side
 
 // ─── Palette — matched to reference image exactly ────────────────────────────
 const FOREST    = '#2A4A2A';   // wordmark, section headers, text
@@ -129,8 +129,12 @@ export default function HomeScreen() {
   // ── XP profile ──────────────────────────────────────────────────────────────
   const [xpProfile, setXpProfile] = useState<HuntXpProfile | null>(null);
   useFocusEffect(useCallback(() => {
-    loadXpProfile().then(setXpProfile).catch(() => {});
-  }, []));
+    if (user) {
+      loadXpProfile().then(setXpProfile).catch(() => {});
+    } else {
+      setXpProfile(null); // sign-out: clear immediately, never show previous account XP
+    }
+  }, [user]));
 
   const totalXp     = xpProfile?.totalXp      ?? 0;
   const streak      = xpProfile?.huntStreak   ?? 0;
@@ -242,13 +246,16 @@ export default function HomeScreen() {
         onPress={handleScanItem}
         style={({ pressed }) => [s.scanCard, pressed && { opacity: 0.92 }]}
       >
-        {/* Lion artwork — right side, bg matches SCAN_DARK so blends seamlessly at full opacity */}
-        <Image
-          source={LION_CARD_BG}
-          style={s.lionBg}
-          resizeMode="cover"
-        />
-        {/* Horizontal fade removed — lion renders sharp with no blending overlay */}
+        {/* Abstract scan/resale art — right side decoration, no lion */}
+        <View style={s.scanArt} pointerEvents="none">
+          <MaterialIcons name="photo-camera"   size={112} color={CREAM} style={{ opacity: 0.07, position: 'absolute', right: -8,  top:    8 }} />
+          <MaterialIcons name="sell"           size={58}  color={GOLD}  style={{ opacity: 0.18, position: 'absolute', right: 22,  bottom: 18 }} />
+          <MaterialIcons name="document-scanner" size={40} color={CREAM} style={{ opacity: 0.13, position: 'absolute', right: 88,  top:    22 }} />
+          <View style={{ position: 'absolute', right: 18,  top:    60, width: 7,  height: 7,  borderRadius: 4, backgroundColor: GOLD,  opacity: 0.32 }} />
+          <View style={{ position: 'absolute', right: 44,  top:    42, width: 5,  height: 5,  borderRadius: 3, backgroundColor: CREAM, opacity: 0.20 }} />
+          <View style={{ position: 'absolute', right: 68,  top:    84, width: 6,  height: 6,  borderRadius: 3, backgroundColor: GOLD,  opacity: 0.22 }} />
+          <View style={{ position: 'absolute', right: 100, top:   150, width: 4,  height: 4,  borderRadius: 2, backgroundColor: CREAM, opacity: 0.15 }} />
+        </View>
 
         {/* Left content */}
         <View style={s.scanCardContent}>
@@ -693,26 +700,13 @@ const s = StyleSheet.create({
     shadowRadius:     14,
     elevation:        10,
   },
-  lionBg: {
+  scanArt: {
     position: 'absolute',
-    right:    0,       // right edge of image touches right edge of card
+    right:    0,
     top:      0,
     width:    '68%',
     height:   238,
-    opacity:  1,
-  },
-  // Soft horizontal fade at the left edge of the lion artwork
-  // prevents any hard visual boundary between text region and image
-  lionFade: {
-    position:        'absolute',
-    left:            '30%',   // starts where text ends
-    top:             0,
-    bottom:          0,
-    width:           '20%',   // fade zone width
-    // React Native can't do linear-gradient natively without a library,
-    // so we use a semi-transparent SCAN_DARK overlay that fades the edge
-    backgroundColor: SCAN_DARK,
-    opacity:         0.55,
+    overflow: 'hidden',
   },
   scanCardOverlay: {
     position: 'absolute',

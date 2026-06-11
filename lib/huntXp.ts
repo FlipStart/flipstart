@@ -17,9 +17,28 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { HuntBundle, HuntBundleItem } from '@/types/flip';
 
-// ─── Storage key ──────────────────────────────────────────────────────────────
+// ─── Storage keys — account-scoped to prevent cross-user contamination ────────
 
-const XP_PROFILE_KEY = '@flipstart/huntXpProfile';
+const GUEST_XP_KEY  = '@flipstart/huntXpProfile';          // guest / unauthenticated
+const accountXpKey  = (uid: string) => `@flipstart/xp:${uid}`; // per-user
+
+// Module-level active user ID — set by AppProviders when auth state changes.
+// All loadXpProfile / saveXpProfile calls route through this.
+let _activeUserId: string | null = null;
+
+/**
+ * Called by AppProviders in _layout.tsx whenever userId changes (including null
+ * on sign-out). Must be called BEFORE any loadXpProfile/saveXpProfile calls for
+ * the new session so they target the correct storage key.
+ */
+export function setXpUserId(userId: string | null): void {
+  _activeUserId = userId;
+  if (__DEV__) console.log('[xp] setXpUserId →', userId ?? 'guest');
+}
+
+function activeKey(): string {
+  return _activeUserId ? accountXpKey(_activeUserId) : GUEST_XP_KEY;
+}
 
 // ─── Rank ladder ──────────────────────────────────────────────────────────────
 
@@ -382,14 +401,10 @@ export function calculateHuntXp(
 
 export async function loadXpProfile(): Promise<HuntXpProfile> {
   try {
-    const raw = await AsyncStorage.getItem(XP_PROFILE_KEY);
+    const raw = await AsyncStorage.getItem(activeKey());
     if (!raw) return defaultProfile();
     const parsed = JSON.parse(raw) as Partial<HuntXpProfile>;
-    // Merge with defaults to handle any missing fields from older versions
-    return {
-      ...defaultProfile(),
-      ...parsed,
-    };
+    return { ...defaultProfile(), ...parsed };
   } catch {
     return defaultProfile();
   }
@@ -397,34 +412,64 @@ export async function loadXpProfile(): Promise<HuntXpProfile> {
 
 export async function saveXpProfile(profile: HuntXpProfile, userId?: string | null): Promise<void> {
   try {
-    await AsyncStorage.setItem(XP_PROFILE_KEY, JSON.stringify(profile));
+    await AsyncStorage.setItem(activeKey(), JSON.stringify(profile));
   } catch { /* never block app flow */ }
-  // Fire-and-forget cloud sync if logged in
-  if (userId) {
+  // Cloud sync — use explicit userId param if provided, otherwise _activeUserId
+  const syncUserId = userId ?? _activeUserId;
+  if (syncUserId) {
     import('@/lib/xpSync').then(({ saveXpProfile: cloudSave }) => {
-      cloudSave(profile, userId).catch(() => {});
+      cloudSave(profile, syncUserId).catch(() => {});
     }).catch(() => {});
   }
 }
 
 /**
  * syncXpOnLogin — called once after auth resolves for a logged-in user.
- * Pulls cloud XP, merges with local (higher progress wins), saves merged.
+ *
+ * Critical safety rules:
+ *   1. Immediately sets _activeUserId so all subsequent XP calls use this user's key.
+ *   2. ONLY reads from this user's account-scoped key — never the guest key.
+ *      This prevents previous-user or guest XP from polluting this account.
+ *   3. Merges local account data (if any) with cloud — both guaranteed same user.
+ *   4. If no local account data, uses cloud value directly (no merge risk).
  */
 export async function syncXpOnLogin(userId: string): Promise<void> {
   try {
+    // Step 1: lock in the active user ID immediately
+    _activeUserId = userId;
+    if (__DEV__) console.log('[xp] syncXpOnLogin for', userId);
+
     const { fetchXpProfile, saveXpProfile: cloudSave, mergeXpProfiles } = await import('@/lib/xpSync');
-    const [local, cloud] = await Promise.all([
-      loadXpProfile(),
-      fetchXpProfile(userId),
-    ]);
+
+    // Step 2: read only from THIS user's account-scoped key
+    const key        = accountXpKey(userId);
+    let localProfile: HuntXpProfile | null = null;
+    try {
+      const raw = await AsyncStorage.getItem(key);
+      if (raw) localProfile = { ...defaultProfile(), ...(JSON.parse(raw) as Partial<HuntXpProfile>) };
+    } catch { /* ok — treat as no local data */ }
+
+    // Step 3: fetch cloud
+    const cloud = await fetchXpProfile(userId);
+
     if (!cloud) {
-      // No cloud record yet — push local up
-      cloudSave(local, userId).catch(() => {});
+      // No cloud record yet
+      if (localProfile) {
+        // Push this user's existing local data to cloud
+        cloudSave(localProfile, userId).catch(() => {});
+      }
+      // No local + no cloud = fresh account, nothing to do
       return;
     }
-    const merged = mergeXpProfiles(local, cloud);
-    await saveXpProfile(merged, userId);
+
+    if (localProfile) {
+      // Both exist — safe to merge (both are guaranteed this user's data)
+      const merged = mergeXpProfiles(localProfile, cloud);
+      await saveXpProfile(merged, userId);
+    } else {
+      // No local account data — write cloud value to local account key
+      try { await AsyncStorage.setItem(key, JSON.stringify(cloud)); } catch { /* ok */ }
+    }
   } catch (err) {
     if (__DEV__) console.warn('[huntXp] syncXpOnLogin threw:', err);
   }

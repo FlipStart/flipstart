@@ -36,7 +36,11 @@ export default function ProgressScreen() {
   const [profile, setProfile] = useState<HuntXpProfile | null>(null);
 
   useFocusEffect(useCallback(() => {
-    if (user) loadXpProfile().then(setProfile).catch(() => {});
+    if (user) {
+      loadXpProfile().then(setProfile).catch(() => {});
+    } else {
+      setProfile(null); // sign-out: clear immediately, never show previous account XP
+    }
   }, [user]));
 
   if (!authLoading && !user) {

@@ -25,7 +25,10 @@ const PARCHMENT = '#F0E8D4';
 const CARD_B    = '#DDD0B0';
 const MUTED     = '#8A7050';
 
-const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
+// Rules: 3–24 chars, letters (any case) / numbers / _ / . / -
+// Must start and end with letter or number.
+// No consecutive special chars (.. -- __ .- etc.).
+const USERNAME_RE = /^(?!.*[._-]{2})[A-Za-z0-9][A-Za-z0-9._-]{1,22}[A-Za-z0-9]$|^[A-Za-z0-9]{3,4}$/;
 type Availability = 'idle' | 'checking' | 'available' | 'taken' | 'invalid';
 
 export default function UsernameSetupScreen() {
@@ -64,7 +67,7 @@ export default function UsernameSetupScreen() {
   const handleContinue = async () => {
     const trimmed = username.trim().toLowerCase();
     if (!trimmed)                    { setError('Username is required.'); return; }
-    if (!USERNAME_RE.test(trimmed))  { setError('Username: 3–20 characters, letters/numbers/underscores only.'); return; }
+    if (!USERNAME_RE.test(trimmed))  { setError('3–24 characters: letters, numbers, underscores, periods, or hyphens. Must start and end with a letter or number.'); return; }
     if (availability === 'taken')    { setError(`"${trimmed}" is already taken. Choose another.`); return; }
     if (availability === 'checking') { setError('Still checking availability — please wait.'); return; }
     if (!user?.id) { setError('Session expired. Please log in again.'); return; }
@@ -101,8 +104,12 @@ export default function UsernameSetupScreen() {
 
         <View style={s.inputRow}>
           <TextInput style={[s.input, { flex: 1 }]} placeholder="username" placeholderTextColor={MUTED}
-            value={username} onChangeText={v => { setUsername(v.toLowerCase().replace(/[^a-z0-9_]/g, '')); setError(null); }}
-            autoCapitalize="none" autoCorrect={false} maxLength={20} editable={!saving} autoFocus />
+            value={username} onChangeText={v => {
+              // Strip only characters that are never allowed; preserve case
+              setUsername(v.replace(/[^A-Za-z0-9._-]/g, ''));
+              setError(null);
+            }}
+            autoCapitalize="none" autoCorrect={false} maxLength={24} editable={!saving} autoFocus />
           {availability === 'checking'  && <ActivityIndicator size="small" color={MUTED} style={{ marginLeft: 8 }} />}
           {availability === 'available' && <MaterialIcons name="check-circle" size={18} color="#2A7A3A" style={{ marginLeft: 8 }} />}
           {availability === 'taken'     && <MaterialIcons name="cancel"       size={18} color="#B85450" style={{ marginLeft: 8 }} />}
@@ -110,7 +117,7 @@ export default function UsernameSetupScreen() {
 
         {availability === 'available' && <Text style={[s.availText, { color: '#2A7A3A' }]}>Available</Text>}
         {availability === 'taken'     && <Text style={[s.availText, { color: '#B85450' }]}>Already taken</Text>}
-        {!['available','taken'].includes(availability) && <Text style={s.fieldHint}>3–20 characters · letters, numbers, underscores</Text>}
+        {!['available','taken'].includes(availability) && <Text style={s.fieldHint}>3–24 characters · letters, numbers, underscores, periods, or hyphens</Text>}
 
         <Pressable onPress={handleContinue} disabled={!canSubmit}
           style={({ pressed }) => [s.primaryBtn, !canSubmit && { opacity: 0.5 }, pressed && canSubmit && { opacity: 0.85 }]}>
