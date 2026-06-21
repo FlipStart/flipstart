@@ -52,14 +52,15 @@ describe("Mock Data", () => {
 
     // Check listings
     expect(result.listings).toBeDefined();
-    expect(result.listings.ebay.title).toBeTruthy();
-    expect(result.listings.ebay.description).toBeTruthy();
-    expect(result.listings.depop.title).toBeTruthy();
-    expect(result.listings.depop.description).toBeTruthy();
+    const listings = result.listings!;
+    expect(listings.ebay.title).toBeTruthy();
+    expect(listings.ebay.description).toBeTruthy();
+    expect(listings.depop.title).toBeTruthy();
+    expect(listings.depop.description).toBeTruthy();
 
     // eBay and Depop listings should be different
-    expect(result.listings.ebay.title).not.toBe(result.listings.depop.title);
-    expect(result.listings.ebay.description).not.toBe(result.listings.depop.description);
+    expect(listings.ebay.title).not.toBe(listings.depop.title);
+    expect(listings.ebay.description).not.toBe(listings.depop.description);
   });
 
   it("should generate unique IDs for each call", () => {

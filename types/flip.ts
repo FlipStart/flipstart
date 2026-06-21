@@ -12,6 +12,31 @@ import type { XpBreakdownItem } from '@/lib/huntXp';
 
 // ─── Persisted (stored in useFlipStore) ──────────────────────────────────────
 
+/** Structured v2 scan-ID fields. All optional — older scans omit them and the
+ *  Diamond matcher falls back to legacy fields under the same strict rules. */
+export interface StructuredId {
+  canonicalBrand?:        string;
+  canonicalItemName?:     string;
+  itemType?:              string;
+  subType?:               string;
+  styleVariant?:          string;
+  modelName?:             string;
+  logoPlacement?:         string;
+  eraEstimate?:           string;
+  eraConfidence?:         'low' | 'medium' | 'high';
+  eraEvidence?:           string[];
+  materialSignals?:       string[];
+  graphicSignals?:        string[];
+  sportsTeam?:            string;
+  league?:                string;
+  playerNumber?:          string;
+  playerNameGuess?:       string;
+  playerNameConfidence?:  'low' | 'medium' | 'high';
+  brandModelSignals?:     string[];
+  possibleDiamondIds?:    string[];
+  diamondReasoningShort?: string;
+}
+
 export interface FlipResult {
   /** Matches ScanResult.id from scan-context */
   id:           string;
@@ -25,6 +50,11 @@ export interface FlipResult {
   era:          string;
   styleLabels:  string[];
   material:     string;
+
+  // Structured v2 ID fields (optional — present on new scans, absent on old).
+  // Carried verbatim from ScanResult.identification so the Diamond matcher can
+  // prefer precise signals over loose title keywords.
+  structured?:  StructuredId;
 
   // Market data from AI
   resaleValue:       number;

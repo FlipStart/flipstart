@@ -399,9 +399,22 @@ export function calculateHuntXp(
 
 // ─── AsyncStorage helpers ─────────────────────────────────────────────────────
 
-export async function loadXpProfile(): Promise<HuntXpProfile> {
+/**
+ * Load XP profile from AsyncStorage.
+ *
+ * Pass `forUserId` from a React screen to bypass _activeUserId and read the
+ * correct account-scoped key directly -- avoids the race where _activeUserId
+ * hasn't been set yet when useFocusEffect fires on focus or token refresh.
+ *
+ * Callers that already own the active context (applyHuntXp, hunt-complete)
+ * can omit forUserId and fall back to activeKey() as before.
+ */
+export async function loadXpProfile(forUserId?: string | null): Promise<HuntXpProfile> {
   try {
-    const raw = await AsyncStorage.getItem(activeKey());
+    const key = forUserId !== undefined
+      ? (forUserId ? accountXpKey(forUserId) : GUEST_XP_KEY)
+      : activeKey();
+    const raw = await AsyncStorage.getItem(key);
     if (!raw) return defaultProfile();
     const parsed = JSON.parse(raw) as Partial<HuntXpProfile>;
     return { ...defaultProfile(), ...parsed };

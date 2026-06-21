@@ -18,8 +18,20 @@ export async function saveXpProfile(profile: HuntXpProfile, userId: string): Pro
   try {
     const sb = await getSupabase();
     if (!sb) return;
+    // Write all individual columns so the Supabase dashboard shows live values.
+    // raw_profile is also written as the authoritative source for fetchXpProfile.
     const { error } = await sb.from('xp_profiles').upsert(
-      { user_id: userId, raw_profile: profile as any },
+      {
+        user_id:               userId,
+        total_xp:              profile.totalXp,
+        current_rank:          profile.currentRank,
+        completed_hunts:       profile.completedHunts,
+        hunt_streak:           profile.huntStreak,
+        last_hunt_date:        profile.lastHuntDate ?? null,
+        discovered_brands:     profile.discoveredBrands,
+        discovered_categories: profile.discoveredCategories,
+        raw_profile:           profile as any,
+      },
       { onConflict: 'user_id' }
     );
     if (error && __DEV__) console.warn('[xpSync] save failed:', error.message);

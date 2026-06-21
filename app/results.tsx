@@ -14,17 +14,39 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useScanContext } from '@/lib/scan-context';
-import { isHuntActive, addItemToHunt, computeHuntRating } from '@/lib/hunt-context';
+import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt } from '@/lib/hunt-context';
 import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview } from '@/lib/reviewPrompt';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
-import { FlipResult } from '@/types/flip';
+import { FlipResult, isHuntBundle } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
+import { MajorAchievementModal } from '@/lib/MajorAchievementModal';
+import {
+  hasShownMajorAchievement,
+  markMajorAchievementShown,
+  type MajorAchievementType,
+} from '@/lib/majorAchievementStorage';
+import { BrandRevealModal } from '@/lib/BrandRevealModal';
+import {
+  getBrandByName,
+  computeDiscoveredBrands,
+  getRevealedBrandNames,
+  markBrandRevealed,
+  TOTAL_SUPPORTED_BRANDS,
+  type Brand,
+} from '@/lib/brandCompendium';
+
+// ─── Reward queue type ────────────────────────────────────────────────────────
+type QueuedReward =
+  | { kind: 'brand'; brand: Brand; totalDiscovered: number }
+  | { kind: 'achievement'; achievementType: MajorAchievementType };
+import { setDiscoveryMeta } from '@/lib/devBrandOverrides';
+import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { computeFlipCalc } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
 
@@ -222,7 +244,8 @@ export default function ResultsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { currentScan, setCurrentScan, updateScan } = useScanContext();
-  const { addFlip, removeFlip, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
+  const { addFlip, removeFlip, flips, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
+  const { addUnseenBrands } = useAchievementNotifications();
 
   const [thriftEditing,   setThriftEditing]   = useState(false);
   const [listingsLoading, setListingsLoading] = useState(false);
@@ -230,6 +253,31 @@ export default function ResultsScreen() {
   const [imageModalOpen,  setImageModalOpen]  = useState(false);
   const [listingsOpen,    setListingsOpen]    = useState(false);
   const [isSaved,         setIsSaved]         = useState(false);
+  // ── Reward queue — ensures brand reveals + achievement celebrations never overlap ──
+  // Priority: legendary brand first, then major achievements, then other brands.
+  const [rewardQueue, setRewardQueue] = useState<QueuedReward[]>([]);
+  const currentReward = rewardQueue[0] ?? null;
+
+  const enqueueReward = useCallback((reward: QueuedReward) => {
+    setRewardQueue(prev => {
+      if (reward.kind === 'brand' && reward.brand.rarity === 'legendary') {
+        // Legendary always jumps to the front
+        return [reward, ...prev];
+      }
+      if (reward.kind === 'achievement') {
+        // Major achievements go after any legendary brands
+        const lastLeg = prev.reduce((idx, r, i) =>
+          r.kind === 'brand' && r.brand.rarity === 'legendary' ? i : idx, -1);
+        const insertAt = lastLeg + 1;
+        return [...prev.slice(0, insertAt), reward, ...prev.slice(insertAt)];
+      }
+      return [...prev, reward];
+    });
+  }, []);
+
+  const advanceQueue = useCallback(() => {
+    setRewardQueue(prev => prev.slice(1));
+  }, []);
   const [showReview,      setShowReview]      = useState(false);
 
   const generateListingsMutation = trpc.scan.generateListings.useMutation();
@@ -315,6 +363,29 @@ export default function ResultsScreen() {
       id: currentScan.id, imageUri: currentScan.imageUri, timestamp: Date.now(),
       itemName: id.item_name, brand: id.brand, category: id.category,
       era: id.estimated_era, styleLabels: id.style_labels, material: id.material_guess,
+      // Carry v2 structured fields verbatim (undefined on older scans).
+      structured: {
+        canonicalBrand:        id.canonicalBrand,
+        canonicalItemName:     id.canonicalItemName,
+        itemType:              id.itemType,
+        subType:               id.subType,
+        styleVariant:          id.styleVariant,
+        modelName:             id.modelName,
+        logoPlacement:         id.logoPlacement,
+        eraEstimate:           id.eraEstimate,
+        eraConfidence:         id.eraConfidence,
+        eraEvidence:           id.eraEvidence,
+        materialSignals:       id.materialSignals,
+        graphicSignals:        id.graphicSignals,
+        sportsTeam:            id.sportsTeam,
+        league:                id.league,
+        playerNumber:          id.playerNumber,
+        playerNameGuess:       id.playerNameGuess,
+        playerNameConfidence:  id.playerNameConfidence,
+        brandModelSignals:     id.brandModelSignals,
+        possibleDiamondIds:    id.possibleDiamondIds,
+        diamondReasoningShort: id.diamondReasoningShort,
+      },
       resaleValue: md.adjusted_estimated_value,
       resaleRangeLow: md.estimated_resale_range.low,
       resaleRangeHigh: md.estimated_resale_range.high,
@@ -334,6 +405,116 @@ export default function ResultsScreen() {
         : null,
     };
     addFlip(flip);
+
+    // ── Brand discovery reveal ─────────────────────────────────────────────
+    // Fires when this save introduces a brand never discovered before.
+    // Works for both normal scans and items saved during a hunt (both go
+    // through addFlip, so the brand lands in flips[] either way).
+    setTimeout(async () => {
+      try {
+        const newBrand = getBrandByName(flip.brand ?? '');
+        if (!newBrand) return;
+
+        // Hunt-aware de-dupe: include brands kept in the active hunt and any
+        // brands discovered earlier via hunt completion, so we never re-reveal.
+        const activeHunt = getActiveHunt();
+        const huntBrands = activeHunt
+          ? activeHunt.items.map(i => i.brand).filter(Boolean) as string[]
+          : [];
+
+        const prevDiscovered = computeDiscoveredBrands(flips, huntBrands);
+        if (prevDiscovered.has(newBrand.name)) return;
+
+        // Has the reveal already been shown for this brand? (once-only guard)
+        const revealed = await getRevealedBrandNames();
+        if (revealed.has(newBrand.name)) return;
+
+        await markBrandRevealed(newBrand.name);
+
+        // Record discovery metadata for future profile/showcase features.
+        const source = activeHunt ? 'hunt_mode' : 'normal_scan';
+        await setDiscoveryMeta({
+          brandName:       newBrand.name,
+          rarity:          newBrand.rarity,
+          category:        newBrand.category,
+          dateDiscovered:  Date.now(),
+          discoverySource: source,
+          scanId:          currentScan.id,
+          huntId:          activeHunt?.id,
+          itemName:        flip.itemName,
+          estimatedProfit: flip.profit,
+        });
+
+        // Fire the notification badge immediately — don't wait for Progress tab focus.
+        addUnseenBrands([newBrand.name]);
+
+        enqueueReward({ kind: 'brand', brand: newBrand, totalDiscovered: prevDiscovered.size + 1 });
+      } catch {
+        // Never crash on brand reveal logic
+      }
+    }, 500);
+
+    // ── Major achievement detection ────────────────────────────────────────
+    // Uses pre-save `flips` snapshot to detect "just crossed" thresholds.
+    setTimeout(async () => {
+      try {
+        const scans = (flips.filter(f => !isHuntBundle(f)) as FlipResult[]);
+        const prevScanCount   = scans.length;
+        const prevTotalProfit = scans.reduce((s, f) => s + (f.profit ?? 0), 0);
+        const prevBrands      = new Set(scans.map(f => f.brand?.toLowerCase().trim()).filter(Boolean));
+
+        // Priority order: most impressive first; only one fires per save
+        let triggered: MajorAchievementType | null = null;
+
+        // FlipStart Legend — $10,000 total profit
+        if (!triggered && prevTotalProfit < 10000 && prevTotalProfit + flip.profit >= 10000) {
+          if (!await hasShownMajorAchievement('flipstart_legend')) triggered = 'flipstart_legend';
+        }
+
+        // Jackpot — first $1,000+ profit item
+        const wasJackpot = scans.some(f => f.profit >= 1000);
+        if (!triggered && !wasJackpot && flip.profit >= 1000) {
+          if (!await hasShownMajorAchievement('jackpot')) triggered = 'jackpot';
+        }
+
+        // Band Tee Bloodhound — first vintage band tee
+        const eraStr   = (flip.era ?? '').toLowerCase();
+        const styleStr = [...(flip.styleLabels ?? []), flip.itemName ?? ''].join(' ').toLowerCase();
+        const isVintageBandTee = eraStr.includes('vintage') && styleStr.includes('band');
+        const wasBandTee = scans.some(f => {
+          const e = (f.era ?? '').toLowerCase();
+          const s = [...(f.styleLabels ?? []), f.itemName ?? ''].join(' ').toLowerCase();
+          return e.includes('vintage') && s.includes('band');
+        });
+        if (!triggered && isVintageBandTee && !wasBandTee) {
+          if (!await hasShownMajorAchievement('band_tee_bloodhound')) triggered = 'band_tee_bloodhound';
+        }
+
+        // Master Scanner — 5,000th scan
+        if (!triggered && prevScanCount < 5000 && prevScanCount + 1 >= 5000) {
+          if (!await hasShownMajorAchievement('master_scanner')) triggered = 'master_scanner';
+        }
+
+        // Brand Encyclopedia — 100th unique brand
+        const isNewBrand  = !prevBrands.has(flip.brand?.toLowerCase().trim());
+        const newBrandCount = prevBrands.size + (isNewBrand ? 1 : 0);
+        if (!triggered && prevBrands.size < 100 && newBrandCount >= 100) {
+          if (!await hasShownMajorAchievement('brand_encyclopedia')) triggered = 'brand_encyclopedia';
+        }
+
+        // First Achievement Ever — very first save
+        if (!triggered && prevScanCount === 0) {
+          if (!await hasShownMajorAchievement('first_achievement')) triggered = 'first_achievement';
+        }
+
+        if (triggered) {
+          await markMajorAchievementShown(triggered);
+          enqueueReward({ kind: 'achievement', achievementType: triggered });
+        }
+      } catch {
+        // Never crash on achievement logic
+      }
+    }, 600); // Small delay — let the results UI settle first
 
     // If a hunt is active, add this item to the hunt session too
     if (isHuntActive()) {
@@ -772,6 +953,26 @@ export default function ResultsScreen() {
           <View style={{ height: 32 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Reward queue — one reward at a time, in priority order ───────────
+           Legendary brand → major achievement → other brand reveals          */}
+      {currentReward?.kind === 'achievement' && (
+        <MajorAchievementModal
+          type={currentReward.achievementType}
+          visible={true}
+          onContinue={advanceQueue}
+        />
+      )}
+      {currentReward?.kind === 'brand' && (
+        <BrandRevealModal
+          brand={currentReward.brand}
+          totalDiscovered={currentReward.totalDiscovered}
+          totalBrands={TOTAL_SUPPORTED_BRANDS}
+          visible={true}
+          onContinue={advanceQueue}
+        />
+      )}
+
     </ScreenContainer>
   );
 }

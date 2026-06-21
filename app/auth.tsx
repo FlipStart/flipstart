@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { supabase } from '@/lib/supabase';
 import { completeOnboarding } from '@/lib/onboarding-storage';
+import { takeAuthReturnDest } from '@/lib/authReturn';
 import { useAuth } from '@/lib/auth-context';
 import { PENDING_USERNAME_KEY } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
@@ -39,14 +40,41 @@ const GOLD      = '#BE9C2C';
 export default function AuthScreen() {
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
-  const params  = useLocalSearchParams<{ mode?: string }>();
+  const params  = useLocalSearchParams<{ mode?: string; authEntryPoint?: string }>();
   const { refreshProfile } = useAuth();
 
+  // Entry context — drives whether the landing screen + guest skip are shown,
+  // and where "back" goes. 'settings' = simple Log In/Create Account that returns
+  // to Settings. 'onboarding' = full landing with guest skip, part of onboarding.
+  const entryPoint: 'settings' | 'onboarding' =
+    params.authEntryPoint === 'settings' ? 'settings' : 'onboarding';
+  const fromSettings = entryPoint === 'settings';
+
+  // After a successful auth, where to send the user.
+  // - Settings: auth was pushed on top of Settings, so back() returns there cleanly.
+  // - Feature gate: use the destination set in lib/authReturn by the gate.
+  // - Onboarding / everything else: replace to the tab root.
+  const goAfterAuth = useCallback(() => {
+    if (fromSettings) {
+      router.back();
+      return;
+    }
+    const dest = takeAuthReturnDest() ?? '/(tabs)';
+    router.replace(dest as any);
+  }, [router, fromSettings]);
+
   const [mode, setMode] = useState<'entry' | 'signup' | 'login' | 'confirm'>(
+    // From Settings we never show the landing — jump straight to the form.
     params.mode === 'login'  ? 'login'  :
     params.mode === 'signup' ? 'signup' :
-    'entry'  // default: show polished entry screen
+    fromSettings             ? 'login'  :
+    'entry'  // onboarding default: show polished entry landing
   );
+  // True only when the user reached a form via the in-screen entry landing (the
+  // Hunt/Progress guest-gate path). In that case "back" returns to the landing.
+  // When the form was opened directly (Settings or the onboarding quiz screen),
+  // "back" must return to whoever pushed us (router.back()).
+  const [cameFromLanding, setCameFromLanding] = useState(false);
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
   const [username,     setUsername]     = useState('');
@@ -139,7 +167,10 @@ export default function AuthScreen() {
       // SIGNED_IN fires → AuthProvider → ensureProfile
       // index.tsx profileChecked gate routes to username-setup or home
       await refreshProfile().catch(() => {});
-      router.replace('/(tabs)' as any);
+      // Any successful auth catches the device up to the current onboarding
+      // version, so the home gate won't bounce a freshly-signed-in user back.
+      await completeOnboarding('resell').catch(() => {});
+      goAfterAuth();
     } catch (err) {
       setGoogleError('Google Sign-In failed. Please try again.');
     } finally {
@@ -201,7 +232,10 @@ export default function AuthScreen() {
 
       // Wait for profile to load before navigating
       await refreshProfile().catch(() => {});
-      router.replace('/(tabs)' as any);
+      // Catch the device up to the current onboarding version (prevents the
+      // home gate from bouncing a freshly-signed-in user back to onboarding).
+      await completeOnboarding('resell').catch(() => {});
+      goAfterAuth();
 
     } catch (err: any) {
       if (err?.code === 'ERR_REQUEST_CANCELED' || err?.code === 'ERR_CANCELED') {
@@ -259,7 +293,7 @@ export default function AuthScreen() {
       }
       await completeOnboarding('resell');
       await refreshProfile().catch(() => {});
-      router.replace('/(tabs)' as any);
+      goAfterAuth();
     } catch { setError('Something went wrong. Please try again.'); setSaving(false); }
   };
 
@@ -283,7 +317,7 @@ export default function AuthScreen() {
       }
       await completeOnboarding('resell');
       await refreshProfile().catch(() => {});
-      router.replace('/(tabs)' as any);
+      goAfterAuth();
     } catch { setError('Something went wrong. Please try again.'); setSaving(false); }
   };
 
@@ -344,7 +378,7 @@ export default function AuthScreen() {
           {/* Primary CTAs */}
           <View style={e.ctaBlock}>
             <Pressable
-              onPress={() => { setError(null); setMode('signup'); }}
+              onPress={() => { setError(null); setCameFromLanding(true); setMode('signup'); }}
               disabled={anyLoading}
               style={({ pressed }) => [e.createBtn, pressed && { opacity: 0.87 }]}
             >
@@ -352,7 +386,7 @@ export default function AuthScreen() {
             </Pressable>
 
             <Pressable
-              onPress={() => { setError(null); setMode('login'); }}
+              onPress={() => { setError(null); setCameFromLanding(true); setMode('login'); }}
               disabled={anyLoading}
               style={({ pressed }) => [e.loginBtn, pressed && { opacity: 0.87 }]}
             >
@@ -457,7 +491,14 @@ export default function AuthScreen() {
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={[s.root, { paddingTop: insets.top + 16 }]} keyboardShouldPersistTaps="handled">
-        <Pressable onPress={() => { setMode('entry'); setError(null); }} hitSlop={12} style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.6 }]}>
+        <Pressable
+          onPress={() => {
+            if (cameFromLanding) { setMode('entry'); setError(null); }
+            else { router.back(); }
+          }}
+          hitSlop={12}
+          style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.6 }]}
+        >
           <MaterialIcons name="arrow-back" size={22} color={FOREST} />
         </Pressable>
         <View style={s.headerBlock}>

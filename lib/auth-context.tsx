@@ -32,11 +32,14 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface Profile {
-  id:                  string;
-  username:            string;
-  display_name:        string | null;
-  onboarding_complete: boolean;
-  created_at:          string;
+  id:                    string;
+  username:              string;
+  display_name:          string | null;
+  onboarding_complete:   boolean;
+  created_at:            string;
+  // Added for one-time username change enforcement.
+  // Optional so the app works before the SQL migration runs.
+  username_changed_once?: boolean;
 }
 
 interface AuthState {

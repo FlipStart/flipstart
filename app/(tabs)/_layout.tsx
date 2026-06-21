@@ -5,7 +5,8 @@
  * Profile removed from bottom tabs — accessible via header icon.
  */
 
-import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform, Animated } from 'react-native';
+import { useRef, useEffect } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
@@ -15,6 +16,8 @@ import { Image } from 'expo-image';
 import { useAudioPlayer } from 'expo-audio';
 
 import { V } from '@/constants/vintage';
+import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import { useAuth } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
@@ -40,10 +43,61 @@ type RightTab = typeof RIGHT_TABS[number];
 // ─── Custom tab bar ───────────────────────────────────────────────────────────
 
 function VintageTabBar({ state, navigation }: BottomTabBarProps) {
-  const router    = useRouter();
+  const router      = useRouter();
+  const { unseenCount, unseenBrandCount, unseenDiamondCount } = useAchievementNotifications();
+  const totalBadge  = unseenCount + unseenBrandCount + unseenDiamondCount;
+  const { user }    = useAuth();
   const insets    = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
   const roar      = useAudioPlayer(ROAR_SOUND);
+
+  // ── Progress tab notification animation ───────────────────────────────────
+  // Urgent: rotation + scale pulse, both icon AND label move together.
+  const wiggleAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim  = useRef(new Animated.Value(1)).current;
+  const wiggleLoop = useRef<Animated.CompositeAnimation | null>(null);
+
+  useEffect(() => {
+    if (totalBadge > 0) {
+      wiggleLoop.current = Animated.loop(
+        Animated.sequence([
+          // Sharp attention-grab: three rapid shakes + scale up
+          Animated.parallel([
+            Animated.sequence([
+              Animated.timing(wiggleAnim, { toValue: 1,     duration: 50,  useNativeDriver: true }),
+              Animated.timing(wiggleAnim, { toValue: -1,    duration: 90,  useNativeDriver: true }),
+              Animated.timing(wiggleAnim, { toValue: 0.85,  duration: 70,  useNativeDriver: true }),
+              Animated.timing(wiggleAnim, { toValue: -0.85, duration: 70,  useNativeDriver: true }),
+              Animated.timing(wiggleAnim, { toValue: 0.5,   duration: 55,  useNativeDriver: true }),
+              Animated.timing(wiggleAnim, { toValue: -0.5,  duration: 55,  useNativeDriver: true }),
+              Animated.timing(wiggleAnim, { toValue: 0,     duration: 40,  useNativeDriver: true }),
+            ]),
+            Animated.sequence([
+              Animated.timing(pulseAnim,  { toValue: 1.22,  duration: 120, useNativeDriver: true }),
+              Animated.timing(pulseAnim,  { toValue: 0.92,  duration: 100, useNativeDriver: true }),
+              Animated.timing(pulseAnim,  { toValue: 1.08,  duration: 80,  useNativeDriver: true }),
+              Animated.timing(pulseAnim,  { toValue: 1,     duration: 60,  useNativeDriver: true }),
+            ]),
+          ]),
+          Animated.delay(1200),
+        ])
+      );
+      wiggleLoop.current.start();
+    } else {
+      wiggleLoop.current?.stop();
+      wiggleLoop.current = null;
+      Animated.parallel([
+        Animated.timing(wiggleAnim, { toValue: 0, duration: 120, useNativeDriver: true }),
+        Animated.timing(pulseAnim,  { toValue: 1, duration: 120, useNativeDriver: true }),
+      ]).start();
+    }
+    return () => { wiggleLoop.current?.stop(); };
+  }, [totalBadge]);
+
+  const wiggleRotate = wiggleAnim.interpolate({
+    inputRange: [-1, 0, 1],
+    outputRange: ['-28deg', '0deg', '28deg'],
+  });
 
   const handleCenterScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -57,17 +111,36 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
 
     const onPress = () => {
       if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-      // Hunt-tab navigates to the hunt entry screen, not a tab screen
+      // Hunt-tab: signed-in users go to full-screen gameplay; guests see the
+      // in-tab account gate (which keeps the bottom tab bar visible).
       if (item.name === 'hunt-tab') {
         try { roar.seekTo(0); roar.play(); } catch { /* never crash */ }
-        router.push('/hunt' as any);
+        if (user) { router.push('/hunt' as any); }
+        else      { navigation.navigate(item.name); }
         return;
       }
       navigation.navigate(item.name);
     };
 
     // Hunt Mode gets a lion icon
-    const isHunt = item.name === 'hunt-tab';
+    const isHunt     = item.name === 'hunt-tab';
+    const isProgress = item.name === 'progress';
+    const shouldAnimate = isProgress && totalBadge > 0;
+
+    const tabContent = (
+      <>
+        <MaterialIcons name={(item as any).icon} size={22} color={color} />
+        {shouldAnimate && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>
+              {totalBadge > 99 ? '99+' : String(totalBadge)}
+            </Text>
+          </View>
+        )}
+        <Text style={[styles.tabLabel, { color }]}>{item.label}</Text>
+        {isActive && !isHunt && <View style={[styles.activeBar, { backgroundColor: V.green }]} />}
+      </>
+    );
 
     return (
       <Pressable
@@ -76,13 +149,22 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
         style={({ pressed }) => [styles.tabItem, pressed && { opacity: 0.7 }]}
       >
         {isHunt ? (
-          // Lion paw icon for Hunt Mode
           <MaterialIcons name="pets" size={22} color={color} />
+        ) : shouldAnimate ? (
+          // Progress tab with notifications: animate icon + label + badge together
+          <Animated.View style={{
+            alignItems: 'center',
+            transform: [{ rotate: wiggleRotate }, { scale: pulseAnim }],
+          }}>
+            {tabContent}
+          </Animated.View>
         ) : (
-          <MaterialIcons name={(item as any).icon} size={22} color={color} />
+          <View style={{ alignItems: 'center' }}>
+            {tabContent}
+          </View>
         )}
-        <Text style={[styles.tabLabel, { color }]}>{item.label}</Text>
-        {isActive && !isHunt && <View style={[styles.activeBar, { backgroundColor: V.green }]} />}
+        {isHunt && <Text style={[styles.tabLabel, { color }]}>{item.label}</Text>}
+        {isActive && isHunt && <View style={[styles.activeBar, { backgroundColor: V.green }]} />}
       </Pressable>
     );
   };
@@ -201,4 +283,19 @@ const styles = StyleSheet.create({
     shadowRadius:    10,
     elevation:       8,
   },
+  badge: {
+    position:        'absolute',
+    top:             -4,
+    right:           -8,
+    minWidth:        16,
+    height:          16,
+    borderRadius:    8,
+    backgroundColor: '#CC2222',
+    justifyContent:  'center',
+    alignItems:      'center',
+    paddingHorizontal: 3,
+    borderWidth:     1,
+    borderColor:     V.pageBg,
+  },
+  badgeText: { fontSize: 9, fontWeight: '800', color: '#fff' },
 });

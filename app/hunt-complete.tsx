@@ -21,7 +21,7 @@ import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 
 import { useFlipStore }                              from '@/lib/useFlipStore';
 import { isHuntBundle, type HuntBundle, type HuntBundleItem } from '@/types/flip';
@@ -31,6 +31,21 @@ import {
   type HuntXpResult,
 } from '@/lib/huntXp';
 import { FONTS } from '@/constants/typography';
+import { MajorAchievementModal } from '@/lib/MajorAchievementModal';
+import { BrandRevealModal } from '@/lib/BrandRevealModal';
+import {
+  getBrandByName,
+  computeDiscoveredBrands,
+  getRevealedBrandNames,
+  markBrandRevealed,
+  TOTAL_SUPPORTED_BRANDS,
+  type Brand,
+} from '@/lib/brandCompendium';
+import {
+  hasShownMajorAchievement,
+  markMajorAchievementShown,
+  type MajorAchievementType,
+} from '@/lib/majorAchievementStorage';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 
@@ -95,6 +110,24 @@ export default function HuntCompleteScreen() {
 
   // Consume XP result (set by hunt-active before navigating here)
   const [xpResult, setXpResult] = useState<HuntXpResult | null>(null);
+  const [majorAchievement, setMajorAchievement] = useState<MajorAchievementType | null>(null);
+
+  // Reward queue — same pattern as results.tsx so rewards never overlap
+  const [rewardQueue, setRewardQueue] = useState<Array<
+    | { kind: 'achievement'; achievementType: MajorAchievementType }
+    | { kind: 'brand'; brand: Brand; totalDiscovered: number }
+  >>([]);
+  const currentReward = rewardQueue[0] ?? null;
+  const advanceQueue = useCallback(() => setRewardQueue(q => q.slice(1)), []);
+
+  const enqueueAchievement = useCallback((type: MajorAchievementType) => {
+    setRewardQueue(q => [...q, { kind: 'achievement', achievementType: type }]);
+  }, []);
+  const enqueueBrand = useCallback((brand: Brand, totalDisc: number) => {
+    setRewardQueue(q => brand.rarity === 'legendary'
+      ? [{ kind: 'brand', brand, totalDiscovered: totalDisc }, ...q]
+      : [...q, { kind: 'brand', brand, totalDiscovered: totalDisc }]);
+  }, []);
 
   useEffect(() => {
     const result = consumeLastCompletionResult();
@@ -104,7 +137,7 @@ export default function HuntCompleteScreen() {
     }
     // Fallback: reconstruct from bundle + current profile if result not present
     if (!bundle) return;
-    loadXpProfile().then(profile => {
+    loadXpProfile().then(async profile => {
       const xpEarned       = bundle.xpEarned ?? 0;
       const newTotalXp     = profile.totalXp;
       const prevTotalXp    = Math.max(0, newTotalXp - xpEarned);
@@ -121,6 +154,45 @@ export default function HuntCompleteScreen() {
         progressBefore:  getRankProgress(prevTotalXp),
         progressAfter:   getRankProgress(newTotalXp),
       });
+
+      // ── Major achievement detection (hunt-based) ─────────────────────────
+      // completedHunts and huntStreak come from the live XP profile.
+      // We show the modal here — user is on hunt-complete and can press Continue.
+      try {
+        const hunts  = profile.completedHunts ?? 0;
+        const streak = profile.huntStreak ?? 0;
+
+        // Hunt Mode Legend — 2,500 hunts
+        if (hunts >= 2500 && !await hasShownMajorAchievement('hunt_mode_legend')) {
+          await markMajorAchievementShown('hunt_mode_legend');
+          enqueueAchievement('hunt_mode_legend');
+        }
+        // Never Miss — 365-day streak
+        else if (streak >= 365 && !await hasShownMajorAchievement('never_miss')) {
+          await markMajorAchievementShown('never_miss');
+          enqueueAchievement('never_miss');
+        }
+
+        // ── Brand reveals for brands newly discovered via this hunt ─────────
+        // Items saved during the hunt already fired brand reveals via results.tsx.
+        // This catches any brands tracked ONLY in profile.discoveredBrands
+        // (edge cases where the XP profile has brands not in flips[]).
+        if (bundle) {
+          const keptBrands = bundle.keptItems.map(i => i.brand).filter(Boolean);
+          // Discover set before this hunt (using flips only, no hunt brands)
+          const preHuntDiscovered = computeDiscoveredBrands(flips, []);
+          const revealed = await getRevealedBrandNames();
+
+          for (const rawBrand of keptBrands) {
+            const brandObj = getBrandByName(rawBrand);
+            if (!brandObj) continue;
+            if (preHuntDiscovered.has(brandObj.name)) continue; // already known
+            if (revealed.has(brandObj.name)) continue;          // reveal already shown
+            await markBrandRevealed(brandObj.name);
+            enqueueBrand(brandObj, preHuntDiscovered.size + 1);
+          }
+        }
+      } catch { /* never crash on achievement logic */ }
     });
   }, []);
 
@@ -298,11 +370,30 @@ export default function HuntCompleteScreen() {
         </View>
 
       </ScrollView>
+
+      {/* ── Reward queue ─────────────────────────────────────────────────── */}
+      {currentReward?.kind === 'achievement' && (
+        <MajorAchievementModal
+          type={currentReward.achievementType}
+          visible={true}
+          onContinue={advanceQueue}
+        />
+      )}
+      {currentReward?.kind === 'brand' && (
+        <BrandRevealModal
+          brand={currentReward.brand}
+          totalDiscovered={currentReward.totalDiscovered}
+          totalBrands={TOTAL_SUPPORTED_BRANDS}
+          visible={true}
+          onContinue={advanceQueue}
+        />
+      )}
+
     </View>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Sub-components ──────────────────────────────────────
 
 function StatCard({
   value, label, valueColor = BROWN,

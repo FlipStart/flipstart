@@ -1,200 +1,535 @@
 /**
- * app/(tabs)/progress.tsx
+ * app/(tabs)/progress.tsx — Progress Screen
  *
- * Progress screen — shows XP rank, hunt streak, and XP bar.
- * Reads live data from huntXp AsyncStorage profile.
+ * Layout:
+ *   1. Header (title + subtitle with divider)
+ *   2. Explore Progress card (SVG ring + stat columns)
+ *   3. "Your Collection" decorative divider
+ *   4. Five standalone collection cards with progress badges
+ *   5. Bottom illustration space (reserved for future artwork)
+ *
+ * Data: all from HuntXpProfile via loadXpProfile().
+ * Calculations: unchanged from prior implementation.
+ * SVG: react-native-svg v15 (pre-installed in Expo SDK 54).
  */
 
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { navGuard } from '@/lib/navGuard';
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Image, Dimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useCallback } from 'react';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Svg, { Circle } from 'react-native-svg';
+import { useFlipStore } from '@/lib/useFlipStore';
 
 import { FONTS } from '@/constants/typography';
-import { V } from '@/constants/vintage';
 import {
   loadXpProfile, getCurrentRank, getNextRank,
   getRankProgress, RANK_LADDER, type HuntXpProfile,
 } from '@/lib/huntXp';
+import {
+  ACHIEVEMENT_CATEGORIES,
+  TOTAL_ACHIEVEMENTS as ACHV_TOTAL,
+  buildUserAchievementData,
+  getTotalUnlocked,
+  getAllUnlockedIds,
+  getUnlockedCount,
+  type UserAchievementData,
+} from '@/lib/achievements';
+import {
+  useAchievementNotifications,
+  type AchievementNotification,
+} from '@/lib/AchievementNotificationContext';
+import {
+  computeDiscoveredBrands,
+  getUnseenBrandNames,
+  TOTAL_SUPPORTED_BRANDS,
+} from '@/lib/brandCompendium';
+import {
+  getUnlockedDiamondIds,
+  getUnseenDiamondIds,
+  TOTAL_DIAMONDS,
+} from '@/lib/diamonds';
 import { useAuth } from '@/lib/auth-context';
+import FeatureGate from '@/components/FeatureGate';
 
-// ─── Palette ──────────────────────────────────────────────────────────────────
-const FOREST  = '#2A4A2A';
-const GOLD    = '#BE9C2C';
-const CREAM   = '#F4EED8';
-const PARCHMENT = '#EDE0C4';
-const CARD_B  = '#DDD0B0';
-const BROWN   = '#5A3A1A';
-const MUTED   = '#8A7050';
+// ─── Palette ─────────────────────────────────────────────────────────────────
+const FOREST = '#2A4A2A';
+const GOLD   = '#BE9C2C';
+const PARCH  = '#ECE7D3';
+const CARD   = '#F2EDD8';
+const IVORY  = '#FAF6EE';
+const BORDER = '#C8B88A';
+const TAN    = '#D6C8A3';
+const BROWN  = '#3D2A12';
+const MUTED  = '#8A7050';
+
+// ─── Screen width ────────────────────────────────────────────────────────────
+const SW = Dimensions.get('window').width;
+
+// ─── Illustration asset ───────────────────────────────────────────────────────
+const EXPLORER_ILL = require('@/assets/images/progress-illustration.png');
+
+// ─── Collection totals ────────────────────────────────────────────────────────
+// TOTAL_ACHIEVEMENTS (39) imported as ACHV_TOTAL from lib/achievements
+const TOTAL_BRANDS = TOTAL_SUPPORTED_BRANDS;  // 241 supported brands
+
+// ─── Destinations (order matches reference image) ────────────────────────────
+const DESTINATIONS = [
+  { key: 'achievements', icon: 'emoji-events',  color: '#BE9C2C', title: 'Achievements',         sub: 'Track your achievements'    },
+  { key: 'brands',       icon: 'local-offer',   color: '#1A1A1A', title: 'Brand Compendium',      sub: 'Discover brands'            },
+  { key: 'diamonds',     icon: 'auto-awesome',  color: '#3A7EBF', title: 'Diamonds in the Rough', sub: 'Find the rarest treasures' },
+] as const;
+
+// Badge text per destination key
+function getBadge(key: string, realUnlocked: number, brands: number | null, diamonds: number): string {
+  if (key === 'achievements') return `${realUnlocked} / ${ACHV_TOTAL}`;
+  if (key === 'brands')       return brands === null ? `— / ${TOTAL_BRANDS}` : `${brands} / ${TOTAL_BRANDS}`;
+  if (key === 'diamonds')     return `${diamonds} / ${TOTAL_DIAMONDS}`;
+  return '—';
+}
+
+const comingSoon = () =>
+  Alert.alert('Coming Soon', 'Coming in a future update.');
+
+// ─── Circular Progress Ring ───────────────────────────────────────────────────
+function RingProgress({ percent, size = 112, strokeWidth = 9 }: {
+  percent: number; size?: number; strokeWidth?: number;
+}) {
+  const r     = (size - strokeWidth) / 2;
+  const circ  = 2 * Math.PI * r;
+  const offset = circ - (percent / 100) * circ;
+  const cx = size / 2;
+  const cy = size / 2;
+
+  return (
+    <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
+      <Svg width={size} height={size} style={{ position: 'absolute' }}>
+        {/* Track */}
+        <Circle cx={cx} cy={cy} r={r} stroke={TAN} strokeWidth={strokeWidth} fill="none" />
+        {/* Arc */}
+        <Circle
+          cx={cx} cy={cy} r={r}
+          stroke={FOREST}
+          strokeWidth={strokeWidth}
+          fill="none"
+          strokeDasharray={circ}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          transform={`rotate(-90, ${cx}, ${cy})`}
+        />
+      </Svg>
+      <Text style={s.ringPct}>{percent}%</Text>
+      <Text style={s.ringLbl}>Complete</Text>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function ProgressScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
+  const { flips } = useFlipStore();
+  const { notifyNew, unseenCount, unseenBrandCount, addUnseenBrands, unseenBrandNames,
+          unseenDiamondCount, addUnseenDiamonds } = useAchievementNotifications();
   const [profile, setProfile] = useState<HuntXpProfile | null>(null);
+  const [achvData, setAchvData] = useState<UserAchievementData | null>(null);
+  const [brandCount, setBrandCount] = useState<number | null>(null);
+  const [diamondCount, setDiamondCount] = useState<number>(0);
 
   useFocusEffect(useCallback(() => {
-    if (user) {
-      loadXpProfile().then(setProfile).catch(() => {});
-    } else {
-      setProfile(null); // sign-out: clear immediately, never show previous account XP
-    }
-  }, [user]));
+    const uid = user?.id ?? null;
+    const load = async () => {
+      const xp = uid ? await loadXpProfile(uid).catch(() => null) : null;
+      setProfile(xp);
 
+      const data = buildUserAchievementData(
+        flips,
+        xp?.completedHunts       ?? 0,
+        xp?.huntStreak           ?? 0,
+        xp?.discoveredBrands?.length ?? 0,
+      );
+      setAchvData(data);
+
+      // Detect newly unlocked achievements and push to notification context
+      const unlockedIds = getAllUnlockedIds(data);
+      if (unlockedIds.length > 0) {
+        // Build full notification detail objects for each unlocked achievement
+        const allDetails: AchievementNotification[] = [];
+        for (const cat of ACHIEVEMENT_CATEGORIES) {
+          for (const ach of cat.achievements) {
+            allDetails.push({
+              id:           ach.id,
+              name:         ach.name,
+              flavor:       ach.flavor,
+              categoryId:   cat.id,
+              categoryIcon: cat.icon,
+              iconColor:    cat.iconColor,
+              barColor:     cat.barColor,
+            });
+          }
+        }
+        await notifyNew(unlockedIds, allDetails);
+      }
+
+      // ── Brand discovery notifications ──────────────────────────────────
+      let discoveredBrands = computeDiscoveredBrands(
+        flips,
+        xp?.discoveredBrands ?? [],
+      );
+
+      // DEV — merge dev-unlocked brands so the count matches the compendium.
+      if (__DEV__) {
+        const { getDevUnlockedBrands } = await import('@/lib/devBrandOverrides');
+        const devSet = await getDevUnlockedBrands();
+        if (devSet.size > 0) discoveredBrands = new Set([...discoveredBrands, ...devSet]);
+      }
+
+      // Store the accurate, deduped, normalized brand count for display.
+      setBrandCount(discoveredBrands.size);
+      const unseenBrands = await getUnseenBrandNames(discoveredBrands);
+      if (unseenBrands.length > 0) {
+        addUnseenBrands(unseenBrands);
+      }
+
+      // ── Diamond discovery (derived from the saved flip history) ─────────
+      let unlockedDiamondIds = getUnlockedDiamondIds(flips);
+
+      // DEV — merge dev force-unlocked Diamonds so the count matches the collection.
+      if (__DEV__) {
+        const { getDevDiamondIds } = await import('@/lib/devDiamondOverrides');
+        const devIds = await getDevDiamondIds();
+        if (devIds.length > 0) unlockedDiamondIds = Array.from(new Set([...unlockedDiamondIds, ...devIds]));
+      }
+
+      setDiamondCount(unlockedDiamondIds.length);
+      const unseenDiamonds = await getUnseenDiamondIds(unlockedDiamondIds);
+      if (unseenDiamonds.length > 0) {
+        addUnseenDiamonds(unseenDiamonds);
+      }
+    };
+    load();
+  }, [user?.id, flips]));
+
+  // ── Guest gate ────────────────────────────────────────────────────────────
   if (!authLoading && !user) {
     return (
-      <View style={{ flex: 1, backgroundColor: PARCHMENT, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
-        <MaterialIcons name="emoji-events" size={48} color={GOLD} style={{ marginBottom: 16 }} />
-        <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 }}>
-          Track Your Progress
-        </Text>
-        <Text style={{ fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 21, marginBottom: 28 }}>
-          Earn XP, climb the ranks, and build hunt streaks. Your progress syncs automatically with a free account.
-        </Text>
-        <Pressable
-          onPress={() => router.push('/auth' as any)}
-          style={{ backgroundColor: FOREST, borderRadius: 50, paddingVertical: 16, paddingHorizontal: 40, marginBottom: 12 }}
-        >
-          <Text style={{ color: CREAM, fontSize: 16, fontWeight: '800', fontFamily: FONTS.serif }}>Create Account</Text>
-        </Pressable>
-        <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'login' } } as any)}>
-          <Text style={{ color: MUTED, fontSize: 14, textDecorationLine: 'underline' }}>Already have an account? Log in</Text>
-        </Pressable>
-      </View>
+      <FeatureGate
+        icon="emoji-events"
+        title="Track Your Progress"
+        subtitle="Build your FlipStart legacy."
+        body="Create a free FlipStart account to save achievements, discovered brands, Diamonds in the Rough, and progress across devices."
+        benefits={[
+          'Save achievements',
+          'Build your Brand Compendium',
+          'Preserve Diamonds in the Rough',
+          'Sync progress automatically',
+        ]}
+        returnTo="progress"
+      />
     );
   }
 
+  // ── Derived values (all preserved from prior implementation) ──────────────
+  const totalXp    = profile?.totalXp             ?? 0;
+  const completed  = profile?.completedHunts      ?? 0;
+  const brands     = brandCount ?? 0;  // null while loading — renders as 0 in exploreRaw but mini-stat shows '—'
 
-  const totalXp     = profile?.totalXp      ?? 0;
-  const streak      = profile?.huntStreak   ?? 0;
-  const completed   = profile?.completedHunts ?? 0;
-  const currentRank = getCurrentRank(totalXp);
-  const nextRank    = getNextRank(totalXp);
-  const progress    = getRankProgress(totalXp);
-  const levelNum    = RANK_LADDER.findIndex(r => r.rank === currentRank.rank) + 1;
+  // Show '—' while brand count is still loading (prevents stale zero flicker)
+  const brandsDisplay = brandCount === null ? '—' : String(brands);
+
+  // Real achievement count — replaces the old completedHunts proxy
+  const realUnlocked   = achvData ? getTotalUnlocked(achvData) : 0;
+
+  // Explore percentage: achievements + brands + diamonds (all three tracked systems)
+  const exploreRaw     = (realUnlocked / ACHV_TOTAL + brands / TOTAL_BRANDS + diamondCount / TOTAL_DIAMONDS) / 3;
+  const explorePercent = Math.min(Math.round(exploreRaw * 100), 100);
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
-      {/* Header */}
+
+      {/* ── Header — centered title + subtitle, airy ─────────────────────── */}
       <View style={s.header}>
-        <View style={{ width: 36 }} />
         <Text style={s.headerTitle}>Progress</Text>
-        <View style={{ width: 36 }} />
+        <Text style={s.headerSub}>Track your journey. Build your legacy.</Text>
       </View>
-      <View style={s.divider} />
+      <View style={s.headerDivider} />
 
-      <ScrollView contentContainerStyle={[s.content, { paddingBottom: insets.bottom + 24 }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[s.scroll, { paddingBottom: Math.max(insets.bottom, 8) + 12 }]}
+        showsVerticalScrollIndicator={false}
+      >
 
-        {/* Rank card */}
-        <Animated.View entering={FadeInDown.delay(60).duration(350)} style={s.rankCard}>
-          <View style={s.rankTop}>
-            <View style={s.rankIconWrap}>
-              <MaterialIcons name="emoji-events" size={32} color={GOLD} />
+        {/* ═══════ EXPLORE PROGRESS ══════════════════════════════════════ */}
+        <View style={s.exploreCard}>
+
+          {/* Decorative title */}
+          <Text style={s.exploreTitle}>{'\u2726'} Explore Progress {'\u2726'}</Text>
+
+          {/* Ring + stats row */}
+          <View style={s.exploreBody}>
+
+            {/* Circular ring */}
+            <RingProgress percent={explorePercent} />
+
+            {/* Thin vertical separator */}
+            <View style={s.vertSep} />
+
+            {/* Right column: progress bar + 3 stat items */}
+            <View style={s.statsCol}>
+              {/* Horizontal bar synced to ring */}
+              <View style={s.exploreBarTrack}>
+                <View style={[s.exploreBarFill, { width: `${explorePercent}%` }]} />
+              </View>
+
+              {/* 3 stat items */}
+              <View style={s.statRow}>
+
+                <View style={s.statItem}>
+                  <View style={s.statIconBox}>
+                    <MaterialIcons name="emoji-events" size={16} color={GOLD} />
+                  </View>
+                  <Text style={s.statCount}>
+                    <Text style={s.statCurrent}>{realUnlocked}</Text>
+                    <Text style={s.statTotal}> / {ACHV_TOTAL}</Text>
+                  </Text>
+                  <Text style={s.statLabel}>Achievements{'\n'}Unlocked</Text>
+                </View>
+
+                <View style={s.statDivider} />
+
+                <View style={s.statItem}>
+                  <View style={s.statIconBox}>
+                    <MaterialIcons name="local-offer" size={16} color={GOLD} />
+                  </View>
+                  <Text style={s.statCount}>
+                    <Text style={s.statCurrent}>{brandsDisplay}</Text>
+                    <Text style={s.statTotal}> / {TOTAL_BRANDS}</Text>
+                  </Text>
+                  <Text style={s.statLabel}>Brands{'\n'}Discovered</Text>
+                </View>
+
+                <View style={s.statDivider} />
+
+                <View style={s.statItem}>
+                  <View style={s.statIconBox}>
+                    <MaterialIcons name="auto-awesome" size={16} color={GOLD} />
+                  </View>
+                  <Text style={s.statCount}>
+                    <Text style={s.statCurrent}>{diamondCount}</Text>
+                    <Text style={s.statTotal}> / {TOTAL_DIAMONDS}</Text>
+                  </Text>
+                  <Text style={s.statLabel}>Diamonds{'\n'}Unlocked</Text>
+                </View>
+
+              </View>
             </View>
-            <View style={s.rankTextBlock}>
-              <Text style={s.rankName}>{currentRank.rank}</Text>
-              <Text style={s.rankLevel}>Level {levelNum}</Text>
+          </View>
+        </View>
+
+        {/* ═══════ "YOUR COLLECTION" DIVIDER ═════════════════════════════ */}
+        <View style={s.collectionDivider}>
+          <View style={s.dividerLine} />
+          <Text style={s.collectionTitle}>Your Collection</Text>
+          <View style={s.dividerLine} />
+        </View>
+
+        {/* ═══════ COLLECTION CARDS ══════════════════════════════════════ */}
+        {DESTINATIONS.map(dest => (
+          <Pressable
+            key={dest.key}
+            onPress={dest.key === 'achievements'
+              ? () => { if (!navGuard()) return; router.push('/achievements' as any); }
+              : dest.key === 'brands'
+              ? () => { if (!navGuard()) return; router.push('/brand-compendium' as any); }
+              : dest.key === 'diamonds'
+              ? () => { if (!navGuard()) return; router.push('/diamonds-in-the-rough' as any); }
+              : comingSoon}
+            style={({ pressed }) => [s.destCard, pressed && { opacity: 0.78 }]}
+          >
+            <View style={s.destIconBox}>
+              <MaterialIcons name={dest.icon as any} size={22} color={dest.color} />
             </View>
-            {streak > 0 && (
-              <View style={s.streakBadge}>
-                <Text style={s.streakFire}>🔥</Text>
-                <Text style={s.streakNum}>{streak}</Text>
-                <Text style={s.streakLabel}>day streak</Text>
+            <View style={s.destBody}>
+              <Text style={s.destTitle}>{dest.title}</Text>
+              <Text style={s.destSub}>{dest.sub}</Text>
+            </View>
+            <View style={s.badge}>
+              <Text style={s.badgeText}>
+                {getBadge(dest.key, realUnlocked, brands, diamondCount)}
+              </Text>
+            </View>
+            {dest.key === 'achievements' && unseenCount > 0 && (
+              <View style={s.notifBadge}>
+                <Text style={s.notifBadgeText}>
+                  {unseenCount > 99 ? '99+' : String(unseenCount)}
+                </Text>
               </View>
             )}
-          </View>
-
-          {/* Progress bar */}
-          <View style={s.barTrack}>
-            <View style={[s.barFill, { width: `${progress}%` }]} />
-          </View>
-          <View style={s.barLabels}>
-            <Text style={s.barCurrent}>{totalXp.toLocaleString()} XP</Text>
-            {nextRank && <Text style={s.barNext}>{nextRank.xp.toLocaleString()} XP</Text>}
-          </View>
-        </Animated.View>
-
-        {/* Stats row */}
-        <Animated.View entering={FadeInDown.delay(120).duration(350)} style={s.statsRow}>
-          <View style={s.statCard}>
-            <Text style={s.statNum}>{completed}</Text>
-            <Text style={s.statLabel}>Hunts{'\n'}Completed</Text>
-          </View>
-          <View style={s.statSep} />
-          <View style={s.statCard}>
-            <Text style={s.statNum}>{streak}</Text>
-            <Text style={s.statLabel}>Day{'\n'}Streak</Text>
-          </View>
-          <View style={s.statSep} />
-          <View style={s.statCard}>
-            <Text style={s.statNum}>{levelNum}</Text>
-            <Text style={s.statLabel}>Current{'\n'}Level</Text>
-          </View>
-        </Animated.View>
-
-        {/* Rank ladder */}
-        <Animated.View entering={FadeInDown.delay(180).duration(350)}>
-          <Text style={s.sectionLabel}>RANK LADDER</Text>
-          {RANK_LADDER.map((tier, idx) => {
-            const isEarned  = totalXp >= tier.xp;
-            const isCurrent = tier.rank === currentRank.rank;
-            return (
-              <View key={tier.rank} style={[s.tierRow, isCurrent && s.tierRowActive]}>
-                <Text style={[s.tierNum, !isEarned && s.tierDimmed]}>{idx + 1}</Text>
-                <Text style={[s.tierName, !isEarned && s.tierDimmed, isCurrent && s.tierNameActive]}>
-                  {tier.rank}
+            {dest.key === 'brands' && unseenBrandCount > 0 && (
+              <View style={s.notifBadge}>
+                <Text style={s.notifBadgeText}>
+                  {unseenBrandCount > 99 ? '99+' : String(unseenBrandCount)}
                 </Text>
-                <Text style={[s.tierXp, !isEarned && s.tierDimmed]}>
-                  {tier.xp.toLocaleString()} XP
-                </Text>
-                {isCurrent && <MaterialIcons name="chevron-left" size={14} color={GOLD} />}
               </View>
-            );
-          })}
-        </Animated.View>
+            )}
+            {dest.key === 'diamonds' && unseenDiamondCount > 0 && (
+              <View style={s.notifBadge}>
+                <Text style={s.notifBadgeText}>
+                  {unseenDiamondCount > 99 ? '99+' : String(unseenDiamondCount)}
+                </Text>
+              </View>
+            )}
+            <MaterialIcons name="chevron-right" size={18} color={MUTED} style={{ marginLeft: 4 }} />
+          </Pressable>
+        ))}
+
+        {/* ═══════ EXPLORER ILLUSTRATION — scroll reward ════════════════ */}
+        {/* Decorative only. Visible only after scrolling to bottom.      */}
+        <View style={s.illWrap}>
+          <Image
+            source={EXPLORER_ILL}
+            style={s.illImage}
+            resizeMode="contain"
+          />
+        </View>
 
       </ScrollView>
     </View>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-  root:        { flex: 1, backgroundColor: V.pageBg },
-  header:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
-  headerTitle: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: FOREST },
-  divider:     { height: 1, backgroundColor: CARD_B },
-  content:     { paddingHorizontal: 16, paddingTop: 18, gap: 14 },
+  root: { flex: 1, backgroundColor: PARCH },
 
-  rankCard:   { backgroundColor: FOREST, borderRadius: 16, padding: 18, gap: 12 },
-  rankTop:    { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  rankIconWrap: { width: 52, height: 52, borderRadius: 26, backgroundColor: GOLD + '22', borderWidth: 1, borderColor: GOLD + '55', justifyContent: 'center', alignItems: 'center' },
-  rankTextBlock: { flex: 1 },
-  rankName:   { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: CREAM },
-  rankLevel:  { fontSize: 13, color: GOLD, fontWeight: '600', marginTop: 2 },
-  streakBadge:{ alignItems: 'center', gap: 2 },
-  streakFire: { fontSize: 18 },
-  streakNum:  { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '900', color: GOLD },
-  streakLabel:{ fontSize: 9, color: CREAM, opacity: 0.7 },
-  barTrack:   { height: 7, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 4, overflow: 'hidden' },
-  barFill:    { height: '100%', backgroundColor: GOLD, borderRadius: 4 },
-  barLabels:  { flexDirection: 'row', justifyContent: 'space-between' },
-  barCurrent: { fontSize: 11, color: CREAM, fontWeight: '600' },
-  barNext:    { fontSize: 11, color: CREAM, opacity: 0.55 },
+  // ── Guest gate ─────────────────────────────────────────────────────────────
+  guestRoot: { flex: 1, backgroundColor: PARCH, justifyContent: 'center', alignItems: 'center', padding: 32 },
+  guestTitle: { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 },
+  guestBody:  { fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 21, marginBottom: 28 },
+  guestBtn:   { backgroundColor: FOREST, borderRadius: 50, paddingVertical: 16, paddingHorizontal: 40, marginBottom: 12 },
+  guestBtnText: { color: '#F4EED8', fontSize: 16, fontWeight: '800', fontFamily: FONTS.serif },
+  guestLink:  { color: MUTED, fontSize: 14, textDecorationLine: 'underline' },
 
-  statsRow:  { flexDirection: 'row', backgroundColor: V.cardBg, borderRadius: 14, borderWidth: 1, borderColor: CARD_B, overflow: 'hidden' },
-  statCard:  { flex: 1, alignItems: 'center', paddingVertical: 14, gap: 4 },
-  statSep:   { width: 1, backgroundColor: CARD_B },
-  statNum:   { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '900', color: FOREST },
-  statLabel: { fontSize: 10, color: MUTED, textAlign: 'center', fontWeight: '600' },
+  // ── Header — centered, airy, no icons ─────────────────────────────────────
+  header: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 10,
+    backgroundColor: PARCH,
+  },
+  headerTitle: {
+    fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST,
+    marginBottom: 4,
+  },
+  headerSub: {
+    fontSize: 13, color: MUTED, textAlign: 'center', lineHeight: 19,
+  },
+  headerDivider: { height: 1, backgroundColor: BORDER },
 
-  sectionLabel: { fontSize: 10, fontWeight: '800', color: MUTED, letterSpacing: 2.5, marginBottom: 8, marginTop: 6 },
-  tierRow:      { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: CARD_B + '60' },
-  tierRowActive:{ backgroundColor: GOLD + '14', marginHorizontal: -4, paddingHorizontal: 4, borderRadius: 8, borderBottomWidth: 0 },
-  tierNum:      { fontSize: 11, color: MUTED, fontWeight: '700', width: 20, textAlign: 'right' },
-  tierName:     { flex: 1, fontFamily: FONTS.serif, fontSize: 13, fontWeight: '700', color: BROWN },
-  tierNameActive: { color: FOREST },
-  tierXp:       { fontSize: 11, color: MUTED },
-  tierDimmed:   { opacity: 0.38 },
+  // ── Scroll ─────────────────────────────────────────────────────────────────
+  scroll: { paddingHorizontal: 16, paddingTop: 24, gap: 16 },
+
+  // ── Explore Progress card ──────────────────────────────────────────────────
+  exploreCard: {
+    backgroundColor: IVORY,
+    borderRadius: 18, borderWidth: 1.5, borderColor: GOLD + '60',
+    paddingHorizontal: 18, paddingTop: 20, paddingBottom: 18,
+    gap: 16,
+  },
+  exploreTitle: {
+    fontFamily: FONTS.serif, fontSize: 15, fontWeight: '700', color: BROWN,
+    textAlign: 'center', letterSpacing: 0.5,
+  },
+  exploreBody: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+
+  vertSep:    { width: 1, height: 90, backgroundColor: BORDER },
+
+  // Right stats column
+  statsCol:   { flex: 1, gap: 10 },
+  exploreBarTrack: {
+    height: 6, backgroundColor: TAN, borderRadius: 3, overflow: 'hidden',
+  },
+  exploreBarFill: { height: '100%', backgroundColor: FOREST, borderRadius: 3 },
+
+  statRow:    { flexDirection: 'row', alignItems: 'flex-start' },
+  statItem:   { flex: 1, alignItems: 'center', gap: 5 },
+  statDivider:{ width: 1, height: 60, backgroundColor: BORDER, alignSelf: 'center' },
+  statIconBox:{
+    width: 30, height: 30, borderRadius: 8,
+    backgroundColor: GOLD + '1E', borderWidth: 1, borderColor: GOLD + '50',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  statCount:  { fontSize: 13, textAlign: 'center' },
+  statCurrent:{ fontFamily: FONTS.serif, fontSize: 15, fontWeight: '900', color: FOREST },
+  statTotal:  { fontSize: 11, color: MUTED, fontWeight: '600' },
+  statLabel:  { fontSize: 8, color: MUTED, fontWeight: '600', textAlign: 'center', lineHeight: 12 },
+
+  // Ring labels
+  ringPct: { fontFamily: FONTS.serif, fontSize: 24, fontWeight: '900', color: FOREST, lineHeight: 28 },
+  ringLbl: { fontSize: 10, color: MUTED, fontWeight: '600', letterSpacing: 0.3 },
+
+  // ── "Your Collection" divider ──────────────────────────────────────────────
+  collectionDivider: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginTop: 4, marginBottom: 4,
+  },
+  dividerLine: { flex: 1, height: 1, backgroundColor: BORDER },
+  collectionTitle: {
+    fontFamily: FONTS.serif, fontSize: 15, fontWeight: '700',
+    color: BROWN, letterSpacing: 0.3,
+  },
+
+  // ── Collection destination cards ───────────────────────────────────────────
+  destCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: IVORY,
+    borderRadius: 16, borderWidth: 1.5, borderColor: GOLD + '55',
+    paddingHorizontal: 16, paddingVertical: 16,
+  },
+  destIconBox: {
+    width: 46, height: 46, borderRadius: 13,
+    backgroundColor: TAN, borderWidth: 1, borderColor: BORDER,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  destBody:  { flex: 1, gap: 3 },
+  destTitle: { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '800', color: BROWN },
+  destSub:   { fontSize: 11, color: MUTED, lineHeight: 15 },
+
+  // Progress badge pill
+  badge: {
+    borderWidth: 1, borderColor: BORDER,
+    borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: CARD,
+  },
+  badgeText: { fontSize: 11, fontWeight: '700', color: BROWN },
+
+  // Red notification badge on Achievements card
+  notifBadge: {
+    minWidth: 20, height: 20, borderRadius: 10,
+    backgroundColor: '#CC2222',
+    justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: 4,
+    marginLeft: -4,
+  },
+  notifBadgeText: { fontSize: 10, fontWeight: '800', color: '#fff' },
+
+  // ── Explorer illustration — scroll reward ─────────────────────────────────
+  // Image is 987×433 (ratio 2.28:1 landscape). Bleeds to full screen width
+  // via negative marginHorizontal to counteract the scroll container padding.
+  illWrap: {
+    alignItems:       'center',
+    marginHorizontal: -16,   // escape the 16px scroll padding → full screen width
+    paddingTop:       20,
+    paddingBottom:    8,
+  },
+  illImage: {
+    width:  SW,               // full screen width
+    height: SW / 2.28,        // exact aspect ratio — ~171px on a 390pt iPhone
+  },
 });

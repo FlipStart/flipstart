@@ -44,6 +44,7 @@ import {
   type HuntItem,
 } from '@/lib/hunt-context';
 import { useFlipStore }         from '@/lib/useFlipStore';
+import { isHuntBundle }         from '@/types/flip';
 import { FONTS }                from '@/constants/typography';
 import { computeFlipCalc }      from '@/utils/flipCalculations';
 import { logHuntItemSaved, logHuntItemRemoved } from '@/lib/analytics';
@@ -95,7 +96,7 @@ export default function HuntItemDetailScreen() {
   const huntItemId  = params.huntItemId ?? null;
 
   const { currentScan, setCurrentScan } = useScanContext();
-  const { pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
+  const { pendingThriftPrices, setPendingThriftPrice, flips } = useFlipStore();
 
   // ── ALL hooks before any conditional return ──────────────────────────────
   const [imgIndex,          setImgIndex]          = useState(0);
@@ -104,11 +105,23 @@ export default function HuntItemDetailScreen() {
   const [priceModalVisible, setPriceModalVisible] = useState(false);
   const allowNavRef = useRef(false);
 
-  // Read-only: look up hunt item by stable ID
+  // Read-only: look up hunt item by stable ID.
+  // Checks active hunt first, then falls back to saved bundles in flip history
+  // so diamonds found in completed hunts can still be viewed.
   const readOnlyItem: HuntItem | null = useMemo(() => {
     if (!isReadOnly || !huntItemId) return null;
-    return getHuntItemById(huntItemId);
-  }, [isReadOnly, huntItemId]);
+    const fromActive = getHuntItemById(huntItemId);
+    if (fromActive) return fromActive;
+    // Search completed hunt bundles in saved history.
+    for (const entry of flips) {
+      if (isHuntBundle(entry)) {
+        const found = [...entry.keptItems, ...entry.removedItems]
+          .find(i => i.huntItemId === huntItemId);
+        if (found) return found as unknown as HuntItem;
+      }
+    }
+    return null;
+  }, [isReadOnly, huntItemId, flips]);
 
   // Derive the scan data source: read-only uses stored snapshot, active uses currentScan
   const scan = isReadOnly ? readOnlyItem?.scanSnapshot ?? null : currentScan;

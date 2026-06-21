@@ -13,7 +13,7 @@ import {
   ImageBackground, Animated, Platform, Keyboard,
   Modal, TouchableWithoutFeedback, Dimensions,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAudioPlayer } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
@@ -46,6 +46,7 @@ const SCREEN_H    = Dimensions.get('window').height;
 
 export default function HuntScreen() {
   const router  = useRouter();
+  const navigation = useNavigation();
   const { user, loading: authLoading } = useAuth();
   const insets  = useSafeAreaInsets();
   const player  = useAudioPlayer(ROAR_SOUND);
@@ -120,7 +121,18 @@ export default function HuntScreen() {
     setStarting(false);
   };
 
-  const handleBack = () => router.back();
+  // Always return to Home. Hunt Mode is a stack route pushed over the tabs.
+  // A plain replace('/(tabs)') lands on whatever tab is currently focused — and
+  // after the gate→auth flow that's the hidden 'hunt-tab' route, which redirects
+  // straight back into Hunt (the glitch). Resetting the root stack to a fresh
+  // (tabs) reinitializes it to its first tab (Home), which is deterministic.
+  const handleBack = () => {
+    try {
+      navigation.reset({ index: 0, routes: [{ name: '(tabs)' as never }] });
+    } catch {
+      router.replace('/(tabs)' as any); // safety fallback
+    }
+  };
 
   if (!authLoading && !user) {
     return (
@@ -292,7 +304,7 @@ const s = StyleSheet.create({
 
   spacer: { flex: 1 },
 
-  // ── Entry card ─────────────────────────────────────────────────────────────
+  // ── Main entry card ────────────────────────────────────────────────────────
   card: {
     marginHorizontal: 16,
     backgroundColor:  CARD_BG,

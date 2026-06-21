@@ -11,10 +11,11 @@
  *   Bottom tab bar (separate component)
  */
 
+import { navGuard } from '@/lib/navGuard';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, Pressable, Platform,
-  Dimensions, Modal, Animated, ScrollView,
+  Dimensions, Modal, Animated, ScrollView, Image, Alert,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,8 +30,9 @@ import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
 import { logEvent } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
-import { isOnboardingComplete, completeOnboarding } from '@/lib/onboarding-storage';
+import { needsOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   loadXpProfile, getCurrentRank, getNextRank,
   getRankProgress, RANK_LADDER, type HuntXpProfile,
@@ -91,10 +93,17 @@ export default function HomeScreen() {
 
   // ── Onboarding ──────────────────────────────────────────────────────────────
   const { user, profile, loading: authLoading, profileChecked } = useAuth();
-  const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
-  const [showScanModal,  setShowScanModal]  = useState(false);
+  const [showScanModal,    setShowScanModal]     = useState(false);
+  const [showProfileMenu,  setShowProfileMenu]   = useState(false);
   useEffect(() => {
-    isOnboardingComplete().then(done => setShowOnboarding(!done));
+    // Version-gated: anyone whose device hasn't completed the CURRENT onboarding
+    // version is sent through it once — including returning testers who finished
+    // the old onboarding (migrated to v1) and signed-in users. Any successful
+    // auth or onboarding completion writes the current version, so this never
+    // loops. Scans, Hunt, achievements, brands, diamonds, and profile are untouched.
+    needsOnboarding().then(needed => {
+      if (needed) router.replace('/onboarding' as any);
+    });
   }, []);
 
   // routedForUser prevents re-routing when profile state updates after
@@ -107,7 +116,7 @@ export default function HomeScreen() {
 
     if (profile?.onboarding_complete) {
       routedForUser.current = user.id;
-      setShowOnboarding(false);
+      // Profile is set up — user stays on home. (No overlay to dismiss anymore.)
     } else {
       routedForUser.current = user.id;
       router.replace('/username-setup' as any);
@@ -120,13 +129,23 @@ export default function HomeScreen() {
 
   // ── XP profile ──────────────────────────────────────────────────────────────
   const [xpProfile, setXpProfile] = useState<HuntXpProfile | null>(null);
+  const [avatarUri,  setAvatarUri]  = useState<string | null>(null);
   useFocusEffect(useCallback(() => {
-    if (user) {
-      loadXpProfile().then(setXpProfile).catch(() => {});
+    // Use user?.id (not user) as dep so token-refresh events that update the
+    // user object reference without changing the ID don't trigger a spurious
+    // reload. Pass uid explicitly to loadXpProfile to bypass _activeUserId and
+    // eliminate the async-import timing race that caused the stale-data flash.
+    const uid = user?.id ?? null;
+    if (uid) {
+      loadXpProfile(uid).then(setXpProfile).catch(() => {});
+      AsyncStorage.getItem(`@flipstart/avatar:${uid}`).then(uri => {
+        setAvatarUri(uri ?? null);
+      }).catch(() => {});
     } else {
       setXpProfile(null); // sign-out: clear immediately, never show previous account XP
+      setAvatarUri(null);
     }
-  }, [user]));
+  }, [user?.id]));
 
   const totalXp     = xpProfile?.totalXp      ?? 0;
   const streak      = xpProfile?.huntStreak   ?? 0;
@@ -186,11 +205,18 @@ export default function HomeScreen() {
         {/* Left: profile (larger circle) + settings (icon only, no bg) */}
         <View style={s.headerLeft}>
           <Pressable
-            onPress={() => router.push('/(tabs)/profile' as any)}
+            onPress={() => setShowProfileMenu(v => !v)}
             style={({ pressed }) => [s.avatarCircle, pressed && { opacity: 0.7 }]}
             hitSlop={8}
           >
-            <MaterialIcons name="person" size={22} color={FOREST} />
+            {avatarUri ? (
+              <Image
+                source={{ uri: avatarUri }}
+                style={{ width: 38, height: 38, borderRadius: 19 }}
+              />
+            ) : (
+              <MaterialIcons name="person" size={22} color={FOREST} />
+            )}
           </Pressable>
         </View>
 
@@ -220,6 +246,31 @@ export default function HomeScreen() {
 
       {/* Header separator */}
       <View style={s.headerSep} />
+
+      {showProfileMenu && (
+        <Pressable style={s.menuBackdrop} onPress={() => setShowProfileMenu(false)}>
+          <Pressable
+            style={[s.profileMenu, { top: insets.top + (IS_SMALL ? 6 : 8) + 46 }]}
+            onPress={e => e.stopPropagation()}
+          >
+            <Pressable
+              style={({ pressed }) => [s.menuItem, pressed && s.menuItemPressed]}
+              onPress={() => { setShowProfileMenu(false); router.push('/(tabs)/profile' as any); }}
+            >
+              <MaterialIcons name="person" size={17} color={FOREST} />
+              <Text style={s.menuItemText}>Profile</Text>
+            </Pressable>
+            <View style={s.menuDivider} />
+            <Pressable
+              style={({ pressed }) => [s.menuItem, pressed && s.menuItemPressed]}
+              onPress={() => { setShowProfileMenu(false); router.push('/(tabs)/settings' as any); }}
+            >
+              <MaterialIcons name="settings" size={17} color={FOREST} />
+              <Text style={s.menuItemText}>Settings</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      )}
 
       {/* ── SLOGAN ─────────────────────────────────────────────────────────── */}
       <View style={s.sloganRow}>
@@ -296,6 +347,16 @@ export default function HomeScreen() {
         </Pressable>
       </View>
 
+      {/* ── LEADERBOARD SHORTCUT — slim, below progress card ───────────────── */}
+      <Pressable
+        onPress={() => Alert.alert('Coming Soon', 'The Hunt Mode Leaderboard will arrive in a future update.')}
+        style={({ pressed }) => [s.leaderCard, pressed && { opacity: 0.8 }]}
+      >
+        <MaterialIcons name="emoji-events" size={15} color={GOLD} />
+        <Text style={s.leaderTitle}>Hunt Mode Leaderboard</Text>
+        <MaterialIcons name="chevron-right" size={13} color={GOLD} />
+      </Pressable>
+
       {/* ── ARTICLES & GUIDES ──────────────────────────────────────────────── */}
       <View style={s.articlesSection}>
         <View style={s.articlesHeader}>
@@ -320,7 +381,7 @@ export default function HomeScreen() {
             <View key={item.id} style={s.articleCardWrap}>
               <ArticleCard
                 data={item}
-                onPress={() => router.push({ pathname: '/article', params: { id: item.id } } as any)}
+                onPress={() => { if (!navGuard()) return; router.push({ pathname: '/article', params: { id: item.id } } as any); }}
               />
               {/* Invisible expander — pushes card to match tallest sibling */}
               <View style={{ flex: 1 }} />
@@ -380,174 +441,13 @@ export default function HomeScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-
-      {/* ── Onboarding overlay ─────────────────────────────────────────────── */}
-      <Modal visible={showOnboarding === true} animationType="fade" statusBarTranslucent>
-        <OnboardingOverlay
-          onComplete={() => setShowOnboarding(false)}
-          onGoToAuth={(mode) => {
-            // Complete onboarding locally first so it doesn't re-show on return
-            completeOnboarding('resell').catch(() => {});
-            setShowOnboarding(false);
-            router.push({ pathname: '/auth', params: { mode } } as any);
-          }}
-        />
-      </Modal>
-    </View>
-  );
-}
-
-// ─── Onboarding overlay ───────────────────────────────────────────────────────
-
-function OnboardingOverlay({
-  onComplete,
-  onGoToAuth,
-}: {
-  onComplete: () => void;
-  onGoToAuth: (mode: string) => void;
-}) {
-  const insets   = useSafeAreaInsets();
-  const [step, setStep] = useState<'intro' | 'account'>('intro');
-  const [saving, setSaving] = useState(false);
-
-  // Guest path — mark onboarding done and go home
-  const handleGuest = async () => {
-    if (saving) return;
-    setSaving(true);
-    await completeOnboarding('resell').catch(() => {});
-    onComplete();
-  };
-
-  // ── Step 1: Intro ─────────────────────────────────────────────────────────
-  if (step === 'intro') {
-    return (
-      <View style={{ flex: 1, backgroundColor: PARCHMENT, paddingTop: insets.top, paddingHorizontal: 24, justifyContent: 'center' }}>
-        {/* Logo */}
-        <View style={{ alignItems: 'center', gap: 4, marginBottom: 32 }}>
-          <Text style={{ fontFamily: FONTS.serif, fontSize: 36, fontWeight: '800', color: FOREST }}>FlipStart</Text>
-          <Text style={{ fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 2 }}>✦ THRIFT INTELLIGENCE ✦</Text>
-        </View>
-
-        {/* Icon + headline */}
-        <View style={{ alignItems: 'center', marginBottom: 28 }}>
-          <View style={{ width: 96, height: 96, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginBottom: 24 }}>
-            <Text style={{ fontSize: 44 }}>📷</Text>
-          </View>
-          <Text style={{ fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 12 }}>
-            Scan. Decide. Profit.
-          </Text>
-          <Text style={{ fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22 }}>
-            Scan any item to instantly see value, profit, and whether it's worth buying.
-          </Text>
-        </View>
-
-        {/* Feature pills */}
-        <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 36 }}>
-          {[
-            { icon: '⚡', label: 'Instant\nAnalysis' },
-            { icon: '💰', label: 'Resale\nValue'    },
-            { icon: '👍', label: 'Buy /\nSkip'      },
-          ].map(f => (
-            <View key={f.label} style={{ alignItems: 'center', gap: 8 }}>
-              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: FOREST + '10', justifyContent: 'center', alignItems: 'center' }}>
-                <Text style={{ fontSize: 20 }}>{f.icon}</Text>
-              </View>
-              <Text style={{ fontSize: 11, fontWeight: '600', color: FOREST, textAlign: 'center' }}>{f.label}</Text>
-            </View>
-          ))}
-        </View>
-
-        {/* Next → */}
-        <Pressable
-          onPress={() => setStep('account')}
-          style={({ pressed }) => ({
-            flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-            gap: 8, backgroundColor: FOREST, borderRadius: 50, paddingVertical: 18,
-            opacity: pressed ? 0.85 : 1,
-          })}
-        >
-          <Text style={{ fontSize: 17, fontWeight: '700', color: CREAM }}>Next</Text>
-          <MaterialIcons name="arrow-forward" size={18} color={CREAM} />
-        </Pressable>
-      </View>
-    );
-  }
-
-  // ── Step 2: Account ───────────────────────────────────────────────────────
-  return (
-    <View style={{ flex: 1, backgroundColor: SCAN_DARK, paddingTop: insets.top, paddingHorizontal: 24, justifyContent: 'center' }}>
-      {/* Back to intro */}
-      <Pressable
-        onPress={() => setStep('intro')}
-        hitSlop={12}
-        style={({ pressed }) => ({ alignSelf: 'flex-start', marginBottom: 24, opacity: pressed ? 0.5 : 1 })}
-      >
-        <MaterialIcons name="arrow-back" size={22} color={CREAM + 'AA'} />
-      </Pressable>
-
-      {/* Header */}
-      <View style={{ alignItems: 'center', marginBottom: 36 }}>
-        <Text style={{ fontFamily: FONTS.serif, fontSize: 34, fontWeight: '900', color: CREAM, marginBottom: 10 }}>
-          FlipStart
-        </Text>
-        <Text style={{ fontFamily: FONTS.serif, fontSize: 20, fontWeight: '700', color: GOLD, textAlign: 'center', lineHeight: 28, marginBottom: 10 }}>
-          Save your progress.{'\n'}Build your empire.
-        </Text>
-        <Text style={{ fontSize: 14, color: CREAM + 'BB', textAlign: 'center', lineHeight: 21 }}>
-          Sync scans across devices, track XP and ranks, and unlock Hunt Mode with a free account.
-        </Text>
-      </View>
-
-      {/* CTAs */}
-      <View style={{ gap: 12, marginBottom: 28 }}>
-        {/* Create Account */}
-        <Pressable
-          onPress={() => onGoToAuth('signup')}
-          disabled={saving}
-          style={({ pressed }) => ({
-            backgroundColor: GOLD, borderRadius: 50,
-            paddingVertical: 18, alignItems: 'center',
-            opacity: pressed ? 0.85 : 1,
-          })}
-        >
-          <Text style={{ fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: SCAN_DARK }}>
-            Create Account
-          </Text>
-        </Pressable>
-
-        {/* Log In */}
-        <Pressable
-          onPress={() => onGoToAuth('login')}
-          disabled={saving}
-          style={({ pressed }) => ({
-            borderRadius: 50, paddingVertical: 17, alignItems: 'center',
-            borderWidth: 1.5, borderColor: CREAM + '60',
-            opacity: pressed ? 0.7 : 1,
-          })}
-        >
-          <Text style={{ fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: CREAM }}>
-            Log In
-          </Text>
-        </Pressable>
-      </View>
-
-      {/* Guest skip */}
-      <Pressable
-        onPress={handleGuest}
-        disabled={saving}
-        style={({ pressed }) => ({ alignItems: 'center', paddingVertical: 8, opacity: pressed || saving ? 0.5 : 1 })}
-      >
-        <Text style={{ fontSize: 14, color: CREAM + '70', textDecorationLine: 'underline' }}>
-          {saving ? 'Setting up…' : 'Continue as guest'}
-        </Text>
-      </Pressable>
     </View>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const ARTICLE_W = (SW - 28 - 8) / 2.15;  // 2 fully visible + peek of 3rd
+const ARTICLE_W = (SW - 32) / 2.30;  // 2 full cards + ~30% peek of card 3 of 3rd
 
 const s = StyleSheet.create({
 
@@ -642,6 +542,48 @@ const s = StyleSheet.create({
     backgroundColor: GOLD + '30',
     marginHorizontal: 14,
     marginBottom:    IS_SMALL ? 8 : 12,
+  },
+
+  // Profile/Settings popover menu
+  menuBackdrop: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    zIndex: 999,
+  },
+  profileMenu: {
+    position:        'absolute',
+    left:            12,
+    backgroundColor: '#F2EDD8',
+    borderRadius:    12,
+    borderWidth:     1.5,
+    borderColor:     GOLD + '70',
+    minWidth:        148,
+    overflow:        'hidden',
+    shadowColor:     '#3D2A12',
+    shadowOffset:    { width: 0, height: 3 },
+    shadowOpacity:   0.18,
+    shadowRadius:    8,
+    elevation:       10,
+    zIndex:          1000,
+  },
+  menuItem: {
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               10,
+    paddingVertical:   13,
+    paddingHorizontal: 16,
+  },
+  menuItemPressed: { backgroundColor: CARD_B + '60' },
+  menuItemText: {
+    fontFamily: 'Georgia',
+    fontSize:   15,
+    fontWeight: '700',
+    color:      '#3D2A12',
+  },
+  menuDivider: {
+    height:           1,
+    backgroundColor:  '#C8B88A' + '80',
+    marginHorizontal: 12,
   },
 
   // ── Slogan ─────────────────────────────────────────────────────────────────
@@ -746,9 +688,31 @@ const s = StyleSheet.create({
   },
 
   // ── Progress card — warm darker parchment ──────────────────────────────────
+  // ── Leaderboard card ─────────────────────────────────────────────────────
+  leaderCard: {
+    marginHorizontal:  12,
+    backgroundColor:   '#FAF7F0',
+    borderRadius:      10,
+    borderWidth:       1,
+    borderColor:       GOLD + '55',
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               10,
+    paddingHorizontal: 14,
+    paddingVertical:   9,
+  },
+  leaderTitle: {
+    flex:       1,
+    fontFamily: FONTS.serif,
+    fontSize:   13,
+    fontWeight: '700',
+    color:      GOLD,
+  },
+
+  // ── Progress card ─────────────────────────────────────────────────────────
   progressCard: {
     marginHorizontal:  12,
-    backgroundColor:   '#E8D8B8',    // darker warm parchment — more premium than page bg
+    backgroundColor:   '#E8D8B8',
     borderRadius:      14,
     borderWidth:       1,
     borderColor:       CARD_B,

@@ -129,6 +129,87 @@ Return colorConfidence field:
   - "low": omit color entirely from all output
 
 
+STRUCTURED IDENTIFICATION — CRITICAL FOR RARE-ITEM DETECTION:
+In addition to the listing title, you MUST populate the structured fields below.
+These drive collectible detection. Be precise and evidence-based. When you are
+not sure, leave a field empty or set its confidence to "low" — NEVER guess to fill.
+
+canonicalBrand: the clean brand name ("Carhartt", "Nike", "Harley-Davidson").
+canonicalItemName: the BEST specific name (see model rules below). Use this as the
+  item_name title too when confidence is strong.
+itemType: one of hoodie, sweatshirt, crewneck, jacket, coat, vest, tee, jersey,
+  jeans, pants, skirt, dress, bag, hat, boots, sunglasses, watch, etc.
+subType: pullover, zip-front, bomber, moto, chore, mesh, double-knee, etc.
+logoPlacement: where the MAIN brand logo sits — one of:
+  centerChest | leftChest | fullFront | sleeve | back | allover | none
+eraEstimate: same as estimated_era.
+eraConfidence: "high" only with hard evidence; "medium" with some; "low" otherwise.
+eraEvidence: array of the ACTUAL evidence seen, e.g. ["single stitch","made in usa tag",
+  "copyright 1994","union label","nike grey tag"]. Empty if none.
+materialSignals: e.g. ["duck canvas","genuine leather","polyester mesh"].
+graphicSignals: notable print/graphic observations.
+styleVariant / modelName: the recognized model when cues support it (see below).
+sportsTeam, league, playerNumber, playerNameGuess, playerNameConfidence: jerseys.
+brandModelSignals: the raw cues that led to a model/variant call.
+possibleDiamondIds: array of candidate collectible IDs (see list below) the item
+  may satisfy. This is a HINT, not a guarantee.
+diamondReasoningShort: one short sentence on why.
+
+── CARHARTT DETROIT JACKET ──
+Detect by VISUAL/STRUCTURAL cues, not only the word "Detroit". Strong signals:
+brand Carhartt; jacket/work/canvas jacket; zip front; short boxy workwear shape;
+corduroy collar; straight hem; two lower front pockets; chest pocket/Carhartt patch;
+duck/firm/worn canvas shell; blanket or quilt lining; NO hood; NOT a chore coat;
+NOT a puffer; NOT a shirt jacket.
+If ENOUGH of these are present (corduroy collar + zip front + duck canvas is decisive):
+  styleVariant="Detroit", modelName="Detroit Jacket",
+  canonicalItemName="Carhartt Detroit Jacket", and add "carhartt_detroit_jacket" to
+  possibleDiamondIds. Title it "Carhartt Detroit Jacket", NOT "Carhartt Work Jacket".
+
+── NIKE CENTER SWOOSH ──
+Use logoPlacement, do NOT rely on the phrase "center swoosh". If brand is Nike AND
+itemType is hoodie/sweatshirt/crewneck/pullover AND the swoosh is the main logo AND
+logoPlacement is centerChest (large, centered on the chest — NOT a small left-chest
+logo): set styleVariant="Center Swoosh",
+canonicalItemName="Nike Center Swoosh Hoodie" (or "...Sweatshirt"/"...Crewneck"), and
+add "nike_center_swoosh" to possibleDiamondIds. NEVER call a centered swoosh a "mini
+swoosh". A small left-chest swoosh is leftChest → NOT center swoosh.
+
+── STRICT VINTAGE EVIDENCE ──
+"worn", "faded", "distressed", "retro vibe", "old-looking", "rugged", "workwear vibe"
+DO NOT by themselves justify high vintage confidence. Set eraConfidence="high" ONLY
+with hard evidence: visible older tag, dated graphic, copyright year, single stitch,
+made-in-USA tag, a known older label/era marker, or explicit 80s/90s/Y2K construction.
+A modern-looking item that is merely worn is NOT vintage — say "Modern" or
+"Modern, vintage-inspired" with eraConfidence "low"/"medium".
+
+── VINTAGE SPORTS JERSEYS ──
+Extract sportsTeam, league (NFL/NBA/MLB/NHL/NASCAR/NCAA), playerNumber, and
+playerNameGuess when team+number reasonably imply a famous player. Set
+playerNameConfidence accordingly. Examples: Steelers + #32 → Franco Harris;
+Bulls + #23 → Michael Jordan; Lakers + #8 or #24 → Kobe Bryant. If confidence is
+medium/high, make the title specific, e.g. "Vintage Pittsburgh Steelers Franco Harris
+Jersey". If weak, keep the guess ONLY in structured fields and DO NOT overclaim in title.
+
+── CANONICAL MODEL NAMES (use the specific name in canonicalItemName + title when cues support it) ──
+Recognize and name these precisely instead of generic descriptions:
+  • Levi's: "Big E" (small-e red tab → pre-1971), "Type III Trucker", "501" → e.g. "Vintage Levi's 501 Jeans"
+  • Champion: "Reverse Weave" (look for the side-seam gusset / reverse-weave tag) → "Champion Reverse Weave Crewneck"
+  • Patagonia: "Snap-T", "Synchilla", "Retro-X" → "Patagonia Snap-T Fleece"
+  • The North Face: "Nuptse", "Denali", "Steep Tech" → "The North Face Nuptse Puffer"
+  • Starter: satin "pullover" / "tip-off" jacket → "Vintage Starter Satin Jacket"
+  • Adidas: "Trefoil" (the three-leaf mark) → "Vintage Adidas Trefoil Track Jacket"
+  • Carhartt: "Detroit Jacket" (rules above), "Active Jacket", "Chore Coat" → name the model
+  • Arc'teryx: model line if visible (Alpha SV, Beta) → "Arc'teryx Beta Shell"
+For all items: prefer a precise, reseller-grade canonicalItemName over a generic one whenever the
+visual/tag evidence supports it. Do NOT invent a model name you cannot see evidence for.
+
+POSSIBLE DIAMOND IDS (use the exact ids when relevant): carhartt_detroit_jacket,
+vintage_carhartt_jacket, nike_center_swoosh, vintage_nike_piece, vintage_leather_jacket,
+vintage_harley_jacket, vintage_harley_tee, vintage_jersey, vintage_adidas_trefoil,
+nascar_jacket, nascar_tee, sturgis_tee, champion_reverse_weave, patagonia_synchilla.
+
+
 ERA DETECTION — CRITICAL. Determine era using every available clue:
 
 TAG CLUES (most reliable — use the [TAG] photo heavily):
@@ -275,7 +356,7 @@ OUTPUT SIZE LIMITS:
 - All text fields: no padding, no filler sentences
 
 Return ONLY this JSON (no markdown, no explanation):
-{"identification":{"item_name":"","brand":"","category":"","estimated_era":"[required]","style_labels":[],"material_guess":"","colorConfidence":"low|medium|high"},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
+{"identification":{"item_name":"","brand":"","category":"","estimated_era":"[required]","style_labels":[],"material_guess":"","colorConfidence":"low|medium|high","canonicalBrand":"","canonicalItemName":"","itemType":"","subType":"","styleVariant":"","modelName":"","logoPlacement":"centerChest|leftChest|fullFront|sleeve|back|allover|none","eraEstimate":"","eraConfidence":"low|medium|high","eraEvidence":[],"materialSignals":[],"graphicSignals":[],"sportsTeam":"","league":"","playerNumber":"","playerNameGuess":"","playerNameConfidence":"low|medium|high","brandModelSignals":[],"possibleDiamondIds":[],"diamondReasoningShort":""},"market_data":{"estimated_resale_range":{"low":0,"high":0},"average_sold_price":0,"suggested_buy_price":0,"demand":"","sell_speed":"","competition_level":"","base_estimated_value":0,"price_adjustments":[{"reason":"","impact":0,"type":"positive|negative"}],"adjusted_estimated_value":0},"risk_analysis":{"match_confidence":0,"risk_flags":[]}}`
 
 /**
  * Single fast analysis — everything in one LLM call.
@@ -313,7 +394,7 @@ export async function analyzeItemFast(
       { role: "user",   content: imageParts },
     ],
     response_format: { type: "json_object" },
-    max_tokens: 650,
+    max_tokens: 900,
   });
 
   const rawContent = response?.choices?.[0]?.message?.content;
@@ -630,14 +711,56 @@ function sanitizeFullResult(raw: any): any {
   const finalDemand = (isCommonMallBrand && isBasicItem && demand === "High") ? "Medium" : demand;
   const finalSpeed = (isCommonMallBrand && isBasicItem && sellSpeed === "Fast") ? "Moderate" : sellSpeed;
 
+  // ── Structured v2 fields — passed through, lightly sanitized ──────────────
+  const strArr = (v: any): string[] => Array.isArray(v) ? v.map(String).filter(Boolean).slice(0, 8) : [];
+  const strOpt = (v: any): string | undefined => {
+    const s = v == null ? '' : String(v).trim();
+    return s.length ? s : undefined;
+  };
+  const confOpt = (v: any): 'low' | 'medium' | 'high' | undefined => {
+    const s = String(v || '').toLowerCase();
+    return (s === 'low' || s === 'medium' || s === 'high') ? s : undefined;
+  };
+
+  // Prefer the AI's specific canonical name for the user-facing title when it is
+  // clearly more specific than the generic item_name (e.g. "Carhartt Detroit Jacket").
+  const canonicalName = strOpt(id.canonicalItemName);
+  const finalItemName = (canonicalName && canonicalName.length >= itemName.length)
+    ? canonicalName
+    : itemName;
+
+  const structured = {
+    canonicalBrand:        strOpt(id.canonicalBrand),
+    canonicalItemName:     canonicalName,
+    itemType:              strOpt(id.itemType),
+    subType:               strOpt(id.subType),
+    styleVariant:          strOpt(id.styleVariant),
+    modelName:             strOpt(id.modelName),
+    logoPlacement:         strOpt(id.logoPlacement),
+    eraEstimate:           strOpt(id.eraEstimate) ?? String(id.estimated_era || ''),
+    eraConfidence:         confOpt(id.eraConfidence),
+    eraEvidence:           strArr(id.eraEvidence),
+    materialSignals:       strArr(id.materialSignals),
+    graphicSignals:        strArr(id.graphicSignals),
+    sportsTeam:            strOpt(id.sportsTeam),
+    league:                strOpt(id.league),
+    playerNumber:          strOpt(id.playerNumber),
+    playerNameGuess:       strOpt(id.playerNameGuess),
+    playerNameConfidence:  confOpt(id.playerNameConfidence),
+    brandModelSignals:     strArr(id.brandModelSignals),
+    possibleDiamondIds:    strArr(id.possibleDiamondIds),
+    diamondReasoningShort: strOpt(id.diamondReasoningShort),
+  };
+
   return {
     identification: {
-      item_name: itemName,
+      item_name: finalItemName,
       brand,
       category,
       estimated_era: String(id.estimated_era || "Unknown"),
       style_labels: Array.isArray(id.style_labels) ? id.style_labels.map(String) : [],
       material_guess: String(id.material_guess || "Unknown"),
+      ...structured,
     },
     market_data: {
       estimated_resale_range: {

@@ -8,6 +8,7 @@
  * No formulas live in this file.
  */
 
+import { navGuard } from '@/lib/navGuard';
 import {
   Text, View, FlatList, Pressable, Platform,
   StyleSheet, TextInput, Animated, PanResponder,
@@ -366,6 +367,7 @@ export default function HistoryScreen() {
   );
 
   const handlePress = (item: HistoryEntry) => {
+    if (!navGuard()) return; // single-tap: ignore a second tap while the first screen loads
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     if (isHuntBundle(item)) {
       router.push({ pathname: '/hunt-history' as any, params: { bundleId: item.id } });

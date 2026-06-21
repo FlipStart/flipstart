@@ -23,6 +23,11 @@ import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
 import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@/lib/analytics";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { AchievementNotificationProvider, useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import { useFlipStore } from '@/lib/useFlipStore';
+import { getUnlockedDiamondIds, getUnseenDiamondIds } from '@/lib/diamonds';
+import { subscribeToHunt, getActiveHunt } from '@/lib/hunt-context';
+import { type HuntBundle } from '@/types/flip';
 // Deep link auth handler remains disabled until AuthProvider boot is confirmed stable.
 // import * as Linking from "expo-linking";
 
@@ -69,6 +74,61 @@ function AppProviders({ children }: { children: React.ReactNode }) {
       </ScanProvider>
     </FlipStoreProvider>
   );
+}
+
+// Watches flips for newly-unlocked diamonds and pushes badge notifications
+// immediately — even when the Progress tab is not in focus (e.g. after saving
+// an item in Hunt Mode from the Home screen).
+function DiamondNotificationWatcher() {
+  const { flips } = useFlipStore();
+  const { addUnseenDiamonds } = useAchievementNotifications();
+  // Tick increments whenever hunt-context fires a change (item saved mid-hunt).
+  const [huntTick, setHuntTick] = useState(0);
+
+  // Subscribe to active hunt mutations so we catch diamonds unlocked before
+  // the hunt ends and the bundle lands in flips.
+  useEffect(() => subscribeToHunt(() => setHuntTick(t => t + 1)), []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      // Build a synthetic HuntBundle from the active in-progress hunt so the
+      // diamond matcher sees kept items immediately, without waiting for hunt end.
+      const activeHunt = getActiveHunt();
+      const activeEntries: HuntBundle[] = activeHunt?.items?.length
+        ? [{
+            type:               'hunt_bundle',
+            id:                 'active',
+            huntTitle:          'Active Hunt',
+            timestamp:          Date.now(),
+            startedAt:          (activeHunt as any).startedAt ?? Date.now(),
+            endedAt:            Date.now(),
+            durationMs:         0,
+            keptItems:          (activeHunt.items as any[]).filter(i => i.kept),
+            removedItems:       [],
+            keptItemCount:      (activeHunt.items as any[]).filter(i => i.kept).length,
+            removedItemCount:   0,
+            totalCost:          0,
+            totalEstimatedProfit: 0,
+            estimatedROI:       0,
+          }]
+        : [];
+
+      let unlockedIds = getUnlockedDiamondIds([...flips, ...activeEntries]);
+      if (__DEV__) {
+        try {
+          const { getDevDiamondIds } = await import('@/lib/devDiamondOverrides');
+          const devIds = await getDevDiamondIds();
+          if (devIds.length > 0) unlockedIds = Array.from(new Set([...unlockedIds, ...devIds]));
+        } catch {}
+      }
+      const unseen = await getUnseenDiamondIds(unlockedIds);
+      if (alive && unseen.length > 0) addUnseenDiamonds(unseen);
+    })();
+    return () => { alive = false; };
+  }, [flips, huntTick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return null;
 }
 
 // Keep the native splash visible until we explicitly hide it.
@@ -232,25 +292,38 @@ export default function RootLayout() {
     >
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
+      <AchievementNotificationProvider>
       <AppProviders>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
+          <DiamondNotificationWatcher />
           <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="achievements" options={{ headerShown: false, animation: 'fade' }} />
+            <Stack.Screen name="achievement-category" options={{ headerShown: false, animation: 'fade' }} />
+            <Stack.Screen name="brand-compendium" options={{ headerShown: false, animation: 'fade' }} />
+            <Stack.Screen name="brand-rarity" options={{ headerShown: false, animation: 'fade' }} />
+            <Stack.Screen name="brand-detail" options={{ headerShown: false, animation: 'fade' }} />
+            <Stack.Screen name="diamonds-in-the-rough" options={{ headerShown: false, animation: 'fade' }} />
+            {__DEV__ && <Stack.Screen name="dev-achievements" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
+            {__DEV__ && <Stack.Screen name="dev-brand-compendium" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
+            {__DEV__ && <Stack.Screen name="dev-diamonds" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
             <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false }} />
+            <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
             <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />
-            <Stack.Screen name="results" options={{ animation: "slide_from_right" }} />
-            <Stack.Screen name="analysis-details" options={{ animation: "slide_from_right" }} />
+            <Stack.Screen name="results" options={{ animation: "fade", gestureEnabled: false }} />
+            <Stack.Screen name="analysis-details" options={{ animation: "fade" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="oauth/callback" />
-            <Stack.Screen name="auth" options={{ headerShown: false, presentation: "modal" }} />
+            <Stack.Screen name="auth" options={{ headerShown: false, animation: "fade" }} />
             <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
             <Stack.Screen name="username-setup" options={{ headerShown: false, presentation: "fullScreenModal" }} />
+            <Stack.Screen name="edit-profile" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
           </Stack>
           <StatusBar style="light" />
         </QueryClientProvider>
       </trpc.Provider>
       </AppProviders>
+      </AchievementNotificationProvider>
       </AuthProvider>
     </GestureHandlerRootView>
     </Animated.View>
