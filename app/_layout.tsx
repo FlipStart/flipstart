@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { Platform, AppState, AppStateStatus, Animated } from "react-native";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SplashScreen from "expo-splash-screen";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
@@ -25,7 +26,12 @@ import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { AchievementNotificationProvider, useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { useFlipStore } from '@/lib/useFlipStore';
-import { getUnlockedDiamondIds, getUnseenDiamondIds } from '@/lib/diamonds';
+import { getUnlockedDiamondIds, getUnseenDiamondIds, computeUnlockedDiamonds } from '@/lib/diamonds';
+import { markProgressHydrated, resetProgressHydration } from '@/lib/progressHydration';
+import {
+  buildUserAchievementData, getAllUnlockedIds, ACHIEVEMENT_CATEGORIES,
+} from '@/lib/achievements';
+import { computeDiscoveredBrands, getUnseenBrandNames } from '@/lib/brandCompendium';
 import { subscribeToHunt, getActiveHunt } from '@/lib/hunt-context';
 import { type HuntBundle } from '@/types/flip';
 // Deep link auth handler remains disabled until AuthProvider boot is confirmed stable.
@@ -42,6 +48,9 @@ function AppProviders({ children }: { children: React.ReactNode }) {
   // Dedup guard: tracks which userId we've already run syncXpOnLogin for
   // this session. Prevents double-sync on profileChecked bounces or re-renders.
   const syncedForUserRef = useRef<string | null>(null);
+  // Tracks the previous auth uid so we can detect sign-out (A→null) and account
+  // switch (A→B) — distinct from initial login (null→A).
+  const prevAuthUidRef = useRef<string | null | undefined>(undefined);
 
   // Keep XP module in sync with auth state.
   // setXpUserId must fire before any screen loads XP so all reads/writes
@@ -49,22 +58,70 @@ function AppProviders({ children }: { children: React.ReactNode }) {
   // syncXpOnLogin is consolidated here (previously split into index.tsx) so all
   // XP auth wiring lives in one place and fires regardless of which tab is active.
   useEffect(() => {
-    const uid = user?.id ?? null;
-    import('@/lib/huntXp').then(({ setXpUserId, syncXpOnLogin }) => {
+    const uid  = user?.id ?? null;
+    const prev = prevAuthUidRef.current;
+    prevAuthUidRef.current = uid;
+
+    (async () => {
+      // On sign-out (A→null) or account switch (A→B) — but NOT initial login
+      // (null→A) — clear the per-account notification keys BEFORE any cloud sync
+      // runs. These keys are global, so without this a new account inherits the
+      // previous account's seen/unread state, dev unlocks, and celebration flags.
+      // Awaiting here guarantees the wipe finishes before the sync below
+      // re-downloads the new account's state (avoids clobbering it on switch).
+      if (prev !== undefined && prev !== null && prev !== uid) {
+        try {
+          await AsyncStorage.multiRemove([
+            '@flipstart/seen_achievement_ids',
+            '@flipstart/dev_unlocked_achievements',
+            '@flipstart/major_achievement_shown_v1',
+            '@flipstart/seen_brand_discoveries',
+            '@flipstart/revealed_brand_discoveries',
+            '@flipstart/brand_discovery_meta',
+            '@flipstart/dev_unlocked_brands',
+            // Diamond seen + dev keys ARE now cleared on switch — Diamonds gained
+            // cloud sync, so the new account's seen state is restored from Supabase
+            // by the gated initial sync (the watcher awaits it before surfacing any
+            // notification, preventing old diamonds from re-badging).
+            '@flipstart/seen_diamond_ids_v1',
+            '@flipstart/dev_unlocked_diamonds_v1',
+          ]);
+        } catch { /* never crash on cleanup */ }
+      }
+
+      const { setXpUserId, syncXpOnLogin } = await import('@/lib/huntXp');
       // Always update the active storage key first
       setXpUserId(uid);
+      // Attribute analytics events to the signed-in profile (null for guests).
+      try {
+        const { setAnalyticsIdentity } = await import('@/lib/analytics');
+        setAnalyticsIdentity(uid);
+      } catch {}
 
       if (uid && syncedForUserRef.current !== uid) {
         // First time seeing this userId this session — run cloud merge
         syncedForUserRef.current = uid;
         syncXpOnLogin(uid).catch(() => {});
+        // Achievements: merge remote seen/celebration state into local (background,
+        // fail-safe). Passing [] for unlockedIds keeps this to the cross-device
+        // seen/celebration merge; per-achievement unlock upserts happen in
+        // progress.tsx when unlocks are detected.
+        import('@/lib/achievementSync')
+          .then(({ syncAchievementsWithSupabase }) => syncAchievementsWithSupabase(uid, []))
+          .catch(() => {});
+        // Brand Compendium: same pattern — download remote discoveries/seen state +
+        // upload existing local discovery meta. Discovered-set upload/reconcile
+        // happens in progress.tsx where the discovered set is computed.
+        import('@/lib/brandSync')
+          .then(({ syncBrandCompendiumWithSupabase }) => syncBrandCompendiumWithSupabase(uid, []))
+          .catch(() => {});
       }
 
       if (!uid) {
         // Signed out — reset so next login triggers sync again
         syncedForUserRef.current = null;
       }
-    }).catch(() => {});
+    })().catch(() => {});
   }, [user?.id]);
 
   return (
@@ -76,20 +133,33 @@ function AppProviders({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Watches flips for newly-unlocked diamonds and pushes badge notifications
-// immediately — even when the Progress tab is not in focus (e.g. after saving
-// an item in Hunt Mode from the Home screen).
+// Watches flips for newly-unlocked diamonds, achievements, and brand discoveries
+// and pushes badge notifications immediately — even when the Progress tab is not
+// in focus (e.g. after saving an item in Hunt Mode from the Home screen). Without
+// this, achievement/brand notifications only appeared after navigating to the
+// Progress tab.
 function DiamondNotificationWatcher() {
+  const { user } = useAuth();
   const { flips } = useFlipStore();
-  const { addUnseenDiamonds } = useAchievementNotifications();
+  const { addUnseenDiamonds, notifyNew, addUnseenBrands } = useAchievementNotifications();
   // Tick increments whenever hunt-context fires a change (item saved mid-hunt).
   const [huntTick, setHuntTick] = useState(0);
+  // Tracks which account has had its initial cloud seen-state download awaited
+  // this session. On the FIRST run for an account we await the download BEFORE
+  // computing unseen, so already-seen items (restored from Supabase) don't
+  // replay as new notifications after login / account switch. Reset to undefined
+  // on sign-out so a re-login re-hydrates.
+  const hydratedUidRef = useRef<string | undefined>(undefined);
 
   // Subscribe to active hunt mutations so we catch diamonds unlocked before
   // the hunt ends and the bundle lands in flips.
   useEffect(() => subscribeToHunt(() => setHuntTick(t => t + 1)), []);
 
   useEffect(() => {
+    // Guests never generate progress badges. Reset hydration so the next login
+    // re-downloads seen state before surfacing anything.
+    if (!user?.id) { hydratedUidRef.current = undefined; resetProgressHydration(); return; }
+    const uid = user.id;
     let alive = true;
     (async () => {
       // Build a synthetic HuntBundle from the active in-progress hunt so the
@@ -114,19 +184,69 @@ function DiamondNotificationWatcher() {
           }]
         : [];
 
-      let unlockedIds = getUnlockedDiamondIds([...flips, ...activeEntries]);
+      // ── Authoritative unlocked/discovered sets (local truth) ───────────────
+      let diamondUnlockedIds = getUnlockedDiamondIds([...flips, ...activeEntries]);
       if (__DEV__) {
         try {
           const { getDevDiamondIds } = await import('@/lib/devDiamondOverrides');
           const devIds = await getDevDiamondIds();
-          if (devIds.length > 0) unlockedIds = Array.from(new Set([...unlockedIds, ...devIds]));
+          if (devIds.length > 0) diamondUnlockedIds = Array.from(new Set([...diamondUnlockedIds, ...devIds]));
         } catch {}
       }
-      const unseen = await getUnseenDiamondIds(unlockedIds);
-      if (alive && unseen.length > 0) addUnseenDiamonds(unseen);
+      const diamondRecords = Object.values(computeUnlockedDiamonds(flips));
+
+      const xp = await import('@/lib/huntXp')
+        .then(({ loadXpProfile }) => loadXpProfile(uid).catch(() => null))
+        .catch(() => null);
+      if (!alive) return;
+
+      const achvData = buildUserAchievementData(
+        flips,
+        xp?.completedHunts           ?? 0,
+        xp?.huntStreak               ?? 0,
+        xp?.discoveredBrands?.length ?? 0,
+      );
+      const achvUnlocked = getAllUnlockedIds(achvData);
+      const discovered   = computeDiscoveredBrands(flips, xp?.discoveredBrands ?? []);
+
+      // ── Sync. On the FIRST run for this account, AWAIT the download so local
+      //    SEEN is hydrated from Supabase BEFORE we compute unseen (prevents the
+      //    login/switch replay). Subsequent runs sync in the background. ───────
+      const firstRun = hydratedUidRef.current !== uid;
+      const runSync = () => Promise.all([
+        import('@/lib/achievementSync').then(m => m.syncAchievementsWithSupabase(uid, achvUnlocked)).catch(() => {}),
+        import('@/lib/brandSync').then(m => m.syncBrandCompendiumWithSupabase(uid, [...discovered])).catch(() => {}),
+        import('@/lib/diamondSync').then(m => m.syncDiamondsWithSupabase(uid, diamondRecords)).catch(() => {}),
+      ]);
+      if (firstRun) {
+        hydratedUidRef.current = uid;   // set before await to avoid duplicate hydration on rapid re-runs
+        await runSync();
+        markProgressHydrated(uid);      // let the Progress tab skip its own wait
+        if (!alive) return;
+      } else {
+        runSync();                      // background; SEEN already hydrated
+      }
+
+      // ── Surface badges from the (now-hydrated) local SEEN keys ─────────────
+      const dUnseen = await getUnseenDiamondIds(diamondUnlockedIds);
+      if (alive && dUnseen.length > 0) addUnseenDiamonds(dUnseen);
+
+      if (achvUnlocked.length > 0) {
+        const details = ACHIEVEMENT_CATEGORIES.flatMap(cat =>
+          cat.achievements.map(a => ({
+            id: a.id, name: a.name, flavor: a.flavor,
+            categoryId: cat.id, categoryIcon: cat.icon,
+            iconColor: cat.iconColor, barColor: cat.barColor,
+          })),
+        );
+        if (alive) await notifyNew(achvUnlocked, details);
+      }
+
+      const bUnseen = await getUnseenBrandNames(discovered);
+      if (alive && bUnseen.length > 0) addUnseenBrands(bUnseen);
     })();
     return () => { alive = false; };
-  }, [flips, huntTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [flips, huntTick, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }

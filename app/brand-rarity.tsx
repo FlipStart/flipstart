@@ -22,7 +22,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { FONTS } from '@/constants/typography';
@@ -30,6 +30,7 @@ import { useAuth } from '@/lib/auth-context';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { loadXpProfile } from '@/lib/huntXp';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import {
   ALL_BRANDS,
   RARITY_TOTALS,
@@ -137,6 +138,20 @@ export default function BrandRarityScreen() {
   const [previewedBrand, setPreviewedBrand] = useState<string | null>(null);
   const [previewUsed,    setPreviewUsed]    = useState(false);
 
+  // Snapshot of which brands were unread when this rarity page opened, so their
+  // NEW dots remain visible during THIS visit even though we mark them seen on
+  // open. After leaving and returning, the snapshot is empty → no dots.
+  const [newAtOpen, setNewAtOpen] = useState<Set<string>>(new Set());
+  const capturedSeen = useRef(false);
+
+  // Analytics: a brand rarity page was opened. cooldownKey is rarity-specific
+  // so Common and Legendary both track independently within their own windows.
+  useScreenFocus(
+    'brand_rarity_opened',
+    { brand_rarity: rarity },
+    { cooldownKey: `brand_rarity_opened:${rarity}` },
+  );
+
   // Filter state
   const [search,      setSearch]      = useState('');
   const [catFilter,   setCatFilter]   = useState<BrandCategory | 'all'>('all');
@@ -174,6 +189,35 @@ export default function BrandRarityScreen() {
     };
     load();
   }, [user?.id, flips]));
+
+  // ── Bug 2 + Bug 1(brands): clear notifications by rarity-page visit ──────────
+  // Opening this rarity page marks EVERY unread discovered brand in this rarity
+  // seen — locally (persisted), in-memory (Progress badge), and remotely. The
+  // user no longer has to tap each brand. We snapshot which were unread at open
+  // so their NEW dots still show during this visit; on return they're gone.
+  const discoveredNamesForRarity = useMemo(
+    () => rarityBrands.filter(b => brandDates.has(b.name)).map(b => b.name),
+    [rarityBrands, brandDates],
+  );
+  useEffect(() => {
+    if (capturedSeen.current) return;
+    if (brandDates.size === 0) return;           // wait for discovery data to load
+    capturedSeen.current = true;
+
+    const unread = discoveredNamesForRarity.filter(n => unseenBrandNames.includes(n));
+    setNewAtOpen(new Set(unread));               // freeze dots for this visit
+    if (unread.length === 0) return;
+
+    markBrandNamesAsSeen(unread).catch(() => {}); // persist (won't reappear next focus)
+    unread.forEach(markBrandSeen);                // in-memory → Progress badge updates
+    const uid = user?.id;
+    if (uid) {
+      import('@/lib/brandSync').then(({ markBrandDiscoverySeenRemote }) => {
+        unread.forEach(n => markBrandDiscoverySeenRemote(uid, n).catch(() => {}));
+      }).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandDates, discoveredNamesForRarity]);
 
   // Handle tapping a locked/mystery card
   const handleUnknownTap = (hiddenBrand: Brand) => {
@@ -290,7 +334,9 @@ export default function BrandRarityScreen() {
 
   const renderItem = ({ item }: { item: ListItem }) => {
     if (item.type === 'discovered') {
-      const isNew = unseenBrandNames.includes(item.brand.name);
+      // NEW dot reflects what was unread when the page opened (frozen for the
+      // visit). Marking-seen already happened on open, so tapping just navigates.
+      const isNew = newAtOpen.has(item.brand.name);
       return (
         <DiscoveredCard
           brand={item.brand}
@@ -298,10 +344,6 @@ export default function BrandRarityScreen() {
           rarityColor={color}
           isNew={isNew}
           onPress={() => {
-            if (isNew) {
-              markBrandSeen(item.brand.name);
-              markBrandNamesAsSeen([item.brand.name]); // persist so it doesn't reappear on next focus
-            }
             router.push({ pathname: '/brand-detail' as any, params: { brand: item.brand.name } });
           }}
         />

@@ -15,6 +15,7 @@ import {
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { trpc } from '@/lib/trpc';
 import { FONTS } from '@/constants/typography';
+import { trackAnalyticsEvent } from '@/lib/analytics';
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const BG      = '#F4EED8';
@@ -55,7 +56,28 @@ export function FeedbackCard(props: FeedbackCardProps) {
   const [submitted, setSubmitted] = useState(false);
 
   const submitMutation = trpc.feedback.submit.useMutation({
-    onSuccess: () => setSubmitted(true),
+    onSuccess: () => {
+      setSubmitted(true);
+      // Analytics: feedback successfully submitted.
+      trackAnalyticsEvent('scan_feedback_submitted', {
+        scan_id:              props.scanId,
+        item_title:           props.itemName,
+        brand:                props.brand,
+        category:             props.category,
+        estimated_resale_low:  props.resaleLow,
+        estimated_resale_high: props.resaleHigh,
+        suggested_buy_price:  props.suggestedBuy,
+        match_confidence:     props.confidenceScore,
+        recommendation:       props.recommendation,
+        estimated_resale_value: props.aiEstimatedResale ?? null,
+        feedback_rating:      accuracy,
+        buy_decision:         decision,
+        user_corrected_value: estValue ? parseFloat(estValue) : null,
+        notes_present:        notes.trim().length > 0,
+        feedback_text_length: notes.trim().length || null,
+        platform:             props.bestPlatform,
+      });
+    },
   });
 
   const handleSubmit = () => {

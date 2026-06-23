@@ -33,6 +33,7 @@ import { useState, useCallback, useMemo } from 'react';
 import { FONTS } from '@/constants/typography';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import { useAuth } from '@/lib/auth-context';
 import {
   DIAMONDS, TOTAL_DIAMONDS, CATEGORY_META,
   computeUnlockedDiamonds, getUnlockedDiamondIds, markDiamondIdsSeen,
@@ -169,6 +170,7 @@ export default function DevDiamondsScreen() {
   const {
     unseenDiamondIds, addUnseenDiamonds, markDiamondsSeen, markDiamondSeen,
   } = useAchievementNotifications();
+  const { user } = useAuth();
 
   const [mode, setMode] = useState<'force' | 'sim'>('force');
   const [query, setQuery] = useState('');
@@ -198,16 +200,31 @@ export default function DevDiamondsScreen() {
     await addDevDiamond(id, { discoveredAt: Date.now() });
     await removeFromDiamondSeen(id);   // so it shows as NEW
     addUnseenDiamonds([id]);           // bump Progress tab badge immediately
+    // Signed-in: upsert to Supabase (dev tool) — background, fail-safe.
+    const uid = user?.id;
+    if (uid) {
+      import('@/lib/diamondSync').then(({ upsertDiamondDiscovery }) =>
+        upsertDiamondDiscovery(uid, {
+          id, discoveredAt: Date.now(), sourceScanId: null,
+          isFromHunt: false, imageUri: null, estimatedProfit: null,
+        }, { isUnread: true }).catch(() => {})).catch(() => {});
+    }
     await reloadDev();
-  }, [addUnseenDiamonds, reloadDev]);
+  }, [addUnseenDiamonds, reloadDev, user?.id]);
 
   // ── Remove a dev-forced Diamond ──────────────────────────────────────────────
   const removeForced = useCallback(async (id: string) => {
     await removeDevDiamond(id);
     await removeFromDiamondSeen(id);   // allow it to re-notify later
     markDiamondSeen(id);               // clear its in-memory NEW badge
+    // Signed-in: delete the remote row (dev tool) — background, fail-safe.
+    const uid = user?.id;
+    if (uid) {
+      import('@/lib/diamondSync').then(({ deleteDiamondDiscoveryRemoteDevOnly }) =>
+        deleteDiamondDiscoveryRemoteDevOnly(uid, id).catch(() => {})).catch(() => {});
+    }
     await reloadDev();
-  }, [markDiamondSeen, reloadDev]);
+  }, [markDiamondSeen, reloadDev, user?.id]);
 
   // ── Row tap router ────────────────────────────────────────────────────────────
   const onRowTap = useCallback((def: DiamondDef) => {
@@ -281,13 +298,22 @@ export default function DevDiamondsScreen() {
             await clearAllDevDiamonds();
             await clearAllDiamondSeen();
             markDiamondsSeen(unseenDiamondIds); // clear in-memory badge
+            // Signed-in: reconcile remote to the real-scan truth — dev-only rows
+            // are deleted, Diamonds still backed by saved scans are kept (matches
+            // the local reset, which leaves scan-derived Diamonds intact).
+            const uid = user?.id;
+            if (uid) {
+              const realIds = getUnlockedDiamondIds(flips);
+              import('@/lib/diamondSync').then(({ reconcileDiamondsToLocalTruth }) =>
+                reconcileDiamondsToLocalTruth(uid, realIds).catch(() => {})).catch(() => {});
+            }
             await reloadDev();
             Alert.alert('Done', 'All dev Diamonds + seen flags cleared.');
           },
         },
       ],
     );
-  }, [unseenDiamondIds, markDiamondsSeen, reloadDev]);
+  }, [unseenDiamondIds, markDiamondsSeen, reloadDev, flips, user?.id]);
 
   const markAllSeen = useCallback(async () => {
     await markDiamondIdsSeen(allUnlockedIds);  // persisted

@@ -31,6 +31,19 @@ export async function hasShownMajorAchievement(
   return shown.has(type);
 }
 
+// MajorAchievementType → achievement_id (inverse of MAJOR_MAP). Used to mirror
+// celebration_seen into the user_achievements row for signed-in users.
+const TYPE_TO_ACHIEVEMENT: Record<string, string> = {
+  flipstart_legend:    'profit_10000',
+  master_scanner:      'scan_5000',
+  hunt_mode_legend:    'hunt_2500',
+  never_miss:          'streak_365',
+  jackpot:             'rare_100profit',
+  band_tee_bloodhound: 'era_bandtee',
+  brand_encyclopedia:  'brand_100',
+  // 'first_achievement' has no single achievement_id → local-only, not synced.
+};
+
 export async function markMajorAchievementShown(
   type: MajorAchievementType,
 ): Promise<void> {
@@ -40,5 +53,22 @@ export async function markMajorAchievementShown(
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...shown]));
   } catch {
     // Never crash on notification storage
+  }
+
+  // Background: mirror celebration_seen to Supabase for signed-in users.
+  // Fail-safe — never blocks or throws. first_achievement maps to nothing → skipped.
+  const achievementId = TYPE_TO_ACHIEVEMENT[type];
+  if (achievementId) {
+    try {
+      const { supabase } = await import('@/lib/supabase');
+      const { data } = await supabase.auth.getUser();
+      const uid = data?.user?.id;
+      if (uid) {
+        const { markAchievementCelebrationSeenRemote } = await import('@/lib/achievementSync');
+        markAchievementCelebrationSeenRemote(uid, achievementId).catch(() => {});
+      }
+    } catch {
+      // local-only ok
+    }
   }
 }

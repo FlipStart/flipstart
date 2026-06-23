@@ -13,7 +13,7 @@
  * home screen when onboarding is not yet complete.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
 } from 'react-native';
@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FONTS } from '@/constants/typography';
 import { completeOnboarding, setOnboardingInterests } from '@/lib/onboarding-storage';
+import { trackAnalyticsEvent } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import * as WebBrowser from 'expo-web-browser';
@@ -77,6 +78,9 @@ export default function OnboardingScreen() {
   const [appleStep,     setAppleStep]     = useState<'idle'|'opening'|'signing'|'loading'>('idle');
   const [appleError,    setAppleError]    = useState<string | null>(null);
 
+  // Analytics: onboarding screen entered (mount-once).
+  useEffect(() => { trackAnalyticsEvent('onboarding_started', {}); }, []);
+
   // ── Google Sign-In ──────────────────────────────────────────────────────────
   const handleGoogleSignIn = useCallback(async () => {
     if (googleLoading || saving || appleStep !== 'idle') return;
@@ -99,6 +103,9 @@ export default function OnboardingScreen() {
       const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
       if (sessionError) { setGoogleError(`Sign-In failed: ${sessionError.message}`); return; }
       await refreshProfile().catch(() => {});
+      trackAnalyticsEvent('login_success', { auth_method: 'google', entry_point: 'onboarding' });
+      trackAnalyticsEvent('account_created', { auth_method: 'google', entry_point: 'onboarding' });
+      trackAnalyticsEvent('onboarding_completed', { auth_method: 'google', completed_onboarding_version: 'resell' });
       await completeOnboarding('resell').catch(() => {});
       router.replace('/(tabs)' as any);
     } catch {
@@ -148,6 +155,9 @@ export default function OnboardingScreen() {
         supabase.auth.updateUser({ data: { full_name: displayName } }).catch(() => {});
       }
       await refreshProfile().catch(() => {});
+      trackAnalyticsEvent('login_success', { auth_method: 'apple', entry_point: 'onboarding' });
+      trackAnalyticsEvent('account_created', { auth_method: 'apple', entry_point: 'onboarding' });
+      trackAnalyticsEvent('onboarding_completed', { auth_method: 'apple', completed_onboarding_version: 'resell' });
       await completeOnboarding('resell').catch(() => {});
       router.replace('/(tabs)' as any);
     } catch (err: any) {
@@ -176,12 +186,18 @@ export default function OnboardingScreen() {
 
   // Persist interests (best-effort) then advance.
   const saveInterestsAndNext = useCallback(() => {
-    setOnboardingInterests(Array.from(selected)).catch(() => {});
+    const interests = Array.from(selected);
+    trackAnalyticsEvent('onboarding_quiz_completed', { selected_interests: interests });
+    setOnboardingInterests(interests).catch(() => {});
     setStep(2);
   }, [selected]);
 
   // Auth → reuse the shared auth screen with onboarding entry context.
   const goToAuth = useCallback((mode: 'signup' | 'login') => {
+    trackAnalyticsEvent(
+      mode === 'signup' ? 'onboarding_create_account_tapped' : 'onboarding_login_tapped',
+      { entry_point: 'onboarding' },
+    );
     router.push({ pathname: '/auth', params: { mode, authEntryPoint: 'onboarding' } } as any);
   }, [router]);
 
@@ -190,9 +206,16 @@ export default function OnboardingScreen() {
   const finishOnboarding = useCallback(async () => {
     if (saving) return;
     setSaving(true);
+    // Guests complete onboarding here (signed-in completion is tracked in the
+    // OAuth success paths above, so don't double-count).
+    if (!signedIn) {
+      trackAnalyticsEvent('onboarding_continue_guest_tapped', { entry_point: 'onboarding' });
+      trackAnalyticsEvent('guest_session_started', {});
+      trackAnalyticsEvent('onboarding_completed', { auth_method: 'guest', completed_onboarding_version: 'resell' });
+    }
     await completeOnboarding('resell').catch(() => {});
     router.replace('/(tabs)' as any);
-  }, [saving, router]);
+  }, [saving, router, signedIn]);
 
   const back = useCallback(() => setStep(s => (s > 0 ? ((s - 1) as Step) : s)), []);
 

@@ -18,7 +18,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Image, Dimensions
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import Svg, { Circle } from 'react-native-svg';
 import { useFlipStore } from '@/lib/useFlipStore';
 
@@ -48,8 +48,11 @@ import {
 import {
   getUnlockedDiamondIds,
   getUnseenDiamondIds,
+  computeUnlockedDiamonds,
   TOTAL_DIAMONDS,
 } from '@/lib/diamonds';
+import { isProgressHydrated, markProgressHydrated } from '@/lib/progressHydration';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
 import FeatureGate from '@/components/FeatureGate';
 
@@ -136,11 +139,22 @@ export default function ProgressScreen() {
           unseenDiamondCount, addUnseenDiamonds } = useAchievementNotifications();
   const [profile, setProfile] = useState<HuntXpProfile | null>(null);
   const [achvData, setAchvData] = useState<UserAchievementData | null>(null);
+  const [devAchvCount, setDevAchvCount] = useState<number>(0);
   const [brandCount, setBrandCount] = useState<number | null>(null);
   const [diamondCount, setDiamondCount] = useState<number>(0);
 
+  // Analytics: Progress tab opened — refires on focus return after 30s cooldown.
+  useScreenFocus('progress_tab_opened');
+
   useFocusEffect(useCallback(() => {
     const uid = user?.id ?? null;
+
+    // Guests never generate notifications. When signed out the screen shows the
+    // FeatureGate (below), but this effect's hooks still run — so without this
+    // guard, guest flips/dev overrides would recompute unseen diamonds/brands/
+    // achievements and light up the Progress tab badge in guest mode.
+    if (!uid) return;
+
     const load = async () => {
       const xp = uid ? await loadXpProfile(uid).catch(() => null) : null;
       setProfile(xp);
@@ -155,6 +169,39 @@ export default function ProgressScreen() {
 
       // Detect newly unlocked achievements and push to notification context
       const unlockedIds = getAllUnlockedIds(data);
+
+      // If the global watcher hasn't yet downloaded this account's seen-state
+      // from Supabase (e.g. Progress opened immediately after login), await that
+      // download here BEFORE notifying — otherwise already-seen achievements/
+      // brands/diamonds would replay as new. Normally the watcher wins this race
+      // and the flag is already set, so this block is skipped.
+      if (uid && !isProgressHydrated(uid)) {
+        try {
+          const disc  = computeDiscoveredBrands(flips, xp?.discoveredBrands ?? []);
+          const dRecs = Object.values(computeUnlockedDiamonds(flips));
+          await Promise.all([
+            import('@/lib/achievementSync').then(m => m.syncAchievementsWithSupabase(uid, unlockedIds)).catch(() => {}),
+            import('@/lib/brandSync').then(m => m.syncBrandCompendiumWithSupabase(uid, [...disc])).catch(() => {}),
+            import('@/lib/diamondSync').then(m => m.syncDiamondsWithSupabase(uid, dRecs)).catch(() => {}),
+          ]);
+        } catch { /* fail-safe: proceed with local SEEN */ }
+        markProgressHydrated(uid);
+      }
+
+      // DEV — count dev-unlocked achievements NOT already unlocked by stats, so
+      // the Progress card total matches the category screen (which merges dev
+      // unlocks in __DEV__). Mirrors the brands/diamonds dev-merge below.
+      if (__DEV__) {
+        try {
+          const { getDevUnlocked } = await import('@/lib/devAchievementOverrides');
+          const devSet  = await getDevUnlocked();
+          const statSet = new Set(unlockedIds);
+          let extra = 0;
+          devSet.forEach(id => { if (!statSet.has(id)) extra++; });
+          setDevAchvCount(extra);
+        } catch { setDevAchvCount(0); }
+      }
+
       if (unlockedIds.length > 0) {
         // Build full notification detail objects for each unlocked achievement
         const allDetails: AchievementNotification[] = [];
@@ -172,6 +219,14 @@ export default function ProgressScreen() {
           }
         }
         await notifyNew(unlockedIds, allDetails);
+
+        // Background cloud sync for signed-in users — records unlocks in Supabase.
+        // Fire-and-forget; never blocks the local notification flow above.
+        if (uid) {
+          import('@/lib/achievementSync')
+            .then(({ syncAchievementsWithSupabase }) => syncAchievementsWithSupabase(uid, unlockedIds))
+            .catch(() => {});
+        }
       }
 
       // ── Brand discovery notifications ──────────────────────────────────
@@ -192,6 +247,15 @@ export default function ProgressScreen() {
       const unseenBrands = await getUnseenBrandNames(discoveredBrands);
       if (unseenBrands.length > 0) {
         addUnseenBrands(unseenBrands);
+      }
+
+      // Background cloud sync for signed-in users — uploads new brand discoveries
+      // + downloads remote seen state. Fire-and-forget; never blocks local flow.
+      if (uid) {
+        import('@/lib/brandSync')
+          .then(({ syncBrandCompendiumWithSupabase }) =>
+            syncBrandCompendiumWithSupabase(uid, [...discoveredBrands]))
+          .catch(() => {});
       }
 
       // ── Diamond discovery (derived from the saved flip history) ─────────
@@ -240,8 +304,11 @@ export default function ProgressScreen() {
   // Show '—' while brand count is still loading (prevents stale zero flicker)
   const brandsDisplay = brandCount === null ? '—' : String(brands);
 
-  // Real achievement count — replaces the old completedHunts proxy
-  const realUnlocked   = achvData ? getTotalUnlocked(achvData) : 0;
+  // Real achievement count — replaces the old completedHunts proxy.
+  // In __DEV__, add dev-unlocked achievements (capped at the total) so this
+  // matches the category screen, which also merges dev unlocks.
+  const statUnlocked   = achvData ? getTotalUnlocked(achvData) : 0;
+  const realUnlocked   = Math.min(statUnlocked + (__DEV__ ? devAchvCount : 0), ACHV_TOTAL);
 
   // Explore percentage: achievements + brands + diamonds (all three tracked systems)
   const exploreRaw     = (realUnlocked / ACHV_TOTAL + brands / TOTAL_BRANDS + diamondCount / TOTAL_DIAMONDS) / 3;

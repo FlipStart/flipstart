@@ -17,6 +17,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 
 import { FONTS } from '@/constants/typography';
 import { useAuth } from '@/lib/auth-context';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { loadXpProfile } from '@/lib/huntXp';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
@@ -60,6 +61,9 @@ export default function BrandCompendiumScreen() {
   const { unseenBrandNames } = useAchievementNotifications();
 
   const [discovered, setDiscovered] = useState<Set<string> | null>(null);
+
+  // Analytics: Brand Compendium opened.
+  useScreenFocus('brand_compendium_opened');
 
   useFocusEffect(useCallback(() => {
     const load = async () => {

@@ -23,8 +23,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { resetOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
+import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import { getClearHistoryImpact, type ClearHistoryImpact, type ImpactContext } from '@/lib/scanDeletionImpact';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
+import { ClearHistoryModal } from '@/components/DeleteImpactModal';
 import { FONTS } from '@/constants/typography';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Camera } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
@@ -60,6 +64,10 @@ export default function SettingsScreen() {
   const router = useRouter();
   const { clearAllFlips, flips } = useFlipStore();
   const { user, profile, signOut } = useAuth();
+  const { pruneUnseen } = useAchievementNotifications();
+  const [clearImpact, setClearImpact] = useState<ClearHistoryImpact | null>(null);
+  const finalValidRef = useRef<{ achievements: string[]; brands: string[]; diamonds: string[] }>({ achievements: [], brands: [], diamonds: [] });
+  useScreenFocus('settings_opened');
 
   const [cameraStatus,   setCameraStatus]   = useState<PermStatus>('Not Asked');
   const [photoStatus,    setPhotoStatus]    = useState<PermStatus>('Not Asked');
@@ -112,17 +120,62 @@ export default function SettingsScreen() {
       Alert.alert('No History', 'Your scan history is already empty.');
       return;
     }
-    Alert.alert(
-      'Clear Scan History',
-      `This will permanently delete all ${flips.length} saved flip${flips.length !== 1 ? 's' : ''}. This cannot be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Clear All', style: 'destructive', onPress: () => {
-          clearAllFlips();
-          Alert.alert('Cleared', 'Your scan history has been cleared.');
-        }},
-      ]
-    );
+    (async () => {
+      let ctx: ImpactContext = { completedHunts: 0, huntStreak: 0, huntBrands: [] };
+      const uid = user?.id;
+      if (uid) {
+        try {
+          const { loadXpProfile } = await import('@/lib/huntXp');
+          const xp = await loadXpProfile(uid).catch(() => null);
+          ctx = {
+            completedHunts: xp?.completedHunts ?? 0,
+            huntStreak:     xp?.huntStreak ?? 0,
+            huntBrands:     xp?.discoveredBrands ?? [],
+          };
+        } catch { /* defaults */ }
+      }
+
+      // Snapshot the FINAL valid sets after clearing (flips empty → only
+      // hunt-mode brands / non-flip achievements survive). performClearHistory
+      // reconciles cloud + local to exactly this truth.
+      try {
+        const { computeValidSets } = await import('@/lib/scanDeletionImpact');
+        finalValidRef.current = computeValidSets([], ctx);
+      } catch {
+        finalValidRef.current = { achievements: [], brands: [], diamonds: [] };
+      }
+
+      setClearImpact(getClearHistoryImpact(flips, ctx));
+    })();
+  };
+
+  const performClearHistory = () => {
+    const uid = user?.id;
+    trackAnalyticsEvent('scan_history_cleared', { scans_deleted: flips.length });
+    clearAllFlips();
+
+    const valid = finalValidRef.current;
+
+    // Prune badges to only what survives clearing.
+    pruneUnseen(valid);
+
+    // Signed-in: reconcile cloud + local seen/meta keys to the final truth so
+    // cleared progress can't resurrect on the next sync. Fail-safe.
+    if (uid) {
+      import('@/lib/achievementSync')
+        .then(({ reconcileAchievementsToLocalTruth }) => reconcileAchievementsToLocalTruth(uid, valid.achievements))
+        .catch(() => {});
+      import('@/lib/brandSync')
+        .then(({ reconcileBrandsToLocalTruth }) => reconcileBrandsToLocalTruth(uid, valid.brands))
+        .catch(() => {});
+      import('@/lib/diamondSync')
+        .then(({ reconcileDiamondsToLocalTruth }) => reconcileDiamondsToLocalTruth(uid, valid.diamonds))
+        .catch(() => {});
+    }
+
+    finalValidRef.current = { achievements: [], brands: [], diamonds: [] };
+    setClearImpact(null);
+    Alert.alert('Cleared', 'Your scan history has been cleared.');
   };
 
   const handleSendFeedback = async () => {
@@ -431,6 +484,13 @@ export default function SettingsScreen() {
         )}
 
       </ScrollView>
+
+      <ClearHistoryModal
+        visible={clearImpact !== null}
+        impact={clearImpact}
+        onCancel={() => { finalValidRef.current = { achievements: [], brands: [], diamonds: [] }; setClearImpact(null); }}
+        onConfirm={performClearHistory}
+      />
     </View>
   );
 }

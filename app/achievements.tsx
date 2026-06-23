@@ -31,6 +31,7 @@ import {
 import {
   useAchievementNotifications,
 } from '@/lib/AchievementNotificationContext';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const FOREST = '#2A4A2A';
@@ -53,6 +54,9 @@ export default function AchievementsScreen() {
   const [userData, setUserData] = useState<UserAchievementData | null>(null);
   const [devUnlocked, setDevUnlocked] = useState<Set<string>>(new Set());
   const { unseenAchievements, markAllSeen } = useAchievementNotifications();
+
+  // Analytics: Achievements screen opened.
+  useScreenFocus('achievements_opened');
 
 
   // Per-category unseen badge counts — drives notification dots on each category card.

@@ -21,6 +21,7 @@ import { FlipResult, ListingData } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
 import { computeFlipCalc } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
+import { trackAnalyticsEvent } from '@/lib/analytics';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
@@ -347,8 +348,26 @@ export default function AnalysisDetailsScreen() {
       }
       setLocalListings(listingData);
       setListingsOpen(true);
+      trackAnalyticsEvent('listing_generated', {
+        scan_id:           baseFlip?.id ?? null,
+        item_title:        baseFlip.itemName,
+        brand:             baseFlip.brand,
+        category:          baseFlip.category,
+        platform:          'both',
+        title_generated:   !!(listingData.ebay?.title || listingData.depop?.title),
+        description_generated: !!(listingData.ebay?.description || listingData.depop?.description),
+        estimated_resale_value: baseFlip.resaleValue,
+        generation_source: 'history',
+      });
     } catch (err: any) {
       console.error('[analysis-details] generateListings failed:', err?.message ?? err);
+      trackAnalyticsEvent('listing_generation_failed', {
+        scan_id:    baseFlip?.id ?? null,
+        item_title: baseFlip.itemName,
+        platform:   'both',
+        error_code: err?.code ?? null,
+        failure_stage: 'ai_generation',
+      });
       Alert.alert('Error', 'Could not generate listings. Please try again.');
     } finally {
       setListLoading(false);

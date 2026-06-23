@@ -140,6 +140,14 @@ export default function DevAchievementsScreen() {
     // Always inject into notification queue (drives tab badge + achievements.tsx popup)
     if (detail) forceNotify(detail);
 
+    // Signed-in: upsert the unlock to Supabase (background, fail-safe).
+    const uid = user?.id;
+    if (uid) {
+      import('@/lib/achievementSync').then(({ upsertAchievementUnlock }) =>
+        upsertAchievementUnlock(uid, ach.id, { isUnread: true, unlockSource: 'dev' }),
+      ).catch(() => {});
+    }
+
     await reload();
   };
 
@@ -149,6 +157,15 @@ export default function DevAchievementsScreen() {
     await removeFromSeen(ach.id);        // allow re-notification
     const majorType = MAJOR_MAP[ach.id];
     if (majorType) await removeFromMajorShown(majorType); // allow re-trigger
+
+    // Signed-in: delete the Supabase row so testing stays consistent.
+    const uid = user?.id;
+    if (uid) {
+      import('@/lib/achievementSync').then(({ deleteAchievementRemote }) =>
+        deleteAchievementRemote(uid, ach.id),
+      ).catch(() => {});
+    }
+
     await reload();
   };
 

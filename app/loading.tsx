@@ -243,7 +243,16 @@ export default function LoadingScreen() {
 
       // Analytics: scan submitted
       try {
-        logEvent("scan_submitted", { tagPresent: !!tag, detailPresent: !!detail });
+        logEvent("scan_submitted", {
+          tagPresent:        !!tag,
+          detailPresent:     !!detail,
+          scan_type:         "normal",
+          image_count:       1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0),
+          has_tag_photo:     !!tag,
+          has_detail_photo:  !!detail,
+          model_name:        "gpt-4o",
+          api_provider:      "openai",
+        });
         incrementSessionCount("scanCount");
       } catch { /* never block analysis */ }
 
@@ -341,7 +350,7 @@ export default function LoadingScreen() {
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
           try {
-            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf });
+            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf, scan_type: "normal", image_count: 1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0), model_name: "gpt-4o" });
             incrementSessionCount("failedScanCount");
           } catch { /* never block */ }
           setFailState({ type: "bad_input", message: "", confidence: matchConf });
@@ -356,7 +365,7 @@ export default function LoadingScreen() {
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
           try {
-            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf });
+            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf, scan_type: "normal", image_count: 1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0), model_name: "gpt-4o" });
             incrementSessionCount("failedScanCount");
           } catch { /* never block */ }
           setFailState({ type: "low_confidence", message: "", confidence: matchConf });
@@ -375,10 +384,18 @@ export default function LoadingScreen() {
         // Analytics: scan completed + save structured scan record for future AI memory
         try {
           logEvent("scan_completed", {
-            confidence:      matchConf,
-            category:        safeIdentification.category,
-            brand:           safeIdentification.brand,
-            recommendation:  result.recommendation ?? "",
+            confidence:        matchConf,
+            category:          safeIdentification.category,
+            brand:             safeIdentification.brand,
+            recommendation:    result.recommendation ?? "",
+            // Cost/budget metadata (client-side knowables; token data is server-only)
+            scan_type:         "normal",
+            image_count:       1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0),
+            has_tag_photo:     !!tag,
+            has_detail_photo:  !!detail,
+            model_name:        "gpt-4o",
+            api_provider:      "openai",
+            // prompt_tokens / completion_tokens / estimated_cost_usd: server-only, left null
           });
           incrementSessionCount("completedScanCount");
           saveScanRecord({

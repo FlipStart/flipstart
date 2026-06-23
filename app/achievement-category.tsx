@@ -23,6 +23,7 @@ import {
   type AchievementNotification,
 } from '@/lib/AchievementNotificationContext';
 import { useAuth } from '@/lib/auth-context';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { loadXpProfile } from '@/lib/huntXp';
 import {
@@ -54,6 +55,14 @@ export default function AchievementCategoryScreen() {
   const { user }   = useAuth();
   const { flips }  = useFlipStore();
   const { categoryId } = useLocalSearchParams<{ categoryId: string }>();
+
+  // Analytics: a specific achievement category was opened. cooldownKey is
+  // category-specific so Scanning and Hunt categories both track independently.
+  useScreenFocus(
+    'achievement_category_opened',
+    { achievement_category: categoryId ?? null },
+    { cooldownKey: `achievement_category_opened:${categoryId ?? 'unknown'}` },
+  );
 
   const [userData, setUserData] = useState<UserAchievementData | null>(null);
   const [devUnlocked, setDevUnlocked] = useState<Set<string>>(new Set());

@@ -13,10 +13,11 @@
  */
 
 import React, {
-  createContext, useContext, useState, useCallback, useRef,
+  createContext, useContext, useState, useCallback, useRef, useEffect,
   type ReactNode,
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from '@/lib/auth-context';
 
 const SEEN_KEY = '@flipstart/seen_achievement_ids';
 
@@ -83,6 +84,12 @@ interface NotifContextValue {
   markDiamondsSeen: (ids: string[]) => void;
   /** Called by the Diamonds screen when a single Diamond is viewed to clear its NEW marker. */
   markDiamondSeen: (id: string) => void;
+  /**
+   * Prune in-memory unseen badges to only currently-valid ids/names. Called
+   * after a scan/history deletion so badges for progress that no longer exists
+   * disappear immediately (no phantom notifications).
+   */
+  pruneUnseen: (valid: { achievements: string[]; brands: string[]; diamonds: string[] }) => void;
 }
 
 const NotifContext = createContext<NotifContextValue>({
@@ -102,11 +109,13 @@ const NotifContext = createContext<NotifContextValue>({
   addUnseenDiamonds:  () => {},
   markDiamondsSeen:   () => {},
   markDiamondSeen:    () => {},
+  pruneUnseen:        () => {},
 });
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function AchievementNotificationProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [unseenAchievements, setUnseenAchievements] = useState<AchievementNotification[]>([]);
   const [unseenBrandNames,   setUnseenBrandNames]   = useState<string[]>([]);
   const [unseenDiamondIds,   setUnseenDiamondIds]   = useState<string[]>([]);
@@ -156,7 +165,15 @@ export function AchievementNotificationProvider({ children }: { children: ReactN
     } catch {
       // Never crash
     }
-  }, [unseenAchievements]);
+
+    // Background: mirror seen state to Supabase for signed-in users (fail-safe).
+    const uid = user?.id;
+    if (uid && toMark.length > 0) {
+      import('@/lib/achievementSync').then(({ markAchievementSeenRemote }) => {
+        toMark.forEach(a => markAchievementSeenRemote(uid, a.id).catch(() => {}));
+      }).catch(() => {});
+    }
+  }, [unseenAchievements, user?.id]);
 
   /**
    * Category-scoped clear — called by achievement-category.tsx when a
@@ -172,7 +189,14 @@ export function AchievementNotificationProvider({ children }: { children: ReactN
       toMark.forEach(a => seen.add(a.id));
       await AsyncStorage.setItem(SEEN_KEY, JSON.stringify([...seen]));
     } catch {}
-  }, [unseenAchievements]);
+
+    const uid = user?.id;
+    if (uid && toMark.length > 0) {
+      import('@/lib/achievementSync').then(({ markAchievementSeenRemote }) => {
+        toMark.forEach(a => markAchievementSeenRemote(uid, a.id).catch(() => {}));
+      }).catch(() => {});
+    }
+  }, [unseenAchievements, user?.id]);
 
   // DEV ONLY — bypass AsyncStorage diff and inject directly
   const forceNotify = useCallback((achievement: AchievementNotification) => {
@@ -216,24 +240,67 @@ export function AchievementNotificationProvider({ children }: { children: ReactN
     setUnseenDiamondIds(prev => prev.filter(d => d !== id));
   }, []);
 
+  // Prune in-memory unseen badges to only currently-valid items. Used after a
+  // scan/history deletion so notifications for removed progress vanish at once.
+  const pruneUnseen = useCallback(
+    (valid: { achievements: string[]; brands: string[]; diamonds: string[] }) => {
+      const aSet = new Set(valid.achievements);
+      const bSet = new Set(valid.brands);
+      const dSet = new Set(valid.diamonds);
+      setUnseenAchievements(prev => prev.filter(a => aSet.has(a.id)));
+      setUnseenBrandNames(prev => prev.filter(n => bSet.has(n)));
+      setUnseenDiamondIds(prev => prev.filter(id => dSet.has(id)));
+    },
+    [],
+  );
+
+  // ── Clear in-memory notification badges on account change ───────────────────
+  // The per-account AsyncStorage keys are cleared in app/_layout.tsx (before the
+  // cloud sync runs, to avoid clobbering the new account's downloaded state).
+  // Here we only reset the in-memory badge arrays so the UI updates immediately
+  // on sign-out/switch. Clear ONLY on sign-out (A→null) or switch (A→B), never
+  // on initial login (null→A).
+  const prevUidRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const uid  = user?.id ?? null;
+    const prev = prevUidRef.current;
+    prevUidRef.current = uid;
+
+    if (prev === undefined) return; // first render
+    if (prev === uid) return;       // no change
+    if (prev === null) return;      // login/launch into an account
+
+    setUnseenAchievements([]);
+    setUnseenBrandNames([]);
+    setUnseenDiamondIds([]);
+  }, [user?.id]);
+
+  // Guests never surface notification badges. Gate the EXPOSED counts/arrays on
+  // being signed in — a single chokepoint so no generator (Progress tab, diamond
+  // watcher, brand discovery, dev tools, or any future caller) can light the
+  // Progress tab badge in guest mode. Internal state is preserved so genuine
+  // guest discoveries surface as unseen once the user signs in.
+  const signedIn = !!user?.id;
+
   return (
     <NotifContext.Provider value={{
-      unseenCount:        unseenAchievements.length,
-      unseenAchievements,
+      unseenCount:        signedIn ? unseenAchievements.length : 0,
+      unseenAchievements: signedIn ? unseenAchievements : [],
       notifyNew,
       markAllSeen,
       markAchievementsSeen,
       forceNotify,
-      unseenBrandCount:   unseenBrandNames.length,
-      unseenBrandNames,
+      unseenBrandCount:   signedIn ? unseenBrandNames.length : 0,
+      unseenBrandNames:   signedIn ? unseenBrandNames : [],
       addUnseenBrands,
       markBrandsSeen,
       markBrandSeen,
-      unseenDiamondCount: unseenDiamondIds.length,
-      unseenDiamondIds,
+      unseenDiamondCount: signedIn ? unseenDiamondIds.length : 0,
+      unseenDiamondIds:   signedIn ? unseenDiamondIds : [],
       addUnseenDiamonds,
       markDiamondsSeen,
       markDiamondSeen,
+      pruneUnseen,
     }}>
       {children}
     </NotifContext.Provider>

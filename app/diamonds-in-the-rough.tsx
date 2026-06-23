@@ -38,6 +38,8 @@ import Svg, {
 import { FONTS } from '@/constants/typography';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
+import { useAuth } from '@/lib/auth-context';
 import {
   DIAMONDS, CATEGORY_META, TOTAL_DIAMONDS,
   computeUnlockedDiamonds, markDiamondIdsSeen,
@@ -320,8 +322,12 @@ export default function DiamondsInTheRoughScreen() {
   const router = useRouter();
   const { flips, isLoaded } = useFlipStore();
   const { unseenDiamondIds, markDiamondsSeen } = useAchievementNotifications();
+  const { user } = useAuth();
 
   const scrollRef = useRef<ScrollView>(null);
+
+  // Analytics: Diamonds in the Rough opened.
+  useScreenFocus('diamonds_opened');
 
   // Derive unlocked diamonds from history (production source of truth).
   const realMap = useMemo(() => computeUnlockedDiamonds(flips), [flips]);
@@ -365,8 +371,16 @@ export default function DiamondsInTheRoughScreen() {
     if (unseenDiamondIds.length > 0) {
       markDiamondsSeen(unseenDiamondIds);          // in-memory (Progress badge)
       markDiamondIdsSeen(unseenDiamondIds).catch(() => {}); // persisted
+      // Mirror to Supabase for signed-in users (background, fail-safe).
+      const uid = user?.id;
+      if (uid) {
+        const ids = [...unseenDiamondIds];
+        import('@/lib/diamondSync').then(({ markDiamondDiscoverySeenRemote }) => {
+          ids.forEach(id => markDiamondDiscoverySeenRemote(uid, id).catch(() => {}));
+        }).catch(() => {});
+      }
     }
-  }, [isLoaded, unseenDiamondIds, markDiamondsSeen]);
+  }, [isLoaded, unseenDiamondIds, markDiamondsSeen, user?.id]);
 
   // Display order: newest-first, with this-visit "new" finds leading.
   const displayOrder = useMemo(() => {
@@ -412,8 +426,15 @@ export default function DiamondsInTheRoughScreen() {
     if (idx >= 0) {
       setActiveIndex(idx);
       scrollRef.current?.scrollTo({ y: 0, animated: true });
+      // Analytics: a diamond detail was opened (only meaningful for unlocked).
+      if (unlockedMap[id]) {
+        trackAnalyticsEvent('diamond_detail_opened', {
+          diamond_id:    id,
+          diamond_title: DIAMOND_BY_ID[id]?.title ?? null,
+        });
+      }
     }
-  }, [displayOrder]);
+  }, [displayOrder, unlockedMap]);
 
   const viewScan = useCallback(() => {
     const sid = activeUnlocked?.sourceScanId;

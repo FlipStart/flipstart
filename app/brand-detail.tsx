@@ -25,10 +25,11 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 
 import { FONTS } from '@/constants/typography';
 import { useAuth } from '@/lib/auth-context';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { loadXpProfile } from '@/lib/huntXp';
 import {
@@ -82,6 +83,18 @@ export default function BrandDetailScreen() {
   const [stats,    setStats]    = useState<BrandStats | null>(null);
   const [totalDisc, setTotalDisc] = useState(0);
   const [logoError, setLogoError] = useState(false);
+
+  // Analytics: a brand detail page was opened. cooldownKey is brand-specific so
+  // opening Nike then Gucci both track (they don't share one cooldown window).
+  useScreenFocus(
+    'brand_detail_opened',
+    {
+      brand_id:     brand?.name ?? brandParam ?? null,
+      brand_name:   brand?.name ?? brandParam ?? null,
+      brand_rarity: brand?.rarity ?? null,
+    },
+    { cooldownKey: `brand_detail_opened:${(brand?.name ?? brandParam ?? 'unknown').toLowerCase()}` },
+  );
 
   useFocusEffect(useCallback(() => {
     const load = async () => {

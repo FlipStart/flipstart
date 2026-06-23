@@ -224,6 +224,41 @@ async function startServer() {
     }
   });
 
+  // ── Founder Dashboard V3 (Supabase-backed, read-only, profiles-only) ────────
+  // Separate from the legacy file-based dashboards above (which stay alive).
+  // Protected by FOUNDER_DASHBOARD_SECRET (distinct from DEV_SECRET).
+  app.get("/api/dev/founder-dashboard-v3", async (req, res) => {
+    const secret = process.env.FOUNDER_DASHBOARD_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).send("<h1>401 Unauthorized</h1>");
+    }
+    try {
+      const { getFounderDashboardV3Metrics } = require("../founderMetrics");
+      const { generateFounderDashboardV3 } = require("../founderDashboardV3");
+      const metrics = await getFounderDashboardV3Metrics();
+      const html = generateFounderDashboardV3(metrics);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (e: any) {
+      res.status(500).send("<pre>Founder Dashboard V3 error: " + (e?.message ?? e) + "</pre>");
+    }
+  });
+
+  // JSON variant for programmatic access / debugging.
+  app.get("/api/dev/founder-dashboard-v3.json", async (req, res) => {
+    const secret = process.env.FOUNDER_DASHBOARD_SECRET;
+    if (!secret || req.query.secret !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const { getFounderDashboardV3Metrics } = require("../founderMetrics");
+      const metrics = await getFounderDashboardV3Metrics();
+      res.json(metrics);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message ?? "metrics failed" });
+    }
+  });
+
   app.get("/api/dev/analytics", (req, res) => {
     const secret = process.env.DEV_SECRET;
     if (!secret || req.query.secret !== secret) {

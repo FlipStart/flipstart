@@ -47,6 +47,8 @@ type QueuedReward =
   | { kind: 'achievement'; achievementType: MajorAchievementType };
 import { setDiscoveryMeta } from '@/lib/devBrandOverrides';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import { useAuth } from '@/lib/auth-context';
+import { trackAnalyticsEvent } from '@/lib/analytics';
 import { computeFlipCalc } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
 
@@ -246,6 +248,7 @@ export default function ResultsScreen() {
   const { currentScan, setCurrentScan, updateScan } = useScanContext();
   const { addFlip, removeFlip, flips, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
   const { addUnseenBrands } = useAchievementNotifications();
+  const { user } = useAuth();
 
   const [thriftEditing,   setThriftEditing]   = useState(false);
   const [listingsLoading, setListingsLoading] = useState(false);
@@ -321,6 +324,30 @@ export default function ResultsScreen() {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => backHandlerRef.current());
     return () => sub.remove();
   }, []);   // stable — ref is always current
+
+  // ── Deferred navigation after save ──────────────────────────────────────────
+  // The save flow shows reward modals (brand reveals + major-achievement
+  // celebrations) and possibly a review prompt. Previously handleConfirm
+  // navigated home immediately, unmounting the screen before the deferred
+  // setTimeouts could enqueue/show those modals — so celebrations never
+  // appeared. Now: detect rewards synchronously, stay on the screen while any
+  // reward/review is showing, and navigate home only once the queue drains.
+  const navPendingRef    = useRef(false);
+  const reviewPendingRef = useRef(false);
+  useEffect(() => {
+    if (!navPendingRef.current) return;
+    if (currentReward) return;             // a reward modal is still showing
+    if (reviewPendingRef.current) {        // rewards done → show review now
+      reviewPendingRef.current = false;
+      setShowReview(true);
+      return;
+    }
+    if (showReview) return;                // review modal showing → wait for button
+    navPendingRef.current = false;         // nothing left → go home
+    setCurrentScan(null);
+    router.replace('/(tabs)' as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentReward, showReview]);
 
   // Early return AFTER all hooks — safe now
   if (!currentScan) {
@@ -405,59 +432,68 @@ export default function ResultsScreen() {
         : null,
     };
     addFlip(flip);
+    trackAnalyticsEvent('scan_saved', {
+      scan_id:         currentScan.id,
+      brand:           flip.brand ?? null,
+      category:        (flip as any).category ?? null,
+      estimated_resale: (flip as any).profit ?? null,
+      notes_present:   !!(flip as any).notes,
+    });
+
+    // Collect rewards locally so we know synchronously whether any exist, then
+    // enqueue them. Navigation is deferred until the queue drains (see effect).
+    const rewards: QueuedReward[] = [];
 
     // ── Brand discovery reveal ─────────────────────────────────────────────
     // Fires when this save introduces a brand never discovered before.
     // Works for both normal scans and items saved during a hunt (both go
     // through addFlip, so the brand lands in flips[] either way).
-    setTimeout(async () => {
-      try {
-        const newBrand = getBrandByName(flip.brand ?? '');
-        if (!newBrand) return;
-
-        // Hunt-aware de-dupe: include brands kept in the active hunt and any
-        // brands discovered earlier via hunt completion, so we never re-reveal.
+    try {
+      const newBrand = getBrandByName(flip.brand ?? '');
+      if (newBrand) {
         const activeHunt = getActiveHunt();
         const huntBrands = activeHunt
           ? activeHunt.items.map(i => i.brand).filter(Boolean) as string[]
           : [];
 
         const prevDiscovered = computeDiscoveredBrands(flips, huntBrands);
-        if (prevDiscovered.has(newBrand.name)) return;
-
-        // Has the reveal already been shown for this brand? (once-only guard)
         const revealed = await getRevealedBrandNames();
-        if (revealed.has(newBrand.name)) return;
+        if (!prevDiscovered.has(newBrand.name) && !revealed.has(newBrand.name)) {
+          await markBrandRevealed(newBrand.name);
 
-        await markBrandRevealed(newBrand.name);
+          const source = activeHunt ? 'hunt_mode' : 'normal_scan';
+          const meta = {
+            brandName:       newBrand.name,
+            rarity:          newBrand.rarity,
+            category:        newBrand.category,
+            dateDiscovered:  Date.now(),
+            discoverySource: source as 'hunt_mode' | 'normal_scan',
+            scanId:          currentScan.id,
+            huntId:          activeHunt?.id,
+            itemName:        flip.itemName,
+            estimatedProfit: flip.profit,
+          };
+          await setDiscoveryMeta(meta);
 
-        // Record discovery metadata for future profile/showcase features.
-        const source = activeHunt ? 'hunt_mode' : 'normal_scan';
-        await setDiscoveryMeta({
-          brandName:       newBrand.name,
-          rarity:          newBrand.rarity,
-          category:        newBrand.category,
-          dateDiscovered:  Date.now(),
-          discoverySource: source,
-          scanId:          currentScan.id,
-          huntId:          activeHunt?.id,
-          itemName:        flip.itemName,
-          estimatedProfit: flip.profit,
-        });
+          // Badge (gated for guests in the context) + immediate cloud upsert.
+          addUnseenBrands([newBrand.name]);
+          if (user?.id) {
+            const uid = user.id;
+            import('@/lib/brandSync')
+              .then(({ upsertBrandDiscovery }) => upsertBrandDiscovery(uid, meta, { isUnread: true }))
+              .catch(() => {});
+          }
 
-        // Fire the notification badge immediately — don't wait for Progress tab focus.
-        addUnseenBrands([newBrand.name]);
-
-        enqueueReward({ kind: 'brand', brand: newBrand, totalDiscovered: prevDiscovered.size + 1 });
-      } catch {
-        // Never crash on brand reveal logic
+          rewards.push({ kind: 'brand', brand: newBrand, totalDiscovered: prevDiscovered.size + 1 });
+        }
       }
-    }, 500);
+    } catch {
+      // Never crash on brand reveal logic
+    }
 
     // ── Major achievement detection ────────────────────────────────────────
     // Uses pre-save `flips` snapshot to detect "just crossed" thresholds.
-    setTimeout(async () => {
-      try {
+    try {
         const scans = (flips.filter(f => !isHuntBundle(f)) as FlipResult[]);
         const prevScanCount   = scans.length;
         const prevTotalProfit = scans.reduce((s, f) => s + (f.profit ?? 0), 0);
@@ -509,12 +545,14 @@ export default function ResultsScreen() {
 
         if (triggered) {
           await markMajorAchievementShown(triggered);
-          enqueueReward({ kind: 'achievement', achievementType: triggered });
+          rewards.push({ kind: 'achievement', achievementType: triggered });
         }
       } catch {
         // Never crash on achievement logic
       }
-    }, 600); // Small delay — let the results UI settle first
+
+    // Enqueue all collected rewards (priority handled inside enqueueReward).
+    rewards.forEach(enqueueReward);
 
     // If a hunt is active, add this item to the hunt session too
     if (isHuntActive()) {
@@ -539,12 +577,22 @@ export default function ResultsScreen() {
     }
 
     // Check review prompt — awaited so the result is known before deciding to navigate.
-    // If should show: display modal and let button handlers navigate.
-    // If not: navigate immediately as before.
     const shouldShowReview = await recordSuccessfulScan().catch(() => false);
+
+    // If any reward modals are queued, stay on the screen and let them play.
+    // The deferred-navigation effect shows the review prompt (if any) after the
+    // reward queue drains, then navigates home. This is what makes brand reveals
+    // and major-achievement celebrations actually appear after a save.
+    if (rewards.length > 0) {
+      navPendingRef.current    = true;
+      reviewPendingRef.current = shouldShowReview;
+      return;
+    }
+
+    // No rewards — original behavior: show review if due (its buttons navigate),
+    // otherwise navigate home immediately.
     if (shouldShowReview) {
       setShowReview(true);
-      // Navigation is deferred — modal button handlers call navigateHome()
       return;
     }
 
@@ -554,6 +602,8 @@ export default function ResultsScreen() {
 
   // Called by every review modal button to clear scan context and go home
   const navigateHome = () => {
+    navPendingRef.current    = false;
+    reviewPendingRef.current = false;
     setCurrentScan(null);
     router.replace('/(tabs)' as any);
   };
@@ -619,10 +669,28 @@ export default function ResultsScreen() {
         adjusted_estimated_value: md.adjusted_estimated_value, demand: md.demand,
       });
       updateScan(currentScan.id, { listings: result });
+      trackAnalyticsEvent('listing_generated', {
+        scan_id:           currentScan.id,
+        item_title:        id.item_name,
+        brand:             id.brand,
+        category:          id.category,
+        platform:          'both',
+        title_generated:   !!(result.ebay?.title || result.depop?.title),
+        description_generated: !!(result.ebay?.description || result.depop?.description),
+        estimated_resale_value: md.adjusted_estimated_value,
+        generation_source: 'result_screen',
+      });
       // Open immediately after generation
       setListingsOpen(true);
-    } catch {
+    } catch (err: any) {
       setListingsError(true);
+      trackAnalyticsEvent('listing_generation_failed', {
+        scan_id:   currentScan.id,
+        item_title: id.item_name,
+        platform:  'both',
+        error_code: err?.code ?? null,
+        failure_stage: 'ai_generation',
+      });
     } finally {
       setListingsLoading(false);
     }

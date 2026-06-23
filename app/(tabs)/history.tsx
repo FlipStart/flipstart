@@ -18,13 +18,20 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { FlipResult, HistoryEntry, HuntBundle, isHuntBundle } from '@/types/flip';
 import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
+import { useAuth } from '@/lib/auth-context';
+import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+import {
+  getScanDeletionImpact, computeValidSets, type DeletionImpact, type ImpactContext,
+} from '@/lib/scanDeletionImpact';
+import { DeleteImpactModal } from '@/components/DeleteImpactModal';
+import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -344,9 +351,37 @@ export default function HistoryScreen() {
   const insets   = useSafeAreaInsets();
   // ONLY source of truth — scan-context is NOT used here
   const { flips, removeFlip, globalStats, globalRank } = useFlipStore();
+  const { user } = useAuth();
+  const { pruneUnseen } = useAchievementNotifications();
 
   const [activeTab, setActiveTab] = useState<Tab>('all');
   const [search,    setSearch]    = useState('');
+  useScreenFocus('history_opened');
+
+  // Impact context from the xp profile (values not derived from flips).
+  const [impactCtx, setImpactCtx] = useState<ImpactContext>({
+    completedHunts: 0, huntStreak: 0, huntBrands: [],
+  });
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const uid = user?.id;
+      if (!uid) { setImpactCtx({ completedHunts: 0, huntStreak: 0, huntBrands: [] }); return; }
+      try {
+        const { loadXpProfile } = await import('@/lib/huntXp');
+        const xp = await loadXpProfile(uid).catch(() => null);
+        if (alive) setImpactCtx({
+          completedHunts: xp?.completedHunts ?? 0,
+          huntStreak:     xp?.huntStreak ?? 0,
+          huntBrands:     xp?.discoveredBrands ?? [],
+        });
+      } catch { /* defaults */ }
+    })();
+    return () => { alive = false; };
+  }, [user?.id]);
+
+  // Pending impact-warning modal (only shown when a delete would remove progress).
+  const [pendingDelete, setPendingDelete] = useState<DeletionImpact | null>(null);
 
   // All entries — most recent first, filtered by search (scans + hunt bundles)
   const allScans = useMemo(() => {
@@ -376,9 +411,54 @@ export default function HistoryScreen() {
     }
   };
 
+  // The actual deletion + post-delete reconcile (prune badges, drop orphaned
+  // remote rows). Achievements/brands/diamonds recompute from flips automatically.
+  const performDelete = (id: string) => {
+    const lost = getScanDeletionImpact(flips, id, impactCtx);
+    trackAnalyticsEvent('scan_deleted', {
+      scan_id: id,
+      lost_achievements: lost.affectedAchievements.length,
+      lost_brands:       lost.affectedBrands.length,
+      lost_diamonds:     lost.affectedDiamonds.length,
+    });
+    removeFlip(id);
+
+    // Final local truth after this deletion (achievements/brands/diamonds recompute
+    // from flips automatically; this is the authoritative set).
+    const after  = flips.filter(f => f.id !== id);
+    const valid  = computeValidSets(after, impactCtx);
+
+    // Prune stale unseen badges to what still exists.
+    pruneUnseen(valid);
+
+    // Signed-in: reconcile the cloud to local truth — delete remote achievement/
+    // brand rows that no longer exist locally AND clean local seen/meta keys so a
+    // future sync can't resurrect them. Fail-safe, fire-and-forget.
+    // (Diamonds: local-only, no sync table yet.)
+    const uid = user?.id;
+    if (uid) {
+      import('@/lib/achievementSync')
+        .then(({ reconcileAchievementsToLocalTruth }) => reconcileAchievementsToLocalTruth(uid, valid.achievements))
+        .catch(() => {});
+      import('@/lib/brandSync')
+        .then(({ reconcileBrandsToLocalTruth }) => reconcileBrandsToLocalTruth(uid, valid.brands))
+        .catch(() => {});
+      import('@/lib/diamondSync')
+        .then(({ reconcileDiamondsToLocalTruth }) => reconcileDiamondsToLocalTruth(uid, valid.diamonds))
+        .catch(() => {});
+    }
+  };
+
   const handleDelete = (id: string) => {
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-    removeFlip(id);
+    // Compute impact first. No progress impact → delete immediately (no popup).
+    const impact = getScanDeletionImpact(flips, id, impactCtx);
+    if (!impact.hasProgressImpact) {
+      performDelete(id);
+      return;
+    }
+    // Progress impact → show the serious warning modal.
+    setPendingDelete(impact);
   };
 
   const EmptyState = ({ msg }: { msg: string }) => (
@@ -503,6 +583,17 @@ export default function HistoryScreen() {
           }
         />
       )}
+
+      <DeleteImpactModal
+        visible={pendingDelete !== null}
+        impact={pendingDelete}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          const id = pendingDelete?.scanId;
+          setPendingDelete(null);
+          if (id) performDelete(id);
+        }}
+      />
     </View>
   );
 }
