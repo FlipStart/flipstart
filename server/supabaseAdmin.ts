@@ -10,12 +10,13 @@
  *   SUPABASE_SERVICE_ROLE_KEY — the service_role secret (not the anon key)
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createClient } = require("@supabase/supabase-js");
+import { createClient } from "@supabase/supabase-js";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _client: any = null;
 let _triedInit = false;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getSupabaseAdmin(): any {
   if (_client) return _client;
   if (_triedInit) return null;
