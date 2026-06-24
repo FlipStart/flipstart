@@ -97,6 +97,13 @@ const ALL_DETAILS = buildAllDetails();
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function DevAchievementsScreen() {
+  // Defense-in-depth: this screen must never be reachable in production, even
+  // via deep link. Render nothing in release builds.
+  if (!__DEV__) return null;
+  return <DevAchievementsScreenImpl />;
+}
+
+function DevAchievementsScreenImpl() {
   const insets  = useSafeAreaInsets();
   const router  = useRouter();
   const { user }  = useAuth();

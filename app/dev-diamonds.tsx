@@ -164,6 +164,11 @@ interface SimResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function DevDiamondsScreen() {
+  if (!__DEV__) return null;
+  return <DevDiamondsScreenImpl />;
+}
+
+function DevDiamondsScreenImpl() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { flips } = useFlipStore();

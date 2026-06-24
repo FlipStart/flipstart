@@ -191,18 +191,67 @@ export default function SettingsScreen() {
     });
   };
 
-  const handleReview = async () => {
-    try {
-      const StoreReview = await import('expo-store-review');
-      const available   = await StoreReview.isAvailableAsync();
-      if (available) {
-        await StoreReview.requestReview();
-      } else {
-        Alert.alert('Thanks!', 'We appreciate your support. You can find us on the App Store to leave a review.');
-      }
-    } catch {
-      Alert.alert('Thanks!', 'We appreciate your support.');
+  // ─── Account deletion (Apple App Store requirement) ────────────────────────
+  // Opens a pre-filled deletion request from the account's email. Explains what
+  // is deleted and the timeline, per Apple guideline 5.1.1(v).
+  const sendDeletionRequest = async () => {
+    const acctEmail = user?.email ?? '';
+    const uname     = profile?.username ?? '';
+    const subject   = 'Delete My FlipStart Account';
+    const body =
+      'Please delete my FlipStart account and associated personal data.\n\n' +
+      `Account email: ${acctEmail}\n` +
+      `Username: ${uname}\n\n` +
+      'I understand this may permanently remove my profile, saved scans, Hunt Mode ' +
+      'progress, achievements, Brand Compendium discoveries, Diamonds in the Rough ' +
+      'progress, XP, and related account data.';
+
+    const available = await MailComposer.isAvailableAsync().catch(() => false);
+    if (available) {
+      await MailComposer.composeAsync({ recipients: [FEEDBACK_EMAIL], subject, body })
+        .then(() => {
+          Alert.alert(
+            'Request Started',
+            'Send the email to submit your deletion request. We\u2019ll process it as soon as reasonably possible.',
+            [{ text: 'OK' }],
+          );
+        })
+        .catch(() => {/* user cancelled compose — no-op */});
+      return;
     }
+
+    // Fallback: open the default mail client via mailto: with everything filled.
+    const mailto =
+      `mailto:${FEEDBACK_EMAIL}` +
+      `?subject=${encodeURIComponent(subject)}` +
+      `&body=${encodeURIComponent(body)}`;
+    const canOpen = await Linking.canOpenURL(mailto).catch(() => false);
+    if (canOpen) {
+      await Linking.openURL(mailto).catch(() => {});
+    } else {
+      Alert.alert('Mail Not Available', `Please email us at ${FEEDBACK_EMAIL} to request account deletion.`);
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      'To delete your FlipStart account and associated personal data, send us a deletion request from the email connected to your account.\n\n' +
+      'We will process deletion requests as soon as reasonably possible, unless we need to retain limited information for legal, security, fraud prevention, or support purposes.\n\n' +
+      'This will delete your profile, saved scans, Hunt Mode progress, achievements, Brand Compendium discoveries, Diamonds in the Rough progress, XP, and related account data.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Send Deletion Request', style: 'destructive', onPress: () => { void sendDeletionRequest(); } },
+      ],
+    );
+  };
+
+  const handleReview = async () => {
+    // Settings "Rate" is a deliberate action — always send the user to the
+    // App Store review page rather than the native in-app sheet, which iOS
+    // rate-limits and may silently suppress (leaving the tap doing nothing).
+    const { openAppStoreReviewPage } = await import('@/lib/reviewPrompt');
+    await openAppStoreReviewPage();
   };
 
   // Identity — same fallback logic as profile.tsx
@@ -381,16 +430,12 @@ export default function SettingsScreen() {
             <>
               <View style={s.cardDivider} />
 
-              {/* Delete Account — placeholder */}
+              {/* Delete Account — Apple-compliant deletion request flow */}
               <DangerRow
                 icon="delete-forever"
                 label="Delete Account"
-                sub="Contact support to remove your account."
-                onPress={() => Alert.alert(
-                  'Delete Account',
-                  `To delete your account, email us at ${FEEDBACK_EMAIL} and we'll process your request promptly.`,
-                  [{ text: 'OK' }]
-                )}
+                sub="Delete your FlipStart account and personal data."
+                onPress={handleDeleteAccount}
               />
               <View style={s.cardDivider} />
 

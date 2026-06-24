@@ -25,6 +25,11 @@ function ColorSwatch({ name, value }: { name: PaletteName; value: string }) {
 }
 
 export default function ThemeLabScreen() {
+  if (!__DEV__) return null;
+  return <ThemeLabScreenImpl />;
+}
+
+function ThemeLabScreenImpl() {
   const [pressCount, setPressCount] = useState(0);
   const [lastAction, setLastAction] = useState<string>("None yet");
   const { colorScheme, setColorScheme } = useThemeContext();

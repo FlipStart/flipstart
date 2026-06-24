@@ -19,7 +19,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { ScreenContainer } from '@/components/screen-container';
 import { useScanContext } from '@/lib/scan-context';
 import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt } from '@/lib/hunt-context';
-import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview } from '@/lib/reviewPrompt';
+import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview, openAppStoreReviewPage } from '@/lib/reviewPrompt';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
@@ -743,10 +743,16 @@ export default function ResultsScreen() {
               {/* Rate button */}
               <Pressable
                 onPress={async () => {
-                  setShowReview(false);
                   await onRequestedReview();
+                  // Request the native sheet WHILE this screen is still mounted
+                  // and active — calling it after navigation makes iOS drop it.
+                  const shown = await requestAppStoreReview();
+                  // If iOS couldn't present the in-app sheet (rate-limited or
+                  // unavailable), deep-link to the store review page so the
+                  // user can still leave a rating.
+                  if (!shown) await openAppStoreReviewPage();
+                  setShowReview(false);
                   navigateHome();
-                  await requestAppStoreReview(); // request after nav — non-blocking
                 }}
                 style={({ pressed }) => ({ backgroundColor: '#152815', borderRadius: 50, paddingVertical: 15, alignItems: 'center', marginBottom: 10, opacity: pressed ? 0.85 : 1 })}
               >

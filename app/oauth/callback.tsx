@@ -53,7 +53,7 @@ export default function OAuthCallback() {
                 lastSignedIn: new Date(userData.lastSignedIn || Date.now()),
               };
               await Auth.setUserInfo(userInfo);
-              console.log("[OAuth] User info stored:", userInfo);
+              console.log("[OAuth] User info stored");
             } catch (err) {
               console.error("[OAuth] Failed to parse user data:", err);
             }
@@ -194,7 +194,7 @@ export default function OAuthCallback() {
 
           // Store user info if available
           if (result.user) {
-            console.log("[OAuth] User data received:", result.user);
+            console.log("[OAuth] User data received (id present:", !!result.user.id, ")");
             const userInfo: Auth.User = {
               id: result.user.id,
               openId: result.user.openId,
@@ -204,7 +204,7 @@ export default function OAuthCallback() {
               lastSignedIn: new Date(result.user.lastSignedIn || Date.now()),
             };
             await Auth.setUserInfo(userInfo);
-            console.log("[OAuth] User info stored:", userInfo);
+            console.log("[OAuth] User info stored");
           } else {
             console.log("[OAuth] No user data in result");
           }
@@ -218,7 +218,7 @@ export default function OAuthCallback() {
             router.replace("/(tabs)");
           }, 1000);
         } else {
-          console.error("[OAuth] No session token in result:", result);
+          console.error("[OAuth] No session token in result");
           setStatus("error");
           setErrorMessage("No session token received");
         }

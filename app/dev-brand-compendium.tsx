@@ -63,6 +63,11 @@ const RARITIES: BrandRarity[] = ['common', 'uncommon', 'rare', 'legendary'];
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function DevBrandCompendiumScreen() {
+  if (!__DEV__) return null;
+  return <DevBrandCompendiumScreenImpl />;
+}
+
+function DevBrandCompendiumScreenImpl() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user }  = useAuth();
