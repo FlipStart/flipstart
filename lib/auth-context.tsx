@@ -198,7 +198,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (__DEV__) console.log("[auth] ensureProfile: loaded:", data?.username);
             return;
           }
-          // Profile missing — check for pending username
+
+          // Profile missing. Before trying to CREATE one, confirm the auth user
+          // still exists server-side. If the account was deleted (e.g. from the
+          // Supabase dashboard) but this device still holds a cached session,
+          // getUser() returns an error/null. In that case we must NOT try to
+          // insert a profile (its id FK references auth.users and would fail,
+          // stranding the user forever on username-setup). Instead, sign out so
+          // the app drops cleanly to guest/login.
+          try {
+            const { data: userData, error: userErr } = await supabase.auth.getUser();
+            if (userErr || !userData?.user) {
+              if (__DEV__) console.warn("[auth] session user no longer exists — signing out ghost session");
+              try { await supabase.auth.signOut(); } catch { /* ok */ }
+              if (mounted.current) {
+                safe.setSession(null);
+                safe.setUser(null);
+                safe.setProfile(null);
+                safe.setProfileChecked(true);
+              }
+              return;
+            }
+          } catch {
+            // If the check itself throws (offline, etc.), fall through to the
+            // normal path rather than forcing a sign-out on a flaky network.
+          }
+
+          // Profile missing but user is valid — check for pending username
           let pendingUsername: string | null = null;
           try { pendingUsername = await AsyncStorage.getItem(PENDING_USERNAME_KEY); } catch { /* ok */ }
 

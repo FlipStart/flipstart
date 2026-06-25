@@ -63,7 +63,7 @@ export default function AuthScreen() {
     router.replace(dest as any);
   }, [router, fromSettings]);
 
-  const [mode, setMode] = useState<'entry' | 'signup' | 'login' | 'confirm'>(
+  const [mode, setMode] = useState<'entry' | 'signup' | 'login' | 'confirm' | 'forgot'>(
     // From Settings we never show the landing — jump straight to the form.
     params.mode === 'login'  ? 'login'  :
     params.mode === 'signup' ? 'signup' :
@@ -83,6 +83,9 @@ export default function AuthScreen() {
   const [resending,    setResending]    = useState(false);
   const [error,        setError]        = useState<string | null>(null);
   const [resendMsg,    setResendMsg]    = useState<string | null>(null);
+  const [forgotMsg,    setForgotMsg]    = useState<string | null>(null);  // success/info under forgot form
+  const [forgotSent,   setForgotSent]   = useState(false);                // true once a request succeeds
+  const [forgotEmail,  setForgotEmail]  = useState('');                   // address the reset link was sent to
   const [cooldown,     setCooldown]     = useState(0);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [googleError,   setGoogleError]   = useState<string | null>(null);
@@ -125,7 +128,7 @@ export default function AuthScreen() {
 
   const startCooldown = () => {
     if (cooldownRef.current) clearInterval(cooldownRef.current);
-    setCooldown(60);
+    setCooldown(30);
     cooldownRef.current = setInterval(() => {
       setCooldown(prev => {
         if (prev <= 1) { clearInterval(cooldownRef.current!); cooldownRef.current = null; return 0; }
@@ -338,6 +341,59 @@ export default function AuthScreen() {
     finally { setResending(false); }
   };
 
+  // ── Forgot password (Pass 1: request side only) ─────────────────────────────
+  // Sends a Supabase password-reset email. The reset LINK is not yet handled in
+  // the app (that is Pass 2 — a dedicated app/auth/reset.tsx route). This pass
+  // only triggers the email. Message is privacy-safe: never reveals whether an
+  // account exists for the entered email.
+  const handleForgotPassword = async () => {
+    if (saving) return;
+    setError(null);
+    setForgotMsg(null);
+    const trimEmail = email.trim().toLowerCase();
+    if (!trimEmail || !trimEmail.includes('@')) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+    setSaving(true);
+    try {
+      // redirectTo points at the Pass 2 route. Safe to send now; the link simply
+      // won't resolve in-app until Pass 2 ships + Supabase Redirect URL is added.
+      await supabase.auth.resetPasswordForEmail(trimEmail, {
+        redirectTo: 'flipstart://auth/reset',
+      });
+    } catch {
+      // Swallow — we still show the same neutral message to avoid leaking
+      // whether the email exists or whether the request errored.
+    } finally {
+      // Remember the address we sent to (shown on the confirmation screen) and
+      // start the shared 30s resend cooldown.
+      setForgotEmail(trimEmail);
+      setForgotSent(true);
+      startCooldown();
+      setSaving(false);
+    }
+  };
+
+  // Resend the reset email (same privacy-safe behavior, gated by cooldown).
+  const handleForgotResend = async () => {
+    if (saving || resending || cooldown > 0 || !forgotEmail) return;
+    setResending(true);
+    setForgotMsg(null);
+    try {
+      await supabase.auth.resetPasswordForEmail(forgotEmail, {
+        redirectTo: 'flipstart://auth/reset',
+      });
+      setForgotMsg('Reset link resent. Check your inbox and spam.');
+      startCooldown();
+    } catch {
+      // Neutral handling — Supabase rate limits server-side; show a soft note.
+      setForgotMsg('Please wait a moment before resending.');
+    } finally {
+      setResending(false);
+    }
+  };
+
   // ── Entry screen — polished account landing ──────────────────────────────────
   if (mode === 'entry') {
     const anyLoading = googleLoading || appleStep !== 'idle';
@@ -486,6 +542,110 @@ export default function AuthScreen() {
     );
   }
 
+  if (mode === 'forgot') {
+    return (
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={[s.root, { paddingTop: insets.top + 16 }]} keyboardShouldPersistTaps="handled">
+          <Pressable
+            onPress={() => { setMode('login'); setError(null); setForgotMsg(null); setForgotSent(false); }}
+            hitSlop={12}
+            style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.6 }]}
+          >
+            <MaterialIcons name="arrow-back" size={22} color={FOREST} />
+          </Pressable>
+
+          <View style={s.headerBlock}>
+            <Text style={s.wordmark}>FlipStart</Text>
+            <Text style={s.subtitle}>Reset your password</Text>
+          </View>
+
+          {forgotSent ? (
+            <>
+              <View style={{ alignItems: 'center', marginVertical: 16 }}>
+                <MaterialIcons name="mark-email-unread" size={48} color={FOREST} />
+              </View>
+              <Text style={s.confirmBody}>
+                If an account exists, we sent a password reset link to{'\n'}
+                <Text style={{ fontWeight: '700', color: FOREST }}>{forgotEmail}</Text>
+                {'\n\n'}Check your inbox (and spam). Tap the link to set a new password.
+              </Text>
+
+              {forgotMsg && (
+                <Text style={[s.confirmBody, { color: forgotMsg.includes('resent') ? FOREST : '#B85450', marginBottom: 8 }]}>
+                  {forgotMsg}
+                </Text>
+              )}
+
+              <Pressable
+                onPress={() => { setMode('login'); setError(null); setForgotMsg(null); setForgotSent(false); }}
+                style={({ pressed }) => [s.primaryBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={s.primaryBtnText}>Back to Log In</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleForgotResend}
+                disabled={resending || cooldown > 0}
+                style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }, cooldown > 0 && { opacity: 0.45 }]}
+              >
+                {resending ? <ActivityIndicator color={MUTED} size="small" /> :
+                  cooldown > 0 ? <Text style={s.switchText}>Resend available in <Text style={s.switchTextBold}>{cooldown}s</Text></Text> :
+                  <Text style={s.switchText}>Didn't get it? <Text style={s.switchTextBold}>Resend Email</Text></Text>
+                }
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text style={[s.confirmBody, { marginBottom: 16 }]}>
+                Enter the email for your FlipStart account and we'll send you a link to reset your password.
+              </Text>
+
+              {error && (
+                <View style={s.errorBox}>
+                  <MaterialIcons name="error-outline" size={14} color="#721C24" />
+                  <Text style={s.errorText}>{error}</Text>
+                </View>
+              )}
+
+              <TextInput
+                style={s.input}
+                placeholder="Email"
+                placeholderTextColor={MUTED}
+                value={email}
+                onChangeText={v => { setEmail(v); setError(null); }}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                autoCorrect={false}
+                editable={!saving}
+              />
+
+              <Pressable
+                onPress={handleForgotPassword}
+                disabled={saving}
+                style={({ pressed }) => [s.primaryBtn, (pressed || saving) && { opacity: 0.8 }]}
+              >
+                {saving ? <ActivityIndicator color={CREAM} /> : <Text style={s.primaryBtnText}>Send Reset Link</Text>}
+              </Pressable>
+
+              {/* Social-login reminder — these users have no FlipStart password. */}
+              <Text style={[s.fieldHint, { textAlign: 'center', marginTop: 14 }]}>
+                Signed up with Google or Apple? You don't have a FlipStart password — use “Continue with Google/Apple” on the log-in screen, and reset through Google or Apple if needed.
+              </Text>
+
+              <Pressable
+                onPress={() => { setMode('login'); setError(null); }}
+                disabled={saving}
+                style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }]}
+              >
+                <Text style={s.switchText}>Remembered it? <Text style={s.switchTextBold}>Back to Log In</Text></Text>
+              </Pressable>
+            </>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
   const isSignUp = mode === 'signup';
 
   return (
@@ -537,6 +697,18 @@ export default function AuthScreen() {
           onChangeText={v => { setEmail(v); clearError(); }} autoCapitalize="none" keyboardType="email-address" autoCorrect={false} editable={!saving} />
         <TextInput style={s.input} placeholder="Password (min 6 characters)" placeholderTextColor={MUTED} value={password}
           onChangeText={v => { setPassword(v); clearError(); }} secureTextEntry autoCapitalize="none" autoCorrect={false} editable={!saving} />
+
+        {/* Forgot password — login mode only. Opens the request screen. */}
+        {!isSignUp && (
+          <Pressable
+            onPress={() => { setMode('forgot'); setError(null); setForgotMsg(null); setForgotSent(false); }}
+            disabled={saving}
+            hitSlop={8}
+            style={({ pressed }) => [{ alignSelf: 'center', marginTop: -2, marginBottom: 12 }, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={[s.switchTextBold, { fontSize: 13 }]}>Forgot password?</Text>
+          </Pressable>
+        )}
 
         {isSignUp && (
           <>

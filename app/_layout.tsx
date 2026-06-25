@@ -436,6 +436,7 @@ export default function RootLayout() {
             <Stack.Screen name="oauth/callback" />
             <Stack.Screen name="auth" options={{ headerShown: false, animation: "fade" }} />
             <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
+            <Stack.Screen name="auth/reset" options={{ headerShown: false }} />
             <Stack.Screen name="username-setup" options={{ headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="edit-profile" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
           </Stack>
