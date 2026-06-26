@@ -37,7 +37,8 @@ if (!process.env.DATA_DIR) {
 
 export interface ScanCounter {
   dateKey: string;   // "2026-05-06" in America/Chicago
-  count:   number;
+  count:   number;   // global total today (all users) — backstop + dashboard
+  perUser?: Record<string, number>; // scans today keyed by scannerId (user id or guest anon id)
 }
 
 export interface FeedbackEntry {
@@ -159,7 +160,7 @@ interface Store {
 // ─── In-memory cache (write-through) ─────────────────────────────────────────
 
 const DEFAULT_STORE: Store = {
-  scanCounter: { dateKey: "", count: 0 },
+  scanCounter: { dateKey: "", count: 0, perUser: {} },
   feedback:    [],
   events:      [],
   sessions:    [],
@@ -217,7 +218,12 @@ function save(): void {
 
 // ─── Scan counter API ─────────────────────────────────────────────────────────
 
-const SCAN_LIMIT = 200;
+// Per-user daily scan limit (placeholder until monetization introduces tiers).
+const PER_USER_DAILY_LIMIT = 7;
+// Global backstop across ALL users in a day — defense against abuse / runaway
+// API cost (e.g. someone spoofing many guest IDs). Set generously so it never
+// limits normal users; it only catches pathological floods. Tune via env.
+const GLOBAL_DAILY_BACKSTOP = Number(process.env.GLOBAL_DAILY_SCAN_BACKSTOP) || 2000;
 const TZ         = "America/Chicago";
 
 function todayKey(): string {
@@ -234,33 +240,71 @@ function nextMidnight(): string {
 function refreshCounter(store: Store): void {
   const today = todayKey();
   if (store.scanCounter.dateKey !== today) {
-    store.scanCounter = { dateKey: today, count: 0 };
-    console.log(`[persist] new day (${today}) — scan counter reset to 0`);
+    store.scanCounter = { dateKey: today, count: 0, perUser: {} };
+    console.log(`[persist] new day (${today}) — scan counters reset`);
   }
+  if (!store.scanCounter.perUser) store.scanCounter.perUser = {};
 }
 
-export function tryIncrementScanCount(): boolean {
+/**
+ * Attempt to consume one scan for the given scannerId (a stable per-user or
+ * per-guest identifier). Returns true if allowed (and increments), false if the
+ * user has hit their daily limit OR the global backstop is reached.
+ *
+ * Backward compatible: callers that pass no id fall back to a shared "_legacy"
+ * bucket so nothing crashes, but the app always sends a real id.
+ */
+export function tryIncrementScanCount(scannerId?: string): boolean {
   const store = load();
   refreshCounter(store);
-  if (store.scanCounter.count >= SCAN_LIMIT) {
-    console.log(`[persist] scan BLOCKED — ${store.scanCounter.count}/${SCAN_LIMIT} used`);
+
+  // Global backstop first (abuse / cost ceiling).
+  if (store.scanCounter.count >= GLOBAL_DAILY_BACKSTOP) {
+    console.log(`[persist] scan BLOCKED (global backstop) — ${store.scanCounter.count}/${GLOBAL_DAILY_BACKSTOP}`);
     return false;
   }
+
+  const id = (scannerId && scannerId.trim()) ? scannerId.trim() : "_legacy";
+  const used = store.scanCounter.perUser![id] ?? 0;
+  if (used >= PER_USER_DAILY_LIMIT) {
+    console.log(`[persist] scan BLOCKED (per-user) — ${id.slice(0, 12)}… ${used}/${PER_USER_DAILY_LIMIT}`);
+    return false;
+  }
+
+  store.scanCounter.perUser![id] = used + 1;
   store.scanCounter.count++;
   save();
-  console.log(`[persist] scan ${store.scanCounter.count}/${SCAN_LIMIT} (${store.scanCounter.dateKey})`);
+  console.log(`[persist] scan OK — user ${id.slice(0, 12)}… ${used + 1}/${PER_USER_DAILY_LIMIT} (global ${store.scanCounter.count})`);
   return true;
+}
+
+/** Per-user remaining today. */
+export function getUserScanStats(scannerId?: string) {
+  const store = load();
+  refreshCounter(store);
+  const id = (scannerId && scannerId.trim()) ? scannerId.trim() : "_legacy";
+  const used = store.scanCounter.perUser![id] ?? 0;
+  return {
+    dailyLimit:     PER_USER_DAILY_LIMIT,
+    usedToday:      used,
+    remainingToday: Math.max(0, PER_USER_DAILY_LIMIT - used),
+    resetTime:      nextMidnight(),
+  };
 }
 
 export function getScanStats() {
   const store     = load();
   refreshCounter(store);
-  const remaining = Math.max(0, SCAN_LIMIT - store.scanCounter.count);
+  const remaining = Math.max(0, GLOBAL_DAILY_BACKSTOP - store.scanCounter.count);
+  const activeUsers = Object.keys(store.scanCounter.perUser ?? {}).length;
   return {
-    globalDailyLimit:          SCAN_LIMIT,
+    // Kept these field names so the founder dashboard keeps working.
+    globalDailyLimit:          GLOBAL_DAILY_BACKSTOP,
     globalScansUsedToday:      store.scanCounter.count,
     globalScansRemainingToday: remaining,
     resetTime:                 nextMidnight(),
+    perUserDailyLimit:         PER_USER_DAILY_LIMIT,
+    activeUsersToday:          activeUsers,
   };
 }
 

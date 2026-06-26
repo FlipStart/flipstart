@@ -14,14 +14,18 @@ import { FONTS } from '@/constants/typography';
 const GOLD    = '#BE9C2C';
 const FOREST  = '#2A4A2A';
 const WARNING = '#A04020';
-const LIMIT   = 200;
+const LIMIT   = 7;
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 
 async function fetchScanStats(): Promise<number> {
-  const res  = await fetch(`${API_BASE}/api/scan-stats`, { method: 'GET' });
+  const { getScannerId } = await import('@/lib/analytics');
+  const scannerId = await getScannerId().catch(() => undefined);
+  const qs   = scannerId ? `?scannerId=${encodeURIComponent(scannerId)}` : '';
+  const res  = await fetch(`${API_BASE}/api/scan-stats${qs}`, { method: 'GET' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  const val  = data?.globalScansRemainingToday;
+  // Per-user response uses remainingToday; fall back to legacy global field.
+  const val  = typeof data?.remainingToday === 'number' ? data.remainingToday : data?.globalScansRemainingToday;
   return typeof val === 'number' && !isNaN(val) ? val : LIMIT;
 }
 

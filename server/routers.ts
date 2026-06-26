@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tryIncrementScanCount, getScanStats, submitFeedback, getFeedbackByScanId } from "./persist";
+import { tryIncrementScanCount, getScanStats, getUserScanStats, submitFeedback, getFeedbackByScanId } from "./persist";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -19,6 +19,7 @@ const appRouter_scan = router({
           detailMimeType:    z.string().optional(),
           tagImageBase64:  z.string().optional(),
           tagMimeType:     z.string().optional(),
+          scannerId:       z.string().optional(), // per-user/guest daily limit key
         })
       )
       .mutation(async ({ input }) => {
@@ -26,18 +27,19 @@ const appRouter_scan = router({
         console.log("[analyze] mimeType:", input.mimeType);
         console.log("[analyze] base64 length:", input.imageBase64?.length ?? 0);
 
-        // ── GLOBAL SCAN LIMIT CHECK ─────────────────────────────────────────
-        // Must be BEFORE any AI call. Atomic increment prevents race conditions.
-        const allowed = tryIncrementScanCount();
+        // ── PER-USER SCAN LIMIT CHECK ───────────────────────────────────────
+        // Must be BEFORE any AI call. Keyed by scannerId (logged-in user id or
+        // guest anon id). A high global backstop also guards against abuse.
+        const allowed = tryIncrementScanCount(input.scannerId);
         if (!allowed) {
-          const stats = getScanStats();
+          const stats = getUserScanStats(input.scannerId);
           throw Object.assign(
-            new Error("Beta scan limit reached for today. Try again tomorrow."),
+            new Error("Daily scan limit reached. Try again tomorrow."),
             {
               code:                     "GLOBAL_SCAN_LIMIT_REACHED",
-              globalDailyLimit:         stats.globalDailyLimit,
-              globalScansUsedToday:     stats.globalScansUsedToday,
-              globalScansRemainingToday: stats.globalScansRemainingToday,
+              dailyLimit:               stats.dailyLimit,
+              usedToday:                stats.usedToday,
+              remainingToday:           stats.remainingToday,
               resetTime:                stats.resetTime,
             }
           );
@@ -79,6 +81,17 @@ const appRouter_scan = router({
     getScanStats: publicProcedure.query(() => {
       return getScanStats();
     }),
+
+    /**
+     * Per-user scan stats — used by the ScanBalancePill so each user/guest sees
+     * their own remaining daily scans (7/day). Pass the same scannerId the scan
+     * mutation uses (logged-in user id or guest anon id).
+     */
+    getUserScanStats: publicProcedure
+      .input(z.object({ scannerId: z.string().optional() }))
+      .query(({ input }) => {
+        return getUserScanStats(input.scannerId);
+      }),
 
     /**
      * Generate eBay + Depop listing copy for a confirmed flip.

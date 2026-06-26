@@ -39,6 +39,16 @@ export function setAnalyticsIdentity(userId: string | null): void {
   _identityUserId = userId ?? null;
 }
 
+/**
+ * Stable per-scanner key for daily scan limits: the signed-in user id when
+ * available, otherwise the persistent guest anon id. Used by the scan gate so
+ * each user/guest gets their own daily allotment.
+ */
+export async function getScannerId(): Promise<string> {
+  if (_identityUserId) return _identityUserId;
+  return getAnonUserId();
+}
+
 // App version, read once from expo config (app.config.ts `version`).
 let _appVersion: string | null = null;
 function getAppVersion(): string | null {

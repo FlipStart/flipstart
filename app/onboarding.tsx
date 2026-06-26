@@ -464,13 +464,7 @@ export default function OnboardingScreen() {
                 }
               </Pressable>
 
-              {/* Guest — visible but not prominent; completing onboarding via guest is allowed */}
-              <Pressable onPress={finishOnboarding} disabled={saving} hitSlop={8}
-                style={({ pressed }) => [ac.guestBtn, (pressed || saving) && { opacity: 0.5 }]}>
-                {saving
-                  ? <ActivityIndicator color={MUTED} size="small" />
-                  : <Text style={ac.guestText}>Continue as guest</Text>}
-              </Pressable>
+              {/* Guest mode removed — an account is required to use FlipStart. */}
             </>
           )}
         </ScrollView>

@@ -63,23 +63,29 @@ const ARTICLES: ArticleCardData[] = [
 ];
 
 // ─── Scan balance hook (wraps ScanBalancePill logic for inline use) ───────────
-// Falls back to a simple fetch if useScanBalance hook doesn't exist yet
+// Per-user daily scans remaining (7/day placeholder).
 function useScansRemaining(): { remaining: number; loading: boolean } {
-  const [remaining, setRemaining] = useState(200);
+  const [remaining, setRemaining] = useState(7);
   const [loading,   setLoading]   = useState(true);
   const apiBase = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 
   const load = useCallback(async () => {
     try {
-      const res  = await fetch(`${apiBase}/api/scan-stats`);
+      const { getScannerId } = await import('@/lib/analytics');
+      const scannerId = await getScannerId().catch(() => undefined);
+      const qs   = scannerId ? `?scannerId=${encodeURIComponent(scannerId)}` : '';
+      const res  = await fetch(`${apiBase}/api/scan-stats${qs}`);
       const data = await res.json();
-      if (typeof data?.globalScansRemainingToday === 'number') {
+      // Per-user response uses remainingToday; fall back to global field if present.
+      if (typeof data?.remainingToday === 'number') {
+        setRemaining(data.remainingToday);
+      } else if (typeof data?.globalScansRemainingToday === 'number') {
         setRemaining(data.globalScansRemainingToday);
       }
     } catch { /* silent */ } finally {
       setLoading(false);
     }
-  }, []);
+  }, [apiBase]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
   return { remaining, loading };
@@ -111,7 +117,13 @@ export default function HomeScreen() {
   const routedForUser = useRef<string | null>(null);
   useEffect(() => {
     if (authLoading || !profileChecked) return;
-    if (!user) { routedForUser.current = null; return; } // reset on sign-out
+    if (!user) {
+      // No account (signed out, or never logged in). Guests are not allowed —
+      // send them to the start of onboarding to create/log into an account.
+      routedForUser.current = null;
+      router.replace('/onboarding' as any);
+      return;
+    }
     if (routedForUser.current === user.id) return;       // already routed this session
 
     if (profile?.onboarding_complete) {
@@ -194,7 +206,7 @@ export default function HomeScreen() {
   const handleScanItem = () => router.push('/camera' as any);
 
   // ── Scan pill accent ────────────────────────────────────────────────────────
-  const isLow  = remaining > 0 && remaining <= 30;
+  const isLow  = remaining > 0 && remaining <= 2;
   const isZero = remaining <= 0;
 
   return (
@@ -408,7 +420,7 @@ export default function HomeScreen() {
             {/* Big number */}
             <Text style={sm.count}>{scanLoading ? '…' : remaining}</Text>
             <Text style={sm.subtitle}>
-              Global Premium Scans{'\n'}Remaining Today
+              Daily Scans{'\n'}Remaining Today
             </Text>
 
             {/* Divider */}
@@ -416,7 +428,7 @@ export default function HomeScreen() {
 
             {/* Explanation */}
             <Text style={sm.body}>
-              Each item you scan uses one daily scan. Scans reset every day at midnight.
+              You get 7 scans per day. Each item you scan uses one. Your scans reset every day at midnight.
             </Text>
 
             {/* Low / zero warning */}
@@ -425,8 +437,8 @@ export default function HomeScreen() {
                 <MaterialIcons name="info-outline" size={14} color="#B85450" />
                 <Text style={sm.warningText}>
                   {isZero
-                    ? "Daily limit reached — FlipStart's beta caps scans at 200/day across all users to manage AI costs. Check back tomorrow."
-                    : 'Running low on the shared daily scan limit for today.'}
+                    ? "You've used all 7 free scans for today. Your scans reset tomorrow."
+                    : 'Running low on your free scans for today.'}
                 </Text>
               </View>
             )}

@@ -35,7 +35,7 @@ import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
 import { useAudioPlayer } from "expo-audio";
 import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
-import { logEvent, incrementSessionCount, saveScanRecord } from "@/lib/analytics";
+import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
 import { isHuntActive } from "@/lib/hunt-context";
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
@@ -264,6 +264,8 @@ export default function LoadingScreen() {
           }, HARD_TIMEOUT_MS);
         });
 
+        const scannerId = await getScannerId().catch(() => undefined);
+
         const result = await Promise.race([
           analyzeFastMutation.mutateAsync({
             imageBase64,
@@ -272,6 +274,7 @@ export default function LoadingScreen() {
             tagMimeType:        tag?.mimeType,
             detailImageBase64:  detail?.base64,
             detailMimeType:     detail?.mimeType,
+            scannerId,
           }),
           timeoutPromise,
         ]);
@@ -457,7 +460,7 @@ export default function LoadingScreen() {
         ) {
           // Scan limit — show immediately, do not auto-retry
           try { player.pause(); } catch {}
-          setFailState({ type: "timeout", message: "FlipStart is in beta, so to keep AI costs sustainable we currently allow 200 scans per day across all users — and today's limit has been reached. Please try again tomorrow." });
+          setFailState({ type: "timeout", message: "You've used all 7 of your free scans for today. FlipStart is in beta, so daily scans are limited to keep AI costs sustainable. Your scans reset tomorrow." });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
           }

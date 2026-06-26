@@ -126,10 +126,16 @@ async function startServer() {
   });
 
   // ── Scan stats REST endpoint ────────────────────────────────────────────────
-  app.get("/api/scan-stats", (_req, res) => {
+  app.get("/api/scan-stats", (req, res) => {
     try {
-      const { getScanStats } = require("../persist");
-      res.json(getScanStats());
+      const { getScanStats, getUserScanStats } = require("../persist");
+      const scannerId = typeof req.query.scannerId === "string" ? req.query.scannerId : undefined;
+      if (scannerId) {
+        // Per-user view for the home ScanBalancePill.
+        res.json(getUserScanStats(scannerId));
+      } else {
+        res.json(getScanStats());
+      }
     } catch (e: any) {
       res.status(500).json({ error: e?.message });
     }
