@@ -425,8 +425,8 @@ export default function HomeScreen() {
                 <MaterialIcons name="info-outline" size={14} color="#B85450" />
                 <Text style={sm.warningText}>
                   {isZero
-                    ? 'Daily scan limit reached. Check back tomorrow.'
-                    : 'Running low on scans for today.'}
+                    ? "Daily limit reached — FlipStart's beta caps scans at 200/day across all users to manage AI costs. Check back tomorrow."
+                    : 'Running low on the shared daily scan limit for today.'}
                 </Text>
               </View>
             )}

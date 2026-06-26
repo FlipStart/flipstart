@@ -17,7 +17,7 @@ import { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -64,6 +64,14 @@ const BENEFITS = [
 
 export default function OnboardingScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ notice?: string }>();
+  // Shown when a social login on the "Log In to Existing Account" route turned
+  // out to be a brand-new account (no quiz taken). We bounce them here.
+  const [notice, setNotice] = useState<string | null>(
+    params.notice === 'no_existing_account'
+      ? "That sign-in created a new account, not an existing one. Please take the quiz to get started."
+      : null,
+  );
   const insets = useSafeAreaInsets();
   const { user, refreshProfile } = useAuth();
   const signedIn = !!user;
@@ -261,6 +269,13 @@ export default function OnboardingScreen() {
           <Text style={st.subtitle}>
             Your AI-powered resale assistant for spotting flips, tracking finds, and building your collection.
           </Text>
+
+          {notice && (
+            <View style={st.noticeBox}>
+              <MaterialIcons name="info-outline" size={18} color={BROWN} />
+              <Text style={st.noticeText}>{notice}</Text>
+            </View>
+          )}
 
           <View style={st.ctaBlock}>
             {signedIn ? (
@@ -481,6 +496,8 @@ const st = StyleSheet.create({
   heroIcon:      { alignSelf: 'center', width: 92, height: 92, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginTop: 8, marginBottom: 24 },
   headline:      { fontFamily: FONTS.serif, fontSize: 27, fontWeight: '800', color: FOREST, textAlign: 'center', lineHeight: 35, marginBottom: 14 },
   subtitle:      { fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22, paddingHorizontal: 6 },
+  noticeBox:     { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#F6E9C8', borderWidth: 1, borderColor: GOLD, borderRadius: 12, padding: 12, marginTop: 18 },
+  noticeText:    { flex: 1, fontSize: 13, color: BROWN, lineHeight: 19 },
 
   stepTitle:     { fontFamily: FONTS.serif, fontSize: 26, fontWeight: '800', color: FOREST, marginTop: 24, marginBottom: 8 },
   stepSub:       { fontSize: 14, color: MUTED, lineHeight: 20, marginBottom: 20 },

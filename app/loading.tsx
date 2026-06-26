@@ -457,7 +457,7 @@ export default function LoadingScreen() {
         ) {
           // Scan limit — show immediately, do not auto-retry
           try { player.pause(); } catch {}
-          setFailState({ type: "timeout", message: "Daily scan limit reached. Try again tomorrow." });
+          setFailState({ type: "timeout", message: "FlipStart is in beta, so to keep AI costs sustainable we currently allow 200 scans per day across all users — and today's limit has been reached. Please try again tomorrow." });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
           }

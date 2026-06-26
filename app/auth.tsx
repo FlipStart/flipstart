@@ -75,6 +75,13 @@ export default function AuthScreen() {
   // When the form was opened directly (Settings or the onboarding quiz screen),
   // "back" must return to whoever pushed us (router.back()).
   const [cameFromLanding, setCameFromLanding] = useState(false);
+  // Login-only mode: when the user arrived via onboarding's "Log In to Existing
+  // Account" button (opened directly in login mode from the onboarding landing,
+  // NOT via the in-app guest-gate landing toggle). In this state we must NOT let
+  // them switch to Create Account — that would bypass the onboarding quiz. The
+  // post-quiz final account prompt opens in 'signup' mode, so it's unaffected.
+  // Settings has its own create/login entry points, also unaffected.
+  const loginOnly = entryPoint === 'onboarding' && params.mode === 'login' && !cameFromLanding;
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
   const [username,     setUsername]     = useState('');
@@ -140,6 +147,40 @@ export default function AuthScreen() {
   const clearError = () => { setError(null); setResendMsg(null); };
 
   // ── Google Sign-In ──────────────────────────────────────────────────────────
+  // On the onboarding login-only route, a social sign-in that creates a BRAND
+  // NEW account is a bypass — the user skipped the quiz. Detect "new account"
+  // by the absence of a profile row, sign them back out, and return them to
+  // onboarding to take the quiz. Returns true if it bounced (caller should stop).
+  // Fail-safe: if the check errors, we do NOT bounce (treat as normal sign-in)
+  // so a flaky network never strands a legitimate existing user.
+  const bounceIfNewAccountOnLoginOnly = async (): Promise<boolean> => {
+    if (!loginOnly) return false;
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const uid = userData?.user?.id;
+      if (!uid) return false; // can't tell — don't bounce
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', uid)
+        .maybeSingle();
+      if (error) return false; // check failed — don't bounce
+      if (!profile) {
+        // Brand-new account created via social login on the login-only route.
+        await supabase.auth.signOut().catch(() => {});
+        await refreshProfile().catch(() => {});
+        router.replace({
+          pathname: '/onboarding',
+          params: { notice: 'no_existing_account' },
+        } as any);
+        return true;
+      }
+      return false; // existing account — proceed normally
+    } catch {
+      return false; // never strand a real user on error
+    }
+  };
+
   const handleGoogleSignIn = async () => {
     if (googleLoading || saving || appleStep !== 'idle') return;
     setGoogleLoading(true);
@@ -170,6 +211,8 @@ export default function AuthScreen() {
       // SIGNED_IN fires → AuthProvider → ensureProfile
       // index.tsx profileChecked gate routes to username-setup or home
       await refreshProfile().catch(() => {});
+      // Login-only route: reject brand-new accounts (they bypassed the quiz).
+      if (await bounceIfNewAccountOnLoginOnly()) return;
       // Any successful auth catches the device up to the current onboarding
       // version, so the home gate won't bounce a freshly-signed-in user back.
       await completeOnboarding('resell').catch(() => {});
@@ -235,6 +278,8 @@ export default function AuthScreen() {
 
       // Wait for profile to load before navigating
       await refreshProfile().catch(() => {});
+      // Login-only route: reject brand-new accounts (they bypassed the quiz).
+      if (await bounceIfNewAccountOnLoginOnly()) return;
       // Catch the device up to the current onboarding version (prevents the
       // home gate from bouncing a freshly-signed-in user back to onboarding).
       await completeOnboarding('resell').catch(() => {});
@@ -684,11 +729,13 @@ export default function AuthScreen() {
         {/* Login failed nudge — if on login screen with an error, remind them they can sign up */}
         {!isSignUp && error && error !== '__EMAIL_EXISTS__' && (
           <Pressable
-            onPress={() => { setMode('signup'); setError(null); }}
+            onPress={() => { if (loginOnly) { router.replace('/onboarding' as any); } else { setMode('signup'); setError(null); } }}
             style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }, { marginTop: -8, marginBottom: 4 }]}
           >
             <Text style={s.switchText}>
-              No account? <Text style={s.switchTextBold}>Create one instead →</Text>
+              {loginOnly
+                ? <>New to FlipStart? <Text style={s.switchTextBold}>Take the quiz first</Text></>
+                : <>No account? <Text style={s.switchTextBold}>Create one instead →</Text></>}
             </Text>
           </Pressable>
         )}
@@ -733,13 +780,27 @@ export default function AuthScreen() {
           {saving ? <ActivityIndicator color={CREAM} /> : <Text style={s.primaryBtnText}>{isSignUp ? 'Create Account' : 'Log In'}</Text>}
         </Pressable>
 
-        <Pressable onPress={() => { setMode(isSignUp ? 'login' : 'signup'); setError(null); }} disabled={saving}
-          style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }]}>
-          <Text style={s.switchText}>
-            {isSignUp ? 'Already have an account? ' : 'New to FlipStart? '}
-            <Text style={s.switchTextBold}>{isSignUp ? 'Log In' : 'Sign Up'}</Text>
-          </Text>
-        </Pressable>
+        {loginOnly ? (
+          // Onboarding login-only: no Create Account escape hatch. New users are
+          // sent back to take the quiz first (the intended new-user funnel).
+          <Pressable
+            onPress={() => { router.replace('/onboarding' as any); }}
+            disabled={saving}
+            style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={s.switchText}>
+              New to FlipStart? <Text style={s.switchTextBold}>Take the quiz first</Text>
+            </Text>
+          </Pressable>
+        ) : (
+          <Pressable onPress={() => { setMode(isSignUp ? 'login' : 'signup'); setError(null); }} disabled={saving}
+            style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }]}>
+            <Text style={s.switchText}>
+              {isSignUp ? 'Already have an account? ' : 'New to FlipStart? '}
+              <Text style={s.switchTextBold}>{isSignUp ? 'Log In' : 'Sign Up'}</Text>
+            </Text>
+          </Pressable>
+        )}
 
         {/* ── Google Sign-In ─────────────────────────────────────── */}
         <View style={s.dividerRow}>

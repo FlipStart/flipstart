@@ -34,6 +34,7 @@ import {
 import { computeDiscoveredBrands, getUnseenBrandNames } from '@/lib/brandCompendium';
 import { subscribeToHunt, getActiveHunt } from '@/lib/hunt-context';
 import { type HuntBundle } from '@/types/flip';
+import UpdateGate from '@/components/UpdateGate';
 // Deep link auth handler remains disabled until AuthProvider boot is confirmed stable.
 // import * as Linking from "expo-linking";
 
@@ -441,6 +442,7 @@ export default function RootLayout() {
             <Stack.Screen name="edit-profile" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
           </Stack>
           <StatusBar style="light" />
+          <UpdateGate />
         </QueryClientProvider>
       </trpc.Provider>
       </AppProviders>
