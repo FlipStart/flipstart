@@ -5,8 +5,8 @@
  *
  * Every function is Supabase-backed and READ-ONLY. The `profiles` table is the
  * source of truth for real users; analytics_events / scans / discovery tables
- * are joined to that set. Guests (no profile, user_id null) are excluded from
- * real-user totals and surfaced separately in the conversion section.
+ * are joined to that set. (Guest mode has been removed — every user has an
+ * account, so all activity attributes to a profile.)
  *
  * Each section function is independently fail-safe: on error it returns
  * `{ error: string }` so the dashboard can render an error card for that one
@@ -267,10 +267,10 @@ export async function getActivationFunnelMetrics(base: BaseData): Promise<Maybe<
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 4 — GUEST VS ACCOUNT CONVERSION
+// SECTION 4 — ACCOUNT FUNNEL
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function getGuestConversionMetrics(base: BaseData): Maybe<any> {
+export function getAccountFunnelMetrics(base: BaseData): Maybe<any> {
   try {
     const { events } = base;
     const count = (name: string) => events.filter(e => e.event_name === name).length;
@@ -280,18 +280,12 @@ export function getGuestConversionMetrics(base: BaseData): Maybe<any> {
     const loginSuccess     = count("login_success");
 
     return {
-      guestSessions:        count("guest_session_started"),
       onboardingStarts,
-      continueGuestTaps:    count("onboarding_continue_guest_tapped"),
       accountCreated,
       loginSuccess,
-      // guest_to_account_converted is not yet emitted anywhere (would need the
-      // anon_id carried through signup). Reported as not-tracked.
-      guestToAccount:       null,
-      guestToAccountTracked: false,
       conversionFromOnboarding: onboardingStarts ? pct(accountCreated, onboardingStarts) : null,
     };
-  } catch (e: any) { return { error: e?.message ?? "conversion failed" }; }
+  } catch (e: any) { return { error: e?.message ?? "account funnel failed" }; }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -901,7 +895,6 @@ export async function getDataQualityMetrics(base: BaseData): Promise<Maybe<any>>
         estimated: ["AI cost / budget (config-rate based)"],
         notTracked: [
           "Exact token usage / exact $ cost",
-          "Guest-to-account conversion",
           "Hunt duration / hunt abandonment",
           "Session length (unless app_session_ended fires with durationMs)",
         ],
@@ -944,7 +937,7 @@ export async function getFounderDashboardV3Metrics(): Promise<any> {
     users:       getUserMetrics(base),
     retention:   getRetentionMetrics(base),
     funnel,
-    conversion:  getGuestConversionMetrics(base),
+    conversion:  getAccountFunnelMetrics(base),
     sessions:    getSessionMetrics(base),
     scans,
     trust:       getScanTrustMetrics(base),
