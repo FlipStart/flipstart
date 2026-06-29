@@ -311,6 +311,7 @@ export default function AuthScreen() {
     try {
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: trimEmail, password: trimPassword,
+        options: { emailRedirectTo: 'flipstart://auth/callback' },
       });
       if (authError) {
         const msg = authError.message.toLowerCase();
