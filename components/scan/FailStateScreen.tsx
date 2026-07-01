@@ -31,7 +31,8 @@ export type FailType =
   | "network"         // generic network error (legacy compat)
   | "timeout"         // scan took > 30s
   | "low_confidence"  // AI uncertain
-  | "bad_input";      // photo quality issue
+  | "bad_input"       // photo quality issue
+  | "scan_limit";     // daily free-scan limit reached
 
 export interface FailStateProps {
   type:               FailType;
@@ -41,6 +42,7 @@ export interface FailStateProps {
   onRetry:            () => void;
   onRetake:           () => void;
   onReturnToHunt?:    () => void;   // shown when hunt is active
+  onReturnHome?:      () => void;   // shown on scan_limit when not in a hunt
   onContinueAnyway?:  () => void;   // low_confidence only
 }
 
@@ -102,6 +104,14 @@ const FAIL_CONFIG: Record<FailType, FailConfig> = {
     body:       "The photo may be too blurry, too dark, or showing multiple items. A clearer shot usually works.",
     retryLabel: "Retake Photo",
   },
+  scan_limit: {
+    icon:       "hourglass-bottom",
+    iconColor:  "#A04020",
+    title:      "You've used all 7 free scans",
+    body:       "You've hit your 7 free scans for today. FlipStart is in beta, so daily scans are limited to keep AI costs sustainable. Your scans reset tomorrow.",
+    retryLabel: "",
+    hint:       "Scans reset at midnight",
+  },
 };
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -125,10 +135,12 @@ export function FailStateScreen({
   onRetry,
   onRetake,
   onReturnToHunt,
+  onReturnHome,
   onContinueAnyway,
 }: FailStateProps) {
   const cfg       = FAIL_CONFIG[type] ?? FAIL_CONFIG.server;
   const isLowConf = type === "low_confidence";
+  const isScanLimit = type === "scan_limit";
   const confPct   = confidence ?? 0;
   const isServer  = type === "server" || type === "network" || type === "timeout" || type === "offline";
 
@@ -185,6 +197,17 @@ export function FailStateScreen({
       {/* ── Action buttons ── */}
       <Animated.View entering={FadeInUp.delay(260).duration(350)} style={s.actions}>
 
+        {isScanLimit ? (
+          /* Scan limit: no retry/retake — a single clear exit button */
+          <Pressable
+            onPress={onReturnToHunt ?? onReturnHome ?? onRetake}
+            style={({ pressed }) => [s.primaryBtn, pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 }]}
+          >
+            <MaterialIcons name={onReturnToHunt ? 'arrow-back' : 'home'} size={18} color={CREAM_TEXT} />
+            <Text style={s.primaryBtnText}>{onReturnToHunt ? 'Return to Hunt' : 'Back to Home'}</Text>
+          </Pressable>
+        ) : (
+          <>
         {/* Primary: retry analysis */}
         <Pressable
           onPress={onRetry}
@@ -222,6 +245,8 @@ export function FailStateScreen({
           >
             <Text style={s.ghostBtnText}>Continue anyway →</Text>
           </Pressable>
+        )}
+          </>
         )}
 
       </Animated.View>

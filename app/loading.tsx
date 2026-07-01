@@ -463,9 +463,9 @@ export default function LoadingScreen() {
           raw.includes("GLOBAL_SCAN_LIMIT_REACHED") ||
           raw.toLowerCase().includes("scan limit")
         ) {
-          // Scan limit — show immediately, do not auto-retry
+          // Scan limit — show dedicated limit screen, do not auto-retry
           try { player.pause(); } catch {}
-          setFailState({ type: "timeout", message: "You've used all 7 of your free scans for today. FlipStart is in beta, so daily scans are limited to keep AI costs sustainable. Your scans reset tomorrow." });
+          setFailState({ type: "scan_limit", message: "" });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
           }
@@ -632,6 +632,7 @@ export default function LoadingScreen() {
         onRetry={handleRetry}
         onRetake={handleRetake}
         onReturnToHunt={handleReturnToHunt}
+        onReturnHome={() => { hasNavigated.current = true; try { player.pause(); } catch {} router.replace('/(tabs)' as any); }}
         onContinueAnyway={handleContinueAnyway}
       />
     );

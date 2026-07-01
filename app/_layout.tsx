@@ -222,6 +222,14 @@ function DiamondNotificationWatcher() {
       if (firstRun) {
         hydratedUidRef.current = uid;   // set before await to avoid duplicate hydration on rapid re-runs
         await runSync();
+        // First open of this account on this device: mark all currently-unlocked
+        // achievements/brands/diamonds as seen so a returning user gets no
+        // notification spam. Only post-baseline unlocks will notify.
+        await import('@/lib/progressHydration').then(m => m.seedSeenBaselineOnce(uid, {
+          achievements: achvUnlocked,
+          brands:       [...discovered],
+          diamonds:     diamondUnlockedIds,
+        })).catch(() => {});
         markProgressHydrated(uid);      // let the Progress tab skip its own wait
         if (!alive) return;
       } else {

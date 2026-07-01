@@ -6,7 +6,7 @@
  */
 
 import {
-  Text, View, ScrollView, Pressable, Platform, Modal,
+  Text, View, ScrollView, Pressable, Platform, Modal, Animated,
   StyleSheet, TextInput, Alert, KeyboardAvoidingView, Clipboard, BackHandler,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -348,22 +348,53 @@ export default function ResultsScreen() {
     return () => sub.remove();
   }, []);   // stable — ref is always current
 
-  // ── Deep Analysis coach-mark (first-scan tooltip) ───────────────────────────
-  // Shows a one-time tip pointing at the tappable title. Persistence rules:
-  //  • Tapping the title (opening Deep Analysis) permanently dismisses it.
-  //  • The X only hides it for THIS scan — it returns on future scans until the
-  //    user actually taps into Deep Analysis at least once.
-  // Flag is account-scoped to avoid cross-user bleed on shared devices.
-  const deepTipKey = `@flipstart/deep_analysis_tip_seen:${user?.id ?? 'guest'}`;
+  // ── Deep Analysis coach-mark (tooltip) ──────────────────────────────────────
+  // Rules:
+  //  • Shows on early scans until the user taps into Deep Analysis once.
+  //  • The X hides it for the current scan only.
+  //  • After they've used Deep Analysis, it stays hidden — UNLESS the user then
+  //    does 5+ scans in a row WITHOUT opening Deep Analysis, in which case the
+  //    tip returns until they tap Deep Analysis again (which resets the streak).
+  // State is stored as one account-scoped JSON blob to avoid multiple reads.
+  const DEEP_STREAK_THRESHOLD = 5;
+  const deepTipKey = `@flipstart/deep_analysis_state:${user?.id ?? 'guest'}`;
   const [showDeepTip, setShowDeepTip] = useState(false);
   useEffect(() => {
     let alive = true;
-    setShowDeepTip(false); // clear prior account's visibility before async read
-    AsyncStorage.getItem(deepTipKey)
-      .then(seen => { if (alive && seen !== 'true') setShowDeepTip(true); })
-      .catch(() => { /* if storage read fails, just don't show the tip */ });
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(deepTipKey);
+        const st = raw ? JSON.parse(raw) as { seen?: boolean; streak?: number; lastScanId?: string } : {};
+        let streak = st.streak ?? 0;
+        // Count this scan once (dedupe by scan id so re-renders don't inflate it).
+        if (currentScan?.id && currentScan.id !== st.lastScanId) {
+          streak += 1;
+          await AsyncStorage.setItem(deepTipKey, JSON.stringify({ ...st, streak, lastScanId: currentScan.id }));
+        }
+        const shouldShow = !st.seen || streak >= DEEP_STREAK_THRESHOLD;
+        if (alive) setShowDeepTip(shouldShow);
+      } catch { /* if storage fails, just don't show the tip */ }
+    })();
     return () => { alive = false; };
-  }, [user?.id, deepTipKey]);
+  }, [deepTipKey, currentScan?.id]);
+
+  // ── Deep Analysis arrow glow ────────────────────────────────────────────────
+  // Subtle pulsing gold aura on the "›" next to the title. Uses the JS driver
+  // (textShadowRadius isn't native-driver animatable) — fine for one tiny
+  // element pulsing slowly. Gives the arrow a soft "ember" flicker.
+  const arrowGlow = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(arrowGlow, { toValue: 1, duration: 1100, useNativeDriver: false }),
+        Animated.timing(arrowGlow, { toValue: 0, duration: 1100, useNativeDriver: false }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [arrowGlow]);
+  const arrowShadowRadius = arrowGlow.interpolate({ inputRange: [0, 1], outputRange: [1, 9] });
+
   // ── Deferred navigation after save ──────────────────────────────────────────
   // The save flow shows reward modals (brand reveals + major-achievement
   // celebrations) and possibly a review prompt. Previously handleConfirm
@@ -812,7 +843,11 @@ export default function ResultsScreen() {
   // Tapping the title opens Deep Analysis AND permanently dismisses the coach-mark.
   const handleOpenDeepAnalysis = () => {
     if (showDeepTip) setShowDeepTip(false);
-    AsyncStorage.setItem(deepTipKey, 'true').catch(() => { /* non-fatal */ });
+    // Mark as used and reset the "scans since last use" streak.
+    AsyncStorage.setItem(
+      deepTipKey,
+      JSON.stringify({ seen: true, streak: 0, lastScanId: currentScan?.id ?? '' }),
+    ).catch(() => { /* non-fatal */ });
     handleOpenAnalysis();
   };
 
@@ -945,7 +980,12 @@ export default function ResultsScreen() {
                   <Pressable onPress={handleOpenDeepAnalysis} hitSlop={4} style={({ pressed }) => [s.idTitlePress, pressed && { opacity: 0.6 }]}>
                     <Text style={s.idName}>
                       {id.item_name || 'Unknown Item'}
-                      <Text style={s.idTitleArrow}> ›</Text>
+                      <Animated.Text
+                        style={[
+                          s.idTitleArrow,
+                          { textShadowColor: GOLD, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: arrowShadowRadius },
+                        ]}
+                      > ›</Animated.Text>
                     </Text>
                   </Pressable>
 

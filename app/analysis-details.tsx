@@ -545,9 +545,9 @@ export default function AnalysisDetailsScreen() {
           {/* ── 5. Risk flags ── */}
           <View style={d.card}>
             <View style={d.riskHeadRow}>
-              <DeepHead icon="shield" title="Risk Flags" />
+              <View style={d.riskHeadLeft}><DeepHead icon="shield" title="Risk Flags" /></View>
               <View style={[d.riskLevelPill, { backgroundColor: risk.color + '18', borderColor: risk.color + '55' }]}>
-                <Text style={[d.riskLevelText, { color: risk.color }]}>{risk.level}</Text>
+                <Text style={[d.riskLevelText, { color: risk.color }]} numberOfLines={1}>{risk.level}</Text>
               </View>
             </View>
             {risk.bullets.map((b, i) => (
@@ -561,8 +561,8 @@ export default function AnalysisDetailsScreen() {
           {/* ── 6. Confidence breakdown ── */}
           <View style={d.card}>
             <View style={d.riskHeadRow}>
-              <DeepHead icon="insights" title="Confidence Breakdown" />
-              <Text style={d.confBig}>{confB.pct > 0 ? `${confB.pct}%` : '—'}</Text>
+              <View style={d.riskHeadLeft}><DeepHead icon="insights" title="Confidence Breakdown" /></View>
+              <Text style={d.confBig} numberOfLines={1}>{confB.pct > 0 ? `${confB.pct}%` : '—'}</Text>
             </View>
             <Text style={d.confSubHead}>Confident because</Text>
             {confB.confident.map((c, i) => (
@@ -898,11 +898,12 @@ const d = StyleSheet.create({
   priceStatVal:    { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: FOREST },
   priceStatLabel:  { fontSize: 9, fontWeight: '700', color: MUTED, marginTop: 2, letterSpacing: 0.3, textTransform: 'uppercase' },
 
-  riskHeadRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  riskLevelPill: { borderWidth: 1, borderRadius: 50, paddingHorizontal: 10, paddingVertical: 3, marginBottom: 10 },
+  riskHeadRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 },
+  riskHeadLeft:  { flex: 1, minWidth: 0 },
+  riskLevelPill: { flexShrink: 0, borderWidth: 1, borderRadius: 50, paddingHorizontal: 10, paddingVertical: 3, marginBottom: 4 },
   riskLevelText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
 
-  confBig:     { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: GOLD, marginBottom: 10 },
+  confBig:     { flexShrink: 0, fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: GOLD, marginBottom: 4 },
   confSubHead: { fontSize: 11, fontWeight: '800', color: FOREST, letterSpacing: 0.4, textTransform: 'uppercase', marginBottom: 6 },
 
   platRow:          { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 },

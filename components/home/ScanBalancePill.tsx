@@ -30,20 +30,20 @@ async function fetchScanStats(): Promise<number> {
 }
 
 export function ScanBalancePill() {
-  const [remaining, setRemaining] = useState<number>(LIMIT);
+  const [remaining, setRemaining] = useState<number | null>(null); // null = not loaded yet
   const [loading,   setLoading]   = useState(true);
+  const [failed,    setFailed]    = useState(false);
   const [tipOpen,   setTipOpen]   = useState(false);
 
   const load = useCallback(async () => {
     try {
       const val = await fetchScanStats();
       setRemaining(val);
+      setFailed(false);
     } catch {
-      // Silent fail — keep showing current value, don't spam logs
-      if (remaining === LIMIT && loading) {
-        // Only on first load failure, keep showing LIMIT
-        setRemaining(LIMIT);
-      }
+      // Don't show a fake number on failure — mark failed so UI shows a dash
+      // and the user can tap to retry, rather than a misleading "7 left".
+      setFailed(true);
     } finally {
       setLoading(false);
     }
@@ -64,25 +64,32 @@ export function ScanBalancePill() {
     return () => sub.remove();
   }, [load]);
 
-  const isZero = remaining <= 0;
-  const isLow  = remaining > 0 && remaining <= 30;
+  const hasData = remaining !== null;
+  const isZero = hasData && remaining! <= 0;
+  const isLow  = hasData && remaining! > 0 && remaining! <= 30;
   const accent = isZero || isLow ? WARNING : GOLD;
   const color  = isZero || isLow ? WARNING : FOREST;
 
-  const tooltipText = loading
+  const tooltipText = loading && !hasData
     ? 'Checking scan balance…'
-    : `${remaining} scans remaining today.`;
+    : failed && !hasData
+      ? "Couldn't load scan balance. Tap to retry."
+      : `${remaining} scans remaining today.`;
+
+  const labelText = !hasData
+    ? (failed ? '—' : '…')
+    : `${remaining} left`;
 
   return (
     <View style={s.wrap}>
       <Pressable
-        onPress={() => setTipOpen(v => !v)}
+        onPress={() => { if (failed && !hasData) { load(); } setTipOpen(v => !v); }}
         style={[s.pill, { borderColor: accent + '80' }]}
         hitSlop={6}
       >
         <Text style={[s.icon, { color: accent }]}>⚡</Text>
         <Text style={[s.label, { color }]}>
-          {loading ? '…' : `${remaining} left`}
+          {labelText}
         </Text>
       </Pressable>
 

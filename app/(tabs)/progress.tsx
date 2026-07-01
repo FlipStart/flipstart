@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useCallback, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Svg, { Circle } from 'react-native-svg';
 import { useFlipStore } from '@/lib/useFlipStore';
 
@@ -51,7 +52,7 @@ import {
   computeUnlockedDiamonds,
   TOTAL_DIAMONDS,
 } from '@/lib/diamonds';
-import { isProgressHydrated, markProgressHydrated } from '@/lib/progressHydration';
+import { isProgressHydrated, markProgressHydrated, seedSeenBaselineOnce } from '@/lib/progressHydration';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
 import FeatureGate from '@/components/FeatureGate';
@@ -141,7 +142,29 @@ export default function ProgressScreen() {
   const [achvData, setAchvData] = useState<UserAchievementData | null>(null);
   const [devAchvCount, setDevAchvCount] = useState<number>(0);
   const [brandCount, setBrandCount] = useState<number | null>(null);
-  const [diamondCount, setDiamondCount] = useState<number>(0);
+  const [diamondCount, setDiamondCount] = useState<number | null>(null);
+  const [cachedAchv, setCachedAchv] = useState<number | null>(null); // last-known achievements, shown until achvData loads
+
+  // ── Instant hydrate from last-known values ──────────────────────────────────
+  // Show the last numbers we saw immediately on mount so the stat cards never
+  // flash "—"; the real values refresh in the background via the load effect.
+  const progressCacheKey = `@flipstart/progress_stats_cache:${user?.id ?? 'guest'}`;
+  useEffect(() => {
+    let alive = true;
+    AsyncStorage.getItem(progressCacheKey)
+      .then(raw => {
+        if (!alive || !raw) return;
+        try {
+          const c = JSON.parse(raw) as { brands?: number; diamonds?: number; achv?: number };
+          // Only fill values that haven't already loaded fresh, to avoid clobbering.
+          setBrandCount(prev => (prev === null && typeof c.brands === 'number' ? c.brands : prev));
+          setDiamondCount(prev => (prev === null && typeof c.diamonds === 'number' ? c.diamonds : prev));
+          if (typeof c.achv === 'number') setCachedAchv(c.achv);
+        } catch { /* ignore corrupt cache */ }
+      })
+      .catch(() => { /* no cache yet — falls back to '—' then real data */ });
+    return () => { alive = false; };
+  }, [progressCacheKey]);
 
   // Analytics: Progress tab opened — refires on focus return after 30s cooldown.
   useScreenFocus('progress_tab_opened');
@@ -184,6 +207,14 @@ export default function ProgressScreen() {
             import('@/lib/brandSync').then(m => m.syncBrandCompendiumWithSupabase(uid, [...disc])).catch(() => {}),
             import('@/lib/diamondSync').then(m => m.syncDiamondsWithSupabase(uid, dRecs)).catch(() => {}),
           ]);
+          // First time this account is opened on this device: treat everything
+          // already unlocked as "seen" so a returning user gets no notification
+          // spam. Only items unlocked AFTER this baseline will notify.
+          await seedSeenBaselineOnce(uid, {
+            achievements: unlockedIds,
+            brands:       [...disc],
+            diamonds:     getUnlockedDiamondIds(flips),
+          });
         } catch { /* fail-safe: proceed with local SEEN */ }
         markProgressHydrated(uid);
       }
@@ -191,14 +222,14 @@ export default function ProgressScreen() {
       // DEV — count dev-unlocked achievements NOT already unlocked by stats, so
       // the Progress card total matches the category screen (which merges dev
       // unlocks in __DEV__). Mirrors the brands/diamonds dev-merge below.
+      let devExtra = 0;
       if (__DEV__) {
         try {
           const { getDevUnlocked } = await import('@/lib/devAchievementOverrides');
           const devSet  = await getDevUnlocked();
           const statSet = new Set(unlockedIds);
-          let extra = 0;
-          devSet.forEach(id => { if (!statSet.has(id)) extra++; });
-          setDevAchvCount(extra);
+          devSet.forEach(id => { if (!statSet.has(id)) devExtra++; });
+          setDevAchvCount(devExtra);
         } catch { setDevAchvCount(0); }
       }
 
@@ -273,6 +304,19 @@ export default function ProgressScreen() {
       if (unseenDiamonds.length > 0) {
         addUnseenDiamonds(unseenDiamonds);
       }
+
+      // ── Cache the fresh values so the next mount hydrates instantly ─────────
+      try {
+        const freshAchv = Math.min(
+          getTotalUnlocked(data) + (__DEV__ ? devExtra : 0),
+          ACHV_TOTAL,
+        );
+        await AsyncStorage.setItem(progressCacheKey, JSON.stringify({
+          brands:   discoveredBrands.size,
+          diamonds: unlockedDiamondIds.length,
+          achv:     freshAchv,
+        }));
+      } catch { /* non-fatal */ }
     };
     load();
   }, [user?.id, flips]));
@@ -299,19 +343,25 @@ export default function ProgressScreen() {
   // ── Derived values (all preserved from prior implementation) ──────────────
   const totalXp    = profile?.totalXp             ?? 0;
   const completed  = profile?.completedHunts      ?? 0;
-  const brands     = brandCount ?? 0;  // null while loading — renders as 0 in exploreRaw but mini-stat shows '—'
+  const brands     = brandCount ?? 0;
+  const diamonds   = diamondCount ?? 0;
 
-  // Show '—' while brand count is still loading (prevents stale zero flicker)
-  const brandsDisplay = brandCount === null ? '—' : String(brands);
+  // Loading-aware display: show cached last-known value until fresh data arrives,
+  // then the real value. Only shows '—' if there's no cache and nothing loaded yet.
+  const brandsDisplay      = brandCount === null ? '—' : String(brands);
+  const diamondsDisplay    = diamondCount === null ? '—' : String(diamonds);
+  const achvLoaded         = achvData !== null;
 
   // Real achievement count — replaces the old completedHunts proxy.
-  // In __DEV__, add dev-unlocked achievements (capped at the total) so this
-  // matches the category screen, which also merges dev unlocks.
   const statUnlocked   = achvData ? getTotalUnlocked(achvData) : 0;
   const realUnlocked   = Math.min(statUnlocked + (__DEV__ ? devAchvCount : 0), ACHV_TOTAL);
+  const achvDisplay    = achvLoaded ? String(realUnlocked) : (cachedAchv !== null ? String(cachedAchv) : '—');
 
-  // Explore percentage: achievements + brands + diamonds (all three tracked systems)
-  const exploreRaw     = (realUnlocked / ACHV_TOTAL + brands / TOTAL_BRANDS + diamondCount / TOTAL_DIAMONDS) / 3;
+  // Explore percentage: achievements + brands + diamonds (all three tracked systems).
+  // While achievements are still loading, fall back to the cached count so the
+  // ring matches the displayed stat instead of dipping to zero.
+  const achvForRing    = achvLoaded ? realUnlocked : (cachedAchv ?? 0);
+  const exploreRaw     = (achvForRing / ACHV_TOTAL + brands / TOTAL_BRANDS + diamonds / TOTAL_DIAMONDS) / 3;
   const explorePercent = Math.min(Math.round(exploreRaw * 100), 100);
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -361,7 +411,7 @@ export default function ProgressScreen() {
                     <MaterialIcons name="emoji-events" size={16} color={GOLD} />
                   </View>
                   <Text style={s.statCount}>
-                    <Text style={s.statCurrent}>{realUnlocked}</Text>
+                    <Text style={s.statCurrent}>{achvDisplay}</Text>
                     <Text style={s.statTotal}> / {ACHV_TOTAL}</Text>
                   </Text>
                   <Text style={s.statLabel}>Achievements{'\n'}Unlocked</Text>
@@ -387,7 +437,7 @@ export default function ProgressScreen() {
                     <MaterialIcons name="auto-awesome" size={16} color={GOLD} />
                   </View>
                   <Text style={s.statCount}>
-                    <Text style={s.statCurrent}>{diamondCount}</Text>
+                    <Text style={s.statCurrent}>{diamondsDisplay}</Text>
                     <Text style={s.statTotal}> / {TOTAL_DIAMONDS}</Text>
                   </Text>
                   <Text style={s.statLabel}>Diamonds{'\n'}Unlocked</Text>
@@ -427,7 +477,7 @@ export default function ProgressScreen() {
             </View>
             <View style={s.badge}>
               <Text style={s.badgeText}>
-                {getBadge(dest.key, realUnlocked, brands, diamondCount)}
+                {getBadge(dest.key, realUnlocked, brands, diamonds)}
               </Text>
             </View>
             {dest.key === 'achievements' && unseenCount > 0 && (
