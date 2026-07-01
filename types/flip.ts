@@ -78,6 +78,7 @@ export interface FlipResult {
   buyLabel:    BuyLabel;
   stars:       number;
   bestPlatform: Platform;
+  recommendation?: Recommendation; // canonical rating — preferred over buyLabel for display
 
   // Listings — optional; only set after user generates listings
   listingsGenerated?: boolean;

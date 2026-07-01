@@ -14,6 +14,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
@@ -49,8 +50,10 @@ import { setDiscoveryMeta } from '@/lib/devBrandOverrides';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { useAuth } from '@/lib/auth-context';
 import { trackAnalyticsEvent } from '@/lib/analytics';
-import { computeFlipCalc } from '@/utils/flipCalculations';
+import { computeFlipCalc, findMaxBuyPriceForRating } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
+import { normalizeBuyRating } from '@/utils/recommendation';
+import PoshmarkLogo from '@/components/logos/PoshmarkLogo';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
@@ -74,6 +77,26 @@ const BROWN  = '#5A3A1A';
 const MUTED  = '#8A7050';
 const GOLD   = '#BE9C2C';
 const CREAM  = '#F4EED8';
+
+// ─── Sold Comp Sources config ─────────────────────────────────────────────────
+// PLACEHOLDER marketplaces (no live data yet). eBay shows logo only; the rest
+// show logo + name. Widths are set per-logo to preserve each one's aspect ratio
+// at a shared height. Poshmark is a real SVG (rendered via PoshmarkLogo); the
+// others are PNGs in assets/images/logos.
+const COMP_LOGO_H = 16;
+const COMP_SOURCES: {
+  name: string;
+  showText: boolean;
+  png?: any;
+  width?: number;     // for PNGs: width at COMP_LOGO_H
+  svg?: 'poshmark';   // marks the SVG-component logo
+}[] = [
+  { name: 'eBay',     showText: false, png: require('@/assets/images/logos/ebay.png'),    width: 40 },
+  { name: 'Depop',    showText: false,  png: require('@/assets/images/logos/depop.png'),   width: 62 },
+  { name: 'Poshmark', showText: false,  svg: 'poshmark' },
+  { name: 'Mercari',  showText: false,  png: require('@/assets/images/logos/mercari.png'), width: 64 },
+  { name: 'Vinted',   showText: false,  png: require('@/assets/images/logos/vinted.png'),  width: 50 },
+];
 
 
 function confidenceLabel(conf: number): { text: string; color: string } {
@@ -325,6 +348,22 @@ export default function ResultsScreen() {
     return () => sub.remove();
   }, []);   // stable — ref is always current
 
+  // ── Deep Analysis coach-mark (first-scan tooltip) ───────────────────────────
+  // Shows a one-time tip pointing at the tappable title. Persistence rules:
+  //  • Tapping the title (opening Deep Analysis) permanently dismisses it.
+  //  • The X only hides it for THIS scan — it returns on future scans until the
+  //    user actually taps into Deep Analysis at least once.
+  // Flag is account-scoped to avoid cross-user bleed on shared devices.
+  const deepTipKey = `@flipstart/deep_analysis_tip_seen:${user?.id ?? 'guest'}`;
+  const [showDeepTip, setShowDeepTip] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    AsyncStorage.getItem(deepTipKey)
+      .then(seen => { if (alive && seen !== 'true') setShowDeepTip(true); })
+      .catch(() => { /* if storage read fails, just don't show the tip */ });
+    return () => { alive = false; };
+  }, [deepTipKey]);
+
   // ── Deferred navigation after save ──────────────────────────────────────────
   // The save flow shows reward modals (brand reveals + major-achievement
   // celebrations) and possibly a review prompt. Previously handleConfirm
@@ -374,6 +413,42 @@ export default function ResultsScreen() {
   const whyBullets   = rec.bullets;
   const profitColor = calc.profit >= 15 ? '#2A5A2A' : calc.profit >= 0 ? '#7A5C1E' : '#8A3A2A';
 
+  // ── Derived display values for the redesigned analysis screen ──
+  const fmtMoney = (n: number | null | undefined) => {
+    const v = Math.round(Number(n) || 0);
+    return `$${v.toLocaleString()}`;
+  };
+  const canonicalRating = normalizeBuyRating(rec.label);           // STRONG BUY / BUY / RISKY BUY / SKIP
+  // For SKIP, the gold accent reads poorly — use white for the icon, label, and
+  // EST. RESALE label instead. Other ratings keep gold.
+  const ratingAccent = canonicalRating === 'SKIP' ? '#FFFFFF' : GOLD;
+  // STRONG BUY is the longest label; shrink it so it fits on one line and never
+  // wraps "STRONG" / "BUY" awkwardly. Other ratings keep the normal size.
+  const ratingFontSize = canonicalRating === 'STRONG BUY' ? 19 : 22;
+  const resaleValue     = md.adjusted_estimated_value ?? 0;
+  // The highest price you can pay while the rating STAYS at BUY/STRONG_BUY.
+  // Derived directly from the same recommendation engine that drives the rating
+  // shown on screen — so it's never disconnected from what you actually see.
+  // Paying more than this is guaranteed to downgrade the rating.
+  const suggestedMax    = Math.max(1, findMaxBuyPriceForRating(
+    resaleValue, ra.match_confidence, md.competition_level ?? '', md.demand ?? '', md.sell_speed ?? '',
+  ));
+  // The price actually used in the breakdown + shown in the editor. Defaults to
+  // the AI's real per-item thrift-price estimate (from the scan itself) until
+  // the user types their own — NOT the breakeven ceiling above, which is a
+  // different number used only for the recommendation line below.
+  const aiEstimatedPrice = Math.max(1, md.suggested_buy_price ?? 0);
+  const maxBuy           = parsedThrift > 0 ? parsedThrift : aiEstimatedPrice;
+  // True until the user edits the price — drives the "Est." label in the UI.
+  const isEstimatedPrice = parsedThrift <= 0;
+  const rangeStr        = (md.estimated_resale_range?.low != null && md.estimated_resale_range?.high != null)
+    ? `${fmtMoney(md.estimated_resale_range.low)}–${fmtMoney(md.estimated_resale_range.high)}`
+    : '—';
+  // Dynamic recommendation line under the rating; falls back to the rec headline.
+  const buyLine = (canonicalRating === 'SKIP')
+    ? (rec.headline || 'Not worth the risk at this price.')
+    : `Worth grabbing if you can buy at ${fmtMoney(suggestedMax)} or less.`;
+
   const haptic = (style: Haptics.ImpactFeedbackStyle) => {
     if (Platform.OS !== 'web') Haptics.impactAsync(style).catch(() => {});
   };
@@ -421,6 +496,7 @@ export default function ResultsScreen() {
       matchConfidence: ra.match_confidence, riskFlags: ra.risk_flags,
       thriftPrice: calc.thriftPrice, fees: calc.fees, profit: calc.profit,
       roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel,
+      recommendation: calc.recommendation,
       stars: calc.stars, bestPlatform: calc.bestPlatform,
       listingsGenerated: hasGeneratedListings(currentScan.listings),
       generatedAt: hasGeneratedListings(currentScan.listings) ? Date.now() : null,
@@ -619,6 +695,18 @@ export default function ResultsScreen() {
     ]);
   };
 
+  const handleSaveWithConfirm = () => {
+    if (isSaved) return;
+    Alert.alert(
+      'Save to History',
+      'Save this scan to your flip history?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: handleConfirm },
+      ]
+    );
+  };
+
   // Update the back handler ref with current state — runs on every render
   // so the ref always reflects the latest isSaved value and handleConfirm closure.
   backHandlerRef.current = () => {
@@ -721,10 +809,17 @@ export default function ResultsScreen() {
     router.push({ pathname: '/analysis-details' as any, params: { scanId: currentScan.id, snapshot, source: 'results' } });
   };
 
+  // Tapping the title opens Deep Analysis AND permanently dismisses the coach-mark.
+  const handleOpenDeepAnalysis = () => {
+    if (showDeepTip) setShowDeepTip(false);
+    AsyncStorage.setItem(deepTipKey, 'true').catch(() => { /* non-fatal */ });
+    handleOpenAnalysis();
+  };
+
   const listings = hasGeneratedListings(currentScan.listings) ? currentScan.listings! : null;
 
   return (
-    <ScreenContainer edges={['left', 'right', 'bottom']}>
+    <ScreenContainer edges={['left', 'right', 'bottom']} style={{ backgroundColor: BG }}>
       {/* Review prompt — appears after first successful scan */}
       {showReview && (
         <Modal transparent animationType="fade" visible statusBarTranslucent>
@@ -792,165 +887,187 @@ export default function ResultsScreen() {
         onClose={() => setListingsOpen(false)}
       />
 
-      {/* Header — outside ScrollView so safe area is not double-applied */}
-      <View style={[s.header, { paddingTop: insets.top + 4 }]}>
+      {/* Header — matches other screen headers: cream bg, green title, circular buttons */}
+      <View style={[s.header, { paddingTop: insets.top + 6 }]}>
         <Pressable
           onPress={handleBackPress}
-          hitSlop={8} style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+          hitSlop={8}
+          style={({ pressed }) => [s.headerBtn, pressed && { opacity: 0.6 }]}
         >
-          <MaterialIcons name="arrow-back" size={22} color={CREAM} />
+          <MaterialIcons name="arrow-back" size={19} color={CREAM} />
         </Pressable>
 
         <View style={s.headerCenter}>
-          <Text style={s.headerBrand}>FlipStart</Text>
           <View style={s.headerSubRow}>
             <Text style={s.headerStar}>✦</Text>
-            <Text style={s.headerSub}>ANALYSIS</Text>
+            <Text style={s.headerBrand}>FlipStart</Text>
             <Text style={s.headerStar}>✦</Text>
           </View>
+          <Text style={s.headerSub}>Analysis</Text>
         </View>
 
-        <Pressable onPress={handleDelete} hitSlop={8}>
-          <MaterialIcons name="delete-outline" size={22} color={CREAM} />
+        <Pressable
+          onPress={handleSaveWithConfirm}
+          disabled={isSaved}
+          hitSlop={8}
+          style={({ pressed }) => [s.headerBtn, pressed && { opacity: 0.6 }, isSaved && { opacity: 0.5 }]}
+        >
+          <MaterialIcons name={isSaved ? 'check-circle' : 'check-circle-outline'} size={19} color={CREAM} />
         </Pressable>
       </View>
+      <View style={s.headerDivider} />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView
-          contentContainerStyle={s.scroll}
+          style={{ flex: 1, backgroundColor: BG }}
+          contentContainerStyle={[s.scroll, { paddingBottom: insets.bottom + 40 }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
 
-          {/* ── 1. Item Identity Card — large and prominent ── */}
-          <View style={s.card}>
-            <View style={s.itemRow}>
-              {/* Tappable image */}
+          {/* ── 1. Item Identity Card ── */}
+          <View style={s.idCard}>
+            <View style={s.idCardRow}>
               <Pressable
                 onPress={() => currentScan.imageUri && setImageModalOpen(true)}
-                style={({ pressed }) => [s.thumbWrap, pressed && { opacity: 0.88 }]}
+                style={({ pressed }) => [s.idThumbWrap, pressed && { opacity: 0.9 }]}
               >
                 {currentScan.imageUri
-                  ? <Image source={{ uri: currentScan.imageUri }} style={s.thumb} contentFit="cover" transition={200} />
-                  : <View style={[s.thumb, s.thumbFallback]}><MaterialIcons name="checkroom" size={32} color={MUTED} /></View>
-                }
+                  ? <Image source={{ uri: currentScan.imageUri }} style={s.idThumb} contentFit="cover" transition={200} />
+                  : <View style={[s.idThumb, s.idThumbFallback]}><MaterialIcons name="checkroom" size={34} color={MUTED} /></View>}
                 {currentScan.imageUri && (
-                  <View style={s.thumbExpandHint}>
-                    <MaterialIcons name="zoom-in" size={11} color={CREAM} />
-                  </View>
+                  <View style={s.idThumbHint}><MaterialIcons name="zoom-in" size={11} color={CREAM} /></View>
                 )}
               </Pressable>
 
-              <View style={s.itemInfo}>
-                <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
-                <Text style={s.itemMeta}>{id.brand} · {id.category}</Text>
-                {id.estimated_era && id.estimated_era !== 'Unknown' && id.estimated_era !== 'Insufficient evidence' && (
-                  <Text style={s.itemEra}>{id.estimated_era}</Text>
-                )}
-                {ra.match_confidence > 0 && (
-                  <View style={[s.confBadge, { backgroundColor: confBadge.color + '18', borderColor: confBadge.color + '50' }]}>
-                    <Text style={[s.confBadgeText, { color: confBadge.color }]}>
-                      {ra.match_confidence}% CONFIDENCE
+              <View style={s.idInfo}>
+                <View style={s.idTitleWrap}>
+                  <Pressable onPress={handleOpenDeepAnalysis} hitSlop={4} style={({ pressed }) => [s.idTitlePress, pressed && { opacity: 0.6 }]}>
+                    <Text style={s.idName}>
+                      {id.item_name || 'Unknown Item'}
+                      <Text style={s.idTitleArrow}> ›</Text>
                     </Text>
-                    <Text style={[s.confBadgeSub, { color: confBadge.color }]}>{confBadge.text}</Text>
-                  </View>
-                )}
+                  </Pressable>
+
+                  {/* First-scan coach mark for Deep Analysis — shows until user taps the title */}
+                  {showDeepTip && (
+                    <View style={s.deepTip}>
+                      <View style={s.deepTipArrow} />
+                      <View style={s.deepTipRow}>
+                        <MaterialIcons name="lightbulb" size={15} color={GOLD} style={{ marginTop: 1 }} />
+                        <Text style={s.deepTipText}>
+                          Tap the item name to open <Text style={s.deepTipBold}>Deep Analysis</Text> — full price reasoning, risks, and platform strategy.
+                        </Text>
+                        <Pressable onPress={() => setShowDeepTip(false)} hitSlop={8} style={s.deepTipClose}>
+                          <MaterialIcons name="close" size={15} color={MUTED} />
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+                </View>
+
+                <View style={s.chipWrap}>
+                  {!!id.brand && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.brand}</Text></View>}
+                  {!!id.category && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.category}</Text></View>}
+                  {!!id.estimated_era && id.estimated_era !== 'Unknown' && id.estimated_era !== 'Insufficient evidence' && (
+                    <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.estimated_era}</Text></View>
+                  )}
+                  {ra.match_confidence > 0 && (
+                    <View style={[s.chip, s.chipConf]}>
+                      <MaterialIcons name="verified" size={12} color={FOREST} />
+                      <Text style={[s.chipText, s.chipConfText]} numberOfLines={1}>{ra.match_confidence}% Confidence</Text>
+                    </View>
+                  )}
+                </View>
               </View>
             </View>
           </View>
 
-          {/* ── 2. Decision Card ── */}
-          <View style={[s.decisionCard, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-            <View style={s.decisionLeft}>
-              <MaterialIcons name={theme.icon as any} size={30} color={theme.iconColor} />
+          {/* ── 2. Big Buy Rating Card ── */}
+          <View style={[s.ratingCard, { backgroundColor: theme.bg, borderColor: GOLD }]}>
+            <View style={s.ratingLeft}>
+              <View style={[s.ratingBadge, { borderColor: ratingAccent }]}>
+                <MaterialIcons name={theme.icon as any} size={30} color={ratingAccent} />
+              </View>
+              <View style={s.ratingTextCol}>
+                <Text
+                  style={[s.ratingText, { color: ratingAccent, fontSize: ratingFontSize }]}
+                  numberOfLines={2}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.7}
+                  ellipsizeMode="clip"
+                >{canonicalRating}</Text>
+                <Text style={s.ratingRec} numberOfLines={2} ellipsizeMode="tail">{buyLine}</Text>
+              </View>
             </View>
-            <View style={s.decisionMid}>
-              <Text style={[s.decisionLabel, { color: theme.textColor }]}>
-                {rec.displayLabel.toUpperCase()}
-              </Text>
-              <Text style={[s.decisionReason, { color: theme.dimColor }]} numberOfLines={2}>
-                {rec.headline}
-              </Text>
-              <Text style={[s.decisionMaxBuy, { color: theme.dimColor }]}>
-                Only buy for ${Math.max(1, md.suggested_buy_price)} or less
-              </Text>
-            </View>
-            <View style={s.decisionRight}>
-              <Text style={[s.decisionProfitLabel, { color: theme.dimColor }]}>EST. PROFIT</Text>
-              <Text style={[s.decisionProfit, { color: theme.textColor }]}>
-                {calc.profit >= 0 ? '+' : ''}{calc.profit < 0 ? `-$${Math.abs(calc.profit)}` : `$${calc.profit}`}
-              </Text>
-            </View>
-          </View>
-
-          {/* ── 3. Quick Summary (with icons) ── */}
-          <View style={s.card}>
-            <Text style={s.sectionLabel}>QUICK SUMMARY</Text>
-            <View style={s.summaryRow}>
-              {[
-                { label: 'Est. Profit', value: `${calc.profit >= 0 ? '+' : '-'}$${Math.abs(calc.profit)}`, color: profitColor,    icon: 'attach-money'   },
-                { label: 'ROI',         value: calc.roi > 0 ? `${calc.roi}%` : '—',                         color: calc.roi >= 50 ? '#2A5A2A' : BROWN, icon: 'show-chart' },
-                { label: 'Competition', value: md.competition_level || '—',                                  color: (md.competition_level||'').toLowerCase() === 'high' ? '#8A3A2A' : '#2A5A2A', icon: 'group' },
-                { label: 'Sell Speed',  value: md.sell_speed || '—',                                        color: (md.sell_speed||'').toLowerCase() === 'slow' ? '#8A3A2A' : '#2A5A2A',        icon: 'speed'  },
-              ].map(m => (
-                <View key={m.label} style={s.summaryBox}>
-                  <MaterialIcons name={m.icon as any} size={18} color={m.color} style={{ marginBottom: 2 }} />
-                  <Text style={[s.summaryValue, { color: m.color }]}>{m.value}</Text>
-                  <Text style={s.summaryLabel}>{m.label}</Text>
-                </View>
-              ))}
+            <View style={s.ratingDivider} />
+            <View style={s.ratingRight}>
+              <Text style={[s.ratingResaleLabel, { color: ratingAccent }]}>EST. RESALE</Text>
+              <Text style={[s.ratingResaleValue, { color: ratingAccent === '#FFFFFF' ? '#FFFFFF' : GOLD }]}>{fmtMoney(resaleValue)}</Text>
+              <View style={s.ratingProfitPill}>
+                <Text style={s.ratingProfitPillText}>Est. Profit {calc.profit >= 0 ? '+' : '-'}{fmtMoney(Math.abs(calc.profit))}</Text>
+              </View>
             </View>
           </View>
 
-          {/* ── 4. Why This Rating ── */}
-          <View style={s.card}>
-            <Text style={s.sectionLabel}>WHY THIS RATING?</Text>
-            {whyBullets.map((b, i) => (
-              <View key={i} style={s.bulletRow}>
-                <Text style={s.bulletDot}>•</Text>
-                <Text style={s.bulletText}>{b}</Text>
+          {/* ── 3. Quick Stats Row ── */}
+          <View style={s.statsCard}>
+            {[
+              { icon: 'payments',   label: 'Est. Profit',  value: `${calc.profit >= 0 ? '+' : '-'}${fmtMoney(Math.abs(calc.profit))}`, color: profitColor },
+              { icon: 'show-chart', label: 'ROI',          value: calc.roi > 0 ? `${calc.roi}%` : '—',     color: calc.roi >= 50 ? '#2A5A2A' : BROWN },
+              { icon: 'sell',       label: 'Avg Sold',     value: md.average_sold_price ? fmtMoney(md.average_sold_price) : '—', color: FOREST },
+              { icon: 'trending-up',label: 'Market Range', value: rangeStr, color: FOREST },
+            ].map((m, i) => (
+              <View key={m.label} style={[s.statBox, i < 3 && s.statBoxBorder]}>
+                <View style={s.statIconCircle}><MaterialIcons name={m.icon as any} size={15} color={GOLD} /></View>
+                <Text style={s.statLabel}>{m.label}</Text>
+                <Text
+                  style={[s.statValue, { color: m.color }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.6}
+                >{m.value}</Text>
               </View>
             ))}
           </View>
 
-          {/* ── 5. Deep Analysis CTA — prominent, after Why, before Market Value ── */}
-          <Pressable onPress={handleOpenAnalysis} style={({ pressed }) => [s.deepCtaCard, pressed && { opacity: 0.88 }]}>
-            <View style={s.deepCtaInner}>
-              <View style={s.deepCtaTextCol}>
-                <Text style={s.deepCtaTitle}>WANT MORE DETAILS?</Text>
-                <Text style={s.deepCtaSub}>Price breakdown · Platform data · Item details</Text>
-              </View>
-              <View style={s.deepCtaArrow}>
-                <Text style={s.deepCtaLink}>View Deep Analysis</Text>
-                <MaterialIcons name="chevron-right" size={18} color={FOREST} />
-              </View>
-            </View>
-          </Pressable>
-
-          {/* ── 6. Market Value ── */}
+          {/* ── 4. Sold Comp Sources (placeholder marketplaces) ── */}
           <View style={s.card}>
-            <Text style={s.sectionLabel}>MARKET VALUE</Text>
-            <View style={s.marketRow}>
-              <View style={s.marketBox}>
-                <Text style={s.marketLabel}>AVERAGE SOLD</Text>
-                <Text style={s.marketValue}>${md.average_sold_price || '—'}</Text>
-              </View>
-              <View style={[s.marketBox, s.marketBoxMid]}>
-                <Text style={s.marketLabel}>MARKET RANGE</Text>
-                <Text style={s.marketValue}>${md.estimated_resale_range?.low}–${md.estimated_resale_range?.high}</Text>
-              </View>
-              <View style={s.marketBox}>
-                <Text style={s.marketLabel}>EST. RESALE</Text>
-                <Text style={s.marketValue}>${md.adjusted_estimated_value}</Text>
-              </View>
+            <View style={s.compHeaderRow}>
+              <Text style={s.compTitle}>Sold Comp Sources</Text>
+              <MaterialIcons name="info-outline" size={15} color={MUTED} />
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={s.compScrollContent}
+            >
+              {COMP_SOURCES.map(src => (
+                <View key={src.name} style={s.compItem}>
+                  {src.svg === 'poshmark'
+                    ? <PoshmarkLogo height={10} />
+                    : <Image
+                        source={src.png}
+                        style={{ width: Math.min(src.width ?? 48, 48), height: COMP_LOGO_H }}
+                        contentFit="contain"
+                      />}
+                  {src.showText && <Text style={s.compPillText}>{src.name}</Text>}
+                </View>
+              ))}
+            </ScrollView>
+            <View style={s.compNoteRow}>
+              <MaterialIcons name="schedule" size={12} color={MUTED} />
+              <Text style={s.compNote}>Live comp breakdown coming soon.</Text>
             </View>
           </View>
 
-          {/* ── 7. Your Price ── */}
+          {/* ── 5. Your thrift price + compact breakdown ── */}
           <View style={s.card}>
-            <Text style={s.sectionLabel}>YOUR PRICE</Text>
-            <View style={s.priceRow}>
-              <Text style={s.priceHint}>Your thrift price</Text>
+            <View style={s.priceTopRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.priceTitle}>Your thrift price</Text>
+                <Text style={s.priceSub}>Values update automatically</Text>
+              </View>
               {thriftEditing ? (
                 <View style={s.priceInputWrap}>
                   <Text style={s.priceDollar}>$</Text>
@@ -965,50 +1082,79 @@ export default function ResultsScreen() {
               ) : (
                 <Pressable
                   onPress={() => { setThriftEditing(true); haptic(Haptics.ImpactFeedbackStyle.Light); }}
-                  style={s.priceDisplay}
+                  style={s.priceDisplayRow}
                 >
-                  <Text style={s.priceDisplayText}>${parsedThrift > 0 ? parsedThrift : md.suggested_buy_price}</Text>
-                  <MaterialIcons name="edit" size={14} color={FOREST} />
+                  {isEstimatedPrice && <Text style={s.priceEstTag}>Est.</Text>}
+                  <Text style={s.priceDisplayText}>{fmtMoney(maxBuy)}</Text>
+                  <View style={s.priceEditBtn}><MaterialIcons name="edit" size={15} color={CREAM} /></View>
                 </Pressable>
               )}
             </View>
-            <Text style={s.priceAutoNote}>✓ All values update automatically</Text>
+
+            <View style={s.breakdownRow}>
+              <View style={s.breakdownCol}>
+                <Text style={s.breakdownLabel}>Resale Value</Text>
+                <Text style={s.breakdownValue}>{fmtMoney(resaleValue)}</Text>
+              </View>
+              <Text style={s.breakdownOp}>−</Text>
+              <View style={s.breakdownCol}>
+                <Text style={s.breakdownLabel}>Platform Fees</Text>
+                <Text style={[s.breakdownValue, { color: '#8A3A2A' }]}>-{fmtMoney(calc.fees)}</Text>
+              </View>
+              <Text style={s.breakdownOp}>−</Text>
+              <View style={s.breakdownCol}>
+                <Text style={s.breakdownLabel}>Max Buy Price</Text>
+                <Text style={[s.breakdownValue, { color: '#8A3A2A' }]}>-{fmtMoney(maxBuy)}</Text>
+              </View>
+              <Text style={s.breakdownOp}>=</Text>
+              <View style={[s.breakdownCol, s.breakdownColResult]}>
+                <Text style={s.breakdownLabel}>Est. Profit</Text>
+                <Text style={[s.breakdownValue, { color: profitColor }]}>{calc.profit >= 0 ? '+' : '-'}{fmtMoney(Math.abs(calc.profit))}</Text>
+              </View>
+            </View>
           </View>
 
-          {/* ── 8. Actions ── */}
+          {/* ── 6. Generate Listings — full-width CTA ── */}
+          <Pressable
+            onPress={handleGenerateListings}
+            disabled={listingsLoading}
+            style={({ pressed }) => [s.generateBtn, (pressed || listingsLoading) && { opacity: 0.85 }]}
+          >
+            <MaterialIcons name={listingsLoading ? 'hourglass-empty' : 'sell'} size={19} color={FOREST} />
+            <Text style={s.generateBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+              {listingsLoading ? 'Generating…' : hasGeneratedListings(listings) ? 'View Listings' : 'Generate Listings'}
+            </Text>
+          </Pressable>
+
+          {listingsError && (
+            <Text style={s.listingsErrText}>Couldn't generate listings. Tap to retry.</Text>
+          )}
+
+          {/* ── 7. Remove + Save to History ── */}
           <View style={s.actionsRow}>
             <Pressable
-              onPress={handleGenerateListings}
-              disabled={listingsLoading}
-              style={({ pressed }) => [s.actionOutline, pressed && { opacity: 0.8 }]}
+              onPress={handleDelete}
+              style={({ pressed }) => [s.removeBtn, pressed && { opacity: 0.7 }]}
             >
-              {listingsLoading
-                ? <MaterialIcons name="hourglass-empty" size={17} color={FOREST} />
-                : <MaterialIcons name="edit-note" size={17} color={FOREST} />}
-              <Text style={s.actionOutlineText}>
-                {listingsLoading ? 'Generating…' : hasGeneratedListings(listings) ? 'View Listings' : 'Generate Listings'}
-              </Text>
+              <MaterialIcons name="delete-outline" size={17} color="#FFFFFF" />
+              <Text style={s.removeBtnText}>Remove</Text>
             </Pressable>
 
             <Pressable
               onPress={handleConfirm}
               disabled={isSaved}
               style={({ pressed }) => [
-                s.actionSolid,
+                s.saveBtn,
                 pressed && !isSaved && { opacity: 0.88, transform: [{ scale: 0.97 }] },
                 isSaved && { backgroundColor: '#2A5A2A', opacity: 0.85 },
               ]}
             >
-              <MaterialIcons name={isSaved ? 'check' : 'bookmark'} size={17} color={CREAM} />
-              <Text style={s.actionSolidText}>{isSaved ? 'Saved' : 'Save to History'}</Text>
+              <MaterialIcons name={isSaved ? 'check' : 'bookmark-border'} size={17} color={CREAM} />
+              <Text style={s.saveBtnText}>{isSaved ? 'Saved' : 'Save to History'}</Text>
             </Pressable>
           </View>
 
-          {listingsError && (
-            <Text style={s.listingsErrText}>Couldn't generate listings. Tap to retry.</Text>
-          )}
-
-          {/* Beta feedback card */}
+          {/* ── 9. Beta feedback ── */}
           <FeedbackCard
             scanId={currentScan.id}
             itemName={id.item_name}
@@ -1021,7 +1167,7 @@ export default function ResultsScreen() {
             demand={md.demand}
             bestPlatform={calc.bestPlatform}
             confidenceScore={ra.match_confidence}
-            recommendation={calc.recommendation?.label ?? 'SKIP'}
+            recommendation={canonicalRating}
           />
 
           <View style={{ height: 32 }} />
@@ -1063,17 +1209,20 @@ const s = StyleSheet.create({
   // Header — deep forest green, no separate safe-area view needed because paddingTop handles it
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 18, paddingTop: 14, paddingBottom: 14,
+    paddingHorizontal: 16, paddingBottom: 12,
     backgroundColor: FOREST,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15, shadowRadius: 4, elevation: 4,
   },
-  // Header center branding
-  headerCenter:  { alignItems: 'center', gap: 2 },
-  headerBrand:   { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: CREAM, letterSpacing: 0.3 },
-  headerSubRow:  { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  headerSub:     { fontSize: 14, fontWeight: '700', color: GOLD, letterSpacing: 2.0, textTransform: 'uppercase' },
-  headerStar:    { fontSize: 14, color: GOLD },
+  headerBtn: {
+    width: 34, height: 34, borderRadius: 17,
+    borderWidth: 1, borderColor: 'rgba(190,156,44,0.4)', backgroundColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  headerCenter:  { flex: 1, alignItems: 'center', gap: 1 },
+  headerSubRow:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerBrand:   { fontFamily: FONTS.serif, fontSize: 26, fontWeight: '800', color: CREAM },
+  headerStar:    { fontSize: 12, color: GOLD },
+  headerSub:     { fontSize: 11, fontWeight: '700', color: CREAM, letterSpacing: 2.5, textTransform: 'uppercase' },
+  headerDivider: { height: 0 },
 
   // Cards
   card: {
@@ -1156,15 +1305,10 @@ const s = StyleSheet.create({
   marketLabel:  { fontSize: 9, fontWeight: '700', color: MUTED, letterSpacing: 0.5, textAlign: 'center' },
   marketValue:  { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: FOREST, textAlign: 'center' },
 
-  // Your price
-  priceRow:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  priceHint:      { fontSize: 13, color: BROWN },
+  // Your price (input styles reused by redesigned thrift editor)
   priceInputWrap: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, borderWidth: 1.5, borderColor: FOREST, paddingHorizontal: 10, paddingVertical: 6, gap: 2 },
   priceDollar:    { fontSize: 15, fontWeight: '700', color: FOREST },
   priceInput:     { fontSize: 18, fontWeight: '800', color: FOREST, minWidth: 70, padding: 0 },
-  priceDisplay:   { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 8, borderWidth: 1.5, borderColor: CARD_B, paddingHorizontal: 12, paddingVertical: 7 },
-  priceDisplayText: { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: FOREST },
-  priceAutoNote:  { fontSize: 10, color: MUTED, marginTop: 6, fontStyle: 'italic' },
 
   // Actions
   actionsRow:      { flexDirection: 'row', gap: 10, marginHorizontal: 14, marginTop: 14 },
@@ -1173,4 +1317,115 @@ const s = StyleSheet.create({
   actionSolid:     { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 14, borderRadius: 10, backgroundColor: FOREST },
   actionSolidText: { fontSize: 13, fontWeight: '700', color: CREAM, fontFamily: FONTS.serif },
   listingsErrText: { fontSize: 11, color: '#8A3A2A', textAlign: 'center', marginTop: 6 },
+
+  // ════════ REDESIGN STYLES ════════
+  // 1 · Item identity card
+  idCard: {
+    backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B,
+    marginHorizontal: 14, marginTop: 12, padding: 15,
+    zIndex: 30, elevation: 12,   // lift above the rating card so the coach-mark tooltip paints on top
+    shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6,
+  },
+  idCardRow: { flexDirection: 'row', gap: 14, alignItems: 'center' },
+  idThumbWrap: { width: 138, height: 138, borderRadius: 14, overflow: 'hidden', position: 'relative' },
+  idThumb:     { width: '100%', height: '100%', backgroundColor: '#EDE3CB' },
+  idThumbFallback: { alignItems: 'center', justifyContent: 'center' },
+  idThumbHint: { position: 'absolute', bottom: 5, right: 5, backgroundColor: 'rgba(42,74,42,0.85)', borderRadius: 10, padding: 3 },
+  idInfo:    { flex: 1, gap: 8, minWidth: 0 },
+  idTitleWrap: { position: 'relative', zIndex: 40 },
+  idTitlePress:{ alignSelf: 'flex-start' },
+  idName:    { fontFamily: FONTS.serif, fontSize: 21, fontWeight: '800', color: FOREST, lineHeight: 26 },
+  idTitleArrow: { fontFamily: FONTS.serif, fontSize: 21, fontWeight: '800', color: GOLD },
+  chipWrap:  { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
+  chip:      { flexDirection: 'row', alignItems: 'center', gap: 3, maxWidth: '100%', backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 8, paddingVertical: 4 },
+  chipText:  { fontSize: 10.5, fontWeight: '600', color: BROWN, flexShrink: 1 },
+  chipConf:  { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
+  chipConfText: { color: FOREST, fontWeight: '700' },
+  // Deep Analysis coach-mark (thought bubble)
+  deepTip: {
+    position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 8, zIndex: 20,
+    backgroundColor: '#FFFDF6', borderRadius: 12, borderWidth: 1, borderColor: GOLD,
+    paddingVertical: 10, paddingHorizontal: 12,
+    shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
+  },
+  deepTipArrow: {
+    position: 'absolute', top: -7, left: 22, width: 12, height: 12,
+    backgroundColor: '#FFFDF6', borderLeftWidth: 1, borderTopWidth: 1, borderColor: GOLD,
+    transform: [{ rotate: '45deg' }],
+  },
+  deepTipRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  deepTipText: { flex: 1, fontSize: 12, lineHeight: 17, color: BROWN },
+  deepTipBold: { fontWeight: '800', color: FOREST },
+  deepTipClose:{ padding: 2, marginTop: -1 },
+
+  // 2 · Big buy rating card
+  ratingCard: {
+    flexDirection: 'row', alignItems: 'center', marginHorizontal: 14, marginTop: 12,
+    borderRadius: 16, borderWidth: 2, padding: 14, gap: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 5,
+  },
+  ratingLeft:  { flex: 1.6, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  ratingBadge: { width: 44, height: 44, borderRadius: 22, borderWidth: 1.5, borderColor: GOLD, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(190,156,44,0.12)' },
+  ratingTextCol: { flex: 1 },
+  ratingText:  { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: GOLD, lineHeight: 25 },
+  ratingRec:   { fontSize: 11.5, color: '#E8E0CC', lineHeight: 15, marginTop: 3 },
+  ratingDivider: { width: 1, alignSelf: 'stretch', backgroundColor: 'rgba(190,156,44,0.35)', marginVertical: 2 },
+  ratingRight: { flex: 1, alignItems: 'center' },
+  ratingResaleLabel: { fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 1.2 },
+  ratingResaleValue: { fontFamily: FONTS.serif, fontSize: 30, fontWeight: '800', color: GOLD, lineHeight: 34, marginTop: 2 },
+  ratingProfitPill: { marginTop: 6, backgroundColor: 'rgba(0,0,0,0.22)', borderRadius: 50, paddingHorizontal: 9, paddingVertical: 3, borderWidth: 1, borderColor: 'rgba(190,156,44,0.4)' },
+  ratingProfitPillText: { fontSize: 11.5, fontWeight: '700', color: '#8FE08F' },
+
+  // 3 · Quick stats row
+  statsCard: {
+    flexDirection: 'row', backgroundColor: CARD, borderRadius: 18, borderWidth: 1, borderColor: CARD_B,
+    marginHorizontal: 14, marginTop: 14, paddingVertical: 16, paddingHorizontal: 6,
+    shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.07, shadowRadius: 4, elevation: 2,
+  },
+  statBox:       { flex: 1, alignItems: 'center', gap: 4, paddingHorizontal: 2 },
+  statBoxBorder: { borderRightWidth: 1, borderRightColor: '#EAE0C8' },
+  statIconCircle:{ width: 30, height: 30, borderRadius: 15, backgroundColor: FOREST, alignItems: 'center', justifyContent: 'center', marginBottom: 2 },
+  statLabel:     { fontSize: 11, color: MUTED, fontWeight: '600' },
+  statValue:     { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800' },
+
+  // 4 · Sold comp sources — compact
+  compHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
+  compTitle:     { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '700', color: FOREST },
+  compPillsRow:  { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 16, rowGap: 12 },
+  compScrollContent: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingRight: 8, paddingVertical: 2 },
+  compItem:      { height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: '#1A1A1A', backgroundColor: '#FFF9EE', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  compPillText:  { fontSize: 13, fontWeight: '700', color: BROWN },
+  compNoteRow:   { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 10 },
+  compNote:      { fontSize: 11.5, color: MUTED, fontStyle: 'italic' },
+
+  // 5 · Your thrift price + breakdown
+  priceTopRow:   { flexDirection: 'row', alignItems: 'center', paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#EAE0C8' },
+  priceTitle:    { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '700', color: FOREST },
+  priceSub:      { fontSize: 12, color: MUTED, marginTop: 2 },
+  priceDisplayRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  priceEstTag:     { fontSize: 11, fontWeight: '700', color: MUTED, fontStyle: 'italic' },
+  priceDisplayText:{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: FOREST },
+  priceEditBtn:  { width: 36, height: 36, borderRadius: 9, backgroundColor: FOREST, alignItems: 'center', justifyContent: 'center' },
+  breakdownRow:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 14 },
+  breakdownCol:  { alignItems: 'center', flex: 1 },
+  breakdownColResult: { paddingVertical: 6, marginVertical: -6 },
+  breakdownLabel:{ fontSize: 10.5, color: FOREST, fontWeight: '600', textAlign: 'center', marginBottom: 3 },
+  breakdownValue:{ fontFamily: FONTS.serif, fontSize: 16, fontWeight: '800', color: FOREST },
+  breakdownOp:   { fontSize: 15, color: MUTED, fontWeight: '700', paddingHorizontal: 2 },
+
+  // 6 · Deep analysis CTA — compact premium secondary
+  // 6 · Generate listings (full-width)
+  generateBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
+    backgroundColor: CARD, borderWidth: 1.5, borderColor: FOREST, borderRadius: 13,
+    marginHorizontal: 14, marginTop: 12, paddingVertical: 16,
+    shadowColor: FOREST, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+  },
+  generateBtnText: { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '800', color: FOREST },
+
+  // 7 · Remove + Save row — equal width, both filled
+  removeBtn:   { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 18, borderRadius: 12, backgroundColor: '#6E211B' },
+  removeBtnText: { fontSize: 14, fontWeight: '700', color: '#FFFFFF', fontFamily: FONTS.serif },
+  saveBtn:     { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 18, borderRadius: 12, backgroundColor: FOREST },
+  saveBtnText: { fontSize: 14, fontWeight: '700', color: CREAM, fontFamily: FONTS.serif },
 });

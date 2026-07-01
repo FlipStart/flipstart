@@ -200,6 +200,47 @@ export function getPlatformRationale(platform: Platform, resaleValue: number): s
  * UI calls this once on every thrift price change.
  * Returns a FlipCalc object — UI just renders it.
  */
+/**
+ * Find the highest whole-dollar thrift price at which the rating stays at
+ * BUY or STRONG_BUY (i.e. does NOT drop to RISKY_BUY or SKIP).
+ *
+ * This exists so the "Worth grabbing if you can buy at $X or less" line is
+ * mathematically consistent with the actual rating logic — paying MORE than
+ * this price is guaranteed to downgrade the rating, so the number shown is a
+ * real, honest ceiling rather than a disconnected AI suggestion.
+ *
+ * Approach: fees are derived from resaleValue only (not thriftPrice), so
+ * profit decreases 1:1 as thriftPrice increases. We walk thriftPrice down
+ * from resaleValue in $1 steps, re-running the exact same getRecommendation()
+ * used everywhere else, until we find a BUY/STRONG_BUY price. This guarantees
+ * the number can never disagree with the live rating shown on screen.
+ *
+ * Returns 0 if even $0 doesn't reach BUY/STRONG_BUY (nothing to recommend).
+ */
+export function findMaxBuyPriceForRating(
+  resaleValue:      number,
+  matchConfidence:  number,
+  competitionLevel: string,
+  demandLevel:      string = '',
+  sellSpeed:        string = '',
+): number {
+  const fees = calculateFees(resaleValue);
+  const ceiling = Math.max(0, Math.round(resaleValue));
+
+  for (let price = ceiling; price >= 0; price--) {
+    const profit = calculateProfit(resaleValue, fees, price);
+    const roi    = calculateROI(profit, price);
+    const rec = getRecommendation({
+      netProfit: profit, resaleValue, thriftPrice: price, roi,
+      matchConfidence, competitionLevel, demandLevel, sellSpeed,
+    });
+    if (rec.label === 'BUY' || rec.label === 'STRONG_BUY') {
+      return price;
+    }
+  }
+  return 0;
+}
+
 export function computeFlipCalc(
   resaleValue:      number,
   thriftPrice:      number,

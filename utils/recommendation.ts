@@ -76,24 +76,29 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
     s !== 'slow';
 
   // ── BUY ─────────────────────────────────────────────────────────────────────
-  // Solid profit with reasonable confidence
+  // Solid profit with reasonable confidence. $11+ profit is a real win for a
+  // reseller — the threshold must reflect that, not penalise modest flips.
   const isBuy =
     !isStrongBuy && (
-      (netProfit >= 15 && matchConfidence >= 60 && s !== 'slow') ||
+      (netProfit >= 15 && matchConfidence >= 55 && c !== 'high' && s !== 'slow') ||
+      (netProfit >= 11 && matchConfidence >= 65 && c === 'low' && s !== 'slow') ||
       (netProfit >= 20 && matchConfidence >= 45 && c !== 'high')
     );
 
   // ── RISKY_BUY ───────────────────────────────────────────────────────────────
-  // Worth considering but with caveats
+  // Profit is there but one or more risk factors exist (confidence, competition,
+  // sell speed). $11+ profit is always worth flagging as at least RISKY_BUY —
+  // the user should know there's upside even if conditions aren't perfect.
   const isRiskyBuy =
     !isStrongBuy && !isBuy && (
-      (netProfit >= 20 && matchConfidence < 60) ||
-      (netProfit >= 15 && c === 'high') ||
+      (netProfit >= 11 && matchConfidence >= 40) ||
+      (netProfit >= 15 && matchConfidence < 55) ||
+      (netProfit >= 11 && c === 'high' && matchConfidence >= 50) ||
       (netProfit >= 15 && s === 'slow') ||
-      (netProfit >= 25 && matchConfidence < 45)
+      (netProfit >= 20 && matchConfidence < 45)
     );
 
-  // ── SKIP — everything else ──────────────────────────────────────────────────
+  // ── SKIP — everything else (low profit, very low confidence, or negative) ──
 
   // ── Assign label ─────────────────────────────────────────────────────────────
   let label: RecLabel;
@@ -120,6 +125,33 @@ const DISPLAY_LABELS: Record<RecLabel, string> = {
   RISKY_BUY:  'Risky Buy',
   SKIP:       'Skip This Item',
 };
+
+// ─── Canonical buy-rating normalizer ──────────────────────────────────────────
+// The app must display EXACTLY one of: STRONG BUY / BUY / RISKY BUY / SKIP
+// everywhere (Analysis screen + Scan History). This maps any internal label or
+// legacy/free-text rating to one of those four. Never upgrades/downgrades intent.
+export type CanonicalRating = 'STRONG BUY' | 'BUY' | 'RISKY BUY' | 'SKIP';
+
+export function normalizeBuyRating(input: unknown): CanonicalRating {
+  if (input == null) return 'SKIP';
+  const v = String(input).trim().toUpperCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  // Exact canonical / internal labels first
+  if (v === 'STRONG BUY' || v === 'STRONGBUY') return 'STRONG BUY';
+  if (v === 'RISKY BUY'  || v === 'RISKYBUY')  return 'RISKY BUY';
+  if (v === 'BUY')                              return 'BUY';
+  if (v === 'SKIP')                             return 'SKIP';
+  // Fuzzy / legacy wording — preserve intent
+  if (v.includes('STRONG'))                                   return 'STRONG BUY';
+  if (v.includes('RISK') || v.includes('MAYBE') ||
+      v.includes('CONSIDER') || v.includes('CONDITION') ||
+      v.includes('CAUTION'))                                  return 'RISKY BUY';
+  if (v.includes('SKIP') || v.includes('PASS') ||
+      v.includes('AVOID') || v.includes('DO NOT') ||
+      v.includes("DON'T") || v.includes('NO BUY'))            return 'SKIP';
+  if (v.includes('BUY') || v.includes('GOOD') ||
+      v.includes('SOLID') || v.includes('GRAB'))              return 'BUY';
+  return 'SKIP';
+}
 
 // ─── Headline builder ─────────────────────────────────────────────────────────
 

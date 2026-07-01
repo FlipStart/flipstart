@@ -110,6 +110,10 @@ export default function LoadingScreen() {
   const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPendingScan = useRef<import('@/lib/pending-scan').PendingScan | null>(null);
   const retryAttemptRef = useRef(0);   // tracks auto-retry attempts for exponential backoff
+  // Stable id for THIS scan attempt — generated once per loading-screen mount.
+  // Sent to the server so the count is idempotent: even if the mutation somehow
+  // fires more than once for the same item, it's only counted once.
+  const scanAttemptIdRef = useRef(`att_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
 
   // ── Audio ─────────────────────────────────────────────────────────────────
   const player       = useAudioPlayer(COIN_SOUND);
@@ -275,6 +279,7 @@ export default function LoadingScreen() {
             detailImageBase64:  detail?.base64,
             detailMimeType:     detail?.mimeType,
             scannerId,
+            scanAttemptId:      scanAttemptIdRef.current,
           }),
           timeoutPromise,
         ]);
@@ -497,47 +502,19 @@ export default function LoadingScreen() {
           failType = "server"; // default unknown → server, most recoverable
         }
 
-        // ── Exponential auto-retry (server/offline/timeout only) ───────────
-        // Attempt 1 → immediate, Attempt 2 → +2s, Attempt 3 → +5s
-        // Bad input / low confidence → never auto-retry (user action needed)
-        const shouldAutoRetry = (failType === "server" || failType === "timeout" || failType === "offline")
-          && retryAttemptRef.current < 3;
+        // ── No auto-retry ───────────────────────────────────────────────────
+        // A single attempt with a 30s hard timeout. If it fails, show the fail
+        // screen immediately so the user isn't stuck waiting through multiple
+        // silent retries (previously up to ~90s). The user can manually retry
+        // from the fail screen if they choose.
 
-        if (shouldAutoRetry) {
-          const attempt = retryAttemptRef.current;
-          retryAttemptRef.current += 1;
-          const delayMs = attempt === 0 ? 0 : attempt === 1 ? 2000 : 5000;
-
-          console.log(`[loading] auto-retry ${attempt + 1}/3 in ${delayMs}ms — type: ${failType}`);
-          try {
-            logEvent("scan_auto_retry", {
-              attempt:     attempt + 1,
-              failType,
-              delayMs,
-              errorRaw:    raw.slice(0, 80),
-            });
-          } catch { /* never block */ }
-
-          await new Promise(res => setTimeout(res, delayMs));
-
-          // Restore pending scan for retry and re-run doScan
-          if (lastPendingScan.current) {
-            const { setPendingScan } = require("@/lib/pending-scan");
-            setPendingScan(lastPendingScan.current);
-          }
-          hasStartedRef.current = false;
-          setScanKey(k => k + 1);
-          return;
-        }
-
-        // ── All retries exhausted — show fail screen ────────────────────────
-        const totalAttempts = retryAttemptRef.current;
-        console.error(`[loading] all retries exhausted (${totalAttempts} auto + manual) — showing fail screen. type: ${failType} raw: ${raw.substring(0, 80)}`);
+        // ── Show fail screen ───────────────────────────────────────────────
+        console.error(`[loading] scan failed — showing fail screen. type: ${failType} raw: ${raw.substring(0, 80)}`);
 
         try {
           logEvent("scan_failed", {
             errorType:     failType,
-            autoRetries:   totalAttempts,
+            autoRetries:   0,
             durationMs,
             errorRaw:      raw.slice(0, 80),
           });
@@ -546,7 +523,7 @@ export default function LoadingScreen() {
 
         const safeMsg = (raw.length > 0 && raw.length < 120 && !raw.startsWith("{") && raw !== "__TIMEOUT__")
           ? raw : "";
-        setRetryCount(totalAttempts);
+        setRetryCount(0);
         setFailState({ type: failType, message: safeMsg });
 
         if (Platform.OS !== "web") {

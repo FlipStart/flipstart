@@ -39,6 +39,7 @@ export interface ScanCounter {
   dateKey: string;   // "2026-05-06" in America/Chicago
   count:   number;   // global total today (all users) — backstop + dashboard
   perUser?: Record<string, number>; // scans today keyed by scannerId (user id or guest anon id)
+  countedAttempts?: Record<string, number>; // attemptId → timestamp; dedupes retries so one item = one count
 }
 
 export interface FeedbackEntry {
@@ -160,7 +161,7 @@ interface Store {
 // ─── In-memory cache (write-through) ─────────────────────────────────────────
 
 const DEFAULT_STORE: Store = {
-  scanCounter: { dateKey: "", count: 0, perUser: {} },
+  scanCounter: { dateKey: "", count: 0, perUser: {}, countedAttempts: {} },
   feedback:    [],
   events:      [],
   sessions:    [],
@@ -240,42 +241,68 @@ function nextMidnight(): string {
 function refreshCounter(store: Store): void {
   const today = todayKey();
   if (store.scanCounter.dateKey !== today) {
-    store.scanCounter = { dateKey: today, count: 0, perUser: {} };
+    store.scanCounter = { dateKey: today, count: 0, perUser: {}, countedAttempts: {} };
     console.log(`[persist] new day (${today}) — scan counters reset`);
   }
   if (!store.scanCounter.perUser) store.scanCounter.perUser = {};
+  if (!store.scanCounter.countedAttempts) store.scanCounter.countedAttempts = {};
 }
 
 /**
- * Attempt to consume one scan for the given scannerId (a stable per-user or
- * per-guest identifier). Returns true if allowed (and increments), false if the
- * user has hit their daily limit OR the global backstop is reached.
+ * Check whether a scan is currently allowed for this scannerId WITHOUT
+ * consuming a count. Call this BEFORE the expensive AI request so users over
+ * their limit are rejected without paying for AI. Does not mutate state.
  *
- * Backward compatible: callers that pass no id fall back to a shared "_legacy"
- * bucket so nothing crashes, but the app always sends a real id.
+ * Returns true if the user has quota remaining AND the global backstop is not hit.
  */
-export function tryIncrementScanCount(scannerId?: string): boolean {
+export function checkScanAllowed(scannerId?: string): boolean {
   const store = load();
   refreshCounter(store);
 
-  // Global backstop first (abuse / cost ceiling).
   if (store.scanCounter.count >= GLOBAL_DAILY_BACKSTOP) {
-    console.log(`[persist] scan BLOCKED (global backstop) — ${store.scanCounter.count}/${GLOBAL_DAILY_BACKSTOP}`);
+    console.log(`[persist] scan CHECK blocked (global backstop) — ${store.scanCounter.count}/${GLOBAL_DAILY_BACKSTOP}`);
     return false;
   }
-
   const id = (scannerId && scannerId.trim()) ? scannerId.trim() : "_legacy";
   const used = store.scanCounter.perUser![id] ?? 0;
   if (used >= PER_USER_DAILY_LIMIT) {
-    console.log(`[persist] scan BLOCKED (per-user) — ${id.slice(0, 12)}… ${used}/${PER_USER_DAILY_LIMIT}`);
+    console.log(`[persist] scan CHECK blocked (per-user) — ${id.slice(0, 12)}… ${used}/${PER_USER_DAILY_LIMIT}`);
     return false;
   }
+  return true;
+}
 
+/**
+ * Commit one scan for this scannerId. Call this ONLY AFTER a scan has
+ * genuinely succeeded (AI analysis returned). Idempotent per attemptId: if the
+ * same attemptId has already been counted today, this is a no-op — so client
+ * retries of the SAME item never double-count. A brand-new scan of the same
+ * item (new attemptId) correctly counts again.
+ *
+ * Returns the updated per-user stats.
+ */
+export function commitScanCount(scannerId?: string, attemptId?: string) {
+  const store = load();
+  refreshCounter(store);
+
+  const id = (scannerId && scannerId.trim()) ? scannerId.trim() : "_legacy";
+
+  // Idempotency: skip if this attempt was already counted today.
+  if (attemptId && attemptId.trim()) {
+    const key = attemptId.trim();
+    if (store.scanCounter.countedAttempts![key]) {
+      console.log(`[persist] scan commit SKIPPED (already counted attempt ${key.slice(0, 12)}…)`);
+      return getUserScanStats(scannerId);
+    }
+    store.scanCounter.countedAttempts![key] = Date.now();
+  }
+
+  const used = store.scanCounter.perUser![id] ?? 0;
   store.scanCounter.perUser![id] = used + 1;
   store.scanCounter.count++;
   save();
-  console.log(`[persist] scan OK — user ${id.slice(0, 12)}… ${used + 1}/${PER_USER_DAILY_LIMIT} (global ${store.scanCounter.count})`);
-  return true;
+  console.log(`[persist] scan COMMITTED — user ${id.slice(0, 12)}… ${used + 1}/${PER_USER_DAILY_LIMIT} (global ${store.scanCounter.count})`);
+  return getUserScanStats(scannerId);
 }
 
 /** Per-user remaining today. */

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tryIncrementScanCount, getScanStats, getUserScanStats, submitFeedback, getFeedbackByScanId } from "./persist";
+import { checkScanAllowed, commitScanCount, getScanStats, getUserScanStats, submitFeedback, getFeedbackByScanId } from "./persist";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -20,6 +20,7 @@ const appRouter_scan = router({
           tagImageBase64:  z.string().optional(),
           tagMimeType:     z.string().optional(),
           scannerId:       z.string().optional(), // per-user/guest daily limit key
+          scanAttemptId:   z.string().optional(), // stable id per item; dedupes retries so 1 item = 1 count
         })
       )
       .mutation(async ({ input }) => {
@@ -27,10 +28,12 @@ const appRouter_scan = router({
         console.log("[analyze] mimeType:", input.mimeType);
         console.log("[analyze] base64 length:", input.imageBase64?.length ?? 0);
 
-        // ── PER-USER SCAN LIMIT CHECK ───────────────────────────────────────
-        // Must be BEFORE any AI call. Keyed by scannerId (logged-in user id or
-        // guest anon id). A high global backstop also guards against abuse.
-        const allowed = tryIncrementScanCount(input.scannerId);
+        // ── PER-USER SCAN LIMIT CHECK (read-only) ───────────────────────────
+        // Check quota BEFORE the AI call so over-limit users don't cost us AI
+        // spend — but do NOT consume the count here. The count is only committed
+        // AFTER a successful analysis (below), so failed/timed-out/canceled
+        // scans never burn a scan. Keyed by scannerId (user id or guest id).
+        const allowed = checkScanAllowed(input.scannerId);
         if (!allowed) {
           const stats = getUserScanStats(input.scannerId);
           throw Object.assign(
@@ -64,6 +67,12 @@ const appRouter_scan = router({
 
           const durationMs = Date.now() - callStart;
           console.log(`[analyze] complete — ${durationMs}ms | confidence:${analysisResult?.risk_analysis?.match_confidence ?? '?'} | value:$${analysisResult?.market_data?.adjusted_estimated_value ?? '?'}`);
+
+          // ── COMMIT THE SCAN COUNT — only now that analysis succeeded ────────
+          // Idempotent per scanAttemptId: retries of the same item won't double
+          // count. A failed AI call above throws before reaching this line, so
+          // failed scans cost nothing.
+          commitScanCount(input.scannerId, input.scanAttemptId);
 
           return {
             imageUrl,

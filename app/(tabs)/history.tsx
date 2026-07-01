@@ -25,6 +25,7 @@ import { useFlipStore } from '@/lib/useFlipStore';
 import { FlipResult, HistoryEntry, HuntBundle, isHuntBundle } from '@/types/flip';
 import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
+import { normalizeBuyRating } from '@/utils/recommendation';
 import { useAuth } from '@/lib/auth-context';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import {
@@ -157,7 +158,7 @@ function FlipCard({
             </Text>
             <View style={[fc.labelPill, { borderColor: profitColor + '55' }]}>
               <Text style={[fc.labelPillText, { color: profitColor }]} numberOfLines={1}>
-                {item.buyLabel}
+                {normalizeBuyRating((item as any).recommendation?.label ?? (item as any).buyLabel ?? (item as any).recommendation)}
               </Text>
             </View>
           </View>
@@ -184,7 +185,7 @@ const fc = StyleSheet.create({
   date:       { fontSize: 10, color: V.textSubtle, marginTop: 1 },
   right:      { alignItems: 'flex-end', gap: 4, minWidth: 64 },
   profit:     { fontSize: 17, fontWeight: '900' },
-  labelPill:  { borderWidth: 1, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 6, maxWidth: 88 },
+  labelPill:  { borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, maxWidth: 110 },
   labelPillText: { fontSize: 9, fontWeight: '700' },
 });
 
