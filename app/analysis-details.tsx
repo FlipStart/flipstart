@@ -20,7 +20,12 @@ import { trpc } from '@/lib/trpc';
 import { FlipResult, ListingData } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
 import { computeFlipCalc } from '@/utils/flipCalculations';
-import { REC_THEMES } from '@/utils/recommendation';
+import { REC_THEMES, normalizeBuyRating } from '@/utils/recommendation';
+import {
+  buildDeepInputs, whyThisRating, ratingQuestion, priceLogicText,
+  riskAssessment, confidenceBreakdown, platformStrategy, listingStrategy,
+  itemEvidence, whatCouldChange,
+} from '@/utils/deepAnalysis';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
@@ -189,6 +194,39 @@ function SectionHead({ icon, title }: { icon: string; title: string }) {
     <View style={d.sectionHead}>
       <Text style={d.sectionIcon}>{icon}</Text>
       <Text style={d.sectionTitle}>{title}</Text>
+    </View>
+  );
+}
+
+const isUnknownStr = (v?: string) =>
+  !v || ['unknown', 'other', 'n/a', 'insufficient evidence', ''].includes(v.trim().toLowerCase());
+
+/** Deep Analysis section head — MaterialIcon in a gold circle + serif title (cream card). */
+function DeepHead({ icon, title }: { icon: string; title: string }) {
+  return (
+    <View style={d.deepHead}>
+      <View style={d.deepHeadIcon}><MaterialIcons name={icon as any} size={15} color={GOLD} /></View>
+      <Text style={d.deepHeadTitle}>{title}</Text>
+    </View>
+  );
+}
+
+/** Deep Analysis section head for the dark-green premium card (cream text/icon). */
+function DeepHeadPremium({ icon, title }: { icon: string; title: string }) {
+  return (
+    <View style={d.deepHead}>
+      <View style={d.deepHeadIconPrem}><MaterialIcons name={icon as any} size={15} color={GOLD} /></View>
+      <Text style={d.deepHeadTitlePrem}>{title}</Text>
+    </View>
+  );
+}
+
+/** Small compact stat used in Price Logic / Listing Strategy recaps. */
+function PriceStat({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <View style={d.priceStat}>
+      <Text style={[d.priceStatVal, color ? { color } : {}]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{value}</Text>
+      <Text style={d.priceStatLabel}>{label}</Text>
     </View>
   );
 }
@@ -377,6 +415,20 @@ export default function AnalysisDetailsScreen() {
   const plat = platformName(calc.bestPlatform);
   const platNote = platformNote(calc.bestPlatform);
 
+  // ── Deep Analysis derived reasoning (all from real scan data) ──────────────
+  const canonicalRating = normalizeBuyRating(baseFlip.recommendation?.label ?? (baseFlip as any).buyLabel ?? rec.label);
+  const maxBuyShown = isHistory && editedThrift > 0 ? editedThrift : baseFlip.thriftPrice;
+  const di = buildDeepInputs(baseFlip, { profit: calc.profit, roi: calc.roi, fees: calc.fees }, maxBuyShown);
+  di.rating = canonicalRating;
+  const whyBullets   = whyThisRating(di);
+  const priceText    = priceLogicText(di);
+  const risk         = riskAssessment(di);
+  const confB        = confidenceBreakdown(di);
+  const platStrat    = platformStrategy(di);
+  const listStrat    = listingStrategy(di);
+  const evidence     = itemEvidence(di);
+  const changeItems  = whatCouldChange(di);
+
   return (
     <ScreenContainer edges={['left', 'right']}>
       {baseFlip.imageUri && (
@@ -408,63 +460,42 @@ export default function AnalysisDetailsScreen() {
           keyboardShouldPersistTaps="handled"
         >
 
-          {/* Compact item summary */}
-          <View style={d.card}>
-            <View style={d.summaryRow}>
-              <Pressable
-                onPress={() => baseFlip.imageUri && setImageOpen(true)}
-                style={({ pressed }) => [d.thumbWrap, pressed && { opacity: 0.85 }]}
-              >
-                {baseFlip.imageUri
-                  ? <Image source={{ uri: baseFlip.imageUri }} style={d.summaryThumb} contentFit="cover" />
-                  : <View style={[d.summaryThumb, d.thumbFallback]}><MaterialIcons name="checkroom" size={20} color={MUTED} /></View>
-                }
-                {baseFlip.imageUri && (
-                  <View style={d.thumbZoomBadge}>
-                    <MaterialIcons name="zoom-in" size={10} color={CREAM} />
-                  </View>
+          {/* ── 2. Compact item recap ── */}
+          <View style={d.recapCard}>
+            <Pressable
+              onPress={() => baseFlip.imageUri && setImageOpen(true)}
+              style={({ pressed }) => [d.recapThumbWrap, pressed && { opacity: 0.85 }]}
+            >
+              {baseFlip.imageUri
+                ? <Image source={{ uri: baseFlip.imageUri }} style={d.recapThumb} contentFit="cover" />
+                : <View style={[d.recapThumb, d.thumbFallback]}><MaterialIcons name="checkroom" size={22} color={MUTED} /></View>
+              }
+            </Pressable>
+            <View style={d.recapInfo}>
+              <Text style={d.recapName} numberOfLines={2} ellipsizeMode="tail">{baseFlip.itemName || 'Unknown Item'}</Text>
+              <View style={d.recapChips}>
+                {!isUnknownStr(baseFlip.brand) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.brand}</Text></View>}
+                {!isUnknownStr(baseFlip.category) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.category}</Text></View>}
+                {!isUnknownStr(baseFlip.era) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.era}</Text></View>}
+                {baseFlip.matchConfidence > 0 && (
+                  <View style={[d.recapChip, d.recapChipConf]}><Text style={[d.recapChipText, { color: FOREST }]} numberOfLines={1}>{baseFlip.matchConfidence}% Conf</Text></View>
                 )}
-              </Pressable>
-
-              <View style={d.summaryInfo}>
-                <Text style={d.summaryName} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.78}>{baseFlip.itemName}</Text>
-                <Text style={d.summaryMeta}>{baseFlip.brand} · {baseFlip.category}</Text>
-
-                <View style={d.summaryBadgeRow}>
-                  {/* Confidence */}
-                  {baseFlip.matchConfidence > 0 && (
-                    <View style={[d.confPill, { backgroundColor: confBadge.color + '18', borderColor: confBadge.color + '40' }]}>
-                      <Text style={[d.confPillPct, { color: confBadge.color }]}>{baseFlip.matchConfidence}%</Text>
-                      <Text style={[d.confPillLabel, { color: confBadge.color }]}>CONFIDENCE</Text>
-                    </View>
-                  )}
-                  {/* Stars */}
-                  <View style={d.starsRow}>
-                    {[1,2,3,4,5].map(n => (
-                      <MaterialIcons
-                        key={n}
-                        name={n <= (calc.stars ?? 0) ? 'star' : 'star-border'}
-                        size={13}
-                        color={n <= (calc.stars ?? 0) ? GOLD : CARD_B}
-                      />
-                    ))}
-                  </View>
+              </View>
+              <View style={d.recapRatingRow}>
+                <View style={[d.recapRatingBadge, { borderColor: theme.border, backgroundColor: theme.bg + '22' }]}>
+                  <Text style={[d.recapRatingText, { color: theme.iconColor }]}>{canonicalRating}</Text>
                 </View>
-
-                {/* Buy label badge */}
-                <View style={[d.buyLabelBadge, { borderColor: theme.border, backgroundColor: theme.bg + '22' }]}>
-                  <Text style={[d.buyLabelText, { color: theme.iconColor }]}>
-                    {rec.displayLabel.toUpperCase()}
-                  </Text>
-                </View>
+                {baseFlip.resaleValue > 0 && (
+                  <Text style={d.recapResale}>Est. Resale <Text style={d.recapResaleVal}>${baseFlip.resaleValue}</Text></Text>
+                )}
               </View>
             </View>
           </View>
 
-          {/* History: editable thrift price — not shown for hunt_history (price is fixed) */}
+          {/* History: editable thrift price — not shown for hunt_history */}
           {isHistory && !isHuntHistory && (
             <View style={d.card}>
-              <SectionHead icon="✏️" title="UPDATE THRIFT PRICE" />
+              <DeepHead icon="edit" title="Update Thrift Price" />
               <View style={d.priceRow}>
                 <Text style={d.dataLabel}>What you paid</Text>
                 {thriftEditing ? (
@@ -484,96 +515,144 @@ export default function AnalysisDetailsScreen() {
                   </Pressable>
                 )}
               </View>
-              <View style={d.calcPreview}>
-                {[
-                  { label: 'Profit', value: calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`, color: profitColor },
-                  { label: 'ROI',    value: calc.roi > 0 ? `${calc.roi}%` : '—',  color: FOREST },
-                  { label: 'Rating', value: calc.buyLabel.replace(/^[^\s]+\s/, ''), color: BROWN },
-                ].map(m => (
-                  <View key={m.label} style={d.calcBox}>
-                    <Text style={[d.calcValue, { color: m.color }]} numberOfLines={1}>{m.value}</Text>
-                    <Text style={d.calcLabel}>{m.label}</Text>
+            </View>
+          )}
+
+          {/* ── 3. Why this rating? (premium dark-green card) ── */}
+          <View style={d.premiumCard}>
+            <View style={d.premiumAccent} />
+            <DeepHeadPremium icon="verified" title={ratingQuestion(canonicalRating)} />
+            {whyBullets.map((b, i) => (
+              <View key={i} style={d.premiumBulletRow}>
+                <MaterialIcons name="chevron-right" size={16} color={GOLD} style={{ marginTop: 1 }} />
+                <Text style={d.premiumBulletText}>{b}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* ── 4. Price logic ── */}
+          <View style={d.card}>
+            <DeepHead icon="payments" title="Price Logic" />
+            <View style={d.priceLogicStats}>
+              <PriceStat label="Est. Resale" value={baseFlip.resaleValue > 0 ? `$${baseFlip.resaleValue}` : '—'} />
+              <PriceStat label="Max Buy"     value={`$${maxBuyShown}`} />
+              <PriceStat label="Profit"      value={calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`} color={profitColor} />
+              <PriceStat label="ROI"         value={calc.roi > 0 ? `${calc.roi}%` : '—'} />
+            </View>
+            <Text style={d.paragraph}>{priceText}</Text>
+          </View>
+
+          {/* ── 5. Risk flags ── */}
+          <View style={d.card}>
+            <View style={d.riskHeadRow}>
+              <DeepHead icon="shield" title="Risk Flags" />
+              <View style={[d.riskLevelPill, { backgroundColor: risk.color + '18', borderColor: risk.color + '55' }]}>
+                <Text style={[d.riskLevelText, { color: risk.color }]}>{risk.level}</Text>
+              </View>
+            </View>
+            {risk.bullets.map((b, i) => (
+              <View key={i} style={d.bulletRow}>
+                <MaterialIcons name="fiber-manual-record" size={7} color={risk.color} style={{ marginTop: 6 }} />
+                <Text style={d.bulletText}>{b}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* ── 6. Confidence breakdown ── */}
+          <View style={d.card}>
+            <View style={d.riskHeadRow}>
+              <DeepHead icon="insights" title="Confidence Breakdown" />
+              <Text style={d.confBig}>{confB.pct > 0 ? `${confB.pct}%` : '—'}</Text>
+            </View>
+            <Text style={d.confSubHead}>Confident because</Text>
+            {confB.confident.map((c, i) => (
+              <View key={`c${i}`} style={d.bulletRow}>
+                <MaterialIcons name="check-circle" size={13} color="#2A5A2A" style={{ marginTop: 2 }} />
+                <Text style={d.bulletText}>{c}</Text>
+              </View>
+            ))}
+            <Text style={[d.confSubHead, { marginTop: 10 }]}>Lower confidence because</Text>
+            {confB.uncertain.map((c, i) => (
+              <View key={`u${i}`} style={d.bulletRow}>
+                <MaterialIcons name="help-outline" size={13} color={MUTED} style={{ marginTop: 2 }} />
+                <Text style={d.bulletText}>{c}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* ── 7. Where to sell (platform strategy) ── */}
+          <View style={d.card}>
+            <DeepHead icon="storefront" title="Where to Sell" />
+            <Text style={d.confSubHead}>Best Bets</Text>
+            {platStrat.best.map((p, i) => (
+              <View key={`b${i}`} style={d.platRow}>
+                <View style={d.platNameBadge}><Text style={d.platNameText}>{p.name}</Text></View>
+                <Text style={d.platNote}>{p.note}</Text>
+              </View>
+            ))}
+            {platStrat.backup.length > 0 && (
+              <>
+                <Text style={[d.confSubHead, { marginTop: 10 }]}>Backup Platforms</Text>
+                {platStrat.backup.map((p, i) => (
+                  <View key={`bk${i}`} style={d.platRow}>
+                    <View style={[d.platNameBadge, d.platNameBadgeMuted]}><Text style={[d.platNameText, { color: MUTED }]}>{p.name}</Text></View>
+                    <Text style={d.platNote}>{p.note}</Text>
                   </View>
                 ))}
-              </View>
-            </View>
-          )}
-
-          {/* Recommendation warning — shown when rec has a caution note */}
-          {rec.warning && (
-            <View style={d.warningBanner}>
-              <MaterialIcons name="info-outline" size={14} color="#C07030" />
-              <Text style={d.warningBannerText}>{rec.warning}</Text>
-            </View>
-          )}
-
-          {/* Price Breakdown */}
-          <View style={d.card}>
-            <SectionHead icon="💰" title="PRICE BREAKDOWN" />
-            {/* Single-column stacked rows — no divider, guaranteed readable values */}
-            <PriceRow label="Est. Resale Value"   value={`$${baseFlip.resaleValue}`} />
-            <PriceRow label="Platform Fees (~12%)" value={`-$${calc.fees}`}           valueColor="#8A3A2A" />
-            {/* Buy Price vs Max Buy Price: logic based on whether user entered a real price */}
-            {isHistory && editedThrift > 0
-              ? <PriceRow label="Buy Price"     value={`-$${editedThrift}`}          valueColor="#8A3A2A" />
-              : <PriceRow label="Max Buy Price" value={`$${baseFlip.thriftPrice}`} />
-            }
-            <PriceRow
-              label="Net Profit"
-              value={calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`}
-              valueColor={profitColor}
-              bold
-            />
-            <PriceRow label="ROI"          value={calc.roi > 0 ? `${calc.roi}%` : '—'} />
-            <View style={d.priceRowDivider} />
-            <PriceRow label="Market Range" value={`$${baseFlip.resaleRangeLow} – $${baseFlip.resaleRangeHigh}`} />
-            <PriceRow label="Average Sold" value={baseFlip.avgSoldPrice > 0 ? `$${baseFlip.avgSoldPrice}` : 'N/A'} />
-            <Text style={d.smallNote}>Based on recent eBay sold listings. Depop prices typically vary by 10–15%.</Text>
-          </View>
-
-          {/* Market Signals + Platform — side by side */}
-          <View style={d.halfRow}>
-            <View style={[d.card, d.halfCard]}>
-              <SectionHead icon="📊" title="MARKET SIGNALS" />
-              {[
-                { label: 'Demand',      value: baseFlip.demand,           color: baseFlip.demand?.toLowerCase() === 'high' ? '#2A5A2A' : baseFlip.demand?.toLowerCase() === 'low' ? '#8A3A2A' : BROWN },
-                { label: 'Competition', value: baseFlip.competitionLevel, color: (baseFlip.competitionLevel||'').toLowerCase() === 'high' ? '#8A3A2A' : '#2A5A2A' },
-                { label: 'Sell Speed',  value: baseFlip.sellSpeed,        color: baseFlip.sellSpeed?.toLowerCase() === 'fast' ? '#2A5A2A' : '#8A3A2A' },
-                { label: 'Score',       value: `${baseFlip.buyScore}/100`, color: FOREST },
-              ].map(m => <DataRow key={m.label} label={m.label} value={m.value || '—'} valueColor={m.color} bold />)}
-            </View>
-
-            <View style={[d.card, d.halfCard]}>
-              <SectionHead icon="🛒" title="PLATFORM" />
-              <View style={[d.platformPill, { backgroundColor: FOREST + '15', borderColor: FOREST + '30' }]}>
-                <MaterialIcons name="store" size={13} color={FOREST} />
-                <Text style={d.platformPillText}>{plat}</Text>
-              </View>
-              <Text style={d.platformNote}>{platNote}</Text>
-            </View>
-          </View>
-
-          {/* Item Details */}
-          <View style={d.card}>
-            <SectionHead icon="📦" title="ITEM DETAILS" />
-            <ItemDetailsGrid
-              brand={baseFlip.brand       || '—'}
-              category={baseFlip.category || '—'}
-              eraValue={baseFlip.era && baseFlip.era.toLowerCase() !== 'unknown' ? baseFlip.era : 'Needs tag/photo evidence'}
-              material={baseFlip.material || '—'}
-            />
-            {baseFlip.styleLabels?.length > 0 && (
-              <View style={d.tagRow}>
-                {baseFlip.styleLabels.map((l, i) => (
-                  <View key={i} style={d.tag}><Text style={d.tagText}>{l}</Text></View>
-                ))}
-              </View>
+              </>
             )}
           </View>
 
-          {/* Listings (shown for all modes) */}
+          {/* ── 8. Listing strategy ── */}
           <View style={d.card}>
-            <SectionHead icon="📋" title="LISTINGS" />
+            <DeepHead icon="sell" title="Listing Strategy" />
+            <View style={d.priceLogicStats}>
+              <PriceStat label="List Price" value={listStrat.listPriceRange} />
+              <PriceStat label="Accept Above" value={listStrat.acceptAbove} />
+            </View>
+            <Text style={d.confSubHead}>Keywords</Text>
+            <View style={d.kwWrap}>
+              {listStrat.keywords.map((k, i) => (
+                <View key={i} style={d.kwChip}><Text style={d.kwChipText}>{k}</Text></View>
+              ))}
+            </View>
+            <Text style={[d.confSubHead, { marginTop: 10 }]}>Photos to take</Text>
+            <Text style={d.inlineList}>{listStrat.photos.join(' · ')}</Text>
+            <Text style={[d.confSubHead, { marginTop: 10 }]}>Details to mention</Text>
+            <Text style={d.inlineList}>{listStrat.mention.join(' · ')}</Text>
+          </View>
+
+          {/* ── 9. Item evidence ── */}
+          <View style={d.card}>
+            <DeepHead icon="fact-check" title="Item Evidence" />
+            {evidence.present.map((f, i) => (
+              <View key={i} style={d.evidenceRow}>
+                <Text style={d.evidenceLabel}>{f.label}</Text>
+                <Text style={d.evidenceValue} numberOfLines={2}>{f.value}</Text>
+              </View>
+            ))}
+            {evidence.missing.length > 0 && (
+              <>
+                <Text style={[d.confSubHead, { marginTop: 10 }]}>Missing / not visible</Text>
+                <Text style={d.inlineList}>{evidence.missing.join(' · ')}</Text>
+              </>
+            )}
+          </View>
+
+          {/* ── 10. What could change this rating? ── */}
+          <View style={d.card}>
+            <DeepHead icon="tips-and-updates" title="What Could Change This Rating?" />
+            {changeItems.map((c, i) => (
+              <View key={i} style={d.bulletRow}>
+                <MaterialIcons name="chevron-right" size={15} color={GOLD} style={{ marginTop: 2 }} />
+                <Text style={d.bulletText}>{c}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Listings (generate / view) */}
+          <View style={d.card}>
+            <DeepHead icon="description" title="Listings" />
             {hasListings ? (
               <>
                 <View style={d.listingStatusRow}>
@@ -613,55 +692,13 @@ export default function AnalysisDetailsScreen() {
             )}
           </View>
 
-          {/* Average Sold Data */}
-          <View style={d.card}>
-            <SectionHead icon="💵" title="AVERAGE SOLD DATA" />
-            <DataRow label="Avg Sold Price (eBay)" value={baseFlip.avgSoldPrice > 0 ? `$${baseFlip.avgSoldPrice}` : 'N/A'} />
-            <DataRow label="Estimated Range"        value={`$${baseFlip.resaleRangeLow} – $${baseFlip.resaleRangeHigh}`} />
-            <Text style={d.smallNote}>Based on recent completed listings</Text>
-          </View>
-
-          {/* Verify Before Buying — shown when confidence < 70 */}
-          {showVerify && (
-            <View style={[d.card, d.verifyCard]}>
-              <SectionHead icon="🔍" title="VERIFY BEFORE BUYING" />
-              <Text style={d.verifyIntro}>
-                Confidence is {baseFlip.matchConfidence}%. Double-check before purchasing:
-              </Text>
-              {[
-                'Check tags and brand markings carefully',
-                'Compare condition to sold comps online',
-                'Confirm size, flaws, and any damage',
-                'Search manually if price seems unusually high',
-              ].map((tip, i) => (
-                <View key={i} style={d.verifyRow}>
-                  <MaterialIcons name="check-circle-outline" size={14} color={GOLD} />
-                  <Text style={d.verifyText}>{tip}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          {/* Risk flags if present */}
-          {(baseFlip.riskFlags?.length ?? 0) > 0 && (
-            <View style={d.card}>
-              <SectionHead icon="⚠️" title="RISK FLAGS" />
-              {baseFlip.riskFlags!.map((flag, i) => (
-                <View key={i} style={d.verifyRow}>
-                  <MaterialIcons name="warning-amber" size={14} color="#C07030" />
-                  <Text style={d.verifyText}>{flag}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          {/* Back to Summary */}
+          {/* ── 11. Back to Analysis ── */}
           <Pressable
             onPress={() => router.back()}
-            style={({ pressed }) => [d.backToSummaryBtn, { marginTop: 16 }, pressed && { opacity: 0.88 }]}
+            style={({ pressed }) => [d.backToSummaryBtn, { marginTop: 4 }, pressed && { opacity: 0.88 }]}
           >
             <MaterialIcons name="arrow-back" size={18} color={CREAM} />
-            <Text style={d.backToSummaryText}>Back to Summary</Text>
+            <Text style={d.backToSummaryText}>Back to Analysis</Text>
           </Pressable>
 
           <View style={{ height: 32 }} />
@@ -816,4 +853,70 @@ const d = StyleSheet.create({
     backgroundColor: FOREST, marginHorizontal: 14, paddingVertical: 16, borderRadius: 50,
   },
   backToSummaryText: { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '700', color: CREAM },
+
+  // ════════ DEEP ANALYSIS REDESIGN STYLES ════════
+  deepHead:        { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  deepHeadIcon:    { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(190,156,44,0.14)', borderWidth: 1, borderColor: 'rgba(190,156,44,0.4)', alignItems: 'center', justifyContent: 'center' },
+  deepHeadTitle:   { fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: '800', color: FOREST, flex: 1 },
+  deepHeadIconPrem:{ width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(255,255,255,0.12)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center' },
+  deepHeadTitlePrem:{ fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: '800', color: CREAM, flex: 1 },
+
+  recapCard: {
+    flexDirection: 'row', gap: 12, backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B,
+    marginHorizontal: 14, marginTop: 12, padding: 12, alignItems: 'center',
+    shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6, elevation: 2,
+  },
+  recapThumbWrap: { width: 76, height: 76, borderRadius: 12, overflow: 'hidden' },
+  recapThumb:     { width: '100%', height: '100%', backgroundColor: '#EDE3CB' },
+  recapInfo:      { flex: 1, minWidth: 0, gap: 6 },
+  recapName:      { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '800', color: FOREST, lineHeight: 20 },
+  recapChips:     { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+  recapChip:      { backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 7, paddingVertical: 2 },
+  recapChipConf:  { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
+  recapChipText:  { fontSize: 9.5, fontWeight: '700', color: BROWN },
+  recapRatingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 1 },
+  recapRatingBadge:{ borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
+  recapRatingText:{ fontSize: 10, fontWeight: '800', letterSpacing: 0.4, fontFamily: FONTS.serif },
+  recapResale:    { fontSize: 11, color: MUTED, fontWeight: '600' },
+  recapResaleVal: { color: GOLD, fontWeight: '800', fontFamily: FONTS.serif },
+
+  premiumCard: {
+    backgroundColor: '#1E3A20', borderRadius: 16, marginHorizontal: 14, marginTop: 12,
+    paddingTop: 0, paddingBottom: 14, paddingHorizontal: 15, overflow: 'hidden',
+    shadowColor: '#0A1A0A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 6,
+  },
+  premiumAccent:  { height: 3, backgroundColor: GOLD, marginHorizontal: -15, marginBottom: 14 },
+  premiumBulletRow:{ flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginBottom: 8 },
+  premiumBulletText:{ flex: 1, fontSize: 13, lineHeight: 19, color: '#EDE6D2' },
+
+  bulletRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 7 },
+  bulletText: { flex: 1, fontSize: 13, lineHeight: 19, color: BROWN },
+  paragraph:  { fontSize: 13, lineHeight: 20, color: BROWN, marginTop: 4 },
+
+  priceLogicStats: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  priceStat:       { flex: 1, backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 6, alignItems: 'center' },
+  priceStatVal:    { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: FOREST },
+  priceStatLabel:  { fontSize: 9, fontWeight: '700', color: MUTED, marginTop: 2, letterSpacing: 0.3, textTransform: 'uppercase' },
+
+  riskHeadRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  riskLevelPill: { borderWidth: 1, borderRadius: 50, paddingHorizontal: 10, paddingVertical: 3, marginBottom: 10 },
+  riskLevelText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
+
+  confBig:     { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: GOLD, marginBottom: 10 },
+  confSubHead: { fontSize: 11, fontWeight: '800', color: FOREST, letterSpacing: 0.4, textTransform: 'uppercase', marginBottom: 6 },
+
+  platRow:          { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 },
+  platNameBadge:    { backgroundColor: FOREST, borderRadius: 7, paddingHorizontal: 9, paddingVertical: 4, minWidth: 68, alignItems: 'center' },
+  platNameBadgeMuted:{ backgroundColor: 'transparent', borderWidth: 1, borderColor: CARD_B },
+  platNameText:     { fontSize: 11.5, fontWeight: '800', color: CREAM, fontFamily: FONTS.serif },
+  platNote:         { flex: 1, fontSize: 12, lineHeight: 17, color: BROWN },
+
+  kwWrap:     { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
+  kwChip:     { backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 9, paddingVertical: 4 },
+  kwChipText: { fontSize: 11, fontWeight: '600', color: BROWN },
+  inlineList: { fontSize: 12.5, lineHeight: 19, color: BROWN },
+
+  evidenceRow:   { flexDirection: 'row', gap: 10, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: '#EFE7D0' },
+  evidenceLabel: { width: 90, fontSize: 12, fontWeight: '800', color: FOREST },
+  evidenceValue: { flex: 1, fontSize: 12.5, color: BROWN, lineHeight: 17 },
 });

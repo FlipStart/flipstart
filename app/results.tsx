@@ -358,12 +358,12 @@ export default function ResultsScreen() {
   const [showDeepTip, setShowDeepTip] = useState(false);
   useEffect(() => {
     let alive = true;
+    setShowDeepTip(false); // clear prior account's visibility before async read
     AsyncStorage.getItem(deepTipKey)
       .then(seen => { if (alive && seen !== 'true') setShowDeepTip(true); })
       .catch(() => { /* if storage read fails, just don't show the tip */ });
     return () => { alive = false; };
-  }, [deepTipKey]);
-
+  }, [user?.id, deepTipKey]);
   // ── Deferred navigation after save ──────────────────────────────────────────
   // The save flow shows reward modals (brand reveals + major-achievement
   // celebrations) and possibly a review prompt. Previously handleConfirm
