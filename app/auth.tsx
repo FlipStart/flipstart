@@ -31,8 +31,8 @@ WebBrowser.maybeCompleteAuthSession();
 const FOREST    = '#2A4A2A';
 const SCAN_DARK = '#152815';
 const CREAM     = '#F4EED8';
-const PARCHMENT = '#F0E8D4';
-const CARD_B    = '#DDD0B0';
+const PARCHMENT = '#FFFFFF';   // page background — white app-wide
+const CARD_B    = '#DDD2AC';
 const BROWN     = '#5A3A1A';
 const MUTED     = '#8A7050';
 const GOLD      = '#BE9C2C';
@@ -875,7 +875,7 @@ const s = StyleSheet.create({
   errorText:      { fontSize: 13, color: '#721C24', flex: 1, lineHeight: 18 },
   emailExistsBox: { backgroundColor: '#FFF3CD', borderRadius: 10, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: '#FFEAA7' },
   emailExistsText:{ fontSize: 13, color: '#856404', lineHeight: 18, marginBottom: 6 },
-  input:          { backgroundColor: '#FFF9EE', borderRadius: 12, borderWidth: 1, borderColor: CARD_B, paddingHorizontal: 16, paddingVertical: 14, fontSize: 15, color: FOREST, marginBottom: 12 },
+  input:          { backgroundColor: '#FFFEFA', borderRadius: 12, borderWidth: 1, borderColor: CARD_B, paddingHorizontal: 16, paddingVertical: 14, fontSize: 15, color: FOREST, marginBottom: 12 },
   fieldHint:      { fontSize: 11, color: MUTED, marginBottom: 10, marginLeft: 4 },
   unameRow:       { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   unameIcon:      { marginLeft: 8 },
@@ -902,7 +902,7 @@ const e = StyleSheet.create({
   headerBlock:   { alignItems: 'center', marginBottom: 28, marginTop: 16 },
   wordmark:      { fontFamily: FONTS.serif, fontSize: 42, fontWeight: '900', color: FOREST, letterSpacing: -0.5, marginBottom: 14 },
   tagline:       { fontFamily: FONTS.serif, fontSize: 24, fontWeight: '700', color: SCAN_DARK, textAlign: 'center', lineHeight: 32 },
-  benefitsCard:  { backgroundColor: '#EDE0C4', borderRadius: 18, padding: 20, marginBottom: 28, gap: 14, borderWidth: 1, borderColor: CARD_B },
+  benefitsCard:  { backgroundColor: '#FFFEFA', borderRadius: 18, padding: 20, marginBottom: 28, gap: 14, borderWidth: 1, borderColor: CARD_B },
   benefitRow:    { flexDirection: 'row', alignItems: 'center', gap: 12 },
   benefitText:   { fontSize: 14, color: BROWN, flex: 1, lineHeight: 20 },
   ctaBlock:      { gap: 12, marginBottom: 24 },

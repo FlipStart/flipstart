@@ -116,8 +116,8 @@ const FAIL_CONFIG: Record<FailType, FailConfig> = {
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
-const PARCHMENT   = "#EDE0C4";
-const PARCHMENT_D = "#D9C9A3";
+const PARCHMENT   = "#FFFEFA";
+const PARCHMENT_D = "#DDD2AC";
 const FOREST      = "#1F3D1F";
 const GOLD        = "#BE9C2C";
 const GOLD_LIGHT  = "rgba(190,156,44,0.12)";
@@ -270,7 +270,7 @@ export function FailStateScreen({
 const s = StyleSheet.create({
   root: {
     flex:              1,
-    backgroundColor:   PARCHMENT,
+    backgroundColor:   "#FFFFFF",
     alignItems:        "center",
     justifyContent:    "center",
     paddingHorizontal: 28,

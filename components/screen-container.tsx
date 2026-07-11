@@ -4,7 +4,7 @@ import { SafeAreaView, type Edge } from "react-native-safe-area-context";
 import { cn } from "@/lib/utils";
 
 // Clean warm cream — no texture image. Matches the reference design.
-const PAGE_BG = "#ECE7D3";
+const PAGE_BG = "#FFFEFA";
 
 export interface ScreenContainerProps extends ViewProps {
   edges?: Edge[];

@@ -35,7 +35,7 @@ import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
 import { useAudioPlayer } from "expo-audio";
 import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
-import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
+import { logEvent, incrementSessionCount, saveScanRecord } from "@/lib/analytics";
 import { isHuntActive } from "@/lib/hunt-context";
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
@@ -110,10 +110,6 @@ export default function LoadingScreen() {
   const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPendingScan = useRef<import('@/lib/pending-scan').PendingScan | null>(null);
   const retryAttemptRef = useRef(0);   // tracks auto-retry attempts for exponential backoff
-  // Stable id for THIS scan attempt — generated once per loading-screen mount.
-  // Sent to the server so the count is idempotent: even if the mutation somehow
-  // fires more than once for the same item, it's only counted once.
-  const scanAttemptIdRef = useRef(`att_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
 
   // ── Audio ─────────────────────────────────────────────────────────────────
   const player       = useAudioPlayer(COIN_SOUND);
@@ -247,16 +243,7 @@ export default function LoadingScreen() {
 
       // Analytics: scan submitted
       try {
-        logEvent("scan_submitted", {
-          tagPresent:        !!tag,
-          detailPresent:     !!detail,
-          scan_type:         "normal",
-          image_count:       1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0),
-          has_tag_photo:     !!tag,
-          has_detail_photo:  !!detail,
-          model_name:        "gpt-4o",
-          api_provider:      "openai",
-        });
+        logEvent("scan_submitted", { tagPresent: !!tag, detailPresent: !!detail });
         incrementSessionCount("scanCount");
       } catch { /* never block analysis */ }
 
@@ -268,8 +255,6 @@ export default function LoadingScreen() {
           }, HARD_TIMEOUT_MS);
         });
 
-        const scannerId = await getScannerId().catch(() => undefined);
-
         const result = await Promise.race([
           analyzeFastMutation.mutateAsync({
             imageBase64,
@@ -278,8 +263,6 @@ export default function LoadingScreen() {
             tagMimeType:        tag?.mimeType,
             detailImageBase64:  detail?.base64,
             detailMimeType:     detail?.mimeType,
-            scannerId,
-            scanAttemptId:      scanAttemptIdRef.current,
           }),
           timeoutPromise,
         ]);
@@ -358,7 +341,7 @@ export default function LoadingScreen() {
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
           try {
-            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf, scan_type: "normal", image_count: 1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0), model_name: "gpt-4o" });
+            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf });
             incrementSessionCount("failedScanCount");
           } catch { /* never block */ }
           setFailState({ type: "bad_input", message: "", confidence: matchConf });
@@ -373,7 +356,7 @@ export default function LoadingScreen() {
           addScan(scanResult);
           try { player.pause(); } catch { /* ignore */ }
           try {
-            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf, scan_type: "normal", image_count: 1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0), model_name: "gpt-4o" });
+            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf });
             incrementSessionCount("failedScanCount");
           } catch { /* never block */ }
           setFailState({ type: "low_confidence", message: "", confidence: matchConf });
@@ -392,18 +375,10 @@ export default function LoadingScreen() {
         // Analytics: scan completed + save structured scan record for future AI memory
         try {
           logEvent("scan_completed", {
-            confidence:        matchConf,
-            category:          safeIdentification.category,
-            brand:             safeIdentification.brand,
-            recommendation:    result.recommendation ?? "",
-            // Cost/budget metadata (client-side knowables; token data is server-only)
-            scan_type:         "normal",
-            image_count:       1 + (!!tag ? 1 : 0) + (!!detail ? 1 : 0),
-            has_tag_photo:     !!tag,
-            has_detail_photo:  !!detail,
-            model_name:        "gpt-4o",
-            api_provider:      "openai",
-            // prompt_tokens / completion_tokens / estimated_cost_usd: server-only, left null
+            confidence:      matchConf,
+            category:        safeIdentification.category,
+            brand:           safeIdentification.brand,
+            recommendation:  result.recommendation ?? "",
           });
           incrementSessionCount("completedScanCount");
           saveScanRecord({
@@ -463,9 +438,9 @@ export default function LoadingScreen() {
           raw.includes("GLOBAL_SCAN_LIMIT_REACHED") ||
           raw.toLowerCase().includes("scan limit")
         ) {
-          // Scan limit — show dedicated limit screen, do not auto-retry
+          // Scan limit — show immediately, do not auto-retry
           try { player.pause(); } catch {}
-          setFailState({ type: "scan_limit", message: "" });
+          setFailState({ type: "timeout", message: "Daily scan limit reached. Try again tomorrow." });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
           }
@@ -502,19 +477,47 @@ export default function LoadingScreen() {
           failType = "server"; // default unknown → server, most recoverable
         }
 
-        // ── No auto-retry ───────────────────────────────────────────────────
-        // A single attempt with a 30s hard timeout. If it fails, show the fail
-        // screen immediately so the user isn't stuck waiting through multiple
-        // silent retries (previously up to ~90s). The user can manually retry
-        // from the fail screen if they choose.
+        // ── Exponential auto-retry (server/offline/timeout only) ───────────
+        // Attempt 1 → immediate, Attempt 2 → +2s, Attempt 3 → +5s
+        // Bad input / low confidence → never auto-retry (user action needed)
+        const shouldAutoRetry = (failType === "server" || failType === "timeout" || failType === "offline")
+          && retryAttemptRef.current < 3;
 
-        // ── Show fail screen ───────────────────────────────────────────────
-        console.error(`[loading] scan failed — showing fail screen. type: ${failType} raw: ${raw.substring(0, 80)}`);
+        if (shouldAutoRetry) {
+          const attempt = retryAttemptRef.current;
+          retryAttemptRef.current += 1;
+          const delayMs = attempt === 0 ? 0 : attempt === 1 ? 2000 : 5000;
+
+          console.log(`[loading] auto-retry ${attempt + 1}/3 in ${delayMs}ms — type: ${failType}`);
+          try {
+            logEvent("scan_auto_retry", {
+              attempt:     attempt + 1,
+              failType,
+              delayMs,
+              errorRaw:    raw.slice(0, 80),
+            });
+          } catch { /* never block */ }
+
+          await new Promise(res => setTimeout(res, delayMs));
+
+          // Restore pending scan for retry and re-run doScan
+          if (lastPendingScan.current) {
+            const { setPendingScan } = require("@/lib/pending-scan");
+            setPendingScan(lastPendingScan.current);
+          }
+          hasStartedRef.current = false;
+          setScanKey(k => k + 1);
+          return;
+        }
+
+        // ── All retries exhausted — show fail screen ────────────────────────
+        const totalAttempts = retryAttemptRef.current;
+        console.error(`[loading] all retries exhausted (${totalAttempts} auto + manual) — showing fail screen. type: ${failType} raw: ${raw.substring(0, 80)}`);
 
         try {
           logEvent("scan_failed", {
             errorType:     failType,
-            autoRetries:   0,
+            autoRetries:   totalAttempts,
             durationMs,
             errorRaw:      raw.slice(0, 80),
           });
@@ -523,7 +526,7 @@ export default function LoadingScreen() {
 
         const safeMsg = (raw.length > 0 && raw.length < 120 && !raw.startsWith("{") && raw !== "__TIMEOUT__")
           ? raw : "";
-        setRetryCount(0);
+        setRetryCount(totalAttempts);
         setFailState({ type: failType, message: safeMsg });
 
         if (Platform.OS !== "web") {
@@ -632,7 +635,6 @@ export default function LoadingScreen() {
         onRetry={handleRetry}
         onRetake={handleRetake}
         onReturnToHunt={handleReturnToHunt}
-        onReturnHome={() => { hasNavigated.current = true; try { player.pause(); } catch {} router.replace('/(tabs)' as any); }}
         onContinueAnyway={handleContinueAnyway}
       />
     );
@@ -718,12 +720,12 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.35)",
   },
   headerIcon:  { width: 36, height: 36, justifyContent: "center", alignItems: "center" },
-  headerTitle: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: "700", color: "#ECE7D3", letterSpacing: 0.2 },
+  headerTitle: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: "700", color: "#FFFEFA", letterSpacing: 0.2 },
 
   bannerOverlay: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },
   bannerText: {
     fontFamily: FONTS.serif, fontSize: 22, fontWeight: "800",
-    color: "#ECE7D3", letterSpacing: 1.2,
+    color: "#FFFEFA", letterSpacing: 1.2,
     textShadowColor: "rgba(0,0,0,0.40)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4,
   },
 

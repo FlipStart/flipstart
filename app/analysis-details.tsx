@@ -36,9 +36,9 @@ function hasGeneratedListings(ld: { ebay?: { title?: string } | null; depop?: { 
 }
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
-const BG     = '#F0E8D4';
-const CARD   = '#FFF9EE';
-const CARD_B = '#DDD0B0';
+const BG     = '#FFFFFF';
+const CARD   = '#FFFEFA';
+const CARD_B = '#DDD2AC';
 const FOREST = '#2A4A2A';
 const BROWN  = '#5A3A1A';
 const MUTED  = '#8A7050';
@@ -738,7 +738,7 @@ const d = StyleSheet.create({
   summaryRow:     { flexDirection: 'row', gap: 14, alignItems: 'flex-start' },
   thumbWrap:      { position: 'relative', borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: CARD_B },
   summaryThumb:   { width: 78, height: 78, borderRadius: 9 },
-  thumbFallback:  { backgroundColor: '#EDE0C4', justifyContent: 'center', alignItems: 'center' },
+  thumbFallback:  { backgroundColor: '#FFFEFA', justifyContent: 'center', alignItems: 'center' },
   thumbZoomBadge: { position: 'absolute', bottom: 3, right: 3, backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 6, padding: 2 },
   summaryInfo:    { flex: 1, gap: 4 },
   summaryName:    { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '700', color: FOREST, lineHeight: 22, flexShrink: 1 },
@@ -841,7 +841,7 @@ const d = StyleSheet.create({
 
   // Verify Before Buying
   verifyCard: { borderColor: GOLD + '50', backgroundColor: '#FFFBEE' },
-  warningBanner:     { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FFF8EC', borderRadius: 10, borderWidth: 1, borderColor: '#C07030' + '50', marginHorizontal: 14, marginTop: 10, padding: 12 },
+  warningBanner:     { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FFFEFA', borderRadius: 10, borderWidth: 1, borderColor: '#C07030' + '50', marginHorizontal: 14, marginTop: 10, padding: 12 },
   warningBannerText: { flex: 1, fontSize: 12, color: '#7A4010', lineHeight: 18 },
   verifyIntro:{ fontSize: 12, color: BROWN, marginBottom: 10, lineHeight: 18 },
   verifyRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 7 },
@@ -867,11 +867,11 @@ const d = StyleSheet.create({
     shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6, elevation: 2,
   },
   recapThumbWrap: { width: 76, height: 76, borderRadius: 12, overflow: 'hidden' },
-  recapThumb:     { width: '100%', height: '100%', backgroundColor: '#EDE3CB' },
+  recapThumb:     { width: '100%', height: '100%', backgroundColor: '#FFFEFA' },
   recapInfo:      { flex: 1, minWidth: 0, gap: 6 },
   recapName:      { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '800', color: FOREST, lineHeight: 20 },
   recapChips:     { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  recapChip:      { backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 7, paddingVertical: 2 },
+  recapChip:      { backgroundColor: '#F8F7F0', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 7, paddingVertical: 2 },
   recapChipConf:  { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
   recapChipText:  { fontSize: 9.5, fontWeight: '700', color: BROWN },
   recapRatingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 1 },
@@ -894,7 +894,7 @@ const d = StyleSheet.create({
   paragraph:  { fontSize: 13, lineHeight: 20, color: BROWN, marginTop: 4 },
 
   priceLogicStats: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  priceStat:       { flex: 1, backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 6, alignItems: 'center' },
+  priceStat:       { flex: 1, backgroundColor: '#F8F7F0', borderWidth: 1, borderColor: CARD_B, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 6, alignItems: 'center' },
   priceStatVal:    { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: FOREST },
   priceStatLabel:  { fontSize: 9, fontWeight: '700', color: MUTED, marginTop: 2, letterSpacing: 0.3, textTransform: 'uppercase' },
 
@@ -913,11 +913,11 @@ const d = StyleSheet.create({
   platNote:         { flex: 1, fontSize: 12, lineHeight: 17, color: BROWN },
 
   kwWrap:     { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
-  kwChip:     { backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 9, paddingVertical: 4 },
+  kwChip:     { backgroundColor: '#F8F7F0', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 9, paddingVertical: 4 },
   kwChipText: { fontSize: 11, fontWeight: '600', color: BROWN },
   inlineList: { fontSize: 12.5, lineHeight: 19, color: BROWN },
 
-  evidenceRow:   { flexDirection: 'row', gap: 10, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: '#EFE7D0' },
+  evidenceRow:   { flexDirection: 'row', gap: 10, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: '#F4F1E8' },
   evidenceLabel: { width: 90, fontSize: 12, fontWeight: '800', color: FOREST },
   evidenceValue: { flex: 1, fontSize: 12.5, color: BROWN, lineHeight: 17 },
 });

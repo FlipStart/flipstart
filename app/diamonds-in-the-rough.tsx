@@ -53,11 +53,11 @@ import {
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const FOREST = '#2A4A2A';
 const GOLD   = '#BE9C2C';
-const PARCH  = '#ECE7D3';
-const CARD   = '#F2EDD8';
-const IVORY  = '#FAF6EE';
-const BORDER = '#C8B88A';
-const TAN    = '#D6C8A3';
+const PARCH  = '#FFFFFF';
+const CARD   = '#F8F7F0';
+const IVORY  = '#FFFEFA';
+const BORDER = '#DDD2AC';
+const TAN    = '#F4F1E8';
 const BROWN  = '#3D2A12';
 const MUTED  = '#8A7050';
 
@@ -624,7 +624,7 @@ const s = StyleSheet.create({
   arrowBtn: {
     position: 'absolute', top: EXHIBIT_H / 2 - 21, zIndex: 5,
     width: 42, height: 42, borderRadius: 21,
-    backgroundColor: '#F3ECD6F2', borderWidth: 1.5, borderColor: BORDER,
+    backgroundColor: '#FFFEFAF2', borderWidth: 1.5, borderColor: BORDER,
     justifyContent: 'center', alignItems: 'center',
   },
 
@@ -678,7 +678,7 @@ const s = StyleSheet.create({
 
   slot: { width: 78, alignItems: 'center', borderRadius: 12, padding: 7, gap: 6 },
   slotUnlocked: { backgroundColor: IVORY, borderWidth: 1.5, borderColor: BORDER },
-  slotLocked: { backgroundColor: '#E4DCC4', borderWidth: 1.5, borderColor: TAN, borderStyle: 'dashed' },
+  slotLocked: { backgroundColor: '#F4F1E8', borderWidth: 1.5, borderColor: TAN, borderStyle: 'dashed' },
   slotActive: { borderColor: FOREST, borderStyle: 'solid' },
   slotThumb: {
     width: 60, height: 54, borderRadius: 8, overflow: 'hidden',

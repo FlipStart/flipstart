@@ -38,10 +38,10 @@ const FEEDBACK_EMAIL = 'flipstartapp@gmail.com';
 // ─── Palette — identical to profile.tsx ──────────────────────────────────────
 const FOREST      = '#2A4A2A';
 const GOLD        = '#BE9C2C';
-const PARCH       = '#ECE7D3';
-const CARD        = '#F2EDD8';
-const BORDER      = '#C8B88A';
-const TAN         = '#D6C8A3';
+const PARCH       = '#FFFFFF';   // page background — white app-wide
+const CARD        = '#FFFEFA';
+const BORDER      = '#DDD2AC';
+const TAN         = '#DDD2AC';
 const BROWN       = '#3D2A12';
 const MUTED       = '#8A7050';
 const AVATAR_BLUE = '#8AABBF';
@@ -92,13 +92,18 @@ export default function SettingsScreen() {
   useFocusEffect(useCallback(() => {
     const uid = user?.id ?? null;
     if (uid) {
-      AsyncStorage.getItem(avatarKey(uid))
-        .then(uri => setAvatarUri(uri ?? null))
-        .catch(() => {});
+      // Prefer the Supabase-backed avatar; local cache is the fallback.
+      if (profile?.avatar_url) {
+        setAvatarUri(profile.avatar_url);
+      } else {
+        AsyncStorage.getItem(avatarKey(uid))
+          .then(uri => setAvatarUri(uri ?? null))
+          .catch(() => {});
+      }
     } else {
       setAvatarUri(null);
     }
-  }, [user?.id]));
+  }, [user?.id, profile?.avatar_url]));
 
   // ── Handlers (all original logic preserved) ───────────────────────────────
   const handlePermissionTap = (status: PermStatus, trigger: 'camera' | 'photo' | 'location') => {

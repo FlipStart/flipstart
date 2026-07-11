@@ -1,11 +1,15 @@
 /**
- * history.tsx
+ * history.tsx — Scan History (redesigned)
  *
  * Source of truth: useFlipStore.flips ONLY.
  * scan-context is NOT used here — it only manages the temporary scan pipeline.
  *
  * Stats are derived from useFlipStore.globalStats (computed via flipCalculations.ts).
- * No formulas live in this file.
+ * No formulas live in this file except realized-profit (derived from sold items).
+ *
+ * Tapping a scan opens /scan-detail (the Flip Record screen). Hunt bundles
+ * still open /hunt-history. Swipe-to-delete, impact-modal deletion, and cloud
+ * reconciliation are preserved verbatim from the previous implementation.
  */
 
 import { navGuard } from '@/lib/navGuard';
@@ -20,12 +24,11 @@ import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useRef, useMemo, useEffect } from 'react';
 
-import { ScreenContainer } from '@/components/screen-container';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { FlipResult, HistoryEntry, HuntBundle, isHuntBundle } from '@/types/flip';
-import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
-import { normalizeBuyRating } from '@/utils/recommendation';
+import { normalizeBuyRating, type CanonicalRating } from '@/utils/recommendation';
+import { calculateFees } from '@/utils/flipCalculations';
 import { useAuth } from '@/lib/auth-context';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import {
@@ -33,6 +36,24 @@ import {
 } from '@/lib/scanDeletionImpact';
 import { DeleteImpactModal } from '@/components/DeleteImpactModal';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
+
+// ─── Palette (matches results / deep analysis / scan-detail) ─────────────────
+const BG     = '#FFFFFF';
+const CARD   = '#FFFEFA';
+const CARD_B = '#DDD2AC';
+const FOREST = '#2A4A2A';
+const BROWN  = '#5A3A1A';
+const MUTED  = '#8A7050';
+const GOLD   = '#BE9C2C';
+const CREAM  = '#F4EED8';
+const MAROON = '#6E211B';
+
+const RATING_THEME: Record<CanonicalRating, { fg: string; border: string; bg: string }> = {
+  'STRONG BUY': { fg: FOREST,    border: GOLD,      bg: '#F5EFDB' },
+  'BUY':        { fg: '#2A5A2A', border: '#7CA87C', bg: '#EFF6EC' },
+  'RISKY BUY':  { fg: '#7A5C1E', border: '#C9A94E', bg: '#F7EFD9' },
+  'SKIP':       { fg: MAROON,    border: '#C08A80', bg: '#F5E9E7' },
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +69,12 @@ function formatDate(ts: number): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+/** Actual realized profit for a sold flip (same fee model as predictions). */
+function realizedProfit(f: FlipResult): number {
+  const sp = f.soldPrice ?? 0;
+  return Math.round(sp - calculateFees(sp) - f.thriftPrice);
+}
+
 // ─── Rank badge ───────────────────────────────────────────────────────────────
 
 function RankBadge({ rank }: { rank: number }) {
@@ -56,7 +83,7 @@ function RankBadge({ rank }: { rank: number }) {
     2: { bg: '#A8A9AD', text: '#1A1A1A', label: '🥈' },
     3: { bg: '#CD7F32', text: '#2A1000', label: '🥉' },
   };
-  const c = cfg[rank] ?? { bg: V.tan, text: V.textMuted, label: `#${rank}` };
+  const c = cfg[rank] ?? { bg: '#F4F1E8', text: MUTED, label: `#${rank}` };
   return (
     <View style={[rb.badge, { backgroundColor: c.bg }]}>
       <Text style={[rb.text, { color: c.text }]}>{c.label}</Text>
@@ -64,7 +91,7 @@ function RankBadge({ rank }: { rank: number }) {
   );
 }
 const rb = StyleSheet.create({
-  badge: { width: 34, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)' },
+  badge: { width: 34, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(90,58,26,0.12)' },
   text:  { fontSize: 13, fontWeight: '800' },
 });
 
@@ -104,7 +131,13 @@ function FlipCard({
     })
   ).current;
 
-  const profitColor = item.profit >= 15 ? V.green : item.profit >= 0 ? V.greenMuted : V.error;
+  const rating  = normalizeBuyRating((item as any).recommendation?.label ?? (item as any).buyLabel ?? (item as any).recommendation);
+  const rTheme  = RATING_THEME[rating];
+  const isSold  = item.status === 'sold' && (item.soldPrice ?? 0) > 0;
+  const isPassed = item.status === 'passed';
+  const hasBought = item.status === 'bought' || item.status === 'listed' || item.status === 'sold';
+  const shownProfit = isSold ? realizedProfit(item) : item.profit;
+  const profitColor = shownProfit >= 15 ? '#2A5A2A' : shownProfit >= 0 ? '#7A5C1E' : '#8A3A2A';
 
   return (
     <View style={fc.wrapper}>
@@ -118,7 +151,7 @@ function FlipCard({
             setTimeout(onDelete, 180);
           }}
         >
-          <MaterialIcons name="delete-outline" size={22} color={V.white} />
+          <MaterialIcons name="delete-outline" size={22} color={CREAM} />
           <Text style={fc.deleteText}>Delete</Text>
         </Pressable>
       </View>
@@ -137,7 +170,12 @@ function FlipCard({
               <Image source={{ uri: item.imageUri }} style={fc.thumb} contentFit="cover" />
             ) : (
               <View style={[fc.thumb, fc.thumbFallback]}>
-                <MaterialIcons name="checkroom" size={22} color={V.textMuted} />
+                <MaterialIcons name="checkroom" size={24} color={MUTED} />
+              </View>
+            )}
+            {isSold && (
+              <View style={fc.soldRibbon}>
+                <Text style={fc.soldRibbonText}>SOLD</Text>
               </View>
             )}
           </View>
@@ -145,22 +183,28 @@ function FlipCard({
           {/* Content */}
           <View style={fc.content}>
             <Text style={fc.name} numberOfLines={1}>{item.itemName}</Text>
-            <Text style={fc.brand} numberOfLines={1}>{item.brand} · {item.category}</Text>
-            {/* Shows user-entered thrift price, NOT max buy */}
-            <Text style={fc.thrift}>Bought at: ${item.thriftPrice}</Text>
-            <Text style={fc.date}>{formatDate(item.timestamp)}</Text>
+            <Text style={fc.brand} numberOfLines={1}>
+              {item.brand}{item.brand && item.category ? ' · ' : ''}{item.category}
+            </Text>
+            <View style={fc.metaRow}>
+              <View style={[fc.ratingPill, { borderColor: rTheme.border, backgroundColor: rTheme.bg }]}>
+                <Text style={[fc.ratingPillText, { color: rTheme.fg }]} numberOfLines={1}>{rating}</Text>
+              </View>
+              {isPassed && (
+                <View style={fc.passedPill}><Text style={fc.passedPillText}>PASSED</Text></View>
+              )}
+            </View>
+            <Text style={fc.date}>
+              {formatDate(item.timestamp)}{hasBought && item.thriftPrice > 0 ? ` · paid $${item.thriftPrice}` : ''}
+            </Text>
           </View>
 
           {/* Right */}
           <View style={fc.right}>
-            <Text style={[fc.profit, { color: profitColor }]}>
-              {item.profit >= 0 ? `+$${item.profit}` : `-$${Math.abs(item.profit)}`}
+            <Text style={[fc.profit, { color: profitColor }]} numberOfLines={1}>
+              {shownProfit >= 0 ? `+$${shownProfit}` : `-$${Math.abs(shownProfit)}`}
             </Text>
-            <View style={[fc.labelPill, { borderColor: profitColor + '55' }]}>
-              <Text style={[fc.labelPillText, { color: profitColor }]} numberOfLines={1}>
-                {normalizeBuyRating((item as any).recommendation?.label ?? (item as any).buyLabel ?? (item as any).recommendation)}
-              </Text>
-            </View>
+            <Text style={fc.profitSub}>{isSold ? 'realized' : 'est. profit'}</Text>
           </View>
         </Pressable>
       </Animated.View>
@@ -169,33 +213,39 @@ function FlipCard({
 }
 
 const fc = StyleSheet.create({
-  wrapper:    { marginBottom: 10, borderRadius: 14, overflow: 'hidden' },
-  deleteZone: { position: 'absolute', top: 0, bottom: 0, right: 0, width: DELETE_WIDTH, backgroundColor: '#8B2A1A', justifyContent: 'center', alignItems: 'center' },
+  wrapper:    { marginBottom: 10, borderRadius: 16, overflow: 'hidden' },
+  deleteZone: { position: 'absolute', top: 0, bottom: 0, right: 0, width: DELETE_WIDTH, backgroundColor: MAROON, justifyContent: 'center', alignItems: 'center' },
   deleteBtn:  { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', gap: 4 },
-  deleteText: { fontSize: 10, fontWeight: '700', color: V.white },
-  surface:    { backgroundColor: V.pageBg, borderRadius: 14 },
-  card:       { flexDirection: 'row', alignItems: 'center', backgroundColor: V.cardBg, borderRadius: 14, borderWidth: 1, borderColor: V.border, padding: 12, gap: 11, shadowColor: V.textDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
-  thumbWrap:  { borderRadius: 11, overflow: 'hidden', borderWidth: 1, borderColor: V.border },
-  thumb:      { width: 56, height: 56, borderRadius: 10 },
-  thumbFallback: { backgroundColor: V.tan, justifyContent: 'center', alignItems: 'center' },
-  content:    { flex: 1, gap: 2 },
-  name:       { fontSize: 14, fontWeight: '700', color: V.textDark },
-  brand:      { fontSize: 11, color: V.textMuted },
-  thrift:     { fontSize: 11, color: V.textMuted },
-  date:       { fontSize: 10, color: V.textSubtle, marginTop: 1 },
-  right:      { alignItems: 'flex-end', gap: 4, minWidth: 64 },
-  profit:     { fontSize: 17, fontWeight: '900' },
-  labelPill:  { borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, maxWidth: 110 },
-  labelPillText: { fontSize: 9, fontWeight: '700' },
+  deleteText: { fontSize: 10, fontWeight: '700', color: CREAM },
+  surface:    { backgroundColor: BG, borderRadius: 16 },
+  card:       { flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B, padding: 12, gap: 12, shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 6, elevation: 2 },
+  thumbWrap:  { borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: CARD_B, position: 'relative' },
+  thumb:      { width: 62, height: 62, backgroundColor: '#FFFEFA' },
+  thumbFallback: { justifyContent: 'center', alignItems: 'center' },
+  soldRibbon: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(42,74,42,0.92)', paddingVertical: 2, alignItems: 'center' },
+  soldRibbonText: { fontSize: 8, fontWeight: '800', color: CREAM, letterSpacing: 1.2 },
+  content:    { flex: 1, gap: 3, minWidth: 0 },
+  name:       { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: FOREST },
+  brand:      { fontSize: 11, color: MUTED, fontWeight: '600' },
+  metaRow:    { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  ratingPill: { borderWidth: 1, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, maxWidth: 110 },
+  ratingPillText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.3 },
+  passedPill:     { backgroundColor: '#F5E9E7', borderWidth: 1, borderColor: '#C08A80', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  passedPillText: { fontSize: 9, fontWeight: '800', color: MAROON, letterSpacing: 0.3 },
+  date:       { fontSize: 10.5, color: MUTED },
+  right:      { alignItems: 'flex-end', gap: 1, minWidth: 66 },
+  profit:     { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800' },
+  profitSub:  { fontSize: 9, color: MUTED, fontWeight: '600' },
 });
 
 // ─── Top flip card ────────────────────────────────────────────────────────────
 
 function TopFlipCard({ item, rank, onPress }: { item: FlipResult; rank: number; onPress: () => void }) {
+  const isSold = item.status === 'sold' && (item.soldPrice ?? 0) > 0;
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [tf.card, pressed && { opacity: 0.88 }]}
+      style={({ pressed }) => [tf.card, rank === 1 && tf.cardFirst, pressed && { opacity: 0.88 }]}
     >
       <RankBadge rank={rank} />
 
@@ -204,40 +254,45 @@ function TopFlipCard({ item, rank, onPress }: { item: FlipResult; rank: number; 
           <Image source={{ uri: item.imageUri }} style={tf.thumb} contentFit="cover" />
         ) : (
           <View style={[tf.thumb, tf.thumbFallback]}>
-            <MaterialIcons name="checkroom" size={20} color={V.textMuted} />
+            <MaterialIcons name="checkroom" size={20} color={MUTED} />
           </View>
         )}
       </View>
 
       <View style={tf.info}>
         <Text style={tf.name} numberOfLines={1}>{item.itemName}</Text>
-        <Text style={tf.brand}>{item.brand}</Text>
-        <View style={tf.roiWrap}>
-          <Text style={tf.roi}>{item.roi}% ROI</Text>
+        <Text style={tf.brand} numberOfLines={1}>{item.brand}</Text>
+        <View style={tf.badgeRow}>
+          <View style={tf.roiWrap}><Text style={tf.roi}>{item.roi}% ROI</Text></View>
+          {isSold && <View style={tf.soldChip}><Text style={tf.soldChipText}>SOLD</Text></View>}
         </View>
       </View>
 
       <View style={tf.profitBlock}>
         <Text style={tf.profit}>+${item.profit}</Text>
-        <Text style={tf.profitSub}>profit</Text>
+        <Text style={tf.profitSub}>est. profit</Text>
       </View>
     </Pressable>
   );
 }
 
 const tf = StyleSheet.create({
-  card:         { flexDirection: 'row', alignItems: 'center', backgroundColor: V.cardBg, borderRadius: 14, borderWidth: 1, borderColor: V.border, padding: 12, gap: 10, marginBottom: 10, shadowColor: V.textDark, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
-  thumbWrap:    { borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: V.border },
-  thumb:        { width: 48, height: 48, borderRadius: 9 },
-  thumbFallback:{ backgroundColor: V.tan, justifyContent: 'center', alignItems: 'center' },
-  info:         { flex: 1, gap: 3 },
-  name:         { fontSize: 14, fontWeight: '700', color: V.textDark },
-  brand:        { fontSize: 11, color: V.textMuted },
+  card:         { flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B, padding: 12, gap: 10, marginBottom: 10, shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 6, elevation: 2 },
+  cardFirst:    { borderColor: GOLD + '99', borderWidth: 1.5, shadowColor: GOLD, shadowOpacity: 0.2, shadowRadius: 8 },
+  thumbWrap:    { borderRadius: 11, overflow: 'hidden', borderWidth: 1, borderColor: CARD_B },
+  thumb:        { width: 50, height: 50, backgroundColor: '#FFFEFA' },
+  thumbFallback:{ justifyContent: 'center', alignItems: 'center' },
+  info:         { flex: 1, gap: 3, minWidth: 0 },
+  name:         { fontFamily: FONTS.serif, fontSize: 14.5, fontWeight: '800', color: FOREST },
+  brand:        { fontSize: 11, color: MUTED, fontWeight: '600' },
+  badgeRow:     { flexDirection: 'row', alignItems: 'center', gap: 5 },
   roiWrap:      { flexDirection: 'row' },
-  roi:          { fontSize: 10, fontWeight: '700', color: V.green, backgroundColor: V.greenLight, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
+  roi:          { fontSize: 10, fontWeight: '700', color: '#2A5A2A', backgroundColor: '#EFF6EC', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, overflow: 'hidden' },
+  soldChip:     { backgroundColor: FOREST, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  soldChipText: { fontSize: 8.5, fontWeight: '800', color: CREAM, letterSpacing: 0.8 },
   profitBlock:  { alignItems: 'flex-end', gap: 1 },
-  profit:       { fontSize: 18, fontWeight: '800', color: V.green },
-  profitSub:    { fontSize: 9, color: V.textMuted },
+  profit:       { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: '#2A5A2A' },
+  profitSub:    { fontSize: 9, color: MUTED, fontWeight: '600' },
 });
 
 
@@ -273,7 +328,7 @@ function HuntBundleCard({
     })
   ).current;
 
-  const profitColor = bundle.totalEstimatedProfit >= 0 ? V.green : V.error;
+  const profitColor = bundle.totalEstimatedProfit >= 0 ? '#2A5A2A' : '#8A3A2A';
   const durationMin = Math.round(bundle.durationMs / 60000);
 
   return (
@@ -287,18 +342,18 @@ function HuntBundleCard({
             setTimeout(onDelete, 180);
           }}
         >
-          <MaterialIcons name="delete-outline" size={22} color={V.white} />
+          <MaterialIcons name="delete-outline" size={22} color={CREAM} />
           <Text style={fc.deleteText}>Delete</Text>
         </Pressable>
       </View>
-      <Animated.View style={[{ transform: [{ translateX }] }]} {...pan.panHandlers}>
+      <Animated.View style={[hb.surface, { transform: [{ translateX }] }]} {...pan.panHandlers}>
         <Pressable
           onPress={() => swipeOpen.current ? snapClosed() : onPress()}
           style={({ pressed }) => [hb.card, pressed && !swipeOpen.current && { opacity: 0.88 }]}
         >
           {/* Trophy icon — distinct from hunt-scan-icon.png */}
           <View style={hb.iconWrap}>
-            <MaterialIcons name="emoji-events" size={32} color={V.gold} />
+            <MaterialIcons name="emoji-events" size={30} color={GOLD} />
           </View>
 
           <View style={hb.info}>
@@ -328,19 +383,20 @@ function HuntBundleCard({
 }
 
 const hb = StyleSheet.create({
-  wrapper:    { marginBottom: 10 },
-  card:       { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF9EE', borderRadius: 14, borderWidth: 1.5, borderColor: '#BE9C2C55', padding: 12, gap: 10 },
-  iconWrap:   { width: 52, height: 52, borderRadius: 12, backgroundColor: '#BE9C2C18', borderWidth: 1, borderColor: '#BE9C2C44', justifyContent: 'center', alignItems: 'center' },
-  info:       { flex: 1, gap: 3 },
+  wrapper:    { marginBottom: 10, borderRadius: 16, overflow: 'hidden' },
+  surface:    { backgroundColor: BG, borderRadius: 16 },
+  card:       { flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 16, borderWidth: 1.5, borderColor: GOLD + '66', padding: 12, gap: 10 },
+  iconWrap:   { width: 52, height: 52, borderRadius: 13, backgroundColor: GOLD + '18', borderWidth: 1, borderColor: GOLD + '44', justifyContent: 'center', alignItems: 'center' },
+  info:       { flex: 1, gap: 3, minWidth: 0 },
   titleRow:   { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  bundgeLabel:{ fontSize: 8, fontWeight: '800', color: '#BE9C2C', letterSpacing: 1.2, backgroundColor: '#BE9C2C18', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
-  title:      { fontSize: 14, fontWeight: '800', color: '#5A3A1A' },
+  bundgeLabel:{ fontSize: 8, fontWeight: '800', color: GOLD, letterSpacing: 1.2, backgroundColor: GOLD + '18', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
+  title:      { fontFamily: FONTS.serif, fontSize: 14.5, fontWeight: '800', color: BROWN },
   metaRow:    { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  meta:       { fontSize: 11, color: '#8A7050' },
-  metaDot:    { fontSize: 11, color: '#8A7050' },
+  meta:       { fontSize: 11, color: MUTED },
+  metaDot:    { fontSize: 11, color: MUTED },
   profitBlock:{ alignItems: 'flex-end', gap: 1 },
-  profit:     { fontSize: 18, fontWeight: '800' },
-  profitSub:  { fontSize: 9, color: '#8A7050' },
+  profit:     { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800' },
+  profitSub:  { fontSize: 9, color: MUTED },
 });
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
@@ -351,7 +407,7 @@ export default function HistoryScreen() {
   const router   = useRouter();
   const insets   = useSafeAreaInsets();
   // ONLY source of truth — scan-context is NOT used here
-  const { flips, removeFlip, globalStats, globalRank } = useFlipStore();
+  const { flips, removeFlip, globalStats } = useFlipStore();
   const { user } = useAuth();
   const { pruneUnseen } = useAchievementNotifications();
 
@@ -402,13 +458,22 @@ export default function HistoryScreen() {
     [flips],
   );
 
+  // Realized outcomes — derived from sold items (new outcome tracking).
+  const realized = useMemo(() => {
+    const sold = flips.filter(
+      (f): f is FlipResult => !isHuntBundle(f) && f.status === 'sold' && (f.soldPrice ?? 0) > 0,
+    );
+    const total = sold.reduce((sum, f) => sum + realizedProfit(f), 0);
+    return { count: sold.length, total };
+  }, [flips]);
+
   const handlePress = (item: HistoryEntry) => {
     if (!navGuard()) return; // single-tap: ignore a second tap while the first screen loads
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     if (isHuntBundle(item)) {
       router.push({ pathname: '/hunt-history' as any, params: { bundleId: item.id } });
     } else {
-      router.push({ pathname: '/analysis-details' as any, params: { scanId: item.id, source: 'history' } });
+      router.push({ pathname: '/scan-detail' as any, params: { scanId: item.id } });
     }
   };
 
@@ -464,20 +529,21 @@ export default function HistoryScreen() {
 
   const EmptyState = ({ msg }: { msg: string }) => (
     <View style={s.emptyWrap}>
-      <Text style={s.emptyIcon}>📦</Text>
+      <View style={s.emptyIconWrap}>
+        <MaterialIcons name="inventory-2" size={34} color={GOLD} />
+      </View>
       <Text style={s.emptyTitle}>Nothing here yet</Text>
       <Text style={s.emptySub}>{msg}</Text>
     </View>
   );
 
   return (
-    <View style={[s.root, { backgroundColor: V.pageBg }]}>
+    <View style={[s.root, { paddingTop: insets.top }]}>
 
-      {/* ── Sticky header ── */}
-      <View style={[s.header, { paddingTop: insets.top + 8 }]}>
-        <View style={{ width: 22 }} />
-        <Text style={s.headerTitle}>Scan History</Text>
-        <View style={{ width: 22 }} />
+      {/* ── Header — flat parchment, matches other tab screens ── */}
+      <View style={s.header}>
+        <Text style={s.headerBrand}>FlipStart</Text>
+        <Text style={s.headerSub}>✦ SCAN HISTORY ✦</Text>
       </View>
       <View style={s.headerDivider} />
 
@@ -512,35 +578,51 @@ export default function HistoryScreen() {
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             <>
-              {/* Total profit dashboard — from globalStats (derived via flipCalculations.ts) */}
-              <View style={s.profitCard}>
-                <View style={s.profitLeft}>
-                  <Text style={s.profitLabel}>Total Profit</Text>
-                  <Text style={s.profitValue}>+${Math.round(globalStats.totalProfit)}</Text>
-                  <Text style={s.profitSub}>
-                    {globalStats.totalFlips} flip{globalStats.totalFlips !== 1 ? 's' : ''} · {globalStats.lifetimeRoi}% ROI · {globalStats.winRate}% win rate
-                  </Text>
+              {/* Scan stats — est. profit + realized profit are the headliners */}
+              <View style={s.statsCard}>
+                <View style={s.statsAccent} />
+                <View style={s.statsInner}>
+                  <View style={s.statCol}>
+                    <Text style={s.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                      {globalStats.totalProfit >= 0 ? '+' : '-'}${Math.abs(Math.round(globalStats.totalProfit))}
+                    </Text>
+                    <Text style={s.statLabel}>TOTAL EST. PROFIT</Text>
+                  </View>
+                  <View style={s.statDivider} />
+                  <View style={s.statCol}>
+                    <Text
+                      style={[s.statValue, realized.count > 0 ? { color: realized.total >= 0 ? '#2A5A2A' : '#8A3A2A' } : { color: MUTED }]}
+                      numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}
+                    >
+                      {realized.count > 0
+                        ? `${realized.total >= 0 ? '+' : '-'}$${Math.abs(realized.total)}`
+                        : '—'}
+                    </Text>
+                    <Text style={s.statLabel}>
+                      {realized.count > 0 ? `REALIZED · ${realized.count} SOLD` : 'REALIZED PROFIT'}
+                    </Text>
+                  </View>
                 </View>
-                <View style={s.rankWrap}>
-                  <Text style={s.rankLabel}>{globalRank.rank}</Text>
-                </View>
+                <Text style={s.statsFooter}>
+                  {globalStats.totalFlips} flip{globalStats.totalFlips !== 1 ? 's' : ''} · {globalStats.lifetimeRoi}% ROI · {globalStats.winRate}% win rate
+                </Text>
               </View>
 
               {/* Search */}
               <View style={s.searchRow}>
                 <View style={s.searchBar}>
-                  <MaterialIcons name="search" size={18} color={V.textMuted} />
+                  <MaterialIcons name="search" size={18} color={MUTED} />
                   <TextInput
                     style={s.searchInput}
                     placeholder="Search scans..."
-                    placeholderTextColor={V.textMuted}
+                    placeholderTextColor={MUTED}
                     value={search}
                     onChangeText={setSearch}
                     returnKeyType="search"
                   />
                   {search.length > 0 && (
                     <Pressable onPress={() => setSearch('')} hitSlop={8}>
-                      <MaterialIcons name="close" size={16} color={V.textMuted} />
+                      <MaterialIcons name="close" size={16} color={MUTED} />
                     </Pressable>
                   )}
                 </View>
@@ -602,37 +684,39 @@ export default function HistoryScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  root: { flex: 1 },
+  root: { flex: 1, backgroundColor: BG },
 
-  header:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: V.screenPad, paddingBottom: 12, backgroundColor: V.pageBg },
-  headerTitle:   { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '700', color: V.green },
-  headerDivider: { height: 1, backgroundColor: V.border, opacity: 0.7 },
+  header:      { alignItems: 'center', gap: 2, backgroundColor: BG, paddingTop: 12, paddingBottom: 10, paddingHorizontal: 24 },
+  headerBrand: { fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST },
+  headerSub:   { fontSize: 10, fontWeight: '800', color: GOLD, letterSpacing: 2.4 },
+  headerDivider:{ height: 1, backgroundColor: CARD_B },
 
-  tabRow:        { flexDirection: 'row', marginHorizontal: V.screenPad, marginTop: 14, marginBottom: 6, backgroundColor: V.tan, borderRadius: 12, padding: 3, borderWidth: 1, borderColor: V.border },
+  tabRow:        { flexDirection: 'row', marginHorizontal: 14, marginTop: 14, marginBottom: 4, backgroundColor: '#F4F1E8', borderRadius: 12, padding: 3, borderWidth: 1, borderColor: CARD_B },
   tabBtn:        { flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
-  tabActive:     { backgroundColor: V.green },
+  tabActive:     { backgroundColor: FOREST },
   tabInactive:   { backgroundColor: 'transparent' },
-  tabText:       { fontSize: 13, fontWeight: '700' },
-  tabTextActive: { color: V.white },
-  tabTextInactive:{ color: V.green },
+  tabText:       { fontFamily: FONTS.serif, fontSize: 13, fontWeight: '700' },
+  tabTextActive: { color: CREAM },
+  tabTextInactive:{ color: FOREST },
 
-  list:          { paddingHorizontal: V.screenPad, paddingTop: 12, paddingBottom: 40 },
-  countLabel:    { fontSize: 11, color: V.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 },
+  list:          { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 40 },
+  countLabel:    { fontSize: 11, color: MUTED, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 },
 
-  profitCard:    { flexDirection: 'row', alignItems: 'center', backgroundColor: V.cardBg, borderRadius: 16, borderWidth: 1, borderColor: V.green + '30', padding: 18, marginBottom: 14, shadowColor: V.green, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.10, shadowRadius: 10, elevation: 3 },
-  profitLeft:    { flex: 1, gap: 3 },
-  profitLabel:   { fontSize: 12, fontWeight: '600', color: V.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 },
-  profitValue:   { fontSize: 34, fontWeight: '900', color: V.green, letterSpacing: -1 },
-  profitSub:     { fontSize: 12, color: V.textMuted },
-  rankWrap:      { alignItems: 'center' },
-  rankLabel:     { fontSize: 28 },
+  statsCard:   { backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B, marginBottom: 14, overflow: 'hidden', shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.10, shadowRadius: 9, elevation: 3 },
+  statsAccent: { height: 3, backgroundColor: GOLD },
+  statsInner:  { flexDirection: 'row', alignItems: 'center', paddingTop: 16, paddingBottom: 12, paddingHorizontal: 10 },
+  statCol:     { flex: 1, alignItems: 'center', gap: 3, minWidth: 0 },
+  statValue:   { fontFamily: FONTS.serif, fontSize: 27, fontWeight: '800', color: FOREST, letterSpacing: -0.5 },
+  statLabel:   { fontSize: 9, fontWeight: '800', color: MUTED, letterSpacing: 1.1 },
+  statDivider: { width: 1, alignSelf: 'stretch', backgroundColor: CARD_B, marginVertical: 4 },
+  statsFooter: { fontSize: 11.5, color: MUTED, textAlign: 'center', paddingBottom: 13, fontWeight: '600' },
 
   searchRow:     { flexDirection: 'row', marginBottom: 12 },
-  searchBar:     { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: V.cardBg, borderRadius: 12, borderWidth: 1, borderColor: V.border, paddingHorizontal: 12, paddingVertical: 9, gap: 8 },
-  searchInput:   { flex: 1, fontSize: 14, color: V.textDark, padding: 0 },
+  searchBar:     { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: CARD_B, paddingHorizontal: 12, paddingVertical: 9, gap: 8 },
+  searchInput:   { flex: 1, fontSize: 14, color: BROWN, padding: 0 },
 
-  emptyWrap:  { alignItems: 'center', paddingTop: 60, gap: 8 },
-  emptyIcon:  { fontSize: 48 },
-  emptyTitle: { fontSize: 17, fontWeight: '700', color: V.textDark },
-  emptySub:   { fontSize: 14, color: V.textMuted, textAlign: 'center', maxWidth: 240 },
+  emptyWrap:     { alignItems: 'center', paddingTop: 56, gap: 8 },
+  emptyIconWrap: { width: 64, height: 64, borderRadius: 32, backgroundColor: GOLD + '16', borderWidth: 1, borderColor: GOLD + '44', alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  emptyTitle:    { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: FOREST },
+  emptySub:      { fontSize: 13.5, color: MUTED, textAlign: 'center', maxWidth: 250 },
 });

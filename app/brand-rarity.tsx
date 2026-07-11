@@ -75,11 +75,11 @@ async function consumePreview(brandName: string): Promise<boolean> {
 // ─── Palette ──────────────────────────────────────────────────────────────────
 const FOREST = '#2A4A2A';
 const GOLD   = '#BE9C2C';
-const PARCH  = '#ECE7D3';
-const CARD   = '#F2EDD8';
-const IVORY  = '#FAF6EE';
-const BORDER = '#C8B88A';
-const TAN    = '#D6C8A3';
+const PARCH  = '#FFFFFF';
+const CARD   = '#F8F7F0';
+const IVORY  = '#FFFEFA';
+const BORDER = '#DDD2AC';
+const TAN    = '#F4F1E8';
 const BROWN  = '#3D2A12';
 const MUTED  = '#8A7050';
 
@@ -511,7 +511,7 @@ export default function BrandRarityScreen() {
                 >
                   <Text style={[
                     s.sheetPillText,
-                    stagedCat === c && { color: '#FAF7EE' },
+                    stagedCat === c && { color: '#FFFEFA' },
                   ]}>
                     {c === 'all' ? 'All Categories' : CATEGORY_LABELS[c]}
                   </Text>
@@ -813,7 +813,7 @@ const s = StyleSheet.create({
   previewBadge: {
     borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3,
   },
-  previewBadgeText: { fontSize: 8, fontWeight: '900', color: '#FAF7EE', letterSpacing: 0.6 },
+  previewBadgeText: { fontSize: 8, fontWeight: '900', color: '#FFFEFA', letterSpacing: 0.6 },
 
   // Empty state
   emptyWrap: { alignItems: 'center', gap: 10, paddingTop: 32 },
@@ -859,7 +859,7 @@ const s = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
   },
   sheetRadioFill: {
-    width: 8, height: 8, borderRadius: 4, backgroundColor: '#FAF7EE',
+    width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFFEFA',
   },
 
   sheetActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
@@ -873,5 +873,5 @@ const s = StyleSheet.create({
     flex: 2, height: 46, borderRadius: 12,
     justifyContent: 'center', alignItems: 'center',
   },
-  sheetApplyText: { fontSize: 14, fontWeight: '900', color: '#FAF7EE', fontFamily: FONTS.serif },
+  sheetApplyText: { fontSize: 14, fontWeight: '900', color: '#FFFEFA', fontFamily: FONTS.serif },
 });

@@ -22,6 +22,7 @@ import {
   createContext, useCallback, useContext,
   useEffect, useRef, useState, type ReactNode,
 } from "react";
+import { AppState } from "react-native";
 
 // import type is compile-time only — completely erased by Metro/Babel.
 // These types create zero runtime dependency on @supabase/supabase-js.
@@ -40,6 +41,9 @@ export interface Profile {
   // Added for one-time username change enforcement.
   // Optional so the app works before the SQL migration runs.
   username_changed_once?: boolean;
+  // Hosted avatar URL (Supabase Storage 'avatars' bucket). Optional so the
+  // app works before the avatar SQL migration runs.
+  avatar_url?:            string | null;
 }
 
 interface AuthState {
@@ -145,6 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // from executing during startup.
   useEffect(() => {
     let subscription: { unsubscribe: () => void } | null = null;
+    let appStateSub: { remove: () => void } | null = null;
 
     const init = async () => {
       // ── Step 1: dynamic import ───────────────────────────────────────────
@@ -162,6 +167,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if (!mounted.current) return;
+
+      // ── Step 1b: keep the access token fresh while the app is foregrounded.
+      // Official supabase-js React Native recipe: the auto-refresh timer only
+      // runs reliably when explicitly started/stopped around AppState changes.
+      // Without this, a session left open past token expiry (~1h) starts
+      // failing API calls (sync, profile) even though the user is "logged in".
+      // Cold-start recovery after days away is unaffected (handled by
+      // persistSession + refresh token) — this protects LIVE sessions.
+      try {
+        if (AppState.currentState === "active") supabase.auth.startAutoRefresh();
+        appStateSub = AppState.addEventListener("change", (state) => {
+          try {
+            if (state === "active") supabase.auth.startAutoRefresh();
+            else supabase.auth.stopAutoRefresh();
+          } catch { /* non-fatal */ }
+        });
+      } catch (err) {
+        if (__DEV__) console.warn("[auth] AppState auto-refresh wiring failed:", err);
+      }
 
       // ── Step 2: helper — fetch profile ──────────────────────────────────
       const fetchProfile = async (userId: string): Promise<void> => {
@@ -323,6 +347,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       try { subscription?.unsubscribe(); } catch { /* ok */ }
+      try { appStateSub?.remove(); } catch { /* ok */ }
+      try { supabaseRef.current?.auth?.stopAutoRefresh?.(); } catch { /* ok */ }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

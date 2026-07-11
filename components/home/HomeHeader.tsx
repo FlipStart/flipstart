@@ -63,7 +63,7 @@ const s = StyleSheet.create({
 
   // Wordmark box — rounded container that makes it look tappable
   wordmarkBox: {
-    backgroundColor:   '#EDE5CC',
+    backgroundColor:   '#FFFEFA',
     borderWidth:       1.5,
     borderColor:       V.gold,
     borderRadius:      14,

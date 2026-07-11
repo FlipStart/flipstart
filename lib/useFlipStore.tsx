@@ -258,7 +258,18 @@ export function FlipStoreProvider({
 
   const updateFlip = useCallback((id: string, updates: Partial<FlipResult>) => {
     dispatch({ type: 'UPDATE_FLIP', payload: { id, updates } });
-  }, []);
+    // Re-sync the merged flip to Supabase. Without this, later edits (sold
+    // status/price, listings) only ever lived locally — and because
+    // mergeScans is cloud-wins per id, the stale cloud row would OVERWRITE
+    // the local sold data on the next login. Same fire-and-forget pattern
+    // as addFlip/removeFlip; raw_result carries the full updated object.
+    if (userId) {
+      const entry = state.flips.find(f => f.id === id);
+      if (entry && !isHuntBundle(entry)) {
+        upsertScan({ ...entry, ...updates }, userId).catch(() => {});
+      }
+    }
+  }, [userId, state.flips]);
 
   const setPendingThriftPrice = useCallback((id: string, price: string) => {
     dispatch({ type: 'SET_THRIFT_PRICE', payload: { id, price } });

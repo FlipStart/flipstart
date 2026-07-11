@@ -14,12 +14,12 @@ import * as Haptics from 'expo-haptics';
 import type { UserMode } from '@/lib/onboarding-storage';
 
 // ─── Palette — vintage FlipStart ─────────────────────────────────────────────
-const TRACK_BG    = '#EAE0C6';   // warm parchment slightly darker than page
-const THUMB_BG    = '#FFF8EC';   // active: warm cream fill
+const TRACK_BG    = '#F4F1E8';   // clean inactive segmented surface
+const THUMB_BG    = '#FFFEFA';   // active: warm cream fill
 const FOREST      = '#2A4A2A';   // active label
-const MUTED       = '#9A8060';   // inactive label
+const MUTED       = '#8A7658';   // inactive label
 const GOLD        = '#BE9C2C';   // border + active underline
-const TRACK_BORD  = '#C9B888';   // outer track border
+const TRACK_BORD  = '#DDD2AC';   // outer track border
 
 const SEGMENTS: { value: UserMode; icon: string; label: string; sub: string }[] = [
   { value: 'resell',   icon: '💰', label: 'Flip for Profit',  sub: 'Resale value & profit'  },

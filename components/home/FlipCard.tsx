@@ -232,7 +232,7 @@ const styles = StyleSheet.create({
   soldPrice: {
     fontSize:   15,
     fontWeight: '800',
-    color:      '#ECE7D3',
+    color:      '#FFFEFA',
     letterSpacing: -0.3,
   },
   profitText: {

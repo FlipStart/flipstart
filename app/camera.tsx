@@ -37,7 +37,7 @@ import {
 
 const GOLD     = '#BE9C2C';
 const GOLD_DIM = 'rgba(190,156,44,0.35)';
-const CREAM    = '#ECE7D3';
+const CREAM    = '#FFFEFA';
 const BG       = '#162D1A';
 const GHOST_SIZE = 70;
 

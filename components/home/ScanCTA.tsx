@@ -185,7 +185,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize:      21,
     fontWeight:    '800',
-    color:         '#ECE7D3',
+    color:         '#FFFEFA',
     letterSpacing: 0.3,   // slightly wider tracking → brand-stamp feel
     lineHeight:    26,
   },

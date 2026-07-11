@@ -21,15 +21,15 @@ export const V = {
   greenMuted:  '#6E8A68',   // Deep Green desaturated — low-value profit
 
   // ── Page & surface — from Antique Cream / Subtle Sepia swatches ─────────────
-  pageBg:  '#ECE7D3',   // Antique Cream swatch — page background
-  cream:   '#ECE7D3',   // alias of pageBg
-  cardBg:  '#F2EDD8',   // Antique Cream lighter — card surface (layering)
-  tan:     '#D6C8A3',   // Subtle Sepia swatch — icon containers, inner tones
-  tanDark: '#C8B88A',   // alias of border
+  pageBg:  '#FFFFFF',   // Antique Cream swatch — page background
+  cream:   '#FFFFFF',   // alias of pageBg
+  cardBg:  '#FFFEFA',   // Antique Cream lighter — card surface (layering)
+  tan:     '#F4F1E8',   // Subtle Sepia swatch — icon containers, inner tones
+  tanDark: '#DDD2AC',   // alias of border
 
   // ── Accent — from Vintage Gold swatch ───────────────────────────────────────
   gold:      '#BE9C2C',   // Vintage Gold swatch — badges, rank, highlights
-  goldLight: '#EDE5C0',   // Vintage Gold pale tint
+  goldLight: '#F4F1E8',   // Vintage Gold pale tint
 
   // ── Text hierarchy — from Aged Brown swatch ─────────────────────────────────
   textDark:   '#3D2A12',   // very dark warm brown — primary text
@@ -44,8 +44,8 @@ export const V = {
   error:     '#9E3A2A',          // muted vintage red — errors only
 
   // ── Borders & dividers — from Subtle Sepia / Warm Beige mix ─────────────────
-  border:        '#C8B88A',   // Subtle Sepia + Warm Beige midpoint
-  separatorLine: '#C8B88A',   // thin rule under header
+  border:        '#DDD2AC',   // Subtle Sepia + Warm Beige midpoint
+  separatorLine: '#DDD2AC',   // thin rule under header
 
   // ── Legacy aliases ───────────────────────────────────────────────────────────
   heading:   '#3D5A38',   // → green

@@ -21,8 +21,8 @@ import { FONTS } from '@/constants/typography';
 const FOREST    = '#2A4A2A';
 const SCAN_DARK = '#152815';
 const CREAM     = '#F4EED8';
-const PARCHMENT = '#F0E8D4';
-const CARD_B    = '#DDD0B0';
+const PARCHMENT = '#FFFFFF';
+const CARD_B    = '#DDD2AC';
 const MUTED     = '#8A7050';
 
 // Rules: 3–24 chars, letters (any case) / numbers / _ / . / -
@@ -135,7 +135,7 @@ const s = StyleSheet.create({
   errorBox:   { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: '#F8D7DA', borderRadius: 10, padding: 12, marginBottom: 14 },
   errorText:  { fontSize: 13, color: '#721C24', flex: 1, lineHeight: 18 },
   inputRow:   { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  input:      { backgroundColor: '#FFF9EE', borderRadius: 12, borderWidth: 1, borderColor: CARD_B, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: FOREST },
+  input:      { backgroundColor: '#FFFEFA', borderRadius: 12, borderWidth: 1, borderColor: CARD_B, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: FOREST },
   availText:  { fontSize: 12, fontWeight: '600', marginBottom: 16, marginLeft: 4 },
   fieldHint:  { fontSize: 11, color: MUTED, marginBottom: 16, marginLeft: 4 },
   primaryBtn: { backgroundColor: SCAN_DARK, borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', marginTop: 4 },

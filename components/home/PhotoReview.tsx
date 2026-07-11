@@ -41,9 +41,9 @@ const SP = {
 };
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
-const PARCHMENT    = '#ECE0C2';
-const PARCHMENT_D  = '#D9C9A3';
-const PARCHMENT_DD = '#C4AD82';
+const PARCHMENT    = '#FFFFFF';
+const PARCHMENT_D  = '#DDD2AC';
+const PARCHMENT_DD = '#DDD2AC';
 const FOREST       = '#1C3820';
 const FOREST_BTN   = '#243E28';
 const FOREST_MID   = '#2E5233';

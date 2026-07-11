@@ -19,9 +19,9 @@ const FOREST = '#2A4A2A';
 const GOLD   = '#BE9C2C';
 const BROWN  = '#5A3A1A';
 const MUTED  = '#8A7050';
-const CARD   = '#FFF9EE';
-const CARD_B = '#DDD0B0';
-const BG     = '#F0E8D4';
+const CARD   = '#FFFEFA';
+const CARD_B = '#DDD2AC';
+const BG     = '#FFFFFF';
 const CREAM  = '#F4EED8';
 const TAN    = '#E8DFC0';
 

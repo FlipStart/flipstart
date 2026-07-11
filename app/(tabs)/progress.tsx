@@ -60,11 +60,11 @@ import FeatureGate from '@/components/FeatureGate';
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const FOREST = '#2A4A2A';
 const GOLD   = '#BE9C2C';
-const PARCH  = '#ECE7D3';
-const CARD   = '#F2EDD8';
-const IVORY  = '#FAF6EE';
-const BORDER = '#C8B88A';
-const TAN    = '#D6C8A3';
+const PARCH  = '#FFFFFF';
+const CARD   = '#FFFEFA';
+const IVORY  = '#FFFEFA';
+const BORDER = '#DDD2AC';
+const TAN    = '#F4F1E8';
 const BROWN  = '#3D2A12';
 const MUTED  = '#8A7050';
 

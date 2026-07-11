@@ -84,6 +84,17 @@ export interface FlipResult {
   listingsGenerated?: boolean;
   generatedAt?:       number | null;
   listingData?:       ListingData | null;
+
+  // ─── Outcome tracking (optional — absent on old scans) ──────────────────────
+  /**
+   * Lifecycle of the flip. Absent on legacy scans; UI infers 'bought' when a
+   * thriftPrice was entered, else 'scanned'. 'passed' = decided not to buy.
+   */
+  status?:    'scanned' | 'bought' | 'listed' | 'sold' | 'passed';
+  /** Actual sale price the user got (set when marked sold). */
+  soldPrice?: number;
+  /** When the item was marked sold. */
+  soldAt?:    number;
 }
 
 // ─── Listing data (persisted inside FlipResult) ─────────────────────────────

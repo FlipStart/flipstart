@@ -25,10 +25,10 @@ import type { FlipResult } from '@/types/flip';
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const FOREST      = '#2A4A2A';
 const GOLD        = '#BE9C2C';
-const PARCH       = '#ECE7D3';
-const CARD        = '#F2EDD8';
-const BORDER      = '#C8B88A';
-const TAN         = '#D6C8A3';
+const PARCH       = '#FFFFFF';   // page background — white app-wide
+const CARD        = '#FFFEFA';
+const BORDER      = '#DDD2AC';
+const TAN         = '#DDD2AC';
 const BROWN       = '#3D2A12';
 const MUTED       = '#8A7050';
 const AVATAR_BLUE = '#8AABBF';
@@ -49,14 +49,20 @@ export default function ProfileScreen() {
     const uid = user?.id ?? null;
     if (uid) {
       loadXpProfile(uid).then(p => setXp(p.totalXp)).catch(() => {});
-      AsyncStorage.getItem(avatarKey(uid)).then(uri => {
-        setAvatarUri(uri ?? null);
-      }).catch(() => {});
+      // Prefer the Supabase-backed avatar (survives logout/login + reinstall);
+      // fall back to the local cache if the account has none yet.
+      if (profile?.avatar_url) {
+        setAvatarUri(profile.avatar_url);
+      } else {
+        AsyncStorage.getItem(avatarKey(uid)).then(uri => {
+          setAvatarUri(uri ?? null);
+        }).catch(() => {});
+      }
     } else {
       setXp(0);
       setAvatarUri(null);
     }
-  }, [user?.id]));
+  }, [user?.id, profile?.avatar_url]));
 
   // ── Edit Profile — guest gate ──────────────────────────────────────────────
   const handleEditProfile = useCallback(() => {
@@ -120,7 +126,7 @@ export default function ProfileScreen() {
         {/* Avatar — long-press to preview full size; tap the camera badge (shown
             when no picture is set) to jump straight to Edit Profile. */}
         <Pressable
-          onPress={avatarUri ? undefined : handleEditProfile}
+          onPress={avatarUri ? () => setShowAvatarPreview(true) : handleEditProfile}
           onLongPress={avatarUri ? () => setShowAvatarPreview(true) : undefined}
           delayLongPress={350}
           style={s.avatarWrap}

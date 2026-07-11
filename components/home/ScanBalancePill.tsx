@@ -14,36 +14,32 @@ import { FONTS } from '@/constants/typography';
 const GOLD    = '#BE9C2C';
 const FOREST  = '#2A4A2A';
 const WARNING = '#A04020';
-const LIMIT   = 7;
+const LIMIT   = 200;
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 
 async function fetchScanStats(): Promise<number> {
-  const { getScannerId } = await import('@/lib/analytics');
-  const scannerId = await getScannerId().catch(() => undefined);
-  const qs   = scannerId ? `?scannerId=${encodeURIComponent(scannerId)}` : '';
-  const res  = await fetch(`${API_BASE}/api/scan-stats${qs}`, { method: 'GET' });
+  const res  = await fetch(`${API_BASE}/api/scan-stats`, { method: 'GET' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  // Per-user response uses remainingToday; fall back to legacy global field.
-  const val  = typeof data?.remainingToday === 'number' ? data.remainingToday : data?.globalScansRemainingToday;
+  const val  = data?.globalScansRemainingToday;
   return typeof val === 'number' && !isNaN(val) ? val : LIMIT;
 }
 
 export function ScanBalancePill() {
-  const [remaining, setRemaining] = useState<number | null>(null); // null = not loaded yet
+  const [remaining, setRemaining] = useState<number>(LIMIT);
   const [loading,   setLoading]   = useState(true);
-  const [failed,    setFailed]    = useState(false);
   const [tipOpen,   setTipOpen]   = useState(false);
 
   const load = useCallback(async () => {
     try {
       const val = await fetchScanStats();
       setRemaining(val);
-      setFailed(false);
     } catch {
-      // Don't show a fake number on failure — mark failed so UI shows a dash
-      // and the user can tap to retry, rather than a misleading "7 left".
-      setFailed(true);
+      // Silent fail — keep showing current value, don't spam logs
+      if (remaining === LIMIT && loading) {
+        // Only on first load failure, keep showing LIMIT
+        setRemaining(LIMIT);
+      }
     } finally {
       setLoading(false);
     }
@@ -64,32 +60,25 @@ export function ScanBalancePill() {
     return () => sub.remove();
   }, [load]);
 
-  const hasData = remaining !== null;
-  const isZero = hasData && remaining! <= 0;
-  const isLow  = hasData && remaining! > 0 && remaining! <= 30;
+  const isZero = remaining <= 0;
+  const isLow  = remaining > 0 && remaining <= 30;
   const accent = isZero || isLow ? WARNING : GOLD;
   const color  = isZero || isLow ? WARNING : FOREST;
 
-  const tooltipText = loading && !hasData
+  const tooltipText = loading
     ? 'Checking scan balance…'
-    : failed && !hasData
-      ? "Couldn't load scan balance. Tap to retry."
-      : `${remaining} scans remaining today.`;
-
-  const labelText = !hasData
-    ? (failed ? '—' : '…')
-    : `${remaining} left`;
+    : `${remaining} scans remaining today.`;
 
   return (
     <View style={s.wrap}>
       <Pressable
-        onPress={() => { if (failed && !hasData) { load(); } setTipOpen(v => !v); }}
+        onPress={() => setTipOpen(v => !v)}
         style={[s.pill, { borderColor: accent + '80' }]}
         hitSlop={6}
       >
         <Text style={[s.icon, { color: accent }]}>⚡</Text>
         <Text style={[s.label, { color }]}>
-          {labelText}
+          {loading ? '…' : `${remaining} left`}
         </Text>
       </Pressable>
 
@@ -150,7 +139,7 @@ const s = StyleSheet.create({
     top:               32,
     right:             0,
     width:             220,
-    backgroundColor:   '#FFF9EE',
+    backgroundColor:   '#FFFEFA',
     borderWidth:       1,
     borderColor:       '#BE9C2C',
     borderRadius:      10,

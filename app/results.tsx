@@ -69,9 +69,9 @@ function hasGeneratedListings(listings: { ebay?: { title?: string; description?:
 }
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
-const BG     = '#F0E8D4';
-const CARD   = '#FFF9EE';
-const CARD_B = '#DDD0B0';
+const BG     = '#FFFFFF';
+const CARD   = '#FFFEFA';
+const CARD_B = '#DDD2AC';
 const FOREST = '#2A4A2A';
 const BROWN  = '#5A3A1A';
 const MUTED  = '#8A7050';
@@ -528,6 +528,9 @@ export default function ResultsScreen() {
       thriftPrice: calc.thriftPrice, fees: calc.fees, profit: calc.profit,
       roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel,
       recommendation: calc.recommendation,
+      // Explicit outcome status at save time: a user who TYPED a real price is
+      // signaling a purchase; one riding the "Est." AI default merely scanned.
+      status: isEstimatedPrice ? 'scanned' : 'bought',
       stars: calc.stars, bestPlatform: calc.bestPlatform,
       listingsGenerated: hasGeneratedListings(currentScan.listings),
       generatedAt: hasGeneratedListings(currentScan.listings) ? Date.now() : null,
@@ -859,7 +862,7 @@ export default function ResultsScreen() {
       {showReview && (
         <Modal transparent animationType="fade" visible statusBarTranslucent>
           <View style={{ flex: 1, backgroundColor: '#000000AA', justifyContent: 'center', alignItems: 'center', padding: 28 }}>
-            <View style={{ backgroundColor: '#F0E8D4', borderRadius: 24, padding: 28, width: '100%', maxWidth: 360, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 20, shadowOffset: { width: 0, height: 8 }, elevation: 12 }}>
+            <View style={{ backgroundColor: '#FFFFFF', borderRadius: 24, padding: 28, width: '100%', maxWidth: 360, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 20, shadowOffset: { width: 0, height: 8 }, elevation: 12 }}>
               {/* Stars decoration */}
               <Text style={{ textAlign: 'center', fontSize: 26, marginBottom: 12, letterSpacing: 4 }}>★★★★★</Text>
               {/* Title */}
@@ -1279,7 +1282,7 @@ const s = StyleSheet.create({
   itemRow:    { flexDirection: 'row', gap: 14, alignItems: 'flex-start' },
   thumbWrap:  { position: 'relative', borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: CARD_B },
   thumb:      { width: 100, height: 100, borderRadius: 11 },
-  thumbFallback: { backgroundColor: '#EDE0C4', justifyContent: 'center', alignItems: 'center' },
+  thumbFallback: { backgroundColor: '#FFFEFA', justifyContent: 'center', alignItems: 'center' },
   thumbExpandHint: {
     position: 'absolute', bottom: 4, right: 4,
     backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 8,
@@ -1368,7 +1371,7 @@ const s = StyleSheet.create({
   },
   idCardRow: { flexDirection: 'row', gap: 14, alignItems: 'center' },
   idThumbWrap: { width: 138, height: 138, borderRadius: 14, overflow: 'hidden', position: 'relative' },
-  idThumb:     { width: '100%', height: '100%', backgroundColor: '#EDE3CB' },
+  idThumb:     { width: '100%', height: '100%', backgroundColor: '#FFFEFA' },
   idThumbFallback: { alignItems: 'center', justifyContent: 'center' },
   idThumbHint: { position: 'absolute', bottom: 5, right: 5, backgroundColor: 'rgba(42,74,42,0.85)', borderRadius: 10, padding: 3 },
   idInfo:    { flex: 1, gap: 8, minWidth: 0 },
@@ -1377,7 +1380,7 @@ const s = StyleSheet.create({
   idName:    { fontFamily: FONTS.serif, fontSize: 21, fontWeight: '800', color: FOREST, lineHeight: 26 },
   idTitleArrow: { fontFamily: FONTS.serif, fontSize: 21, fontWeight: '800', color: GOLD },
   chipWrap:  { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
-  chip:      { flexDirection: 'row', alignItems: 'center', gap: 3, maxWidth: '100%', backgroundColor: '#FBF6E9', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 8, paddingVertical: 4 },
+  chip:      { flexDirection: 'row', alignItems: 'center', gap: 3, maxWidth: '100%', backgroundColor: '#F8F7F0', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 8, paddingVertical: 4 },
   chipText:  { fontSize: 10.5, fontWeight: '600', color: BROWN, flexShrink: 1 },
   chipConf:  { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
   chipConfText: { color: FOREST, fontWeight: '700' },
@@ -1423,7 +1426,7 @@ const s = StyleSheet.create({
     shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.07, shadowRadius: 4, elevation: 2,
   },
   statBox:       { flex: 1, alignItems: 'center', gap: 4, paddingHorizontal: 2 },
-  statBoxBorder: { borderRightWidth: 1, borderRightColor: '#EAE0C8' },
+  statBoxBorder: { borderRightWidth: 1, borderRightColor: '#DDD2AC' },
   statIconCircle:{ width: 30, height: 30, borderRadius: 15, backgroundColor: FOREST, alignItems: 'center', justifyContent: 'center', marginBottom: 2 },
   statLabel:     { fontSize: 11, color: MUTED, fontWeight: '600' },
   statValue:     { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800' },
@@ -1433,13 +1436,13 @@ const s = StyleSheet.create({
   compTitle:     { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '700', color: FOREST },
   compPillsRow:  { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 16, rowGap: 12 },
   compScrollContent: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingRight: 8, paddingVertical: 2 },
-  compItem:      { height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: '#1A1A1A', backgroundColor: '#FFF9EE', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  compItem:      { height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: '#1A1A1A', backgroundColor: '#FFFEFA', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
   compPillText:  { fontSize: 13, fontWeight: '700', color: BROWN },
   compNoteRow:   { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 10 },
   compNote:      { fontSize: 11.5, color: MUTED, fontStyle: 'italic' },
 
   // 5 · Your thrift price + breakdown
-  priceTopRow:   { flexDirection: 'row', alignItems: 'center', paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#EAE0C8' },
+  priceTopRow:   { flexDirection: 'row', alignItems: 'center', paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#DDD2AC' },
   priceTitle:    { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '700', color: FOREST },
   priceSub:      { fontSize: 12, color: MUTED, marginTop: 2 },
   priceDisplayRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
