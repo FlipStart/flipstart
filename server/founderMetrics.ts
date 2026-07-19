@@ -907,6 +907,98 @@ export async function getDataQualityMetrics(base: BaseData): Promise<Maybe<any>>
 // AGGREGATOR
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 16 — SOLD ITEMS / REALIZED PROFIT (source: scans where status='sold')
+// ═══════════════════════════════════════════════════════════════════════════
+// Every sold item, with the AI's estimate vs the user's actual sale price —
+// the ground-truth data for tuning pricing accuracy. Profit here is GROSS
+// (sold − paid, pre-fees): actual platform fees aren't recorded at sale time,
+// so we stay honest rather than estimate.
+
+export async function getSoldMetrics(_base: BaseData): Promise<Maybe<any>> {
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) throw new Error("Supabase not configured");
+
+    // Paginated fetch of sold rows only (partial index makes this cheap).
+    const pageSize = 1000;
+    const rows: any[] = [];
+    for (let from = 0; from < 20000; from += pageSize) {
+      const { data, error } = await sb
+        .from("scans")
+        .select("user_id, local_id, item_name, brand, category, thrift_price, sold_price, sold_at, created_at, raw_result")
+        .eq("status", "sold")
+        .order("sold_at", { ascending: false })
+        .range(from, from + pageSize - 1);
+      if (error) throw new Error(`scans(sold): ${error.message}`);
+      if (!data || data.length === 0) break;
+      rows.push(...data);
+      if (data.length < pageSize) break;
+    }
+
+    const totalScans = await countRows("scans");
+
+    // Per-item records with AI-estimate comparison.
+    const items = rows
+      .filter(r => Number(r.sold_price) > 0)
+      .map(r => {
+        const raw       = r.raw_result ?? {};
+        const soldPrice = Number(r.sold_price);
+        const paid      = Number(r.thrift_price ?? raw.thriftPrice ?? 0);
+        const aiEst     = Number(raw.resaleValue ?? 0) || null;
+        const soldAtMs  = r.sold_at ? Date.parse(r.sold_at) : (Number(raw.soldAt) || null);
+        const createdMs = r.created_at ? Date.parse(r.created_at) : (Number(raw.timestamp) || null);
+        const daysToSell = (soldAtMs && createdMs && soldAtMs >= createdMs)
+          ? Math.round((soldAtMs - createdMs) / DAY_MS * 10) / 10
+          : null;
+        const deltaAbs = aiEst != null ? Math.round((soldPrice - aiEst) * 100) / 100 : null;
+        const deltaPct = (aiEst != null && aiEst > 0)
+          ? Math.round(((soldPrice - aiEst) / aiEst) * 1000) / 10
+          : null;
+        return {
+          soldAt: soldAtMs ? new Date(soldAtMs).toISOString() : null,
+          item:      r.item_name ?? raw.itemName ?? "Unknown Item",
+          brand:     r.brand ?? raw.brand ?? null,
+          category:  r.category ?? raw.category ?? null,
+          paid, aiEst, soldPrice,
+          grossProfit: Math.round((soldPrice - paid) * 100) / 100,
+          deltaAbs, deltaPct, daysToSell,
+        };
+      });
+
+    // Aggregates.
+    const itemsSold       = items.length;
+    const realizedRevenue = Math.round(items.reduce((s, i) => s + i.soldPrice, 0) * 100) / 100;
+    const grossProfit     = Math.round(items.reduce((s, i) => s + i.grossProfit, 0) * 100) / 100;
+    const avgSalePrice    = itemsSold ? Math.round((realizedRevenue / itemsSold) * 100) / 100 : 0;
+    const sellThroughPct  = pct(itemsSold, totalScans);
+    const daysVals        = items.map(i => i.daysToSell).filter((d): d is number => d != null);
+    const avgDaysToSell   = daysVals.length
+      ? Math.round(daysVals.reduce((s, d) => s + d, 0) / daysVals.length * 10) / 10
+      : null;
+
+    // AI accuracy — only items where an estimate exists.
+    const withEst   = items.filter(i => i.deltaPct != null);
+    const avgDeltaPct = withEst.length
+      ? Math.round(withEst.reduce((s, i) => s + (i.deltaPct as number), 0) / withEst.length * 10) / 10
+      : null;
+    const within20 = withEst.length
+      ? pct(withEst.filter(i => Math.abs(i.deltaPct as number) <= 20).length, withEst.length)
+      : null;
+    const soldOver  = withEst.filter(i => (i.deltaPct as number) > 0).length;
+    const soldUnder = withEst.filter(i => (i.deltaPct as number) < 0).length;
+
+    return {
+      itemsSold, totalScans, realizedRevenue, grossProfit, avgSalePrice,
+      sellThroughPct, avgDaysToSell,
+      accuracy: { compared: withEst.length, avgDeltaPct, within20, soldOver, soldUnder },
+      items,
+    };
+  } catch (e: any) {
+    return { error: e?.message ?? "sold metrics failed" };
+  }
+}
+
 export async function getFounderDashboardV3Metrics(): Promise<any> {
   if (!getSupabaseAdmin()) {
     return { configured: false };
@@ -920,7 +1012,7 @@ export async function getFounderDashboardV3Metrics(): Promise<any> {
 
   // Run sections; each is independently fail-safe.
   const [
-    funnel, scans, achievements, brands, diamonds, listings, dataQuality,
+    funnel, scans, achievements, brands, diamonds, listings, dataQuality, sold,
   ] = await Promise.all([
     getActivationFunnelMetrics(base),
     getScanMetrics(base),
@@ -929,6 +1021,7 @@ export async function getFounderDashboardV3Metrics(): Promise<any> {
     getDiamondAnalytics(base),
     getListingAnalytics(base),
     getDataQualityMetrics(base),
+    getSoldMetrics(base),
   ]);
 
   return {
@@ -949,5 +1042,6 @@ export async function getFounderDashboardV3Metrics(): Promise<any> {
     diamonds,
     listings,
     dataQuality,
+    sold,
   };
 }

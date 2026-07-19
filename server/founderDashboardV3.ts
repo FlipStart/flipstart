@@ -387,6 +387,53 @@ function renderDataQuality(s: any): string {
     `<div class="stat-grid">${grid}</div><div class="two-col">${connCard}${statusCard}</div>`);
 }
 
+function renderSold(s: any): string {
+  if (isErr(s)) return errorCard("Sold Items / Realized Profit", s);
+  if (!s || !s.itemsSold) {
+    return section("sold", "16 \u00b7 Sold Items / Realized Profit",
+      `<div class="card"><div class="muted">No items marked sold yet.</div></div>`,
+      "gross = sold \u2212 paid, pre-fees");
+  }
+  const acc = s.accuracy ?? {};
+  const grid = [
+    card("Items sold", num(s.itemsSold), `of ${num(s.totalScans)} total scans`),
+    card("Realized revenue", "$" + num(s.realizedRevenue)),
+    card("Gross realized profit", "$" + num(s.grossProfit), "sold \u2212 paid, pre-fees"),
+    card("Avg sale price", "$" + num(s.avgSalePrice)),
+    card("Sell-through rate", pctStr(s.sellThroughPct)),
+    card("Avg days to sell", s.avgDaysToSell != null ? num(s.avgDaysToSell) : "\u2014"),
+    card("AI avg \u0394 vs estimate", acc.avgDeltaPct != null ? `${acc.avgDeltaPct > 0 ? "+" : ""}${acc.avgDeltaPct}%` : "\u2014", `${num(acc.compared)} compared`),
+    card("Sold within \u00b120% of est.", acc.within20 != null ? pctStr(acc.within20) : "\u2014", `${num(acc.soldOver)} over \u00b7 ${num(acc.soldUnder)} under`),
+  ].join("");
+
+  const rows = (s.items ?? []).map((r: any) => {
+    const dcls = r.deltaPct == null ? "" : (Math.abs(r.deltaPct) <= 20 ? "ok" : "bad");
+    const dstr = r.deltaPct == null ? "\u2014"
+      : `${r.deltaAbs > 0 ? "+" : ""}$${num(Math.abs(r.deltaAbs))} (${r.deltaPct > 0 ? "+" : ""}${r.deltaPct}%)`;
+    return `<tr>
+      <td>${dateOnly(r.soldAt)}</td>
+      <td>${esc(r.item)}</td>
+      <td>${esc(r.brand ?? "\u2014")}</td>
+      <td>${esc(r.category ?? "\u2014")}</td>
+      <td class="r">$${num(r.paid)}</td>
+      <td class="r">${r.aiEst != null ? "$" + num(r.aiEst) : "\u2014"}</td>
+      <td class="r">$${num(r.soldPrice)}</td>
+      <td class="r ${dcls}">${dstr}</td>
+      <td class="r">$${num(r.grossProfit)}</td>
+      <td class="r">${r.daysToSell != null ? num(r.daysToSell) : "\u2014"}</td>
+    </tr>`;
+  }).join("");
+
+  const table = `<div class="card"><div class="card-h">All sold items \u2014 AI estimate vs actual</div>
+    <div class="scroll-x"><table>
+      <thead><tr><th>Sold</th><th>Item</th><th>Brand</th><th>Category</th><th class="r">Paid</th><th class="r">AI Est.</th><th class="r">Sold For</th><th class="r">\u0394 vs Est.</th><th class="r">Gross Profit</th><th class="r">Days</th></tr></thead>
+      <tbody>${rows || emptyRow(10)}</tbody></table></div></div>`;
+
+  return section("sold", "16 \u00b7 Sold Items / Realized Profit",
+    `<div class="stat-grid">${grid}</div>${table}`,
+    "gross = sold \u2212 paid, pre-fees");
+}
+
 function emptyRow(cols: number): string {
   return `<tr><td colspan="${cols}" class="muted" style="text-align:center">No data yet</td></tr>`;
 }
@@ -458,7 +505,7 @@ const TOC = [
   ["conversion", "Account Funnel"], ["sessions", "Sessions"], ["scans", "Scans"],
   ["trust", "Trust"], ["cost", "Cost"], ["hunt", "Hunt"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"],
-  ["listings", "Listings"], ["dataquality", "Data Quality"],
+  ["listings", "Listings"], ["dataquality", "Data Quality"], ["sold", "Sold"],
 ];
 
 export function generateFounderDashboardV3(metrics: any): string {
@@ -490,6 +537,7 @@ export function generateFounderDashboardV3(metrics: any): string {
     renderDiamonds(metrics.diamonds),
     renderListings(metrics.listings),
     renderDataQuality(metrics.dataQuality),
+    renderSold(metrics.sold),
   ].join("");
 
   return shell(body, metrics.generatedAt);

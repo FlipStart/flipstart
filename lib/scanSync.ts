@@ -38,6 +38,10 @@ export async function upsertScan(scan: FlipResult, userId: string): Promise<void
         image_uri:  scan.imageUri,
         profit:     scan.profit,
         thrift_price: scan.thriftPrice,
+        // Sold-outcome columns (queryable mirrors of raw_result fields)
+        status:     scan.status ?? 'scanned',
+        sold_price: scan.soldPrice ?? null,
+        sold_at:    scan.soldAt ? new Date(scan.soldAt).toISOString() : null,
       },
       { onConflict: 'user_id,local_id' }
     );
