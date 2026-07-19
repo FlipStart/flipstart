@@ -102,6 +102,26 @@ export function addItemToHunt(item: HuntItem): void {
   _notify();
 }
 
+/**
+ * Swap a staged hunt item's photo to its uploaded cloud URL (by scanId).
+ * Called after the scan photo finishes uploading in the background, so the
+ * hunt bundle snapshots the durable URL (not the local file:// path) when the
+ * hunt is later saved. Only the primary photo is displayed, so allImageUris[0]
+ * is kept in sync too. No-op if the hunt ended or the item isn't staged.
+ */
+export function updateHuntItemImage(scanId: string, cloudUri: string): void {
+  if (!_activeHunt) return;
+  const it = _activeHunt.items.find(i => i.scanId === scanId);
+  if (!it) return;
+  it.imageUri = cloudUri;
+  if (Array.isArray(it.allImageUris) && it.allImageUris.length > 0) {
+    it.allImageUris = [cloudUri, ...it.allImageUris.slice(1)];
+  } else {
+    it.allImageUris = [cloudUri];
+  }
+  _notify();
+}
+
 /** Look up a hunt item by its stable huntItemId across kept + removed. */
 export function getHuntItemById(huntItemId: string): HuntItem | null {
   if (!_activeHunt) return null;

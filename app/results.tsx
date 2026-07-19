@@ -19,7 +19,8 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useScanContext } from '@/lib/scan-context';
-import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt } from '@/lib/hunt-context';
+import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt, updateHuntItemImage } from '@/lib/hunt-context';
+import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
 import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview, openAppStoreReviewPage } from '@/lib/reviewPrompt';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { useFlipStore } from '@/lib/useFlipStore';
@@ -269,7 +270,7 @@ export default function ResultsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { currentScan, setCurrentScan, updateScan } = useScanContext();
-  const { addFlip, removeFlip, flips, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
+  const { addFlip, updateFlip, removeFlip, flips, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
   const { addUnseenBrands } = useAchievementNotifications();
   const { user } = useAuth();
 
@@ -542,6 +543,23 @@ export default function ResultsScreen() {
         : null,
     };
     addFlip(flip);
+
+    // Back up the scan photo to Supabase Storage so it survives logout/login
+    // and reinstalls — local file:// paths never do. Non-blocking, guest-gated.
+    // On success we swap the scan's imageUri to the cloud URL (persists via the
+    // updateFlip sync fix) AND patch the staged hunt item (if a hunt is active)
+    // so the hunt bundle later snapshots the durable URL, not the local path.
+    if (user?.id && flip.imageUri && !isRemoteUri(flip.imageUri)) {
+      const uid = user.id;
+      const localUri = flip.imageUri;
+      const flipId = flip.id;
+      uploadImageToStorage(localUri, 'scan-photos', uid).then(cloudUrl => {
+        if (!cloudUrl) return;
+        updateFlip(flipId, { imageUri: cloudUrl });
+        if (isHuntActive()) updateHuntItemImage(flipId, cloudUrl);
+      }).catch(() => {});
+    }
+
     trackAnalyticsEvent('scan_saved', {
       scan_id:         currentScan.id,
       brand:           flip.brand ?? null,
