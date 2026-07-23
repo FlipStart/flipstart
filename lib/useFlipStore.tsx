@@ -18,14 +18,42 @@
 
 import React, {
   createContext, useContext, useEffect, useReducer,
-  useCallback, useMemo,
+  useCallback, useMemo, useRef,
 } from 'react';
+import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FlipResult, HuntBundle, HistoryEntry, isHuntBundle } from '@/types/flip';
 import { deriveGlobalStats, calcGlobalRank } from '@/utils/flipCalculations';
 import type { GlobalStats, GlobalRank } from '@/types/flip';
 import { upsertScan, deleteScan, deleteAllScans, fetchScans, mergeScans } from '@/lib/scanSync';
 import { upsertHuntBundle, deleteHuntBundle, deleteAllHuntBundles, fetchHuntBundles, mergeHuntBundles } from '@/lib/huntBundleSync';
+
+/**
+ * Every hosted (https) photo URL an entry references. Hunt items reuse the
+ * SAME uploaded file as their standalone scan, so deletes must check whether
+ * any surviving entry still points at a URL before removing it from Storage.
+ */
+function collectRemoteImageUrls(entry: HistoryEntry): string[] {
+  const urls: string[] = [];
+  if (isHuntBundle(entry)) {
+    const items = [...(entry.keptItems ?? []), ...(entry.removedItems ?? [])] as any[];
+    for (const it of items) if (it?.imageUri) urls.push(it.imageUri);
+  } else if ((entry as FlipResult).imageUri) {
+    urls.push((entry as FlipResult).imageUri);
+  }
+  return urls.filter(u => typeof u === 'string' && /^https?:\/\//.test(u));
+}
+
+/** Local (non-hosted) item photo URIs inside a hunt bundle, deduped. */
+function collectLocalItemUris(bundle: HuntBundle): string[] {
+  const items = [...((bundle as any).keptItems ?? []), ...((bundle as any).removedItems ?? [])] as any[];
+  const out = new Set<string>();
+  for (const it of items) {
+    const u = it?.imageUri;
+    if (typeof u === 'string' && u && !/^https?:\/\//.test(u)) out.add(u);
+  }
+  return [...out];
+}
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -245,6 +273,26 @@ export function FlipStoreProvider({
     if (userId && entry) {
       if (isHuntBundle(entry)) deleteHuntBundle(id, userId).catch(() => {});
       else                     deleteScan(id, userId).catch(() => {});
+
+      // Clean up this entry's Storage photos so deleted scans don't leave
+      // files consuming quota forever. A hunt item shares its scan's uploaded
+      // file, so only delete URLs no SURVIVING entry still references.
+      const removedUrls = collectRemoteImageUrls(entry);
+      if (removedUrls.length > 0) {
+        const stillUsed = new Set<string>();
+        for (const f of state.flips) {
+          if (f.id === id) continue;
+          for (const u of collectRemoteImageUrls(f)) stillUsed.add(u);
+        }
+        const orphaned = removedUrls.filter(u => !stillUsed.has(u));
+        if (orphaned.length > 0) {
+          import('@/lib/imageUpload')
+            .then(({ deleteUploadedImage }) => {
+              orphaned.forEach(u => deleteUploadedImage(u, 'scan-photos').catch(() => {}));
+            })
+            .catch(() => {});
+        }
+      }
     }
   }, [userId, state.flips]);
 
@@ -253,6 +301,10 @@ export function FlipStoreProvider({
     if (userId) {
       deleteAllScans(userId).catch(() => {});
       deleteAllHuntBundles(userId).catch(() => {});
+      // Nothing references these photos any more — purge the user's folder.
+      import('@/lib/imageUpload')
+        .then(({ deleteAllUserImages }) => deleteAllUserImages(userId, 'scan-photos'))
+        .catch(() => {});
     }
   }, [userId]);
 
@@ -270,6 +322,77 @@ export function FlipStoreProvider({
       }
     }
   }, [userId, state.flips]);
+
+  // ── Retry sweep: photos that never reached Storage ──────────────────────
+  // A scan saved while offline / on bad signal keeps its local file:// path
+  // forever — invisible on other devices and lost on reinstall. This retries
+  // those uploads on load and whenever the app returns to the foreground.
+  // Bounded per pass and guarded against overlapping runs.
+  const flipsRef    = useRef(state.flips);
+  flipsRef.current  = state.flips;
+  const sweepingRef = useRef(false);
+
+  const retryPendingPhotoUploads = useCallback(async () => {
+    if (!userId || sweepingRef.current) return;
+    sweepingRef.current = true;
+    try {
+      const { uploadImageToStorage, isRemoteUri } = await import('@/lib/imageUpload');
+      const MAX_PER_PASS = 8;   // keep a backlog from hammering the network
+      const entries = flipsRef.current;
+
+      // 1. Standalone scans still on a local path.
+      const pendingScans = entries.filter(
+        (f): f is FlipResult => !isHuntBundle(f) && !!f.imageUri && !isRemoteUri(f.imageUri),
+      ).slice(0, MAX_PER_PASS);
+
+      for (const f of pendingScans) {
+        const url = await uploadImageToStorage(f.imageUri, 'scan-photos', userId);
+        if (url) updateFlip(f.id, { imageUri: url });
+      }
+
+      // 2. Hunt bundles whose saved items still hold local paths. Re-upsert the
+      //    whole bundle (raw_bundle is a single JSONB blob) once patched.
+      const pendingBundles = entries.filter(
+        (e): e is HuntBundle => isHuntBundle(e) && collectLocalItemUris(e).length > 0,
+      ).slice(0, 2);
+
+      for (const b of pendingBundles) {
+        const map = new Map<string, string>();
+        for (const localUri of collectLocalItemUris(b).slice(0, MAX_PER_PASS)) {
+          if (map.has(localUri)) continue;
+          const url = await uploadImageToStorage(localUri, 'scan-photos', userId);
+          if (url) map.set(localUri, url);
+        }
+        if (map.size === 0) continue;
+
+        const patchItems = (items: any[] | undefined) =>
+          (items ?? []).map(it => {
+            const next = it?.imageUri ? map.get(it.imageUri) : undefined;
+            if (!next) return it;
+            const all = Array.isArray(it.allImageUris) && it.allImageUris.length > 0
+              ? [next, ...it.allImageUris.slice(1)]
+              : [next];
+            return { ...it, imageUri: next, allImageUris: all };
+          });
+
+        addHuntBundle({
+          ...b,
+          keptItems:    patchItems((b as any).keptItems),
+          removedItems: patchItems((b as any).removedItems),
+        } as HuntBundle);
+      }
+    } catch { /* fail-safe: try again next foreground */ }
+    finally { sweepingRef.current = false; }
+  }, [userId, updateFlip, addHuntBundle]);
+
+  useEffect(() => {
+    if (!userId || !state.isLoaded) return;
+    retryPendingPhotoUploads();
+    const sub = AppState.addEventListener('change', s => {
+      if (s === 'active') retryPendingPhotoUploads();
+    });
+    return () => sub.remove();
+  }, [userId, state.isLoaded, retryPendingPhotoUploads]);
 
   const setPendingThriftPrice = useCallback((id: string, price: string) => {
     dispatch({ type: 'SET_THRIFT_PRICE', payload: { id, price } });

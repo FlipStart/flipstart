@@ -369,6 +369,7 @@ function renderDataQuality(s: any): string {
     card("Events w/ user_id", num(s.withUser)),
     card("Anon-only events", num(s.anonOnly)),
     card("Missing session_id", num(s.missingSession)),
+    card("Ghost profiles excluded", num(s.ghostProfiles ?? 0), "abandoned social logins \u2014 not counted as users"),
     card("Latest event", dt(s.latestEvent)),
     card("Latest profile", dt(s.latestProfile)),
     card("Latest scan saved", dt(s.latestScan)),

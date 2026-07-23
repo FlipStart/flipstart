@@ -29,6 +29,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { useAudioPlayer } from 'expo-audio';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image } from 'expo-image';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
@@ -124,6 +125,8 @@ const CONTENT_CARDS = [
 ];
 
 // ─── Scan → Analyze → Collect steps ───────────────────────────────────────────
+const ROAR_SOUND = require('@/assets/images/lion-roar.m4a');
+
 const STEPS = [
   { icon: 'photo-camera' as const, title: 'Scan',    desc: 'Take photos of a thrift find.' },
   { icon: 'query-stats' as const,  title: 'Analyze', desc: 'See value, buy rating, and risk flags.' },
@@ -138,6 +141,7 @@ export default function HomeScreen() {
 
   // ── Onboarding ──────────────────────────────────────────────────────────────
   const { user, profile, loading: authLoading, profileChecked } = useAuth();
+  const roar = useAudioPlayer(ROAR_SOUND);
   const [showScanModal,   setShowScanModal]   = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   useEffect(() => {
@@ -432,7 +436,10 @@ export default function HomeScreen() {
             </View>
 
             <Pressable
-              onPress={() => go('/hunt')}
+              onPress={() => {
+                try { roar.seekTo(0); roar.play(); } catch { /* never crash */ }
+                go('/hunt');
+              }}
               style={({ pressed }) => [s.huntBtn, pressed && { opacity: 0.85 }]}
             >
               <Text style={s.huntBtnText}>Start Hunting</Text>

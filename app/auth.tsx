@@ -161,11 +161,17 @@ export default function AuthScreen() {
       if (!uid) return false; // can't tell — don't bounce
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('id')
+        .select('id, onboarding_complete')
         .eq('id', uid)
         .maybeSingle();
       if (error) return false; // check failed — don't bounce
-      if (!profile) {
+      // NOTE: existence alone is NOT proof of a real prior account. The
+      // SIGNED_IN handler in auth-context runs ensureProfile(), which
+      // auto-creates a row (onboarding_complete:false) for a brand-new social
+      // login — and refreshProfile() is awaited just above, so that row is
+      // usually already present by the time we get here. Only a profile that
+      // has actually FINISHED onboarding proves a pre-existing account.
+      if (!profile || profile.onboarding_complete !== true) {
         // Brand-new account created via social login on the login-only route.
         await supabase.auth.signOut().catch(() => {});
         await refreshProfile().catch(() => {});

@@ -35,8 +35,9 @@ import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
 import { useAudioPlayer } from "expo-audio";
 import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
-import { logEvent, incrementSessionCount, saveScanRecord } from "@/lib/analytics";
+import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
 import { isHuntActive } from "@/lib/hunt-context";
+import { useAuth } from "@/lib/auth-context";
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
@@ -103,7 +104,14 @@ export default function LoadingScreen() {
     confidence?: number;
   } | null>(null);
 
+  const { user }        = useAuth();
   const hasNavigated    = useRef(false);
+  // Stable id for THIS scan attempt. The server dedupes by it, so internal
+  // retries of the same item can never burn more than one scan. A genuinely
+  // new scan remounts this screen and gets a fresh id.
+  const scanAttemptId   = useRef(
+    `attempt_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+  ).current;
   const hasStartedRef   = useRef(false);
   const scanStartTime   = useRef(Date.now());
   const lastHapticAt    = useRef(0);
@@ -255,6 +263,18 @@ export default function LoadingScreen() {
           }, HARD_TIMEOUT_MS);
         });
 
+        // Scan-limit identity. Prefer the signed-in account id: it is the same
+        // value getScannerId() returns for authenticated users (so the Home
+        // pill reads the identical bucket), but it can't degrade to a SHARED
+        // bucket. The analytics fallback can return the literal "anon_unknown"
+        // when AsyncStorage fails, and an undefined id makes the server use
+        // "_legacy" — either way every affected device would share one quota.
+        let scannerId: string | undefined = user?.id ?? undefined;
+        if (!scannerId) {
+          const fallback = await getScannerId().catch(() => undefined);
+          scannerId = fallback && fallback !== 'anon_unknown' ? fallback : undefined;
+        }
+
         const result = await Promise.race([
           analyzeFastMutation.mutateAsync({
             imageBase64,
@@ -263,6 +283,8 @@ export default function LoadingScreen() {
             tagMimeType:        tag?.mimeType,
             detailImageBase64:  detail?.base64,
             detailMimeType:     detail?.mimeType,
+            scannerId,
+            scanAttemptId,
           }),
           timeoutPromise,
         ]);
@@ -434,13 +456,31 @@ export default function LoadingScreen() {
 
         if (raw === "__TIMEOUT__" || raw.toLowerCase().includes("timed out")) {
           failType = "timeout";
+        } else if (raw.includes("SCANNER_ID_MISSING")) {
+          // The server refused because this build didn't identify itself. Never
+          // auto-retry (it will fail identically) and never call it a scan
+          // limit — the user has scans left, the app just couldn't prove who
+          // they are. Surfaced as a server fault since that's the honest cause.
+          try { player.pause(); } catch {}
+          setFailState({
+            type: "server",
+            message: "FlipStart couldn't verify your scan balance. Please make sure you're signed in and running the latest version, then try again.",
+          });
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+          }
+          return;
         } else if (
           raw.includes("GLOBAL_SCAN_LIMIT_REACHED") ||
           raw.toLowerCase().includes("scan limit")
         ) {
-          // Scan limit — show immediately, do not auto-retry
+          // Scan limit — show immediately, do not auto-retry.
+          // Uses the dedicated scan_limit variant (correct title + no retry
+          // button). This previously passed type:"timeout", which showed
+          // "This hunt is taking longer than expected" plus a retry button that
+          // could never succeed.
           try { player.pause(); } catch {}
-          setFailState({ type: "timeout", message: "Daily scan limit reached. Try again tomorrow." });
+          setFailState({ type: "scan_limit", message: "" });   // "" → screen uses its own copy
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
           }

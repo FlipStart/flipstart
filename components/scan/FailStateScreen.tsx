@@ -168,7 +168,7 @@ export function FailStateScreen({
       {/* ── Title + body ── */}
       <Animated.View entering={FadeInDown.delay(140).duration(350)} style={s.textBlock}>
         <Text style={s.title}>{cfg.title}</Text>
-        <Text style={s.body}>{message ?? cfg.body}</Text>
+        <Text style={s.body}>{message || cfg.body}</Text>
         {cfg.hint && (
           <View style={s.hintRow}>
             <MaterialIcons name="info-outline" size={11} color={MUTED} />

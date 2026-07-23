@@ -89,8 +89,11 @@ async function countRows(
 // avoid refetching profiles/events repeatedly.
 
 export interface BaseData {
+  /** REAL users only — abandoned ghost profiles are excluded (see loadBaseData). */
   profiles: Array<{ id: string; created_at: string; onboarding_complete?: boolean }>;
   profileIds: Set<string>;
+  /** Count of excluded ghost profiles, surfaced in Data Quality. */
+  ghostProfiles: number;
   // analytics events, lightweight projection
   events: Array<{
     user_id: string | null;
@@ -102,15 +105,36 @@ export interface BaseData {
   }>;
 }
 
+// A social sign-in on the login-only route can auto-create an auth user +
+// profile before the app detects there was no prior account and bounces the
+// user back to onboarding (see bounceIfNewAccountOnLoginOnly in app/auth.tsx).
+// Those rows are abandoned instantly and are NOT real users — counting them
+// inflates signups and deflates every conversion rate and per-user average.
+//
+// A profile is treated as a ghost when onboarding was never completed AND it is
+// older than this grace window. The window keeps genuine users who are still
+// mid-signup (created seconds ago, currently on username-setup) counted as real.
+const GHOST_GRACE_MS = 60 * 60 * 1000; // 1 hour
+
 export async function loadBaseData(): Promise<BaseData> {
-  const profiles = await fetchAll<{ id: string; created_at: string; onboarding_complete?: boolean }>(
+  const allProfiles = await fetchAll<{ id: string; created_at: string; onboarding_complete?: boolean }>(
     "profiles", "id, created_at, onboarding_complete",
   );
+
+  const ghostCutoff = Date.now() - GHOST_GRACE_MS;
+  const profiles = allProfiles.filter(p => {
+    if (p.onboarding_complete === true) return true;         // real, completed
+    const created = Date.parse(p.created_at);
+    if (!Number.isFinite(created)) return true;              // unparseable — keep
+    return created >= ghostCutoff;                           // still in grace window
+  });
+  const ghostProfiles = allProfiles.length - profiles.length;
+
   const profileIds = new Set(profiles.map(p => p.id));
   const events = await fetchAll<BaseData["events"][number]>(
     "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata",
   );
-  return { profiles, profileIds, events };
+  return { profiles, profileIds, events, ghostProfiles };
 }
 
 // Filter helpers over the in-memory event set (profiles-only).
@@ -851,7 +875,7 @@ export async function getListingAnalytics(base: BaseData): Promise<Maybe<any>> {
 
 export async function getDataQualityMetrics(base: BaseData): Promise<Maybe<any>> {
   try {
-    const { events, profiles } = base;
+    const { events, profiles, ghostProfiles } = base;
     const todayStart = iso(new Date(new Date().setHours(0, 0, 0, 0)));
     const withUser = events.filter(e => e.user_id).length;
     const anonOnly = events.filter(e => !e.user_id && e.anonymous_id).length;
@@ -886,6 +910,9 @@ export async function getDataQualityMetrics(base: BaseData): Promise<Maybe<any>>
       eventsToday: events.filter(e => e.created_at >= todayStart).length,
       withUser, anonOnly, missingSession,
       latestEvent, latestProfile, latestScan,
+      // Abandoned profiles excluded from every metric above (bounced social
+      // logins on the login-only route). Shown so the exclusion is visible.
+      ghostProfiles,
       tables,
       trackingStatus: {
         exact: [
