@@ -28,6 +28,8 @@ import { FONTS } from '@/constants/typography';
 import { setPendingScan } from '@/lib/pending-scan';
 import {
   captureMultipleFromGallery,
+  pickMultipleFromGallery,
+  normalizeGalleryAsset,
   type CapturedPhoto,
   type PhotoSlot,
   SLOT_ORDER,
@@ -331,16 +333,47 @@ export default function CameraScreen() {
     }
   };
 
-  // ── Gallery (unchanged) ───────────────────────────────────────────────────
+  // ── Gallery — instant thumbnails, background normalization ────────────────
+  // The old flow base64-encoded every full-res photo (in the picker AND again
+  // in the manipulator, sequentially) before showing anything — 3-9s of blank
+  // slots. Now: the picker returns raw asset uris immediately, thumbnails
+  // render from those at once, and each photo's AI-ready base64 JPEG is
+  // prepared in parallel in the background, swapping in as it finishes.
   const handleGallery = async () => {
     haptic(Haptics.ImpactFeedbackStyle.Light);
-    const photos = await captureMultipleFromGallery(3);
-    if (!photos || photos.length === 0) return;
+    const assets = await pickMultipleFromGallery(3);
+    if (!assets || assets.length === 0) return;
+
+    // Phase 1 — INSTANT: show the raw picker uris in slots right away.
+    // base64:'' marks a photo as still-preparing (handleDone guards on it).
     const next = { ...slots };
-    for (let i = 0; i < photos.length; i++) { next[SLOT_ORDER[i]] = photos[i]; }
+    const slotForAsset: Record<number, PhotoSlot> = {};
+    for (let i = 0; i < assets.length; i++) {
+      const slot = SLOT_ORDER[i];
+      slotForAsset[i] = slot;
+      next[slot] = { uri: assets[i].uri, base64: '', mimeType: 'image/jpeg' };
+    }
     setSlots(next);
     setActiveSlot(getNextEmptySlot(next));
     setUndoData(null); // clear undo on gallery import
+
+    // Phase 2 — BACKGROUND: normalize all photos in parallel; swap each into
+    // its slot when ready. Guarded so we never clobber a slot the user has
+    // since removed or replaced (uri must still match the placeholder).
+    assets.forEach((asset, i) => {
+      const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][i] ?? `gallery-${i}`;
+      normalizeGalleryAsset(asset, label)
+        .then(photo => {
+          if (!photo) return;
+          const slot = slotForAsset[i];
+          setSlots(prev => {
+            const current = prev[slot];
+            if (!current || current.uri !== asset.uri) return prev; // user changed it
+            return { ...prev, [slot]: photo };
+          });
+        })
+        .catch(() => { /* photo keeps its preview; Done guard catches the miss */ });
+    });
   };
 
   const handleRemove = (slot: PhotoSlot) => {
@@ -375,6 +408,11 @@ export default function CameraScreen() {
   const handleDone = () => {
     if (!slots.front) {
       Alert.alert('Front Photo Required', 'Take a Front photo first before analyzing.');
+      return;
+    }
+    if (!slots.front.base64) {
+      // Gallery import still preparing this photo (background normalization).
+      Alert.alert('One moment', 'Your photo is still being prepared \u2014 try again in a second.');
       return;
     }
     haptic(Haptics.ImpactFeedbackStyle.Heavy);

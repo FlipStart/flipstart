@@ -148,7 +148,7 @@ async function normalizeAsset(
 const GALLERY_MAX_PX  = 1280;  // max long-edge pixels — sharp enough for tags at arm's length
 const GALLERY_QUALITY = 0.82;  // ~80% size reduction vs raw; tags/logos remain crisp
 
-async function normalizeGalleryAsset(
+export async function normalizeGalleryAsset(
   asset: ImagePicker.ImagePickerAsset,
   label = 'gallery',
 ): Promise<CapturedPhoto | null> {
@@ -352,6 +352,57 @@ export async function captureFromGallery(): Promise<CapturedPhoto | null> {
  * Returns a CapturedPhoto[] (1–3 items) or null if cancelled/failed.
  * Maps to slots: index 0 = front, 1 = tag, 2 = detail.
  */
+/**
+ * FAST multi-select picker — returns raw assets IMMEDIATELY, with no base64
+ * encoding in the picker. The old path set base64:true, which made iOS encode
+ * each full-res 12MP photo (~4MB+) inside the picker before returning — then
+ * normalizeGalleryAsset re-encoded everything AGAIN. Selecting 3 photos meant
+ * 3-9 seconds of nothing on screen.
+ *
+ * Callers show thumbnails from asset.uri instantly, then run
+ * normalizeGalleryAsset per asset (in parallel) to produce the AI-ready
+ * base64 JPEG in the background.
+ */
+export async function pickMultipleFromGallery(
+  max = 3,
+): Promise<ImagePicker.ImagePickerAsset[] | null> {
+  try {
+    haptic(Haptics.ImpactFeedbackStyle.Light);
+
+    const existing = await ImagePicker.getMediaLibraryPermissionsAsync();
+    if (!existing.granted) {
+      if (!existing.canAskAgain) {
+        Alert.alert(
+          'Photo Library Access Denied',
+          'To upload photos, enable Photo Library access in Settings \u2192 FlipStart.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ],
+        );
+        return null;
+      }
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') return null;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes:              ['images'] as ImagePicker.MediaType[],
+      allowsMultipleSelection: true,
+      selectionLimit:          max,
+      allowsEditing:           false, // must be false for multi-select on iOS
+      base64:                  false, // \u2190 the speed fix: no encode in the picker
+      exif:                    false,
+    });
+
+    if (result.canceled || !result.assets?.length) return null;
+    return result.assets.slice(0, max);
+  } catch (err) {
+    console.error('[capture] pickMultipleFromGallery error:', err);
+    return null;
+  }
+}
+
 export async function captureMultipleFromGallery(max = 3): Promise<CapturedPhoto[] | null> {
   try {
     haptic(Haptics.ImpactFeedbackStyle.Light);
@@ -387,13 +438,15 @@ export async function captureMultipleFromGallery(max = 3): Promise<CapturedPhoto
 
     if (result.canceled || !result.assets?.length) return null;
 
-    const photos: CapturedPhoto[] = [];
-    for (let i = 0; i < result.assets.slice(0, max).length; i++) {
-      const asset = result.assets[i];
-      const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][i] ?? `gallery-${i}`;
-      const photo = await normalizeGalleryAsset(asset, label);
-      if (photo) photos.push(photo);
-    }
+    // Parallel — each photo normalizes independently; 3\u00d7 faster than the old
+    // sequential await-in-loop for a typical 3-photo pick.
+    const normalized = await Promise.all(
+      result.assets.slice(0, max).map((asset, i) => {
+        const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][i] ?? `gallery-${i}`;
+        return normalizeGalleryAsset(asset, label);
+      }),
+    );
+    const photos: CapturedPhoto[] = normalized.filter((p): p is CapturedPhoto => p !== null);
 
     if (photos.length === 0) {
       Alert.alert(
