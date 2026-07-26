@@ -217,6 +217,82 @@ function save(): void {
   }
 }
 
+// ─── Write scheduling ─────────────────────────────────────────────────────────
+// save() serialises and rewrites the ENTIRE store synchronously. Node is
+// single-threaded, so at multi-megabyte store sizes that blocks the event loop
+// for every concurrent request, not just the one that triggered it. The cost
+// grows with history — it is O(store size), forever.
+//
+// High-frequency writers (events, sessions, scan records) therefore schedule a
+// coalesced flush instead of writing inline. Quota and feedback writes stay
+// immediate: losing either to a crash is worse than the latency they cost.
+const FLUSH_INTERVAL_MS = 2000;    // coalesce window after the last write
+const FLUSH_MAX_WAIT_MS = 10000;   // hard ceiling — see note below
+
+let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+let _firstPendingAt = 0;
+let _pendingWrites  = 0;
+
+/** Write immediately and clear any pending flush. */
+function flushNow(reason?: string): void {
+  if (_flushTimer) {
+    clearTimeout(_flushTimer);
+    _flushTimer = null;
+  }
+  const n = _pendingWrites;
+  _firstPendingAt = 0;
+  _pendingWrites  = 0;
+  save();
+  if (reason && n > 0) {
+    console.log(`[persist] flushed ${n} coalesced write(s) — ${reason}`);
+  }
+}
+
+/**
+ * Mark the store dirty and schedule a flush.
+ *
+ * A plain debounce would never fire under continuous load, because every new
+ * write resets the timer. FLUSH_MAX_WAIT_MS is the guarantee: once writes have
+ * been pending that long, the next one flushes regardless of the timer.
+ */
+function scheduleSave(): void {
+  _pendingWrites++;
+  const now = Date.now();
+  if (_firstPendingAt === 0) _firstPendingAt = now;
+
+  if (now - _firstPendingAt >= FLUSH_MAX_WAIT_MS) {
+    flushNow("max wait reached");
+    return;
+  }
+
+  if (_flushTimer) clearTimeout(_flushTimer);
+  _flushTimer = setTimeout(() => flushNow("idle"), FLUSH_INTERVAL_MS);
+  // Never hold the process open just for a pending flush; exit hooks handle it.
+  if (typeof (_flushTimer as { unref?: () => void }).unref === "function") {
+    (_flushTimer as unknown as { unref: () => void }).unref();
+  }
+}
+
+// Railway sends SIGTERM on redeploy. Without these hooks, anything still
+// coalesced at that moment is lost. Node's default SIGTERM/SIGINT behaviour is
+// to exit immediately, so flushing first is strictly safer than the status quo.
+let _exitHooksInstalled = false;
+function installExitFlush(): void {
+  if (_exitHooksInstalled) return;
+  _exitHooksInstalled = true;
+
+  const onSignal = (signal: string) => {
+    if (_pendingWrites > 0) flushNow(signal);
+    process.exit(0);
+  };
+  process.once("SIGTERM", () => onSignal("SIGTERM"));
+  process.once("SIGINT",  () => onSignal("SIGINT"));
+  process.once("beforeExit", () => {
+    if (_pendingWrites > 0) flushNow("beforeExit");
+  });
+}
+installExitFlush();
+
 // ─── Scan counter API ─────────────────────────────────────────────────────────
 
 // Per-user daily scan limit (placeholder until monetization introduces tiers).
@@ -400,7 +476,7 @@ export function logEvent(event: Omit<EventEntry, "eventId">): void {
     if (store.events.length > 50000) {
       store.events = store.events.slice(-50000);
     }
-    save();
+    scheduleSave();
   } catch (e) {
     console.error("[persist] logEvent failed:", e);
   }
@@ -427,7 +503,7 @@ export function startSession(data: Omit<SessionEntry, "endedAt" | "durationMs" |
     const existingIdx = store.sessions.findIndex(s => s.sessionId === data.sessionId);
     if (existingIdx !== -1) store.sessions.splice(existingIdx, 1);
     store.sessions.push(entry);
-    save();
+    scheduleSave();
   } catch (e) {
     console.error("[persist] startSession failed:", e);
   }
@@ -465,7 +541,7 @@ export function endSession(data: {
         feedbackSubmittedCount:data.feedbackSubmittedCount,
       });
     }
-    save();
+    scheduleSave();
   } catch (e) {
     console.error("[persist] endSession failed:", e);
   }
@@ -487,7 +563,7 @@ export function saveScanRecord(record: ScanRecord): void {
     } else {
       store.scanRecords.push(record);
     }
-    save();
+    scheduleSave();
   } catch (e) {
     console.error("[persist] saveScanRecord failed:", e);
   }

@@ -1,5 +1,18 @@
 import { ENV } from "./env";
 
+// ─── Model pricing (USD per token) ────────────────────────────────────────────
+// Used only for the [llm] cost log line. Verify against OpenAI's pricing page
+// before trusting the numbers — this table is the single place to update them.
+// Unknown models fall back to gpt-4o rates and are flagged in the log.
+const MODEL_PRICING: Record<string, { in: number; cachedIn: number; out: number }> = {
+  "gpt-4o":       { in: 0.0000025,  cachedIn: 0.00000125,  out: 0.00001   },
+  "gpt-4o-mini":  { in: 0.00000015, cachedIn: 0.000000075, out: 0.0000006 },
+  "gpt-4.1":      { in: 0.000002,   cachedIn: 0.0000005,   out: 0.000008  },
+  "gpt-4.1-mini": { in: 0.0000004,  cachedIn: 0.0000001,   out: 0.0000016 },
+  "gpt-4.1-nano": { in: 0.0000001,  cachedIn: 0.000000025, out: 0.0000004 },
+};
+const FALLBACK_PRICING = MODEL_PRICING["gpt-4o"];
+
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
 export type TextContent = {
@@ -276,7 +289,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    model: "gpt-4o",
+    model: ENV.openaiModel,
     messages: messages.map(normalizeMessage),
   };
 
@@ -327,11 +340,25 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   // ── Cost/token logging (dev visibility only — never exposed to users) ──────
   if (result.usage) {
     const { prompt_tokens, completion_tokens, total_tokens } = result.usage;
-    // GPT-4o pricing as of 2025: ~$2.50/1M input, ~$10/1M output tokens
-    const estimatedCostUSD = (prompt_tokens * 0.0000025) + (completion_tokens * 0.00001);
+    const model   = ENV.openaiModel;
+    const pricing = MODEL_PRICING[model];
+    const rates   = pricing ?? FALLBACK_PRICING;
+
+    // Cached prompt tokens bill at a reduced rate. Absent on responses that
+    // did not hit the cache, and absent entirely on providers that omit it.
+    const cachedIn = (result.usage as { prompt_tokens_details?: { cached_tokens?: number } })
+      .prompt_tokens_details?.cached_tokens ?? 0;
+    const freshIn  = Math.max(0, prompt_tokens - cachedIn);
+
+    const estimatedCostUSD =
+      (freshIn  * rates.in) +
+      (cachedIn * rates.cachedIn) +
+      (completion_tokens * rates.out);
+
     console.log(
-      `[llm] tokens — prompt:${prompt_tokens} completion:${completion_tokens} total:${total_tokens}` +
-      ` | est_cost:$${estimatedCostUSD.toFixed(5)}`
+      `[llm] model:${model}${pricing ? "" : " (UNPRICED — using gpt-4o rates)"}` +
+      ` | tokens — prompt:${prompt_tokens} (cached:${cachedIn}) completion:${completion_tokens}` +
+      ` total:${total_tokens} | est_cost:$${estimatedCostUSD.toFixed(6)}`
     );
   }
 

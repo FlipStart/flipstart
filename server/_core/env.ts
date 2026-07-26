@@ -8,4 +8,7 @@ export const ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  // Model is env-driven so a migration or rollback is a Railway variable
+  // edit, not a redeploy. Defaults to gpt-4o = current production behaviour.
+  openaiModel: process.env.OPENAI_MODEL ?? "gpt-4o",
 };
