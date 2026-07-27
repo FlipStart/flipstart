@@ -1,4 +1,5 @@
 import { invokeLLM } from "./_core/llm";
+import { ENV } from "./_core/env";
 import { storagePut } from "./storage";
 
 /**
@@ -389,6 +390,7 @@ export async function analyzeItemFast(
 
   const photoCount = 1 + (detail ? 1 : 0) + (tag ? 1 : 0);
   const response = await invokeLLM({
+    model: ENV.openaiScanModel,
     messages: [
       { role: "system", content: FAST_ANALYSIS_PROMPT },
       { role: "user",   content: imageParts },
@@ -489,6 +491,7 @@ export async function generateItemListings(input: ListingInput): Promise<{
     `\nDemand: ${input.demand ?? "Medium"}`;
 
   const response = await invokeLLM({
+    model: ENV.openaiListingModel,
     messages: [
       { role: "system", content: LISTING_PROMPT },
       { role: "user",   content: userMessage },

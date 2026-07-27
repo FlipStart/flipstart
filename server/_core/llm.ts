@@ -67,6 +67,12 @@ export type ToolChoice = ToolChoicePrimitive | ToolChoiceByName | ToolChoiceExpl
 
 export type InvokeParams = {
   messages: Message[];
+  /**
+   * Model override for this specific call. Callers should pass this
+   * explicitly (ENV.openaiScanModel / ENV.openaiListingModel) so the two
+   * call sites can diverge. Falls back to the scan model when omitted.
+   */
+  model?: string;
   tools?: Tool[];
   toolChoice?: ToolChoice;
   tool_choice?: ToolChoice;
@@ -288,8 +294,12 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     response_format,
   } = params;
 
+  // Resolved once so the payload and the cost log can never disagree about
+  // which model actually ran.
+  const resolvedModel = (params.model ?? "").trim() || ENV.openaiScanModel;
+
   const payload: Record<string, unknown> = {
-    model: ENV.openaiModel,
+    model: resolvedModel,
     messages: messages.map(normalizeMessage),
   };
 
@@ -340,7 +350,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   // ── Cost/token logging (dev visibility only — never exposed to users) ──────
   if (result.usage) {
     const { prompt_tokens, completion_tokens, total_tokens } = result.usage;
-    const model   = ENV.openaiModel;
+    const model   = resolvedModel;
     const pricing = MODEL_PRICING[model];
     const rates   = pricing ?? FALLBACK_PRICING;
 
