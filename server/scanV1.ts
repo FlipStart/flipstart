@@ -237,11 +237,20 @@ const PRICING: Record<string, { in: number; cachedIn: number; out: number }> = {
   "gpt-4.1-nano": { in: 0.0000001,  cachedIn: 0.000000025, out: 0.0000004 },
 };
 
+/**
+ * Strip a trailing snapshot date so a pinned model prices the same as its alias.
+ * "gpt-4.1-mini-2025-04-14" -> "gpt-4.1-mini". Without this a pinned snapshot
+ * misses the table and silently bills at gpt-4o rates in the log, ~6x too high.
+ */
+function basePricingKey(model: string): string {
+  return model.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+}
+
 function estimateCost(
   model: string, promptTokens: number | null,
   cachedTokens: number | null, completionTokens: number | null,
 ): number | null {
-  const rates = PRICING[model];
+  const rates = PRICING[basePricingKey(model)];
   if (!rates || promptTokens == null) return null;
   const cached = cachedTokens ?? 0;
   const fresh = Math.max(0, promptTokens - cached);

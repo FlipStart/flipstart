@@ -145,8 +145,75 @@ async function normalizeAsset(
 // Camera photos do NOT go through this path — camera output is already
 // controlled by CAMERA_OPTIONS and is never the source of timeouts.
 
-const GALLERY_MAX_PX  = 1280;  // max long-edge pixels — sharp enough for tags at arm's length
-const GALLERY_QUALITY = 0.82;  // ~80% size reduction vs raw; tags/logos remain crisp
+// ─── Resize target — derived from what the model can actually see ────────────
+//
+// gpt-4.1-mini divides an image into 32px patches and caps the count at 1536.
+// Anything larger is downscaled by the API BEFORE the model sees it. For a 4:3
+// photo that ceiling works out to 45x33 patches = 1440x1056 effective pixels.
+//
+// Consequences, both counter-intuitive:
+//
+//   1. A raw 4032x3024 capture and a 1440x1080 capture are IDENTICAL to the
+//      model. Both arrive as 1440x1056. Sending the raw file uploads ~2.9MB
+//      per photo so the API can discard 88% of it. Pure latency waste.
+//
+//   2. Resizing BELOW 1440 does cost real detail. The old 1280 target gave the
+//      model 1280x960 — 19% fewer pixels than it was willing to process, which
+//      is exactly the margin that decides whether an RN number or a copyright
+//      date is legible.
+//
+// So 1440 is the only sensible target: maximum detail the model will accept,
+// minimum bytes on the wire. Same constant for camera and gallery — there is no
+// reason for the two paths to feed the model differently.
+const AI_MAX_PX = 1440;
+
+const GALLERY_MAX_PX  = AI_MAX_PX;
+const GALLERY_QUALITY = 0.82;  // tags/logos remain crisp at this compression
+
+// ─── Camera normalization — resize to the model ceiling ──────────────────────
+//
+// Takes the on-disk URI from takePictureAsync and produces a resized JPEG plus
+// base64. Callers should request `base64: false` from the camera: encoding a
+// ~2.9MB base64 string only to discard it wastes both time and memory on older
+// devices.
+
+export async function normalizeCameraCapture(
+  uri: string,
+  origW = 0,
+  origH = 0,
+  label = 'camera',
+): Promise<CapturedPhoto | null> {
+  if (!uri) return null;
+  const startMs = Date.now();
+
+  // Only downsize, never upscale.
+  const actions: ImageManipulator.Action[] = [];
+  if (origW > AI_MAX_PX || origH > AI_MAX_PX || (!origW && !origH)) {
+    if (origW >= origH) actions.push({ resize: { width:  AI_MAX_PX } });
+    else                actions.push({ resize: { height: AI_MAX_PX } });
+  }
+
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      actions,
+      { compress: GALLERY_QUALITY, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+    );
+    if (!result.base64) {
+      console.warn(`[capture:${label}] manipulator returned no base64`);
+      return null;
+    }
+    const finalKB = Math.round((result.base64.length * 3) / 4 / 1024);
+    console.log(
+      `[capture:${label}] done — ${result.width ?? '?'}x${result.height ?? '?'} ~${finalKB}KB ` +
+      `${Date.now() - startMs}ms${actions.length ? ` (resized from ${origW}x${origH})` : ''}`
+    );
+    return { uri: result.uri, base64: result.base64, mimeType: 'image/jpeg' };
+  } catch (err) {
+    console.error(`[capture:${label}] camera resize failed:`, err);
+    return null;
+  }
+}
 
 export async function normalizeGalleryAsset(
   asset: ImagePicker.ImagePickerAsset,

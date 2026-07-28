@@ -13,6 +13,15 @@ const MODEL_PRICING: Record<string, { in: number; cachedIn: number; out: number 
 };
 const FALLBACK_PRICING = MODEL_PRICING["gpt-4o"];
 
+/**
+ * Strip a trailing snapshot date so a pinned model prices the same as its alias.
+ * "gpt-4.1-mini-2025-04-14" -> "gpt-4.1-mini". Without this a pinned snapshot
+ * misses the table and silently bills at gpt-4o rates in the log, ~6x too high.
+ */
+function basePricingKey(model: string): string {
+  return model.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+}
+
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
 export type TextContent = {
@@ -351,7 +360,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   if (result.usage) {
     const { prompt_tokens, completion_tokens, total_tokens } = result.usage;
     const model   = resolvedModel;
-    const pricing = MODEL_PRICING[model];
+    const pricing = MODEL_PRICING[basePricingKey(model)];
     const rates   = pricing ?? FALLBACK_PRICING;
 
     // Cached prompt tokens bill at a reduced rate. Absent on responses that

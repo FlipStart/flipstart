@@ -32,8 +32,7 @@ import {
   normalizeGalleryAsset,
   type CapturedPhoto,
   type PhotoSlot,
-  SLOT_ORDER,
-} from '@/lib/capture';
+  SLOT_ORDER, normalizeCameraCapture } from '@/lib/capture';
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
 
@@ -310,15 +309,23 @@ export default function CameraScreen() {
     haptic(Haptics.ImpactFeedbackStyle.Medium);
     setIsTaking(true);
     try {
+      // base64:false on purpose — the raw 12MP encode is ~2.9MB and would be
+      // thrown away by the resize below. normalizeCameraCapture reads the URI
+      // and returns base64 at the final size instead.
       const pic = await cameraRef.current.takePictureAsync({
-        base64: true, quality: 0.55, exif: false,
+        base64: false, quality: 0.55, exif: false,
       });
-      if (!pic?.base64) return;
-      const prefix   = pic.base64.substring(0, 12);
-      const mimeType = prefix.startsWith('/9j/') ? 'image/jpeg'
-                     : prefix.startsWith('iVBOR') ? 'image/png'
-                     : 'image/jpeg';
-      const photo: CapturedPhoto = { uri: pic.uri, base64: pic.base64, mimeType };
+      if (!pic?.uri) return;
+
+      // Resize to the model's effective ceiling (1440px long edge). A raw
+      // capture and a 1440px capture look identical to the AI — the API
+      // downscales anything larger before the model sees it — so this is pure
+      // upload savings with no loss of detail. See AI_MAX_PX in lib/capture.ts.
+      const photo = await normalizeCameraCapture(pic.uri, pic.width, pic.height);
+      if (!photo) {
+        Alert.alert('Photo failed', 'Could not process that photo. Please try again.');
+        return;
+      }
       if (undoData?.slot === activeSlot) setUndoData(null);
       const next = { ...slots, [activeSlot]: photo };
       setSlots(next);
