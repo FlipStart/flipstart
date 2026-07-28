@@ -9,22 +9,12 @@
  */
 
 import type {
-  BuyLabel, Platform, RankLabel,
-  FlipCalc, GlobalStats, GlobalRank, FlipResult,
+  BuyLabel, Platform,
+  FlipCalc, GlobalStats, FlipResult,
 } from '@/types/flip';
 import { getRecommendation, type Recommendation } from '@/utils/recommendation';
 
 // ─── Rank gate constants ──────────────────────────────────────────────────────
-// Volume thresholds for rank eligibility.
-// High stats alone cannot unlock a high rank — volume and consistency required.
-const RANK_GATES = {
-  GOAT:    100,   // 100+ flips + strong stats
-  ELITE:    40,   // 40+ flips
-  PRO:      15,   // 15+ flips
-  SKILLED:   5,   // 5+ flips
-  LEARNING:  1,   // any confirmed flip
-  // Fewer than 1 → Beginner (no cap needed, this is the floor)
-} as const;
 import { WIN_LABELS } from '@/types/flip';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -295,59 +285,4 @@ export function deriveGlobalStats(history: FlipResult[]): GlobalStats {
   const winRate     = totalFlips > 0 ? Math.round((wins / totalFlips) * 100) : 0;
 
   return { totalFlips, totalProfit, totalCost, lifetimeRoi, avgProfit, winRate };
-}
-
-// ─── Global rank ──────────────────────────────────────────────────────────────
-
-/**
- * Compute global rank from derived stats.
- *
- * Raw score formula:
- *   (lifetimeRoi × 0.35) + (avgProfit × 0.30) + (winRate × 0.25) + (volumeBonus × 0.10)
- *
- * Volume bonus (0–100) rewards consistency:
- *   10 flips → 10pts, 25 → 25pts, 50 → 50pts, 100+ → 100pts
- *
- * Sample-size gate: high scores with few flips are capped at a lower rank.
- * This means 1 lucky flip cannot produce an Elite or GOAT rank.
- *
- * Rank gates (minimum confirmed flips to be ELIGIBLE for that rank):
- *   GOAT:    100+  flips AND score ≥ 95
- *   Elite:    40+  flips AND score ≥ 85
- *   Pro:      15+  flips AND score ≥ 70
- *   Skilled:   5+  flips AND score ≥ 55
- *   Learning:  1+  flip  (any confirmed flip exits Beginner)
- *   Beginner:  0   flips
- */
-export function calcGlobalRank(stats: GlobalStats): GlobalRank {
-  const n = stats.totalFlips;
-
-  // Volume bonus: log-scale reward capped at 100
-  const volumeBonus = Math.min(100, Math.round(n > 0 ? (Math.log10(n + 1) / Math.log10(101)) * 100 : 0));
-
-  const rawScore = Math.round(
-    stats.lifetimeRoi * 0.35 +
-    stats.avgProfit   * 0.30 +
-    stats.winRate     * 0.25 +
-    volumeBonus       * 0.10,
-  );
-
-  // Apply sample-size gate: cap the rank based on how many flips exist
-  let rank: RankLabel;
-
-  if (n >= RANK_GATES.GOAT && rawScore >= 95) {
-    rank = '🐐 GOAT';
-  } else if (n >= RANK_GATES.ELITE && rawScore >= 85) {
-    rank = '🐐 Elite';
-  } else if (n >= RANK_GATES.PRO && rawScore >= 70) {
-    rank = '💰 Pro';
-  } else if (n >= RANK_GATES.SKILLED && rawScore >= 55) {
-    rank = '📈 Skilled';
-  } else if (n >= RANK_GATES.LEARNING) {
-    rank = '🧠 Learning';
-  } else {
-    rank = '🪨 Beginner';
-  }
-
-  return { rank, score: rawScore };
 }

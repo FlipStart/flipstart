@@ -4,7 +4,6 @@
  * FlipResult    → what gets persisted when user confirms an item
  * FlipCalc      → live recalculated values derived from FlipResult + thrift price
  * GlobalStats   → derived from the full FlipResult[] history
- * GlobalRank    → rank label + score
  */
 
 import type { ScanResult } from '@/lib/types';
@@ -140,11 +139,6 @@ export interface GlobalStats {
   winRate:      number;   // % of items with buyLabel BUY or higher
 }
 
-export interface GlobalRank {
-  rank:  RankLabel;
-  score: number;
-}
-
 // ─── Enums / unions ───────────────────────────────────────────────────────────
 
 export type BuyLabel =
@@ -156,14 +150,6 @@ export type BuyLabel =
   | '🤮 TRASH';
 
 export type Platform = 'eBay' | 'Depop' | 'Either';
-
-export type RankLabel =
-  | '🐐 GOAT'
-  | '🐐 Elite'
-  | '💰 Pro'
-  | '📈 Skilled'
-  | '🧠 Learning'
-  | '🪨 Beginner';
 
 // WIN_LABELS — labels that count as a "win" for win-rate calculation
 export const WIN_LABELS: BuyLabel[] = [
@@ -188,6 +174,22 @@ export interface HuntBundleItem {
   huntRating:   'legendary' | 'treasure' | 'risky' | 'trash';
   kept:         boolean;
   scanSnapshot: ScanResult;   // full AI result — used to reopen Discovery Analysis
+
+  // ─── Flip Record state ──────────────────────────────────────────────────────
+  // Kept items get the same Flip Record as a normal scan, so they need the same
+  // mutable fields. All optional: bundles saved before this existed simply have
+  // none of them, and every reader defaults (status ?? 'scanned'). No migration.
+  //
+  // Mutated via useFlipStore.updateHuntItem(), never updateFlip() — hunt items
+  // are nested inside a bundle and are deliberately NOT top-level flips.
+  status?:            'scanned' | 'bought' | 'listed' | 'sold' | 'passed';
+  soldPrice?:         number;
+  soldAt?:            number;
+  listingsGenerated?: boolean;
+  generatedAt?:       number | null;
+  listingData?:       ListingData | null;
+  /** Recomputed alongside thriftPrice when edited from the Flip Record. */
+  roi?:               number;
 }
 
 /** A complete Hunt Mode session saved as one Scan History bundle. */

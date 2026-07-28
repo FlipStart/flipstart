@@ -24,6 +24,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 import { useFlipStore }                from '@/lib/useFlipStore';
 import { isHuntBundle, HuntBundleItem } from '@/types/flip';
+import { calculateFees } from '@/utils/flipCalculations';
 import { FONTS }                        from '@/constants/typography';
 import { logEvent }                     from '@/lib/analytics';
 import { useEffect }                    from 'react';
@@ -102,6 +103,39 @@ export default function HuntHistoryScreen() {
   }
 
   const profitColor = bundle.totalEstimatedProfit >= 0 ? '#2A6A2A' : '#8A2A2A';
+
+  // Realized profit across kept items marked sold. Same fee model as a normal
+  // flip so the number is comparable to everything else in the app. Recomputes
+  // on every render, so marking an item sold updates this immediately on return.
+  const soldKept = bundle.keptItems.filter(i => i.status === 'sold' && (i.soldPrice ?? 0) > 0);
+  const realizedTotal = soldKept.reduce((sum, i) => {
+    const sp = i.soldPrice ?? 0;
+    return sum + Math.round(sp - calculateFees(sp) - (i.thriftPrice ?? 0));
+  }, 0);
+
+  /**
+   * KEPT items open the full Flip Record — same screen a normal scan gets, with
+   * working sold tracking. They stay nested in the bundle, so scan-detail is
+   * given bundleId + huntItemId to resolve and write back through.
+   *
+   * REMOVED items keep going to Deep Analysis: they were passed on, so there is
+   * no flip to record.
+   */
+  const handleKeptPress = (item: HuntBundleItem) => {
+    logEvent('hunt_history_item_opened', {
+      category:   item.category,
+      huntRating: item.huntRating,
+      destination: 'flip_record',
+    });
+    router.push({
+      pathname: '/scan-detail' as any,
+      params: {
+        scanId:     item.scanId,
+        bundleId:   bundle.id,
+        huntItemId: item.huntItemId,
+      },
+    });
+  };
 
   const handleItemPress = (item: HuntBundleItem) => {
     logEvent('hunt_history_item_opened', {
@@ -190,12 +224,28 @@ export default function HuntHistoryScreen() {
           </View>
         </View>
 
+        {/* ── Realized profit ── full width, only once something has sold.
+            Hidden until then: "$0 realized" on an unsold hunt reads as a loss. */}
+        {soldKept.length > 0 && (
+          <View style={s.realizedBar}>
+            <View style={s.realizedRow}>
+              <Text style={s.realizedLabel}>REALIZED PROFIT</Text>
+              <Text style={[s.realizedValue, { color: realizedTotal >= 0 ? '#2A6A2A' : '#8A2A2A' }]}>
+                {realizedTotal >= 0 ? '+' : '-'}${Math.abs(realizedTotal)}
+              </Text>
+            </View>
+            <Text style={s.realizedSub}>
+              {soldKept.length} of {bundle.keptItems.length} kept item{bundle.keptItems.length !== 1 ? 's' : ''} sold
+            </Text>
+          </View>
+        )}
+
         {/* ── Kept items ── */}
         {bundle.keptItems.length > 0 && (
           <>
             <Text style={s.sectionLabel}>KEPT ITEMS · {bundle.keptItems.length}</Text>
             {bundle.keptItems.map(item => (
-              <HuntItemRow key={item.huntItemId} item={item} onPress={() => handleItemPress(item)} />
+              <HuntItemRow key={item.huntItemId} item={item} onPress={() => handleKeptPress(item)} />
             ))}
           </>
         )}
@@ -289,6 +339,11 @@ const s = StyleSheet.create({
   statValue:    { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '800', color: BROWN },
   statLabel:    { fontSize: 9, fontWeight: '700', color: MUTED, letterSpacing: 0.5 },
 
+  realizedBar:   { backgroundColor: CARD, borderRadius: 14, borderWidth: 1, borderColor: CARD_B, paddingHorizontal: 14, paddingVertical: 12, marginTop: 10, gap: 3 },
+  realizedRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  realizedLabel: { fontSize: 10, fontWeight: '800', color: BROWN, letterSpacing: 1.1 },
+  realizedValue: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800' },
+  realizedSub:   { fontSize: 10.5, color: MUTED },
   sectionLabel: { fontSize: 10, fontWeight: '700', color: MUTED, letterSpacing: 1.4, marginTop: 8, marginBottom: 6 },
 
   notFoundText: { fontFamily: FONTS.serif, fontSize: 17, color: BROWN, marginTop: 12, marginBottom: 20 },

@@ -20,6 +20,7 @@ import { useAuth } from '@/lib/auth-context';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { loadXpProfile, getCurrentRank, RANK_LADDER } from '@/lib/huntXp';
 import { isHuntBundle } from '@/types/flip';
+import { allScanFlips } from '@/utils/huntItemToFlip';
 import type { FlipResult } from '@/types/flip';
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
@@ -82,7 +83,10 @@ export default function ProfileScreen() {
   }, [user?.id, router]);
 
   // ── Scan stats ────────────────────────────────────────────────────────────
-  const scanFlips   = flips.filter((f): f is FlipResult => !isHuntBundle(f));
+  // Kept hunt items count toward lifetime stats: a hunt find is a real find.
+  // They stay nested in their bundle (so they never appear as their own rows in
+  // Scan History) and are projected into FlipResults here.
+  const scanFlips   = allScanFlips(flips);
   const totalScans  = scanFlips.length;
   const totalCost   = scanFlips.reduce((s, f) => s + Math.max(0, f.thriftPrice ?? 0), 0);
   const totalProfit = scanFlips.reduce((s, f) => s + Math.max(0, f.profit   ?? 0), 0);

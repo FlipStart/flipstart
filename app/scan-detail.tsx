@@ -21,12 +21,13 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Clipboard } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useFlipStore } from '@/lib/useFlipStore';
-import { FlipResult, ListingData, isHuntBundle } from '@/types/flip';
+import { FlipResult, ListingData, HuntBundleItem, isHuntBundle } from '@/types/flip';
+import { huntItemToFlip } from '@/utils/huntItemToFlip';
 import { FONTS } from '@/constants/typography';
 import { normalizeBuyRating, type CanonicalRating } from '@/utils/recommendation';
 import { computeFlipCalc, calculateFees } from '@/utils/flipCalculations';
@@ -108,15 +109,41 @@ const iv = StyleSheet.create({
 export default function ScanDetailScreen() {
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
-  const params  = useLocalSearchParams<{ scanId?: string }>();
+  const params  = useLocalSearchParams<{ scanId?: string; bundleId?: string; huntItemId?: string }>();
   const { user } = useAuth();
-  const { flips, removeFlip, updateFlip } = useFlipStore();
+  const { flips, removeFlip, updateFlip, updateHuntItem } = useFlipStore();
   const { pruneUnseen } = useAchievementNotifications();
 
-  const flip = useMemo(
-    () => flips.find(f => !isHuntBundle(f) && f.id === params.scanId) as FlipResult | undefined,
-    [flips, params.scanId],
-  );
+  // ── Resolution ──────────────────────────────────────────────────────────────
+  // Two sources. A normal scan is a top-level FlipResult. A KEPT hunt item lives
+  // nested inside a HuntBundle and is deliberately not a top-level flip — hunt
+  // finds must not appear as their own rows in Scan History. When bundleId and
+  // huntItemId are present we resolve from the bundle and project the item into
+  // a FlipResult so the entire screen below renders unchanged.
+  const huntItem = useMemo((): HuntBundleItem | undefined => {
+    if (!params.bundleId || !params.huntItemId) return undefined;
+    const bundle = flips.find(f => isHuntBundle(f) && f.id === params.bundleId);
+    if (!bundle || !isHuntBundle(bundle)) return undefined;
+    return bundle.keptItems.find(i => i.huntItemId === params.huntItemId);
+  }, [flips, params.bundleId, params.huntItemId]);
+
+  const isHuntFlip = !!huntItem;
+
+  const flip = useMemo(() => {
+    if (huntItem) return huntItemToFlip(huntItem);
+    return flips.find(f => !isHuntBundle(f) && f.id === params.scanId) as FlipResult | undefined;
+  }, [flips, params.scanId, huntItem]);
+
+  // Every write goes through here. Hunt items are nested, so updateFlip() cannot
+  // reach them — it filters bundles out before syncing, and the write would
+  // silently no-op, showing the user a sale that vanishes on reopen.
+  const applyUpdate = useCallback((updates: Partial<FlipResult>) => {
+    if (isHuntFlip && params.bundleId && params.huntItemId) {
+      updateHuntItem(params.bundleId, params.huntItemId, updates as Partial<HuntBundleItem>);
+      return;
+    }
+    if (flip) updateFlip(flip.id, updates);
+  }, [isHuntFlip, params.bundleId, params.huntItemId, updateHuntItem, updateFlip, flip]);
 
   // ── Local UI state (hooks before any early return) ──────────────────────────
   const [thriftEditing, setThriftEditing] = useState(false);
@@ -228,7 +255,7 @@ export default function ScanDetailScreen() {
   const setStatus = (next: Status) => {
     haptic(Haptics.ImpactFeedbackStyle.Medium);
     const clearingSold = status === 'sold' && next !== 'sold';
-    updateFlip(flip.id, {
+    applyUpdate({
       status: next,
       ...(clearingSold ? { soldPrice: undefined, soldAt: undefined } : {}),
     });
@@ -260,7 +287,7 @@ export default function ScanDetailScreen() {
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     // Entering a valid sold price is what completes the journey — the stepper
     // jumps straight to 100% (Sold) since that's the real-world outcome.
-    updateFlip(flip.id, { status: 'sold', soldPrice: v, soldAt: Date.now() });
+    applyUpdate({ status: 'sold', soldPrice: v, soldAt: Date.now() });
     trackAnalyticsEvent('flip_status_changed', { scan_id: flip.id, status: 'sold', sold_price: v });
   };
 
@@ -277,7 +304,7 @@ export default function ScanDetailScreen() {
     const v = parseFloat(thriftStr);
     if (!v || v === flip.thriftPrice) { setThriftEditing(false); setThriftStr(String(flip.thriftPrice)); return; }
     haptic(Haptics.ImpactFeedbackStyle.Medium);
-    updateFlip(flip.id, {
+    applyUpdate({
       thriftPrice: v, fees: calc.fees, profit: calc.profit, roi: calc.roi,
       buyScore: calc.buyScore, buyLabel: calc.buyLabel, stars: calc.stars,
     });
@@ -299,7 +326,7 @@ export default function ScanDetailScreen() {
         ebay:  { title: result.ebay.title,  description: result.ebay.description  },
         depop: { title: result.depop.title, description: result.depop.description },
       };
-      updateFlip(flip.id, { listingsGenerated: true, generatedAt: Date.now(), listingData });
+      applyUpdate({ listingsGenerated: true, generatedAt: Date.now(), listingData });
       setLocalListings(listingData);
       setListingsOpen(true);
       trackAnalyticsEvent('listing_generated', {
@@ -433,9 +460,16 @@ export default function ScanDetailScreen() {
           <Text style={s.headerBrand}>FlipStart</Text>
           <Text style={s.headerSub}>✦ FLIP RECORD ✦</Text>
         </View>
-        <Pressable onPress={handleDeletePress} style={s.headerBtn} hitSlop={8}>
-          <MaterialIcons name="delete-outline" size={20} color={CREAM} />
-        </Pressable>
+        {/* No delete for hunt items: removing one would desync the bundle's
+            totals and the XP already awarded on them. Delete the whole bundle
+            from Scan History instead. Empty View keeps the header centred. */}
+        {isHuntFlip ? (
+          <View style={s.headerBtn} />
+        ) : (
+          <Pressable onPress={handleDeletePress} style={s.headerBtn} hitSlop={8}>
+            <MaterialIcons name="delete-outline" size={20} color={CREAM} />
+          </Pressable>
+        )}
       </View>
 
       <ScrollView

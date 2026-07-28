@@ -37,4 +37,21 @@ export const ENV = {
   // hard 400 from the API. modelOr() treats blank and whitespace as unset.
   openaiScanModel:    modelOr(process.env.OPENAI_SCAN_MODEL),
   openaiListingModel: modelOr(process.env.OPENAI_LISTING_MODEL),
+
+  // ── CanonicalAnalysisV1 rollout ──────────────────────────────────────────
+  // Off by default. The legacy scan path stays intact and is the immediate
+  // rollback: unset this variable and the old route resumes on restart.
+  canonicalV1Enabled: (process.env.CANONICAL_ANALYSIS_V1_ENABLED ?? "").trim() === "true",
+
+  // Comma-separated user ids allowed onto V1 while the flag is off. Lets the
+  // founder account test in production without exposing anyone else.
+  canonicalV1AllowedUserIds: (process.env.CANONICAL_ANALYSIS_V1_USER_IDS ?? "")
+    .split(",").map(s => s.trim()).filter(Boolean),
 };
+
+/** V1 is on for everyone, or this specific user is on the allow-list. */
+export function canonicalV1EnabledFor(userId: string | undefined | null): boolean {
+  if (ENV.canonicalV1Enabled) return true;
+  if (!userId) return false;
+  return ENV.canonicalV1AllowedUserIds.includes(userId);
+}

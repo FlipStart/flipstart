@@ -29,6 +29,7 @@ import { FlipResult, HistoryEntry, HuntBundle, isHuntBundle } from '@/types/flip
 import { FONTS } from '@/constants/typography';
 import { normalizeBuyRating, type CanonicalRating } from '@/utils/recommendation';
 import { calculateFees } from '@/utils/flipCalculations';
+import { allScanFlips, type SourcedFlip } from '@/utils/huntItemToFlip';
 import { useAuth } from '@/lib/auth-context';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import {
@@ -73,6 +74,23 @@ function formatDate(ts: number): string {
 function realizedProfit(f: FlipResult): number {
   const sp = f.soldPrice ?? 0;
   return Math.round(sp - calculateFees(sp) - f.thriftPrice);
+}
+
+/**
+ * Realized profit across a hunt bundle's kept items, using the same fee model
+ * as a normal flip so the two are directly comparable.
+ *
+ * Returns count as well as total: the UI must not show "$0 realized" for a
+ * bundle where nothing has sold yet — that reads as a loss rather than as
+ * "no data". Callers gate on count > 0.
+ */
+function bundleRealized(bundle: HuntBundle): { count: number; total: number } {
+  const sold = bundle.keptItems.filter(i => i.status === 'sold' && (i.soldPrice ?? 0) > 0);
+  const total = sold.reduce((sum, i) => {
+    const sp = i.soldPrice ?? 0;
+    return sum + Math.round(sp - calculateFees(sp) - (i.thriftPrice ?? 0));
+  }, 0);
+  return { count: sold.length, total };
 }
 
 // ─── Rank badge ───────────────────────────────────────────────────────────────
@@ -330,6 +348,7 @@ function HuntBundleCard({
 
   const profitColor = bundle.totalEstimatedProfit >= 0 ? '#2A5A2A' : '#8A3A2A';
   const durationMin = Math.round(bundle.durationMs / 60000);
+  const realized    = bundleRealized(bundle);
 
   return (
     <View style={hb.wrapper}>
@@ -376,6 +395,20 @@ function HuntBundleCard({
             </Text>
             <Text style={hb.profitSub}>est. profit</Text>
           </View>
+
+          {/* Realized only appears once a kept item is actually sold — an
+              always-on "$0 realized" would read as a loss, not as no-data. */}
+          {realized.count > 0 && (
+            <>
+              <View style={hb.profitDivider} />
+              <View style={hb.profitBlock}>
+                <Text style={[hb.profit, { color: realized.total >= 0 ? '#2A5A2A' : '#8A3A2A' }]}>
+                  {realized.total >= 0 ? '+' : '-'}${Math.abs(realized.total)}
+                </Text>
+                <Text style={hb.profitSub}>realized</Text>
+              </View>
+            </>
+          )}
         </Pressable>
       </Animated.View>
     </View>
@@ -395,6 +428,7 @@ const hb = StyleSheet.create({
   meta:       { fontSize: 11, color: MUTED },
   metaDot:    { fontSize: 11, color: MUTED },
   profitBlock:{ alignItems: 'flex-end', gap: 1 },
+  profitDivider:{ width: 1, alignSelf: 'stretch', marginVertical: 4, backgroundColor: GOLD + '44' },
   profit:     { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800' },
   profitSub:  { fontSize: 9, color: MUTED },
 });
@@ -452,16 +486,21 @@ export default function HistoryScreen() {
       });
   }, [flips, search]);
 
-  // Top flips — highest profit first, only positive-profit items
+  // Top flips — highest profit first, only positive-profit items.
+  // Kept hunt items rank here as individual finds, never as their bundle: a
+  // bundle row in a "top flips" list tells the user nothing about which item
+  // actually earned the money.
   const topFlips = useMemo(
-    () => [...flips].filter((f): f is FlipResult => !isHuntBundle(f) && f.profit > 0).sort((a, b) => b.profit - a.profit),
+    () => allScanFlips(flips).filter(f => f.profit > 0).sort((a, b) => b.profit - a.profit),
     [flips],
   );
 
   // Realized outcomes — derived from sold items (new outcome tracking).
   const realized = useMemo(() => {
-    const sold = flips.filter(
-      (f): f is FlipResult => !isHuntBundle(f) && f.status === 'sold' && (f.soldPrice ?? 0) > 0,
+    // Includes sold kept hunt items — the money is just as real, and excluding
+    // it would make this figure disagree with the per-bundle realized totals.
+    const sold = allScanFlips(flips).filter(
+      f => f.status === 'sold' && (f.soldPrice ?? 0) > 0,
     );
     const total = sold.reduce((sum, f) => sum + realizedProfit(f), 0);
     return { count: sold.length, total };
@@ -475,6 +514,27 @@ export default function HistoryScreen() {
     } else {
       router.push({ pathname: '/scan-detail' as any, params: { scanId: item.id } });
     }
+  };
+
+  /**
+   * Top Flips can contain kept hunt items. Those are not top-level flips, so
+   * scan-detail cannot find them by id — it needs the bundle coordinates.
+   */
+  const handleTopFlipPress = (item: SourcedFlip) => {
+    if (!navGuard()) return;
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    if (item.huntSource) {
+      router.push({
+        pathname: '/scan-detail' as any,
+        params: {
+          scanId:     item.id,
+          bundleId:   item.huntSource.bundleId,
+          huntItemId: item.huntSource.huntItemId,
+        },
+      });
+      return;
+    }
+    router.push({ pathname: '/scan-detail' as any, params: { scanId: item.id } });
   };
 
   // The actual deletion + post-delete reconcile (prune badges, drop orphaned
@@ -570,14 +630,10 @@ export default function HistoryScreen() {
 
       {/* ── Content ── */}
       {activeTab === 'all' ? (
-        <FlatList
-          data={allScans}
-          keyExtractor={item => item.id}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={s.list}
-          keyboardShouldPersistTaps="handled"
-          ListHeaderComponent={
-            <>
+        <>
+        {/* Pinned above the list, NOT a ListHeaderComponent: the stats and the
+            search field stay on screen while only the rows scroll. */}
+        <View style={s.pinnedHeader}>
               {/* Scan stats — est. profit + realized profit are the headliners */}
               <View style={s.statsCard}>
                 <View style={s.statsAccent} />
@@ -631,8 +687,14 @@ export default function HistoryScreen() {
               <Text style={s.countLabel}>
                 {allScans.length} entr{allScans.length !== 1 ? 'ies' : 'y'}
               </Text>
-            </>
-          }
+        </View>
+
+        <FlatList
+          data={allScans}
+          keyExtractor={item => item.id}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={s.listPinned}
+          keyboardShouldPersistTaps="handled"
           renderItem={({ item }) => {
             if (isHuntBundle(item)) {
               return <HuntBundleCard bundle={item as HuntBundle} onPress={() => handlePress(item)} onDelete={() => handleDelete(item.id)} />;
@@ -643,6 +705,7 @@ export default function HistoryScreen() {
             <EmptyState msg={search ? 'No items match your search.' : 'Scan and confirm items to build your history.'} />
           }
         />
+        </>
       ) : (
         <FlatList
           data={topFlips}
@@ -658,7 +721,7 @@ export default function HistoryScreen() {
             <TopFlipCard
               item={item}
               rank={index + 1}
-              onPress={() => handlePress(item)}
+              onPress={() => handleTopFlipPress(item)}
             />
           )}
           ListEmptyComponent={
@@ -700,6 +763,8 @@ const s = StyleSheet.create({
   tabTextInactive:{ color: FOREST },
 
   list:          { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 40 },
+  pinnedHeader:  { paddingHorizontal: 14, paddingTop: 12 },
+  listPinned:    { paddingHorizontal: 14, paddingTop: 0, paddingBottom: 40 },
   countLabel:    { fontSize: 11, color: MUTED, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 },
 
   statsCard:   { backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B, marginBottom: 14, overflow: 'hidden', shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.10, shadowRadius: 9, elevation: 3 },

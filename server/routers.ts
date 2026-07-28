@@ -4,6 +4,10 @@ import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
+import { canonicalV1EnabledFor } from "./_core/env.js";
+import { analyzeItemV1, ScanV1Error } from "./scanV1.js";
+import { persistScanPhotos } from "./photoPersistence.js";
+import { randomUUID } from "node:crypto";
 import { uploadScanImage, analyzeItemFast, generateItemListings } from "./scan";
 
 // ─── Successful-analysis cache (keyed by scanAttemptId) ──────────────────────
@@ -114,6 +118,74 @@ const appRouter_scan = router({
               resetTime:                stats.resetTime,
             }
           );
+        }
+
+        // ── CanonicalAnalysisV1 route (feature-flagged) ─────────────────────
+        // Off by default. When enabled for this user, run V1 and FAIL CLOSED:
+        // no analysis saved, no scan consumed, nothing unlocked. The legacy
+        // path below is untouched and is the immediate rollback.
+        if (canonicalV1EnabledFor(sid)) {
+          const analysisId = randomUUID();
+          try {
+            const images = {
+              front:  input.imageBase64,
+              detail: input.detailImageBase64,
+              tag:    input.tagImageBase64,
+            };
+
+            // Persist first so meta.photo_refs is populated on the stored
+            // analysis. A failed upload leaves a null ref but never fails the
+            // scan — the analysis is still valid.
+            const photoRefs = await persistScanPhotos({
+              userId: sid,
+              analysisId,
+              scanAttemptId: input.scanAttemptId ?? analysisId,
+              images,
+              mimeType: input.mimeType,
+            });
+
+            const v1Start = Date.now();
+            const { canonical, telemetry } = await analyzeItemV1({
+              images,
+              mimeType: input.mimeType,
+              userId: sid,
+              scanAttemptId: input.scanAttemptId ?? analysisId,
+              analysisId,
+              planAtScan: "free",
+              photoRefs,
+            });
+
+            console.log(
+              `[analyzeV1] ok — ${Date.now() - v1Start}ms | model:${telemetry.model}` +
+              ` | prompt:${telemetry.prompt_tokens} cached:${telemetry.cached_tokens}` +
+              ` completion:${telemetry.completion_tokens}` +
+              ` | cost:$${telemetry.estimated_cost_usd?.toFixed(6) ?? "?"}` +
+              ` | era:${canonical.derived.era_effective.status}` +
+              `/${canonical.derived.era_effective.confirmed_vintage_route ?? "-"}` +
+              ` | downgrades:${canonical.derived.validation.downgrades.length}`
+            );
+
+            // Only NOW is the scan consumed.
+            commitScanCount(sid, input.scanAttemptId);
+            const v1Payload = { canonical, schemaVersion: "1" as const };
+            cacheAnalysis(input.scanAttemptId, v1Payload);
+            return v1Payload;
+          } catch (err) {
+            const kind = err instanceof ScanV1Error ? err.kind : "transport_error";
+            const diag = err instanceof ScanV1Error ? err.diagnostics : {};
+            console.error(
+              `[analyzeV1] FAILED kind=${kind} analysis=${analysisId} —`,
+              err instanceof Error ? err.message : String(err),
+              JSON.stringify(diag).slice(0, 800),
+            );
+            // Fail closed. No scan consumed, nothing saved, nothing unlocked.
+            // Deliberately NOT silently downgraded to the legacy route: that
+            // would hide a broken V1 behind a working-looking response.
+            throw Object.assign(
+              new Error("Scan could not be completed. Please try again."),
+              { code: "SCAN_V1_FAILED", kind }
+            );
+          }
         }
 
         try {

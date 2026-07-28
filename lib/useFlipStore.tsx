@@ -22,9 +22,9 @@ import React, {
 } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { FlipResult, HuntBundle, HistoryEntry, isHuntBundle } from '@/types/flip';
-import { deriveGlobalStats, calcGlobalRank } from '@/utils/flipCalculations';
-import type { GlobalStats, GlobalRank } from '@/types/flip';
+import { FlipResult, HuntBundle, HuntBundleItem, HistoryEntry, isHuntBundle } from '@/types/flip';
+import { deriveGlobalStats } from '@/utils/flipCalculations';
+import type { GlobalStats } from '@/types/flip';
 import { upsertScan, deleteScan, deleteAllScans, fetchScans, mergeScans } from '@/lib/scanSync';
 import { upsertHuntBundle, deleteHuntBundle, deleteAllHuntBundles, fetchHuntBundles, mergeHuntBundles } from '@/lib/huntBundleSync';
 
@@ -85,6 +85,7 @@ type FlipAction =
   | { type: 'SET_THRIFT_PRICE';  payload: { id: string; price: string } }
   | { type: 'CLEAR_THRIFT_PRICE'; payload: string }      // by id
   | { type: 'ADD_HUNT_BUNDLE'; payload: HuntBundle }
+  | { type: 'UPDATE_HUNT_ITEM'; payload: { bundleId: string; huntItemId: string; updates: Partial<HuntBundleItem> } }
   | { type: 'CLEAR_ALL' };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
@@ -128,6 +129,32 @@ function reducer(state: FlipStoreState, action: FlipAction): FlipStoreState {
         ),
       };
 
+    case 'UPDATE_HUNT_ITEM': {
+      const { bundleId, huntItemId, updates } = action.payload;
+      return {
+        ...state,
+        flips: state.flips.map(entry => {
+          if (!isHuntBundle(entry) || entry.id !== bundleId) return entry;
+
+          const patch = (list: HuntBundleItem[]) =>
+            list.map(i => i.huntItemId === huntItemId ? { ...i, ...updates } : i);
+
+          const keptItems    = patch(entry.keptItems);
+          const removedItems = patch(entry.removedItems);
+
+          // thriftPrice/profit feed the bundle header totals. Recompute them so
+          // the header can never contradict the item the user just edited.
+          const totalCost = keptItems.reduce((s, i) => s + Math.max(0, i.thriftPrice ?? 0), 0);
+          const totalEstimatedProfit = keptItems.reduce((s, i) => s + (i.profit ?? 0), 0);
+          const estimatedROI = totalCost > 0
+            ? Math.round((totalEstimatedProfit / totalCost) * 100)
+            : 0;
+
+          return { ...entry, keptItems, removedItems, totalCost, totalEstimatedProfit, estimatedROI };
+        }),
+      };
+    }
+
     case 'SET_THRIFT_PRICE':
       return {
         ...state,
@@ -166,12 +193,17 @@ interface FlipStoreValue {
   removeFlip:         (id: string) => void;
   clearAllFlips:      () => void;
   updateFlip:         (id: string, updates: Partial<FlipResult>) => void;
+  /**
+   * Patch a single item inside a hunt bundle. Kept hunt items have a full Flip
+   * Record but are NOT top-level flips, so updateFlip() cannot reach them —
+   * it filters bundles out before syncing.
+   */
+  updateHuntItem:     (bundleId: string, huntItemId: string, updates: Partial<HuntBundleItem>) => void;
   setPendingThriftPrice: (id: string, price: string) => void;
   clearPendingThriftPrice: (id: string) => void;
 
   // Derived (computed from flips via flipCalculations.ts)
   globalStats: GlobalStats;
-  globalRank:  GlobalRank;
 
   // Convenience
   getFlipById: (id: string) => FlipResult | undefined;
@@ -323,6 +355,35 @@ export function FlipStoreProvider({
     }
   }, [userId, state.flips]);
 
+  const updateHuntItem = useCallback((
+    bundleId: string,
+    huntItemId: string,
+    updates: Partial<HuntBundleItem>,
+  ) => {
+    dispatch({ type: 'UPDATE_HUNT_ITEM', payload: { bundleId, huntItemId, updates } });
+    // Re-sync the whole bundle. Same reasoning as updateFlip: mergeHuntBundles
+    // is cloud-wins per id, so without this a stale cloud row would overwrite
+    // the local sold data on next login.
+    if (userId) {
+      const entry = state.flips.find(f => f.id === bundleId);
+      if (entry && isHuntBundle(entry)) {
+        const patch = (list: HuntBundleItem[]) =>
+          list.map(i => i.huntItemId === huntItemId ? { ...i, ...updates } : i);
+        const keptItems    = patch(entry.keptItems);
+        const removedItems = patch(entry.removedItems);
+        const totalCost = keptItems.reduce((s, i) => s + Math.max(0, i.thriftPrice ?? 0), 0);
+        const totalEstimatedProfit = keptItems.reduce((s, i) => s + (i.profit ?? 0), 0);
+        const estimatedROI = totalCost > 0
+          ? Math.round((totalEstimatedProfit / totalCost) * 100)
+          : 0;
+        upsertHuntBundle(
+          { ...entry, keptItems, removedItems, totalCost, totalEstimatedProfit, estimatedROI },
+          userId,
+        ).catch(() => {});
+      }
+    }
+  }, [userId, state.flips]);
+
   // ── Retry sweep: photos that never reached Storage ──────────────────────
   // A scan saved while offline / on bad signal keeps its local file:// path
   // forever — invisible on other devices and lost on reinstall. This retries
@@ -436,7 +497,6 @@ export function FlipStoreProvider({
 
     return { totalFlips, totalProfit, totalCost, lifetimeRoi, avgProfit, winRate };
   }, [state.flips]);
-  const globalRank  = useMemo(() => calcGlobalRank(globalStats), [globalStats]);
 
   const getFlipById = useCallback(
     (id: string) => state.flips.find((f): f is FlipResult => !isHuntBundle(f) && f.id === id),
@@ -454,10 +514,10 @@ export function FlipStoreProvider({
         removeFlip,
         clearAllFlips,
         updateFlip,
+        updateHuntItem,
         setPendingThriftPrice,
         clearPendingThriftPrice,
         globalStats,
-        globalRank,
         getFlipById,
       }}
     >
