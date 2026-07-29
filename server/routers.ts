@@ -4,9 +4,11 @@ import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
-import { canonicalV1EnabledFor } from "./_core/env.js";
+import { canonicalV1EnabledFor, ENV } from "./_core/env.js";
 import { analyzeItemV1, ScanV1Error } from "./scanV1.js";
 import { persistScanPhotos } from "./photoPersistence.js";
+import { toLegacyShape } from "./compat/toLegacyShape.js";
+import { grantDevScans, revokeDevGrant, devGrantStatus } from "./devGrants.js";
 import { randomUUID } from "node:crypto";
 import { uploadScanImage, analyzeItemFast, generateItemListings } from "./scan";
 
@@ -165,9 +167,22 @@ const appRouter_scan = router({
               ` | downgrades:${canonical.derived.validation.downgrades.length}`
             );
 
-            // Only NOW is the scan consumed.
-            commitScanCount(sid, input.scanAttemptId);
-            const v1Payload = { canonical, schemaVersion: "1" as const };
+            // Only NOW is the scan consumed. Skipped while V1 is allow-list
+            // only, so founder testing does not burn the 7/day quota on
+            // results that are still being validated.
+            const testingOnly = !ENV.canonicalV1Enabled;
+            if (!testingOnly) commitScanCount(sid, input.scanAttemptId);
+            else console.log("[analyzeV1] allow-list scan — quota NOT consumed");
+
+            // Emit BOTH shapes. The shipped app reads the legacy keys and
+            // renders normally with no EAS build; `canonical` rides along for
+            // the new screens. The adapter is deleted once the client reads
+            // canonical directly.
+            const v1Payload = {
+              ...toLegacyShape(canonical),
+              canonical,
+              schemaVersion: "1" as const,
+            };
             cacheAnalysis(input.scanAttemptId, v1Payload);
             return v1Payload;
           } catch (err) {
@@ -273,6 +288,45 @@ const appRouter_scan = router({
 
 // ─── Feedback router ─────────────────────────────────────────────────────────
 
+/**
+ * Dev-only quota grants.
+ *
+ * Every procedure here requires DEV_SCAN_GRANT_SECRET, which lives in Railway
+ * and is never compiled into the app. The client asks the user to type it.
+ * Hiding the UI behind __DEV__ is convenience, not security — this is the
+ * boundary that actually holds.
+ */
+const devRouter = router({
+  /** Never returns the secret or any hint about it. Safe to call unauthenticated. */
+  grantStatus: publicProcedure
+    .input(z.object({ scannerId: z.string().min(1) }))
+    .query(({ input }) => devGrantStatus(input.scannerId)),
+
+  grantScans: publicProcedure
+    .input(z.object({
+      secret:    z.string().min(1).max(512),
+      scannerId: z.string().min(1).max(200),
+      limit:     z.number().int().positive().max(500).optional(),
+      hours:     z.number().int().positive().max(12).optional(),
+    }))
+    .mutation(({ input }) => {
+      const res = grantDevScans({
+        secret: input.secret,
+        scannerId: input.scannerId,
+        limit: input.limit,
+        ttlMs: input.hours ? input.hours * 3_600_000 : undefined,
+      });
+      // Uniform shape on failure. The caller learns THAT it failed and the
+      // broad reason, never anything that narrows the secret.
+      if (!res.ok) return { ok: false as const, reason: res.reason };
+      return { ok: true as const, limit: res.limit, expiresAt: res.expiresAt };
+    }),
+
+  revokeScans: publicProcedure
+    .input(z.object({ secret: z.string().min(1).max(512), scannerId: z.string().min(1).max(200) }))
+    .mutation(({ input }) => ({ ok: revokeDevGrant(input.secret, input.scannerId) })),
+});
+
 const feedbackRouter = router({
 
   submit: publicProcedure
@@ -334,6 +388,7 @@ const feedbackRouter = router({
 // ─── App router ───────────────────────────────────────────────────────────────
 
 export const appRouter = router({
+  dev: devRouter,
   scan:     appRouter_scan,
   feedback: feedbackRouter,
   system:   systemRouter,

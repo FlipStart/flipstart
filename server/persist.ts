@@ -16,6 +16,7 @@
  *  - scanRecords[] — full structured scan data for future AI memory system
  */
 
+import { activeGrantFor } from "./devGrants.js";
 import * as fs   from "fs";
 import * as path from "path";
 
@@ -331,6 +332,44 @@ function refreshCounter(store: Store): void {
  *
  * Returns true if the user has quota remaining AND the global backstop is not hit.
  */
+// ─── Dev scan override ────────────────────────────────────────────────────────
+//
+// Raises the daily limit for specific ids so testing does not burn the normal
+// 7/day. Env-controlled, so it cannot be enabled from the app.
+//
+// It deliberately does NOT bypass GLOBAL_DAILY_BACKSTOP. The per-user limit is
+// a fairness rule; the global backstop is the cost ceiling, and a dev tool has
+// no business disabling the thing that stops a runaway bill.
+//
+// Caveat worth knowing: scannerId is client-supplied (analyzeFast is a
+// publicProcedure with no auth), so the id in this list functions as a shared
+// secret. Anyone who learns it can claim the elevated limit. Keep the value out
+// of screenshots and commits, and clear the variable when testing is done.
+const DEV_SCAN_USER_IDS = (process.env.DEV_SCAN_LIMIT_USER_IDS ?? "")
+  .split(",").map(s => s.trim()).filter(Boolean);
+
+const DEV_SCAN_LIMIT = (() => {
+  const raw = Number(process.env.DEV_SCAN_LIMIT);
+  if (!Number.isFinite(raw) || raw <= 0) return 200;
+  return Math.min(Math.floor(raw), 1000);   // hard ceiling regardless of env
+})();
+
+/**
+ * Effective daily limit for this id.
+ *
+ * Two sources, checked in order:
+ *   1. A live dev grant (server-issued, secret-gated, time-boxed). Preferred —
+ *      it expires on its own and clears on restart.
+ *   2. DEV_SCAN_LIMIT_USER_IDS, a static env allow-list. Simpler, but it never
+ *      expires, so treat it as the blunt instrument.
+ */
+function limitFor(id: string): { limit: number; elevated: boolean; source: "grant" | "env" | "none" } {
+  const grant = activeGrantFor(id);
+  if (grant) return { limit: grant.limit, elevated: true, source: "grant" };
+  if (DEV_SCAN_USER_IDS.includes(id)) return { limit: DEV_SCAN_LIMIT, elevated: true, source: "env" };
+  return { limit: PER_USER_DAILY_LIMIT, elevated: false, source: "none" };
+}
+
 export function checkScanAllowed(scannerId?: string): boolean {
   const store = load();
   refreshCounter(store);
@@ -341,11 +380,23 @@ export function checkScanAllowed(scannerId?: string): boolean {
   }
   const id = (scannerId && scannerId.trim()) ? scannerId.trim() : "_legacy";
   const used = store.scanCounter.perUser![id] ?? 0;
-  if (used >= PER_USER_DAILY_LIMIT) {
-    console.log(`[persist] scan CHECK blocked (per-user) — ${id.slice(0, 12)}… ${used}/${PER_USER_DAILY_LIMIT}`);
+  const { limit, elevated } = limitFor(id);
+  if (used >= limit) {
+    console.log(`[persist] scan CHECK blocked (per-user) — ${id.slice(0, 12)}… ${used}/${limit}${elevated ? " [DEV]" : ""}`);
     return false;
   }
+  if (elevated) {
+    const { source } = limitFor(id);
+    console.log(`[persist] DEV SCAN OVERRIDE (${source}) — ${id.slice(0, 12)}… ${used}/${limit} (normal ${PER_USER_DAILY_LIMIT})`);
+  }
   return true;
+}
+
+/** Daily limit in force for an id. Exposed so the UI can show the right number
+ *  instead of a hardcoded 7. */
+export function scanLimitFor(scannerId?: string): number {
+  const id = (scannerId && scannerId.trim()) ? scannerId.trim() : "_legacy";
+  return limitFor(id).limit;
 }
 
 /**
@@ -377,7 +428,7 @@ export function commitScanCount(scannerId?: string, attemptId?: string) {
   store.scanCounter.perUser![id] = used + 1;
   store.scanCounter.count++;
   save();
-  console.log(`[persist] scan COMMITTED — user ${id.slice(0, 12)}… ${used + 1}/${PER_USER_DAILY_LIMIT} (global ${store.scanCounter.count})`);
+  console.log(`[persist] scan COMMITTED — user ${id.slice(0, 12)}… ${used + 1}/${limitFor(id).limit}${limitFor(id).elevated ? " [DEV]" : ""} (global ${store.scanCounter.count})`);
   return getUserScanStats(scannerId);
 }
 
@@ -387,11 +438,16 @@ export function getUserScanStats(scannerId?: string) {
   refreshCounter(store);
   const id = (scannerId && scannerId.trim()) ? scannerId.trim() : "_legacy";
   const used = store.scanCounter.perUser![id] ?? 0;
+  // Report the EFFECTIVE limit, not the constant. The home screen reads
+  // remainingToday and gates the scan button on it, so returning 7 while the
+  // server allows 200 would block testing from the client side.
+  const { limit, elevated } = limitFor(id);
   return {
-    dailyLimit:     PER_USER_DAILY_LIMIT,
+    dailyLimit:     limit,
     usedToday:      used,
-    remainingToday: Math.max(0, PER_USER_DAILY_LIMIT - used),
+    remainingToday: Math.max(0, limit - used),
     resetTime:      nextMidnight(),
+    devOverride:    elevated,
   };
 }
 
