@@ -576,18 +576,37 @@ export default function AnalysisDetailsScreen() {
               const reasons: string[] = v1?.marketabilityReasons ?? [];
               if (!speed && !demand && !comp && !pool) return null;
               const cap = (x?: string) =>
-                x ? String(x).replace(/_/g, ' ').replace(/^./, (m: string) => m.toUpperCase()) : '—';
+                x ? String(x).replace(/_/g, ' ').replace(/^./, (m: string) => m.toUpperCase()) : '';
+              // buyer_pool is an enum whose raw values ("broad", "very_narrow")
+              // do not read as an answer to "who buys it".
+              const POOL: Record<string, string> = {
+                broad:        'Almost anyone',
+                moderate:     'A decent range',
+                narrow:       'A specific type',
+                very_narrow:  'A rare buyer',
+              };
+              const poolLabel = pool ? (POOL[String(pool)] ?? cap(pool)) : '';
               return (
                 <View style={d.marketBlock}>
                   <Text style={d.confSubHead}>Market signals</Text>
                   <View style={d.marketGrid}>
-                    {([['Sells', cap(speed)], ['Demand', cap(demand)],
-                       ['Buyers', cap(pool)], ['Competition', cap(comp)]] as [string,string][]).map(([k, val]) => (
-                      <View key={k} style={d.marketCell}>
-                        <Text style={d.marketKey}>{k}</Text>
-                        <Text style={d.marketVal} numberOfLines={1}>{val}</Text>
-                      </View>
-                    ))}
+                    {/* "Buyers" alone was ambiguous — buyers of what, how many?
+                        Each cell now carries a one-line explanation, and a cell
+                        with no data is skipped rather than showing an em dash. */}
+                    {([
+                      ['How fast it sells', cap(speed),  'Typical time to find a buyer'],
+                      ['How wanted it is',  cap(demand), 'How actively people search for this'],
+                      ['Who buys it',       poolLabel,   'How wide the audience is'],
+                      ['Similar listings',  cap(comp),   'How much you are competing against'],
+                    ] as [string,string,string][])
+                      .filter(([, val]) => val && val !== '—')
+                      .map(([k, val, hint]) => (
+                        <View key={k} style={d.marketCell}>
+                          <Text style={d.marketKey}>{k}</Text>
+                          <Text style={d.marketVal} numberOfLines={1}>{val}</Text>
+                          <Text style={d.marketHint} numberOfLines={2}>{hint}</Text>
+                        </View>
+                      ))}
                   </View>
                   {reasons.slice(0, 3).map((r, i) => (
                     <View key={i} style={d.bulletRow}>
@@ -1109,6 +1128,7 @@ const d = StyleSheet.create({
                   borderWidth: 1, borderColor: GOLD + '33', paddingHorizontal: 10, paddingVertical: 8 },
   marketKey:    { fontSize: 9.5, fontWeight: '800', color: BROWN, letterSpacing: 0.9, opacity: 0.8 },
   marketVal:    { fontSize: 14, fontWeight: '800', color: FOREST, marginTop: 2 },
+  marketHint:   { fontSize: 9.5, color: MUTED, marginTop: 3, lineHeight: 13 },
   rescanRow:    { flexDirection: 'row', alignItems: 'flex-start', gap: 7, marginTop: 10,
                   backgroundColor: '#FBF6E6', borderRadius: 10, borderWidth: 1,
                   borderColor: GOLD + '33', paddingHorizontal: 10, paddingVertical: 9 },

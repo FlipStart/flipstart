@@ -43,19 +43,31 @@ export interface Recommendation {
 
 export type RiskFactorCode =
   | 'SLOW_SELL' | 'HIGH_COMPETITION' | 'LOW_CONFIDENCE'
-  | 'NARROW_POOL' | 'OBVIOUS_DAMAGE' | 'ERA_UNCONFIRMED' | 'THIN_MARGIN';
+  | 'NARROW_POOL' | 'OBVIOUS_DAMAGE' | 'ERA_UNCONFIRMED' | 'THIN_MARGIN'
+  | 'LOW_DEMAND' | 'VERY_SLOW_SELL';
 
 export interface RiskFactor { code: RiskFactorCode; label: string }
 
+// Plain-language, and specific enough to act on. "Slow sell speed" tells the
+// user what to expect; "risky" does not.
 const RISK_LABELS: Record<RiskFactorCode, string> = {
-  SLOW_SELL:        'Slow sell-through',
-  HIGH_COMPETITION: 'Heavy competition',
-  LOW_CONFIDENCE:   'Identification uncertain',
-  NARROW_POOL:      'Narrow buyer pool',
+  SLOW_SELL:        'Slow sell speed',
+  VERY_SLOW_SELL:   'Very slow to sell',
+  HIGH_COMPETITION: 'Lots of competition',
+  LOW_DEMAND:       'Low demand',
+  LOW_CONFIDENCE:   'Not sure what this is',
+  NARROW_POOL:      'Niche buyer',
   OBVIOUS_DAMAGE:   'Visible damage',
   ERA_UNCONFIRMED:  'Era unconfirmed',
   THIN_MARGIN:      'Thin margin',
 };
+
+/** Ranked by how much each should worry a reseller. The card shows the top few,
+ *  so ordering decides what the user actually reads. */
+const RISK_PRIORITY: RiskFactorCode[] = [
+  'OBVIOUS_DAMAGE', 'THIN_MARGIN', 'VERY_SLOW_SELL', 'LOW_DEMAND',
+  'SLOW_SELL', 'HIGH_COMPETITION', 'NARROW_POOL', 'LOW_CONFIDENCE', 'ERA_UNCONFIRMED',
+];
 
 // ─── Normalisation helpers ─────────────────────────────────────────────────────
 
@@ -108,8 +120,11 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   const factors: RiskFactor[] = [];
   const add = (code: RiskFactorCode) => factors.push({ code, label: RISK_LABELS[code] });
 
-  if (s === 'slow')                     add('SLOW_SELL');
+  const rawSpeed = (input.sellSpeed ?? '').toLowerCase();
+  if (rawSpeed.includes('very slow') || rawSpeed === 'very_slow') add('VERY_SLOW_SELL');
+  else if (s === 'slow')                add('SLOW_SELL');
   if (c === 'high')                     add('HIGH_COMPETITION');
+  if (d === 'low')                      add('LOW_DEMAND');
   if (matchConfidence > 0 && matchConfidence < 55) add('LOW_CONFIDENCE');
   const pool = (input.buyerPool ?? '').toLowerCase();
   if (pool === 'narrow' || pool === 'very_narrow') add('NARROW_POOL');
@@ -129,10 +144,16 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
 
   // ── Demotion ────────────────────────────────────────────────────────────────
   // Margin buys tolerance: a big enough spread absorbs one or two risk factors.
+  const substantive = factors.filter(f => f.code !== 'ERA_UNCONFIRMED');
+
+  // Era-unconfirmed does not count toward demotion on its own. On a front-only
+  // scan it fires almost every time, and letting it drag every item to RISKY
+  // BUY made the label meaningless.
+  const weight = substantive.length;
   let demote: number;
-  if (netProfit >= 40)      demote = factors.length <= 2 ? 0 : 1;
-  else if (netProfit >= 25) demote = factors.length === 0 ? 0 : 1;
-  else                      demote = Math.min(factors.length, 2);
+  if (netProfit >= 40)      demote = weight <= 2 ? 0 : 1;
+  else if (netProfit >= 25) demote = weight === 0 ? 0 : 1;
+  else                      demote = Math.min(weight, 2);
 
   let tier = Math.max(0, base - demote);
 
@@ -144,7 +165,15 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
 
   // Only the factors that actually cost something are worth showing. On a
   // STRONG BUY the user does not need a list of things that did not matter.
-  const shownFactors = label === 'STRONG_BUY' ? [] : factors;
+  // Era alone is a weak reason to hesitate — it says nothing about whether the
+  // item sells or what it is worth. When it is the ONLY factor, the rating is
+  // effectively being driven by an absence of information, which is not the
+  // same as a risk. Keep the chip so the user knows why, but it never stands
+  // alone as the sole justification for a downgrade.
+  const ordered = [...factors].sort(
+    (a, b) => RISK_PRIORITY.indexOf(a.code) - RISK_PRIORITY.indexOf(b.code),
+  );
+  const shownFactors = label === 'STRONG_BUY' ? [] : ordered;
 
   return {
     label,

@@ -1,7 +1,11 @@
 /**
  * components/results/FeedbackCard.tsx
  *
- * Lightweight beta feedback card shown at the bottom of the results screen.
+ * Lightweight accuracy-feedback card shown at the bottom of the results screen.
+ *
+ * Named "Help us improve" rather than "Beta feedback": the mechanism is
+ * permanent, not a beta artefact, and asking post-launch users to give "beta"
+ * feedback implies the product is unfinished.
  * Collects: accuracy rating, buy/pass decision, user's estimated value, notes.
  *
  * Vintage FlipStart aesthetic — fast, minimal, not a form.
@@ -118,7 +122,7 @@ export function FeedbackCard(props: FeedbackCardProps) {
       {/* Header */}
       <View style={s.headerRow}>
         <Text style={s.headerDeco}>✦</Text>
-        <Text style={s.headerTitle}>BETA FEEDBACK</Text>
+        <Text style={s.headerTitle}>HELP US IMPROVE</Text>
         <Text style={s.headerDeco}>✦</Text>
       </View>
       <Text style={s.headerSub}>Help us improve FlipStart's accuracy.</Text>

@@ -896,6 +896,21 @@ export default function ResultsScreen() {
       sellSpeed: md.sell_speed, competitionLevel: md.competition_level,
       matchConfidence: ra.match_confidence, riskFlags: ra.risk_flags,
       riskyBuyReasons: (ra as any).risky_buy_reasons ?? [],
+      // The canonical block. Deep Analysis gates Era & Authenticity, rescan
+      // advice, market signals and "What the AI Saw" on this — omitting it
+      // silently hid all four whenever Deep Analysis was opened before the scan
+      // had been confirmed into the store.
+      structured: {
+        v1:             (id as any).v1,
+        frontEvidence:  (id as any).frontEvidence,
+        tagEvidence:    (id as any).tagEvidence,
+        detailEvidence: (id as any).detailEvidence,
+        eraEvidence:    (id as any).eraEvidence,
+        canonicalBrand: (id as any).canonicalBrand,
+        eraEstimate:    (id as any).eraEstimate,
+        eraConfidence:  (id as any).eraConfidence,
+      },
+      recommendation: calc.recommendation,
       thriftPrice: calc.thriftPrice, fees: calc.fees, profit: calc.profit,
       roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel,
       stars: calc.stars, bestPlatform: calc.bestPlatform,
@@ -1168,7 +1183,69 @@ export default function ResultsScreen() {
             </View>
           </View>
 
-          {/* ── 2a. Condition ────────────────────────────────────────────────
+          {/* ── 2a. Why risky? ──────────────────────────────────────────────
+              Only on RISKY BUY, and only when there is something specific to
+              say. The rating alone does not tell the user WHAT to weigh — the
+              same label can mean "it will sit for months" or "I am not sure
+              what this is", and those call for different decisions. Factors
+              come from the rating engine itself, so this can never disagree
+              with Deep Analysis. */}
+          {canonicalRating === 'RISKY BUY' && (calc.recommendation?.riskFactors?.length ?? 0) > 0 && (
+            <View style={s.riskWhyCard}>
+              <View style={s.riskWhyHeader}>
+                <MaterialIcons name="info-outline" size={15} color={BROWN} />
+                <Text style={s.riskWhyTitle}>Why risky</Text>
+              </View>
+              <View style={s.riskWhyChips}>
+                {calc.recommendation.riskFactors.slice(0, 4).map(f => (
+                  <View key={f.code} style={s.riskWhyChip}>
+                    <Text style={s.riskWhyChipText}>{f.label}</Text>
+                  </View>
+                ))}
+              </View>
+              {/* The sentence names the DOMINANT factor rather than describing
+                  the situation vaguely. "The conditions are not in your favour"
+                  read as a condition-of-the-item problem — the opposite of what
+                  it meant — right below a card saying condition was fine. */}
+              <Text style={s.riskWhyNote}>
+                {(() => {
+                  const codes = calc.recommendation.riskFactors.map(f => f.code);
+                  const has = (c: string) => codes.includes(c as any);
+                  const good = calc.profit >= 15;
+
+                  if (has('OBVIOUS_DAMAGE'))
+                    return good
+                      ? 'Good profit on paper, but the damage will cost you buyers and may bring a return.'
+                      : 'The damage eats into a margin that is already thin.';
+                  if (has('VERY_SLOW_SELL') || has('SLOW_SELL'))
+                    return good
+                      ? 'Good profit potential — but expect it to sit a while before it sells.'
+                      : 'Modest profit and a slow seller, so your money is tied up for the payoff.';
+                  if (has('LOW_DEMAND'))
+                    return good
+                      ? 'The money is there if it sells — demand for this is soft.'
+                      : 'Soft demand and a thin margin is a hard combination.';
+                  if (has('HIGH_COMPETITION'))
+                    return good
+                      ? 'Solid margin, but you are competing with a lot of similar listings.'
+                      : 'Thin margin against heavy competition — you will likely have to undercut.';
+                  if (has('NARROW_POOL'))
+                    return 'Worth real money to the right buyer, but that buyer is rare.';
+                  if (has('LOW_CONFIDENCE'))
+                    return 'The numbers look fine, but verify what this actually is before paying.';
+                  if (has('THIN_MARGIN'))
+                    return 'Very little room here — one return or price cut wipes out the profit.';
+                  if (has('ERA_UNCONFIRMED'))
+                    return 'Age could not be confirmed from these photos, and era moves value on items like this.';
+                  return good
+                    ? 'Real profit here — just not a quick or certain one.'
+                    : 'Workable, but nothing about this is a sure thing.';
+                })()}
+              </Text>
+            </View>
+          )}
+
+          {/* ── 2b. Condition ────────────────────────────────────────────────
               Renders ONLY when there is something concrete to report. A clean,
               well-photographed item shows nothing — an always-present "no
               damage found" line would train users to ignore the row, which is
@@ -1227,34 +1304,6 @@ export default function ResultsScreen() {
               </View>
             );
           })()}
-
-          {/* ── 2b. Why risky? ──────────────────────────────────────────────
-              Only on RISKY BUY, and only when there is something specific to
-              say. The rating alone does not tell the user WHAT to weigh — the
-              same label can mean "it will sit for months" or "I am not sure
-              what this is", and those call for different decisions. Factors
-              come from the rating engine itself, so this can never disagree
-              with Deep Analysis. */}
-          {canonicalRating === 'RISKY BUY' && (calc.recommendation?.riskFactors?.length ?? 0) > 0 && (
-            <View style={s.riskWhyCard}>
-              <View style={s.riskWhyHeader}>
-                <MaterialIcons name="info-outline" size={15} color={BROWN} />
-                <Text style={s.riskWhyTitle}>Why risky</Text>
-              </View>
-              <View style={s.riskWhyChips}>
-                {calc.recommendation.riskFactors.slice(0, 4).map(f => (
-                  <View key={f.code} style={s.riskWhyChip}>
-                    <Text style={s.riskWhyChipText}>{f.label}</Text>
-                  </View>
-                ))}
-              </View>
-              <Text style={s.riskWhyNote}>
-                {calc.profit >= 15
-                  ? 'Real profit here — just not a quick or certain one.'
-                  : 'Margin is workable, but the conditions are not in your favour.'}
-              </Text>
-            </View>
-          )}
 
           {/* ── 3. Quick Stats Row ── */}
           <View style={s.statsCard}>
@@ -1403,7 +1452,7 @@ export default function ResultsScreen() {
             </Pressable>
           </View>
 
-          {/* ── 9. Beta feedback ── */}
+          {/* ── 9. Accuracy feedback ── */}
           <FeedbackCard
             scanId={currentScan.id}
             itemName={id.item_name}
@@ -1628,14 +1677,18 @@ const s = StyleSheet.create({
   // 3 · Quick stats row
   chipSoft:      { opacity: 0.72 },
   chipSoftText:  { fontStyle: 'italic' },
+  // marginHorizontal 14 matches ratingCard / statsCard / every other card.
+  // Without it these span the full screen and read as a different component.
   conditionStrip:      { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 14,
-                         borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11, marginTop: 10 },
+                         borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11,
+                         marginTop: 10, marginHorizontal: 14 },
   conditionStripWarn:  { backgroundColor: '#FBEFEA', borderColor: '#8A3A2A' + '44' },
   conditionStripInfo:  { backgroundColor: '#FBF6E6', borderColor: GOLD + '44' },
   conditionStripTitle: { fontSize: 10.5, fontWeight: '800', color: BROWN, letterSpacing: 1, marginBottom: 2 },
   conditionStripBody:  { fontSize: 12.5, color: BROWN, lineHeight: 17 },
   riskWhyCard:    { backgroundColor: '#FBF6E6', borderRadius: 14, borderWidth: 1, borderColor: GOLD + '55',
-                    paddingHorizontal: 14, paddingVertical: 12, marginTop: 10, gap: 8 },
+                    paddingHorizontal: 14, paddingVertical: 12, marginTop: 10,
+                    marginHorizontal: 14, gap: 8 },
   riskWhyHeader:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
   riskWhyTitle:   { fontSize: 11, fontWeight: '800', color: BROWN, letterSpacing: 1 },
   riskWhyChips:   { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
