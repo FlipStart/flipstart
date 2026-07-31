@@ -15,7 +15,7 @@
 import { navGuard } from '@/lib/navGuard';
 import {
   Text, View, FlatList, Pressable, Platform,
-  StyleSheet, TextInput, Animated, PanResponder,
+  StyleSheet, TextInput,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -30,6 +30,8 @@ import { FONTS } from '@/constants/typography';
 import { normalizeBuyRating, type CanonicalRating } from '@/utils/recommendation';
 import { calculateFees } from '@/utils/flipCalculations';
 import { allScanFlips, type SourcedFlip } from '@/utils/huntItemToFlip';
+import { SwipeRow, useSwipeAwarePress } from '@/components/history/SwipeRow';
+import { useHint } from '@/lib/uiHints';
 import { useAuth } from '@/lib/auth-context';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import {
@@ -115,40 +117,11 @@ const rb = StyleSheet.create({
 
 // ─── Scan card ────────────────────────────────────────────────────────────────
 
-const DELETE_WIDTH = 80;
-
 function FlipCard({
   item, onPress, onDelete,
 }: { item: FlipResult; onPress: () => void; onDelete: () => void }) {
 
-  const translateX = useRef(new Animated.Value(0)).current;
-  const swipeOpen  = useRef(false);
-
-  const snapOpen = () =>
-    Animated.spring(translateX, { toValue: -DELETE_WIDTH, useNativeDriver: true, bounciness: 4 })
-      .start(() => { swipeOpen.current = true; });
-
-  const snapClosed = () =>
-    Animated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 4 })
-      .start(() => { swipeOpen.current = false; });
-
-  const pan = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) =>
-        Math.abs(g.dx) > 6 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-      onPanResponderMove: (_, g) => {
-        const base = swipeOpen.current ? -DELETE_WIDTH : 0;
-        translateX.setValue(Math.min(0, Math.max(-DELETE_WIDTH, base + g.dx)));
-      },
-      onPanResponderRelease: (_, g) => {
-        const base  = swipeOpen.current ? -DELETE_WIDTH : 0;
-        const total = base + g.dx;
-        total < -DELETE_WIDTH / 2 ? snapOpen() : snapClosed();
-      },
-      onPanResponderTerminate: () => snapClosed(),
-    })
-  ).current;
-
+  const handlePress = useSwipeAwarePress(onPress);
   const rating  = normalizeBuyRating((item as any).recommendation?.label ?? (item as any).buyLabel ?? (item as any).recommendation);
   const rTheme  = RATING_THEME[rating];
   const isSold  = item.status === 'sold' && (item.soldPrice ?? 0) > 0;
@@ -158,29 +131,10 @@ function FlipCard({
   const profitColor = shownProfit >= 15 ? '#2A5A2A' : shownProfit >= 0 ? '#7A5C1E' : '#8A3A2A';
 
   return (
-    <View style={fc.wrapper}>
-      {/* Delete zone behind card */}
-      <View style={fc.deleteZone}>
+    <SwipeRow onDelete={onDelete}>
         <Pressable
-          style={fc.deleteBtn}
-          onPress={() => {
-            if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-            snapClosed();
-            setTimeout(onDelete, 180);
-          }}
-        >
-          <MaterialIcons name="delete-outline" size={22} color={CREAM} />
-          <Text style={fc.deleteText}>Delete</Text>
-        </Pressable>
-      </View>
-
-      <Animated.View
-        style={[fc.surface, { transform: [{ translateX }] }]}
-        {...pan.panHandlers}
-      >
-        <Pressable
-          onPress={() => swipeOpen.current ? snapClosed() : onPress()}
-          style={({ pressed }) => [fc.card, pressed && !swipeOpen.current && { opacity: 0.88 }]}
+          onPress={handlePress}
+          style={({ pressed }) => [fc.card, pressed && { opacity: 0.88 }]}
         >
           {/* Thumbnail */}
           <View style={fc.thumbWrap}>
@@ -225,17 +179,11 @@ function FlipCard({
             <Text style={fc.profitSub}>{isSold ? 'realized' : 'est. profit'}</Text>
           </View>
         </Pressable>
-      </Animated.View>
-    </View>
+    </SwipeRow>
   );
 }
 
 const fc = StyleSheet.create({
-  wrapper:    { marginBottom: 10, borderRadius: 16, overflow: 'hidden' },
-  deleteZone: { position: 'absolute', top: 0, bottom: 0, right: 0, width: DELETE_WIDTH, backgroundColor: MAROON, justifyContent: 'center', alignItems: 'center' },
-  deleteBtn:  { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', gap: 4 },
-  deleteText: { fontSize: 10, fontWeight: '700', color: CREAM },
-  surface:    { backgroundColor: BG, borderRadius: 16 },
   card:       { flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B, padding: 12, gap: 12, shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 6, elevation: 2 },
   thumbWrap:  { borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: CARD_B, position: 'relative' },
   thumb:      { width: 62, height: 62, backgroundColor: '#FFFEFA' },
@@ -319,56 +267,16 @@ const tf = StyleSheet.create({
 function HuntBundleCard({
   bundle, onPress, onDelete,
 }: { bundle: HuntBundle; onPress: () => void; onDelete: () => void }) {
-  const translateX = useRef(new Animated.Value(0)).current;
-  const swipeOpen  = useRef(false);
-
-  const snapOpen = () =>
-    Animated.spring(translateX, { toValue: -DELETE_WIDTH, useNativeDriver: true, bounciness: 4 })
-      .start(() => { swipeOpen.current = true; });
-  const snapClosed = () =>
-    Animated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 4 })
-      .start(() => { swipeOpen.current = false; });
-
-  const pan = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) =>
-        Math.abs(g.dx) > 6 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-      onPanResponderMove: (_, g) => {
-        const base = swipeOpen.current ? -DELETE_WIDTH : 0;
-        translateX.setValue(Math.min(0, Math.max(-DELETE_WIDTH, base + g.dx)));
-      },
-      onPanResponderRelease: (_, g) => {
-        const base  = swipeOpen.current ? -DELETE_WIDTH : 0;
-        const total = base + g.dx;
-        total < -DELETE_WIDTH / 2 ? snapOpen() : snapClosed();
-      },
-      onPanResponderTerminate: () => snapClosed(),
-    })
-  ).current;
-
+  const handlePress = useSwipeAwarePress(onPress);
   const profitColor = bundle.totalEstimatedProfit >= 0 ? '#2A5A2A' : '#8A3A2A';
   const durationMin = Math.round(bundle.durationMs / 60000);
   const realized    = bundleRealized(bundle);
 
   return (
-    <View style={hb.wrapper}>
-      <View style={fc.deleteZone}>
+    <SwipeRow onDelete={onDelete}>
         <Pressable
-          style={fc.deleteBtn}
-          onPress={() => {
-            if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-            snapClosed();
-            setTimeout(onDelete, 180);
-          }}
-        >
-          <MaterialIcons name="delete-outline" size={22} color={CREAM} />
-          <Text style={fc.deleteText}>Delete</Text>
-        </Pressable>
-      </View>
-      <Animated.View style={[hb.surface, { transform: [{ translateX }] }]} {...pan.panHandlers}>
-        <Pressable
-          onPress={() => swipeOpen.current ? snapClosed() : onPress()}
-          style={({ pressed }) => [hb.card, pressed && !swipeOpen.current && { opacity: 0.88 }]}
+          onPress={handlePress}
+          style={({ pressed }) => [hb.card, pressed && { opacity: 0.88 }]}
         >
           {/* Trophy icon — distinct from hunt-scan-icon.png */}
           <View style={hb.iconWrap}>
@@ -410,14 +318,11 @@ function HuntBundleCard({
             </>
           )}
         </Pressable>
-      </Animated.View>
-    </View>
+    </SwipeRow>
   );
 }
 
 const hb = StyleSheet.create({
-  wrapper:    { marginBottom: 10, borderRadius: 16, overflow: 'hidden' },
-  surface:    { backgroundColor: BG, borderRadius: 16 },
   card:       { flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 16, borderWidth: 1.5, borderColor: GOLD + '66', padding: 12, gap: 10 },
   iconWrap:   { width: 52, height: 52, borderRadius: 13, backgroundColor: GOLD + '18', borderWidth: 1, borderColor: GOLD + '44', justifyContent: 'center', alignItems: 'center' },
   info:       { flex: 1, gap: 3, minWidth: 0 },
@@ -444,6 +349,8 @@ export default function HistoryScreen() {
   const { flips, removeFlip, globalStats } = useFlipStore();
   const { user } = useAuth();
   const { pruneUnseen } = useAchievementNotifications();
+  // One-time swipe-to-delete tip. Clears the moment the user swipes any row.
+  const showSwipeHint = useHint('swipeToDelete');
 
   const [activeTab, setActiveTab] = useState<Tab>('all');
   const [search,    setSearch]    = useState('');
@@ -684,9 +591,18 @@ export default function HistoryScreen() {
                 </View>
               </View>
 
-              <Text style={s.countLabel}>
-                {allScans.length} entr{allScans.length !== 1 ? 'ies' : 'y'}
-              </Text>
+              <View style={s.countRow}>
+                <Text style={s.countLabel}>
+                  {allScans.length} entr{allScans.length !== 1 ? 'ies' : 'y'}
+                </Text>
+                {/* Only when there is something to swipe — the tip is noise
+                    next to an empty list. */}
+                {showSwipeHint && allScans.length > 0 && (
+                  <Text style={s.swipeHint} numberOfLines={1}>
+                    swipe left to delete
+                  </Text>
+                )}
+              </View>
         </View>
 
         <FlatList
@@ -765,7 +681,11 @@ const s = StyleSheet.create({
   list:          { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 40 },
   pinnedHeader:  { paddingHorizontal: 14, paddingTop: 12 },
   listPinned:    { paddingHorizontal: 14, paddingTop: 0, paddingBottom: 40 },
-  countLabel:    { fontSize: 11, color: MUTED, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 },
+  countRow:      { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 10 },
+  countLabel:    { fontSize: 11, color: MUTED, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
+  // Sentence case and lighter than the label on purpose — it should read as a
+  // passing tip, not as a second heading competing with the count.
+  swipeHint:     { fontSize: 10, color: MUTED, opacity: 0.75, fontStyle: 'italic', flexShrink: 1 },
 
   statsCard:   { backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B, marginBottom: 14, overflow: 'hidden', shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.10, shadowRadius: 9, elevation: 3 },
   statsAccent: { height: 3, backgroundColor: GOLD },

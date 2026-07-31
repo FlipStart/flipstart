@@ -21,6 +21,11 @@ export interface RecommendationInput {
   competitionLevel: string;   // 'High' | 'Moderate' | 'Low' | ''
   demandLevel:      string;   // 'High' | 'Medium' | 'Low' | ''
   sellSpeed:        string;   // 'Fast' | 'Moderate' | 'Slow' | ''
+  /** Canonical V1 signals. Optional — absent on v0 scans, which simply carry
+   *  fewer risk factors rather than behaving differently. */
+  buyerPool?:       string;   // 'broad' | 'moderate' | 'narrow' | 'very_narrow'
+  hasObviousDamage?: boolean;
+  eraUnconfirmed?:  boolean;
 }
 
 export interface Recommendation {
@@ -30,7 +35,27 @@ export interface Recommendation {
   bullets:      string[];   // 2–4 situational reason bullets
   warning?:     string;     // optional extra caution note
   colorKey:     RecLabel;   // same as label — used by UI for theme lookup
+  /** Exactly what pushed this down a tier. Rendered under a RISKY BUY card so
+   *  the user sees the specific reason rather than a generic caution. Same
+   *  source as the Deep Analysis reasons, so the two cannot drift. */
+  riskFactors:  RiskFactor[];
 }
+
+export type RiskFactorCode =
+  | 'SLOW_SELL' | 'HIGH_COMPETITION' | 'LOW_CONFIDENCE'
+  | 'NARROW_POOL' | 'OBVIOUS_DAMAGE' | 'ERA_UNCONFIRMED' | 'THIN_MARGIN';
+
+export interface RiskFactor { code: RiskFactorCode; label: string }
+
+const RISK_LABELS: Record<RiskFactorCode, string> = {
+  SLOW_SELL:        'Slow sell-through',
+  HIGH_COMPETITION: 'Heavy competition',
+  LOW_CONFIDENCE:   'Identification uncertain',
+  NARROW_POOL:      'Narrow buyer pool',
+  OBVIOUS_DAMAGE:   'Visible damage',
+  ERA_UNCONFIRMED:  'Era unconfirmed',
+  THIN_MARGIN:      'Thin margin',
+};
 
 // ─── Normalisation helpers ─────────────────────────────────────────────────────
 
@@ -57,55 +82,69 @@ function speed(raw: string): 'fast' | 'moderate' | 'slow' {
 
 // ─── Core decision logic ──────────────────────────────────────────────────────
 
+/**
+ * Buy/skip decision.
+ *
+ * Profit sets the tier. Risk factors DEMOTE rather than veto, and enough profit
+ * absorbs risk.
+ *
+ * The previous version gated two of its three BUY paths on
+ * `competition !== 'high' && sellSpeed !== 'slow'`, making either signal an
+ * absolute veto. Since the prompt correctly tells the model that mass-market
+ * basics are "saturated: slow, high competition", most thrift clothing tripped
+ * it and a $100-profit item still read RISKY BUY. A fat margin on a slow mover
+ * is patience, not danger — it should cost a tier at most.
+ */
 export function getRecommendation(input: RecommendationInput): Recommendation {
-  const {
-    netProfit, resaleValue, thriftPrice, roi,
-    matchConfidence,
-  } = input;
+  const { netProfit, roi, matchConfidence } = input;
 
   const c = comp(input.competitionLevel);
   const d = demand(input.demandLevel);
   const s = speed(input.sellSpeed);
 
-  // ── STRONG_BUY ──────────────────────────────────────────────────────────────
-  // High profit + strong signal + no major risk factors
-  const isStrongBuy =
-    netProfit >= 25 &&
-    matchConfidence >= 70 &&
-    c !== 'high' &&
-    s !== 'slow';
+  const TIERS: RecLabel[] = ['SKIP', 'RISKY_BUY', 'BUY', 'STRONG_BUY'];
 
-  // ── BUY ─────────────────────────────────────────────────────────────────────
-  // Solid profit with reasonable confidence. $11+ profit is a real win for a
-  // reseller — the threshold must reflect that, not penalise modest flips.
-  const isBuy =
-    !isStrongBuy && (
-      (netProfit >= 15 && matchConfidence >= 55 && c !== 'high' && s !== 'slow') ||
-      (netProfit >= 11 && matchConfidence >= 65 && c === 'low' && s !== 'slow') ||
-      (netProfit >= 20 && matchConfidence >= 45 && c !== 'high')
-    );
+  // ── Risk factors ────────────────────────────────────────────────────────────
+  const factors: RiskFactor[] = [];
+  const add = (code: RiskFactorCode) => factors.push({ code, label: RISK_LABELS[code] });
 
-  // ── RISKY_BUY ───────────────────────────────────────────────────────────────
-  // Profit is there but one or more risk factors exist (confidence, competition,
-  // sell speed). $11+ profit is always worth flagging as at least RISKY_BUY —
-  // the user should know there's upside even if conditions aren't perfect.
-  const isRiskyBuy =
-    !isStrongBuy && !isBuy && (
-      (netProfit >= 11 && matchConfidence >= 40) ||
-      (netProfit >= 15 && matchConfidence < 55) ||
-      (netProfit >= 11 && c === 'high' && matchConfidence >= 50) ||
-      (netProfit >= 15 && s === 'slow') ||
-      (netProfit >= 20 && matchConfidence < 45)
-    );
+  if (s === 'slow')                     add('SLOW_SELL');
+  if (c === 'high')                     add('HIGH_COMPETITION');
+  if (matchConfidence > 0 && matchConfidence < 55) add('LOW_CONFIDENCE');
+  const pool = (input.buyerPool ?? '').toLowerCase();
+  if (pool === 'narrow' || pool === 'very_narrow') add('NARROW_POOL');
+  if (input.hasObviousDamage)           add('OBVIOUS_DAMAGE');
+  if (input.eraUnconfirmed)             add('ERA_UNCONFIRMED');
 
-  // ── SKIP — everything else (low profit, very low confidence, or negative) ──
+  // ── Base tier from profit and confidence ────────────────────────────────────
+  let base: number;
+  if (netProfit < 0)                                   base = 0;
+  else if (netProfit >= 25 && matchConfidence >= 70)   base = 3;
+  else if (netProfit >= 15 && matchConfidence >= 55)   base = 2;
+  else if (netProfit >= 11 && matchConfidence >= 40)   base = 2;
+  else if (netProfit >= 8)                             base = 1;
+  else                                                 base = 0;
 
-  // ── Assign label ─────────────────────────────────────────────────────────────
-  let label: RecLabel;
-  if (isStrongBuy)     label = 'STRONG_BUY';
-  else if (isBuy)      label = 'BUY';
-  else if (isRiskyBuy) label = 'RISKY_BUY';
-  else                 label = 'SKIP';
+  if (netProfit >= 0 && netProfit < 8) add('THIN_MARGIN');
+
+  // ── Demotion ────────────────────────────────────────────────────────────────
+  // Margin buys tolerance: a big enough spread absorbs one or two risk factors.
+  let demote: number;
+  if (netProfit >= 40)      demote = factors.length <= 2 ? 0 : 1;
+  else if (netProfit >= 25) demote = factors.length === 0 ? 0 : 1;
+  else                      demote = Math.min(factors.length, 2);
+
+  let tier = Math.max(0, base - demote);
+
+  // Real profit never falls all the way to SKIP on risk alone. If the money is
+  // there, the user deserves to see it flagged rather than hidden.
+  if (tier === 0 && netProfit >= 11) tier = 1;
+
+  const label = TIERS[tier];
+
+  // Only the factors that actually cost something are worth showing. On a
+  // STRONG BUY the user does not need a list of things that did not matter.
+  const shownFactors = label === 'STRONG_BUY' ? [] : factors;
 
   return {
     label,
@@ -114,6 +153,7 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
     headline:     buildHeadline(label, netProfit, matchConfidence, c, s, roi),
     bullets:      buildBullets(label, input, c, d, s),
     warning:      buildWarning(label, matchConfidence, c),
+    riskFactors:  shownFactors,
   };
 }
 

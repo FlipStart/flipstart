@@ -335,8 +335,12 @@ export default function LoadingScreen() {
         const safeRiskAnalysis = {
           match_confidence: 0,
           risk_flags:       [] as string[],
+          risky_buy_reasons: [] as string[],
           ...(result.risk_analysis || {}),
         };
+        if (!Array.isArray(safeRiskAnalysis.risky_buy_reasons)) {
+          safeRiskAnalysis.risky_buy_reasons = [];
+        }
         if (!Array.isArray(safeRiskAnalysis.risk_flags)) {
           safeRiskAnalysis.risk_flags = [];
         }

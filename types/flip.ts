@@ -13,7 +13,42 @@ import type { XpBreakdownItem } from '@/lib/huntXp';
 
 /** Structured v2 scan-ID fields. All optional — older scans omit them and the
  *  Diamond matcher falls back to legacy fields under the same strict rules. */
+/** Canonical V1 values that the legacy shape has no field for. Undefined on
+ *  v0 scans, so every reader must treat it as optional. */
+export interface CanonicalV1Passthrough {
+  photoSlots?: string[];
+  eraStatus?: string;
+  eraConfidence?: number;
+  productionDecade?: string;
+  styleEra?: string;
+  vintageRoute?: string | null;
+  sizeLabel?: string;
+  sizeSystem?: string;
+  primaryColor?: string;
+  materialSource?: string;
+  obviousDamage?: string[];
+  conditionUnknowns?: string[];
+  assessmentLimited?: boolean;
+  buyerPool?: string;
+  marketabilityReasons?: string[];
+  pricingBasis?: string[];
+  pricingUnknowns?: string[];
+  priceConfidence?: number;
+  estimateUnavailable?: boolean;
+  missingEvidence?: string[];
+  rescanAdvice?: string;
+  authenticityConcerns?: string[];
+  displayName?: string;
+  eraPrefix?: string | null;
+}
+
 export interface StructuredId {
+  /** Present only on CanonicalAnalysisV1 scans. */
+  v1?: CanonicalV1Passthrough;
+  /** Raw per-photo observations, for the "What the AI Saw" section. */
+  frontEvidence?:  string[];
+  tagEvidence?:    string[];
+  detailEvidence?: string[];
   canonicalBrand?:        string;
   canonicalItemName?:     string;
   itemType?:              string;
@@ -65,6 +100,10 @@ export interface FlipResult {
   competitionLevel:  string;
   matchConfidence:   number;
   riskFlags:         string[];
+  /** The AI's own reasons this could be profitable on paper but still a bad
+   *  buy. Distinct from riskFlags: these justify a RISKY BUY rating rather
+   *  than warning about the item generally. Optional — absent on v0 scans. */
+  riskyBuyReasons?:  string[];
 
   // User-confirmed values
   thriftPrice: number;   // what user actually paid / entered

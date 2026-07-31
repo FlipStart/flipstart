@@ -231,9 +231,11 @@ Each finding:
 
 Use certainty honestly. 80 or above means you would stake the recommendation on it. Below that, the finding is informational.
 
-Report what you were able to check in visible_condition_observations, and what you could not check in condition_unknowns. Absence of visible damage is not proof of good condition - if you could not see the underarms, say so.
+Report what you were able to check in visible_condition_observations. Be specific and positive where the photos support it - "no stains, holes, or print cracking visible on the front" is a real assessment, not a hedge. You CAN judge the areas you were shown.
 
-If you see no concrete defects, return an empty condition_findings array.
+Use condition_unknowns ONLY for areas you genuinely could not judge from the photos supplied - blur, glare, an obscured area, a fold hiding a seam. Do NOT list every part of the item that simply was not photographed: a front-only scan obviously does not show the back, and code already knows which photos it sent. Filling this with "back not shown, underarms not shown, inside not shown" on every single-photo scan makes the field meaningless.
+
+If you see no concrete defects, return an empty condition_findings array and say what you were able to rule out.
 
 # MARKETABILITY
 

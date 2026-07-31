@@ -30,68 +30,143 @@ const lc = (v?: string) => (v ?? '').trim().toLowerCase();
 
 // ─── 1. Why this rating? ──────────────────────────────────────────────────────
 
+/**
+ * Why this rating?
+ *
+ * The ordering must match the verdict. A RISKY BUY explanation that opens with
+ * "workable margin" is answering "why buy" — it reads like the rating is wrong.
+ * For RISKY BUY and SKIP the risk leads; the upside follows as the reason it
+ * is not a flat SKIP.
+ *
+ * The AI's own risky_buy_reasons come first where present. It saw the item; a
+ * template did not. Derived reasons only fill the gaps.
+ */
 export function whyThisRating(i: DeepInputs): string[] {
   const { flip, profit, roi, rating, resaleValue, maxBuy } = i;
-  const out: string[] = [];
-  const comp = lc(flip.competitionLevel);
+  const comp   = lc(flip.competitionLevel);
   const demand = lc(flip.demand);
-  const speed = lc(flip.sellSpeed);
-  const conf = flip.matchConfidence;
+  const speed  = lc(flip.sellSpeed);
+  const conf   = flip.matchConfidence;
   const brandKnown = !isUnknown(flip.brand);
 
-  // Margin reasoning (always lead with the money)
-  if (profit >= 25) {
-    out.push(`Strong margin — about $${profit} profit between the ~$${resaleValue} resale estimate and a ~$${maxBuy} buy price.`);
-  } else if (profit >= 11) {
-    out.push(`Workable margin — roughly $${profit} profit at a ~$${maxBuy} buy price, enough to be worth the effort.`);
-  } else if (profit >= 0) {
-    out.push(`Thin margin — only about $${profit} profit at this buy price, so there's little room for error.`);
-  } else {
-    out.push(`Negative margin at this buy price — you'd lose about $${Math.abs(profit)} after fees.`);
+  // ── Reason pools ───────────────────────────────────────────────────────────
+
+  const marginReason = (): string => {
+    if (profit >= 25)  return `Strong margin — about $${profit} profit between the ~$${resaleValue} resale estimate and a ~$${maxBuy} buy price.`;
+    if (profit >= 11)  return `Workable margin — roughly $${profit} profit at a ~$${maxBuy} buy price.`;
+    if (profit >= 0)   return `Thin margin — only about $${profit} profit at this buy price, so there's little room for error.`;
+    return `Negative margin at this buy price — you'd lose about $${Math.abs(profit)} after fees.`;
+  };
+
+  const roiReason = (): string | null => {
+    if (roi <= 0) return null;
+    if (roi >= 150) return `High ROI (~${roi}%) — capital turns over efficiently if it sells.`;
+    if (roi >= 60)  return `Solid ROI (~${roi}%) for a flip in this price range.`;
+    return `Modest ROI (~${roi}%) — fine if it sells fast, weak if it sits.`;
+  };
+
+  /** What actually makes this risky. Derived only — the AI's own reasons are
+   *  layered on top by the caller. */
+  const riskReasons = (): string[] => {
+    const r: string[] = [];
+    if (speed === 'slow')   r.push(`Slow sell-through — expect to hold this a while before it moves.`);
+    if (demand === 'low')   r.push(`Soft demand for this type of item, so it may sit even priced well.`);
+    if (comp === 'high')    r.push(`Saturated category — plenty of similar listings competing on price.`);
+    if (profit > 0 && profit < 11) {
+      r.push(`Margin is thin at ~$${profit} — one return or a price cut erases it.`);
+    }
+    if (conf > 0 && conf < 70) {
+      r.push(`Identification confidence is ${conf}% — verify brand, size, and condition in person.`);
+    }
+    if (v1?.buyerPool === 'narrow' || v1?.buyerPool === 'very_narrow') {
+      r.push(`Narrow buyer pool — it may be worth the money, but only to the right person.`);
+    }
+    if (typeof v1?.priceConfidence === 'number' && v1.priceConfidence < 50) {
+      r.push(`Price confidence is only ${v1.priceConfidence}% — the resale estimate could move either way.`);
+    }
+    if (v1?.assessmentLimited) {
+      r.push(`Parts of the item were not visible, so condition is only partly assessed.`);
+    }
+    if (isUnknown(flip.era))      r.push(`Era could not be confirmed, and age moves value on items like this.`);
+    if (isUnknown(flip.material)) r.push(`Material not visible — check the fabric tag before committing.`);
+    if (resaleValue <= 0)         r.push(`No reliable resale estimate, so profit here is unverified.`);
+    return r;
+  };
+
+  /** Why it is not a flat SKIP. Kept short and placed after the risk. */
+  const upsideReasons = (): string[] => {
+    const u: string[] = [];
+    if (profit >= 11) u.push(marginReason());
+    const r = roiReason();
+    if (r && roi >= 150) u.push(r);
+    if (brandKnown && demand === 'high') {
+      u.push(`${flip.brand} has steady secondhand demand, which helps it move.`);
+    }
+    if (speed === 'fast') u.push(`Items like this tend to sell quickly, lowering holding risk.`);
+    return u;
+  };
+
+  // Canonical V1 values, when this scan produced them.
+  const v1 = flip.structured?.v1;
+
+  // AI-supplied reasons first — it saw the photos. risky_buy_reasons is the
+  // model's direct answer to "why is this risky"; marketability_reasons and
+  // obvious damage back it up with specifics.
+  const aiReasons = [
+    ...(flip.riskyBuyReasons ?? []),
+    ...(v1?.obviousDamage ?? []),
+    ...(v1?.authenticityConcerns ?? []),
+    ...(v1?.marketabilityReasons ?? []).filter(r =>
+      /slow|satur|compet|narrow|niche|soft|sit|hold|low demand/i.test(r)),
+  ].map(s => (s || '').trim()).filter(Boolean);
+
+  const dedupe = (list: string[]): string[] => {
+    const seen = new Set<string>();
+    return list.filter(s => {
+      // Compare on the first few words so a derived reason does not repeat an
+      // AI reason that says the same thing in different words.
+      const key = s.toLowerCase().replace(/[^a-z ]/g, '').split(/\s+/).slice(0, 4).join(' ');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  // ── Rating-specific ordering ───────────────────────────────────────────────
+
+  if (rating === 'RISKY BUY') {
+    const out = dedupe([...aiReasons, ...riskReasons()]).slice(0, 4);
+    const upside = upsideReasons();
+    if (upside.length) {
+      out.push(`Still worth considering — ${upside[0].charAt(0).toLowerCase()}${upside[0].slice(1)}`);
+    }
+    out.push(`Buy it only at or below ~$${maxBuy}, and only if you can wait for the right buyer.`);
+    return out.slice(0, 6);
   }
 
-  if (roi > 0) {
-    if (roi >= 150) out.push(`High ROI (~${roi}%) — capital turns over efficiently if it sells.`);
-    else if (roi >= 60) out.push(`Solid ROI (~${roi}%) for a flip in this price range.`);
-    else out.push(`Modest ROI (~${roi}%) — fine if it sells fast, weak if it sits.`);
+  if (rating === 'SKIP') {
+    const out = dedupe([...aiReasons, ...riskReasons()]).slice(0, 4);
+    if (profit < 0) out.unshift(marginReason());
+    out.push(`The risk/reward doesn't clear the bar at this price — walk unless you can buy much lower.`);
+    return dedupe(out).slice(0, 6);
   }
 
-  // Brand / demand
+  // STRONG BUY / BUY — the money is genuinely the reason, so it leads.
+  const out: string[] = [marginReason()];
+  const r = roiReason();
+  if (r) out.push(r);
   if (brandKnown && demand === 'high') {
     out.push(`${flip.brand} has strong, steady secondhand demand — easier to sell at a fair price.`);
-  } else if (brandKnown && demand === 'low') {
-    out.push(`${flip.brand} is recognizable but demand looks soft right now — expect a slower sale.`);
   } else if (brandKnown) {
     out.push(`${flip.brand} is a recognizable brand, which helps buyers find and trust the listing.`);
   } else {
     out.push(`Brand isn't clearly identified, so value leans on item type, style, and condition instead.`);
   }
-
-  // Competition / sell speed
-  if (comp === 'high') {
-    out.push(`High competition in this category — you may need sharp pricing or better photos to stand out.`);
-  } else if (comp === 'low') {
-    out.push(`Low competition means less price pressure and a better shot at your asking price.`);
-  }
-  if (speed === 'slow') {
-    out.push(`Sell-through looks slow, so factor in holding time before it moves.`);
-  } else if (speed === 'fast') {
-    out.push(`Items like this tend to sell quickly, which lowers your holding risk.`);
-  }
-
-  // Confidence caveat tied to rating
-  if (conf > 0 && conf < 70) {
-    out.push(`Confidence is ${conf}% — verify size and condition in person before committing.`);
-  }
-
-  // Rating-specific closer
-  if (rating === 'SKIP') {
-    out.push(`Overall the risk/reward doesn't clear the bar at this price — walk unless you can buy much lower.`);
-  } else if (rating === 'RISKY BUY') {
-    out.push(`Worth it only if the price is right and you accept some uncertainty on sell speed or condition.`);
-  }
-
-  return out.slice(0, 6);
+  if (comp === 'low')   out.push(`Low competition means less price pressure and a better shot at your asking price.`);
+  if (speed === 'fast') out.push(`Items like this tend to sell quickly, which lowers your holding risk.`);
+  // Caveats still belong here, just not leading.
+  if (conf > 0 && conf < 70) out.push(`Confidence is ${conf}% — verify size and condition in person before committing.`);
+  return dedupe(out).slice(0, 6);
 }
 
 export function ratingQuestion(rating: CanonicalRating): string {
@@ -115,7 +190,20 @@ export function priceLogicText(i: DeepInputs): string {
   const profitPhrase = profit >= 0
     ? `the expected profit is about +$${profit} after ~$${fees} in platform fees`
     : `you'd be down about $${Math.abs(profit)} after ~$${fees} in platform fees`;
-  return `FlipStart estimates this can resell around $${resaleValue} based on ${brandBit}, plus current resale demand signals. At a buy price of about $${maxBuy}, ${profitPhrase}.`;
+
+  // Prefer the model's own stated basis over the template. It looked at the
+  // item; "current resale demand signals" is a phrase, not a reason — and it
+  // also implies live market access the system does not have.
+  const v1 = flip.structured?.v1;
+  const basis = (v1?.pricingBasis ?? []).filter(Boolean);
+  if (basis.length) {
+    const reasons = basis.slice(0, 2).join('; ');
+    const caveat = (v1?.pricingUnknowns ?? [])[0];
+    return `FlipStart estimates this can resell around $${resaleValue} — ${reasons}. ` +
+           `At a buy price of about $${maxBuy}, ${profitPhrase}.` +
+           (caveat ? ` ${caveat.charAt(0).toUpperCase()}${caveat.slice(1)}.` : '');
+  }
+  return `FlipStart estimates this can resell around $${resaleValue} based on ${brandBit}. At a buy price of about $${maxBuy}, ${profitPhrase}.`;
 }
 
 // ─── 3. Risk assessment ───────────────────────────────────────────────────────
@@ -320,10 +408,23 @@ export function whatCouldChange(i: DeepInputs): string[] {
 }
 
 // Convenience: build the full input object from a flip + calc.
+/**
+ * Assemble deep-analysis inputs.
+ *
+ * `liveRating` MUST be passed whenever the user can edit the thrift price. The
+ * stored rating on the flip reflects the price at scan time; reading it here
+ * meant the explanation was written for a rating the screen was no longer
+ * showing — raise the price until an item is unprofitable and it would still
+ * explain why it was a good buy.
+ *
+ * It stays optional so callers that genuinely have no live calc (a read-only
+ * historical view) still work, falling back to the stored value.
+ */
 export function buildDeepInputs(
   flip: FlipResult,
   calc: { profit: number; roi: number; fees: number },
   maxBuy: number,
+  liveRating?: CanonicalRating,
 ): DeepInputs {
   return {
     flip,
@@ -332,6 +433,7 @@ export function buildDeepInputs(
     fees: calc.fees,
     maxBuy,
     resaleValue: flip.resaleValue,
-    rating: normalizeBuyRating(flip.recommendation?.label ?? (flip as any).buyLabel ?? 'SKIP'),
+    rating: liveRating
+      ?? normalizeBuyRating(flip.recommendation?.label ?? (flip as any).buyLabel ?? 'SKIP'),
   };
 }

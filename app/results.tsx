@@ -51,7 +51,7 @@ import { setDiscoveryMeta } from '@/lib/devBrandOverrides';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { useAuth } from '@/lib/auth-context';
 import { trackAnalyticsEvent } from '@/lib/analytics';
-import { computeFlipCalc, findMaxBuyPriceForRating } from '@/utils/flipCalculations';
+import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice, findBuyThresholdPrice } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
 import PoshmarkLogo from '@/components/logos/PoshmarkLogo';
@@ -319,7 +319,13 @@ export default function ResultsScreen() {
 
   const thriftPriceStr  = pendingThriftPrices[currentScan?.id ?? ''] ?? '';
   const parsedThrift    = parseFloat(thriftPriceStr) || 0;
-  const effectiveThrift = parsedThrift > 0 ? parsedThrift : (_md?.suggested_buy_price ?? 0);
+  // Shared resolver — Deep Analysis calls the same function, so the two screens
+  // can never rate the same item at different prices.
+  const effectiveThrift = resolveEffectiveThriftPrice({
+    entered:   parsedThrift > 0 ? parsedThrift : null,
+    stored:    null,   // a fresh scan has no stored price yet
+    suggested: _md?.suggested_buy_price ?? null,
+  });
 
   // useMemo MUST be before any early return — fixes the "fewer hooks" crash
   const calc = useMemo(
@@ -332,6 +338,11 @@ export default function ResultsScreen() {
       _id?.estimated_era ?? '',
       _md?.demand ?? '',
       _md?.sell_speed ?? '',
+      {
+        buyerPool:        (_id as any)?.v1?.buyerPool,
+        hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
+        eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
+      },
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [_md?.adjusted_estimated_value, effectiveThrift, _ra?.match_confidence,
@@ -462,9 +473,21 @@ export default function ResultsScreen() {
   // Derived directly from the same recommendation engine that drives the rating
   // shown on screen — so it's never disconnected from what you actually see.
   // Paying more than this is guaranteed to downgrade the rating.
-  const suggestedMax    = Math.max(1, findMaxBuyPriceForRating(
-    resaleValue, ra.match_confidence, md.competition_level ?? '', md.demand ?? '', md.sell_speed ?? '',
-  ));
+  const v1Sig = {
+    buyerPool:        (_id as any)?.v1?.buyerPool,
+    hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
+    eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
+  };
+  // Ceiling: the most you should pay before this becomes a SKIP. Null when the
+  // item is not worth buying at any price — rendered as words, never as $0.
+  const suggestedMax = findMaxBuyPriceForRating(
+    resaleValue, ra.match_confidence, md.competition_level ?? '', md.demand ?? '', md.sell_speed ?? '', v1Sig,
+  );
+  // Aspirational: the price at which it would become a solid BUY. Null when the
+  // risk factors cap it below BUY at any price, which is common and fine.
+  const buyThreshold = findBuyThresholdPrice(
+    resaleValue, ra.match_confidence, md.competition_level ?? '', md.demand ?? '', md.sell_speed ?? '', v1Sig,
+  );
   // The price actually used in the breakdown + shown in the editor. Defaults to
   // the AI's real per-item thrift-price estimate (from the scan itself) until
   // the user types their own — NOT the breakeven ceiling above, which is a
@@ -477,9 +500,28 @@ export default function ResultsScreen() {
     ? `${fmtMoney(md.estimated_resale_range.low)}–${fmtMoney(md.estimated_resale_range.high)}`
     : '—';
   // Dynamic recommendation line under the rating; falls back to the rec headline.
-  const buyLine = (canonicalRating === 'SKIP')
-    ? (rec.headline || 'Not worth the risk at this price.')
-    : `Worth grabbing if you can buy at ${fmtMoney(suggestedMax)} or less.`;
+  // The line under the rating. It has to answer the question the rating raises,
+  // and that differs by rating:
+  //   SKIP        — why not
+  //   RISKY BUY   — the ceiling, because there may be no price that makes it a
+  //                 clean BUY and pretending otherwise produced "$1 or less"
+  //   BUY/STRONG  — the price that keeps it a solid buy
+  const buyLine = (() => {
+    if (canonicalRating === 'SKIP') {
+      return rec.headline || 'Not worth the risk at this price.';
+    }
+    if (suggestedMax === null || suggestedMax <= 0) {
+      return 'Hard to make money on this one at any price.';
+    }
+    if (canonicalRating === 'RISKY BUY') {
+      // Mention the BUY price only when one exists AND is meaningfully below
+      // the ceiling — otherwise it is noise.
+      return (buyThreshold !== null && buyThreshold > 0 && buyThreshold < suggestedMax - 1)
+        ? `Pay ${fmtMoney(suggestedMax)} at most — a solid buy under ${fmtMoney(buyThreshold)}.`
+        : `Pay ${fmtMoney(suggestedMax)} at most for this to be worth it.`;
+    }
+    return `Worth grabbing if you can buy at ${fmtMoney(suggestedMax)} or less.`;
+  })();
 
   const haptic = (style: Haptics.ImpactFeedbackStyle) => {
     if (Platform.OS !== 'web') Haptics.impactAsync(style).catch(() => {});
@@ -499,6 +541,10 @@ export default function ResultsScreen() {
       era: id.estimated_era, styleLabels: id.style_labels, material: id.material_guess,
       // Carry v2 structured fields verbatim (undefined on older scans).
       structured: {
+        v1:                    (id as any).v1,
+        frontEvidence:         (id as any).frontEvidence,
+        tagEvidence:           (id as any).tagEvidence,
+        detailEvidence:        (id as any).detailEvidence,
         canonicalBrand:        id.canonicalBrand,
         canonicalItemName:     id.canonicalItemName,
         itemType:              id.itemType,
@@ -526,6 +572,7 @@ export default function ResultsScreen() {
       avgSoldPrice: md.average_sold_price,
       demand: md.demand, sellSpeed: md.sell_speed, competitionLevel: md.competition_level,
       matchConfidence: ra.match_confidence, riskFlags: ra.risk_flags,
+      riskyBuyReasons: (ra as any).risky_buy_reasons ?? [],
       thriftPrice: calc.thriftPrice, fees: calc.fees, profit: calc.profit,
       roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel,
       recommendation: calc.recommendation,
@@ -848,6 +895,7 @@ export default function ResultsScreen() {
       avgSoldPrice: md.average_sold_price, demand: md.demand,
       sellSpeed: md.sell_speed, competitionLevel: md.competition_level,
       matchConfidence: ra.match_confidence, riskFlags: ra.risk_flags,
+      riskyBuyReasons: (ra as any).risky_buy_reasons ?? [],
       thriftPrice: calc.thriftPrice, fees: calc.fees, profit: calc.profit,
       roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel,
       stars: calc.stars, bestPlatform: calc.bestPlatform,
@@ -1030,9 +1078,58 @@ export default function ResultsScreen() {
                 <View style={s.chipWrap}>
                   {!!id.brand && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.brand}</Text></View>}
                   {!!id.category && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.category}</Text></View>}
-                  {!!id.estimated_era && id.estimated_era !== 'Unknown' && id.estimated_era !== 'Insufficient evidence' && (
-                    <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.estimated_era}</Text></View>
+                  {/* Size, when it was actually read off a tag. Never inferred —
+                      a wrong size is worse than no size for a reseller. */}
+                  {!!(id as any).v1?.sizeLabel && (
+                    <View style={s.chip}>
+                      <Text style={s.chipText} numberOfLines={1}>Size {(id as any).v1.sizeLabel}</Text>
+                    </View>
                   )}
+                  {/* Era: prefer the validated decade/status over the free-text
+                      field, which can say "Unknown" while the canonical status
+                      is a confident "modern". */}
+                  {/* Era pill. Always renders — a missing pill reads as a
+                      broken field, and "Era unknown" is a real, useful answer.
+                      Confidence is expressed in the wording rather than by
+                      hiding the chip. */}
+                  {(() => {
+                    const v1 = (id as any).v1;
+                    const status  = v1?.eraStatus;
+                    const conf    = typeof v1?.eraConfidence === 'number' ? v1.eraConfidence : 0;
+                    const decade  = v1?.productionDecade && v1.productionDecade !== 'unknown'
+                      ? String(v1.productionDecade).replace(/^pre_/, 'pre-') : null;
+                    const y2k     = v1?.styleEra === 'y2k';
+
+                    // A decade only appears when hard manufacturing evidence
+                    // established it, so it is never hedged.
+                    let label: string | null = decade;
+
+                    if (!label) {
+                      if (status === 'confirmed_vintage')      label = y2k ? 'Y2K' : 'Vintage';
+                      else if (status === 'likely_vintage')    label = y2k ? 'Likely Y2K' : 'Likely vintage';
+                      else if (status === 'vintage_inspired')  label = 'Vintage-inspired';
+                      else if (status === 'modern')            label = conf >= 70 ? 'Modern' : 'Likely modern';
+                      else {
+                        // Unknown. Fall back to any legacy free text, then to a
+                        // hedge from styling, then to an honest "Era unknown".
+                        const legacy = id.estimated_era;
+                        const usableLegacy = legacy && legacy !== 'Unknown'
+                          && legacy !== 'Insufficient evidence' ? legacy : null;
+                        label = usableLegacy
+                          ?? (y2k ? 'Y2K styling' : null)
+                          ?? 'Era unknown';
+                      }
+                    }
+
+                    const soft = label === 'Era unknown' || label.startsWith('Likely');
+                    return (
+                      <View style={[s.chip, soft && s.chipSoft]}>
+                        <Text style={[s.chipText, soft && s.chipSoftText]} numberOfLines={1} ellipsizeMode="tail">
+                          {label}
+                        </Text>
+                      </View>
+                    );
+                  })()}
                   {ra.match_confidence > 0 && (
                     <View style={[s.chip, s.chipConf]}>
                       <MaterialIcons name="verified" size={12} color={FOREST} />
@@ -1071,15 +1168,106 @@ export default function ResultsScreen() {
             </View>
           </View>
 
+          {/* ── 2a. Condition ────────────────────────────────────────────────
+              Renders ONLY when there is something concrete to report. A clean,
+              well-photographed item shows nothing — an always-present "no
+              damage found" line would train users to ignore the row, which is
+              exactly when a real warning needs to land.
+
+              Obvious findings only. Low-certainty maybes stay in Deep Analysis:
+              a false damage warning costs more trust than a missed one costs
+              money. */}
+          {(() => {
+            const v1 = (id as any).v1;
+            const damage: string[] = v1?.obviousDamage ?? [];
+            const unknowns: string[] = v1?.conditionUnknowns ?? [];
+            const slots: string[] = v1?.photoSlots ?? ['front'];
+
+            // Damage always wins — it changes the decision.
+            if (damage.length > 0) {
+              return (
+                <View style={[s.conditionStrip, s.conditionStripWarn]}>
+                  <MaterialIcons name="report-problem" size={16} color="#8A3A2A" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[s.conditionStripTitle, { color: '#8A3A2A' }]}>Condition</Text>
+                    <Text style={s.conditionStripBody} numberOfLines={3}>
+                      {damage.slice(0, 3).join(' · ')}
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
+
+            // No damage found. Say what WAS checked rather than only what was
+            // not — "condition not fully visible" reads as a failure when the
+            // model successfully assessed everything it was shown. A front
+            // photo genuinely does assess the front.
+            const coverage =
+              slots.length >= 3 ? 'all three photos'
+              : slots.length === 2 ? 'the photos provided'
+              : 'the front photo';
+            const gap =
+              slots.length >= 3 ? null
+              : slots.includes('tag') && !slots.includes('detail')
+                ? 'Check the back and any wear areas to confirm.'
+                : 'Check the back and inside of the item to verify.';
+
+            // Nothing useful to say at all — stay silent rather than filling space.
+            if (!gap && unknowns.length === 0) return null;
+
+            return (
+              <View style={[s.conditionStrip, s.conditionStripInfo]}>
+                <MaterialIcons name="check-circle-outline" size={16} color={FOREST} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.conditionStripTitle}>Condition</Text>
+                  <Text style={s.conditionStripBody} numberOfLines={3}>
+                    No visible flaws in {coverage}.{gap ? ` ${gap}` : ''}
+                  </Text>
+                </View>
+              </View>
+            );
+          })()}
+
+          {/* ── 2b. Why risky? ──────────────────────────────────────────────
+              Only on RISKY BUY, and only when there is something specific to
+              say. The rating alone does not tell the user WHAT to weigh — the
+              same label can mean "it will sit for months" or "I am not sure
+              what this is", and those call for different decisions. Factors
+              come from the rating engine itself, so this can never disagree
+              with Deep Analysis. */}
+          {canonicalRating === 'RISKY BUY' && (calc.recommendation?.riskFactors?.length ?? 0) > 0 && (
+            <View style={s.riskWhyCard}>
+              <View style={s.riskWhyHeader}>
+                <MaterialIcons name="info-outline" size={15} color={BROWN} />
+                <Text style={s.riskWhyTitle}>Why risky</Text>
+              </View>
+              <View style={s.riskWhyChips}>
+                {calc.recommendation.riskFactors.slice(0, 4).map(f => (
+                  <View key={f.code} style={s.riskWhyChip}>
+                    <Text style={s.riskWhyChipText}>{f.label}</Text>
+                  </View>
+                ))}
+              </View>
+              <Text style={s.riskWhyNote}>
+                {calc.profit >= 15
+                  ? 'Real profit here — just not a quick or certain one.'
+                  : 'Margin is workable, but the conditions are not in your favour.'}
+              </Text>
+            </View>
+          )}
+
           {/* ── 3. Quick Stats Row ── */}
           <View style={s.statsCard}>
             {[
               { icon: 'payments',   label: 'Est. Profit',  value: `${calc.profit >= 0 ? '+' : '-'}${fmtMoney(Math.abs(calc.profit))}`, color: profitColor },
               { icon: 'show-chart', label: 'ROI',          value: calc.roi > 0 ? `${calc.roi}%` : '—',     color: calc.roi >= 50 ? '#2A5A2A' : BROWN },
-              { icon: 'sell',       label: 'Avg Sold',     value: md.average_sold_price ? fmtMoney(md.average_sold_price) : '—', color: FOREST },
+              // "Avg Sold" removed: it was the midpoint of the AI's own estimate
+              // presented as if it were sold-comp data. No comps exist yet, and
+              // implying otherwise is exactly the claim the prompt rewrite set
+              // out to remove.
               { icon: 'trending-up',label: 'Market Range', value: rangeStr, color: FOREST },
             ].map((m, i) => (
-              <View key={m.label} style={[s.statBox, i < 3 && s.statBoxBorder]}>
+              <View key={m.label} style={[s.statBox, i < 2 && s.statBoxBorder]}>
                 <View style={s.statIconCircle}><MaterialIcons name={m.icon as any} size={15} color={GOLD} /></View>
                 <Text style={s.statLabel}>{m.label}</Text>
                 <Text
@@ -1438,6 +1626,23 @@ const s = StyleSheet.create({
   ratingProfitPillText: { fontSize: 11.5, fontWeight: '700', color: '#8FE08F' },
 
   // 3 · Quick stats row
+  chipSoft:      { opacity: 0.72 },
+  chipSoftText:  { fontStyle: 'italic' },
+  conditionStrip:      { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 14,
+                         borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11, marginTop: 10 },
+  conditionStripWarn:  { backgroundColor: '#FBEFEA', borderColor: '#8A3A2A' + '44' },
+  conditionStripInfo:  { backgroundColor: '#FBF6E6', borderColor: GOLD + '44' },
+  conditionStripTitle: { fontSize: 10.5, fontWeight: '800', color: BROWN, letterSpacing: 1, marginBottom: 2 },
+  conditionStripBody:  { fontSize: 12.5, color: BROWN, lineHeight: 17 },
+  riskWhyCard:    { backgroundColor: '#FBF6E6', borderRadius: 14, borderWidth: 1, borderColor: GOLD + '55',
+                    paddingHorizontal: 14, paddingVertical: 12, marginTop: 10, gap: 8 },
+  riskWhyHeader:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  riskWhyTitle:   { fontSize: 11, fontWeight: '800', color: BROWN, letterSpacing: 1 },
+  riskWhyChips:   { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  riskWhyChip:    { backgroundColor: '#FFFEFA', borderRadius: 999, borderWidth: 1, borderColor: GOLD + '66',
+                    paddingHorizontal: 10, paddingVertical: 5 },
+  riskWhyChipText:{ fontSize: 12, fontWeight: '700', color: BROWN },
+  riskWhyNote:    { fontSize: 12, color: BROWN, opacity: 0.85, lineHeight: 17 },
   statsCard: {
     flexDirection: 'row', backgroundColor: CARD, borderRadius: 18, borderWidth: 1, borderColor: CARD_B,
     marginHorizontal: 14, marginTop: 14, paddingVertical: 16, paddingHorizontal: 6,

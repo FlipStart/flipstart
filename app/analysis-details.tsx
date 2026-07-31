@@ -19,7 +19,7 @@ import { useScanContext } from '@/lib/scan-context';
 import { trpc } from '@/lib/trpc';
 import { FlipResult, ListingData } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
-import { computeFlipCalc } from '@/utils/flipCalculations';
+import { computeFlipCalc, resolveEffectiveThriftPrice } from '@/utils/flipCalculations';
 import { REC_THEMES, normalizeBuyRating } from '@/utils/recommendation';
 import {
   buildDeepInputs, whyThisRating, ratingQuestion, priceLogicText,
@@ -318,7 +318,14 @@ export default function AnalysisDetailsScreen() {
     );
   }
 
-  const editedThrift = parseFloat(thriftStr) || baseFlip.thriftPrice;
+  // Same resolver results.tsx uses. Previously this fell back to
+  // baseFlip.thriftPrice while results fell back to suggested_buy_price, which
+  // is why the two screens could disagree on the rating for one item.
+  const editedThrift = resolveEffectiveThriftPrice({
+    entered:   thriftStr.trim() === '' ? null : thriftStr,
+    stored:    baseFlip.thriftPrice ?? null,
+    suggested: (baseFlip as any).suggestedBuyPrice ?? null,
+  });
   const calc = useMemo(
     () => computeFlipCalc(
       baseFlip.resaleValue, editedThrift,
@@ -355,7 +362,7 @@ export default function AnalysisDetailsScreen() {
     const v = parseFloat(thriftStr);
     if (!v || v === storedFlip.thriftPrice) { setThriftEditing(false); return; }
     haptic(Haptics.ImpactFeedbackStyle.Medium);
-    updateFlip(storedFlip.id, { thriftPrice: v, fees: calc.fees, profit: calc.profit, roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel, stars: calc.stars });
+    updateFlip(storedFlip.id, { thriftPrice: v, fees: calc.fees, profit: calc.profit, roi: calc.roi, buyScore: calc.buyScore, buyLabel: calc.buyLabel, stars: calc.stars, recommendation: calc.recommendation });
     setThriftEditing(false);
   };
 
@@ -416,12 +423,29 @@ export default function AnalysisDetailsScreen() {
   const platNote = platformNote(calc.bestPlatform);
 
   // ── Deep Analysis derived reasoning (all from real scan data) ──────────────
-  const canonicalRating = normalizeBuyRating(baseFlip.recommendation?.label ?? (baseFlip as any).buyLabel ?? rec.label);
+  // LIVE rating from the current thrift price. `rec` is calc.recommendation,
+  // which already reflects the edited price; the stored value on baseFlip is
+  // only a fallback for a flip that somehow has no calc.
+  const canonicalRating = normalizeBuyRating(
+    rec?.label ?? baseFlip.recommendation?.label ?? (baseFlip as any).buyLabel ?? 'SKIP',
+  );
   const maxBuyShown = isHistory && editedThrift > 0 ? editedThrift : baseFlip.thriftPrice;
-  const di = buildDeepInputs(baseFlip, { profit: calc.profit, roi: calc.roi, fees: calc.fees }, maxBuyShown);
-  di.rating = canonicalRating;
+  // Pass the LIVE rating so the explanation matches the badge above it.
+  const di = buildDeepInputs(
+    baseFlip,
+    { profit: calc.profit, roi: calc.roi, fees: calc.fees },
+    maxBuyShown,
+    normalizeBuyRating(calc.recommendation?.label ?? 'SKIP'),
+  );
+  // buildDeepInputs already received the live rating; no override needed.
+  // The previous assignment here silently replaced it with the stored value,
+  // which is why the explanation never followed the badge.
   const whyBullets   = whyThisRating(di);
   const priceText    = priceLogicText(di);
+  // Canonical V1 values, absent on older scans. Every section below treats a
+  // missing block as "nothing to show" rather than rendering empty scaffolding.
+  const v1: any = (baseFlip.structured as any)?.v1;
+  const [sawOpen, setSawOpen] = useState(false);
   const risk         = riskAssessment(di);
   const confB        = confidenceBreakdown(di);
   const platStrat    = platformStrategy(di);
@@ -540,6 +564,40 @@ export default function AnalysisDetailsScreen() {
               <PriceStat label="ROI"         value={calc.roi > 0 ? `${calc.roi}%` : '—'} />
             </View>
             <Text style={d.paragraph}>{priceText}</Text>
+
+            {/* Market signals sit here rather than in their own card: they are
+                the "why" behind the price above, and splitting them would make
+                the user reconcile two cards answering one question. */}
+            {(() => {
+              const speed  = baseFlip.sellSpeed;
+              const demand = baseFlip.demand;
+              const comp   = baseFlip.competitionLevel;
+              const pool   = v1?.buyerPool;
+              const reasons: string[] = v1?.marketabilityReasons ?? [];
+              if (!speed && !demand && !comp && !pool) return null;
+              const cap = (x?: string) =>
+                x ? String(x).replace(/_/g, ' ').replace(/^./, (m: string) => m.toUpperCase()) : '—';
+              return (
+                <View style={d.marketBlock}>
+                  <Text style={d.confSubHead}>Market signals</Text>
+                  <View style={d.marketGrid}>
+                    {([['Sells', cap(speed)], ['Demand', cap(demand)],
+                       ['Buyers', cap(pool)], ['Competition', cap(comp)]] as [string,string][]).map(([k, val]) => (
+                      <View key={k} style={d.marketCell}>
+                        <Text style={d.marketKey}>{k}</Text>
+                        <Text style={d.marketVal} numberOfLines={1}>{val}</Text>
+                      </View>
+                    ))}
+                  </View>
+                  {reasons.slice(0, 3).map((r, i) => (
+                    <View key={i} style={d.bulletRow}>
+                      <MaterialIcons name="chevron-right" size={14} color={GOLD} style={{ marginTop: 2 }} />
+                      <Text style={d.bulletText}>{r}</Text>
+                    </View>
+                  ))}
+                </View>
+              );
+            })()}
           </View>
 
           {/* ── 5. Risk flags ── */}
@@ -637,7 +695,80 @@ export default function AnalysisDetailsScreen() {
                 <Text style={d.inlineList}>{evidence.missing.join(' · ')}</Text>
               </>
             )}
+            {/* Same concern as "missing", so same card. There is no add-a-photo
+                flow, so this is advice for a FUTURE scan and reads that way. */}
+            {!!v1?.rescanAdvice && (
+              <View style={d.rescanRow}>
+                <MaterialIcons name="photo-camera" size={14} color={GOLD} style={{ marginTop: 2 }} />
+                <Text style={d.rescanText}>{v1.rescanAdvice}</Text>
+              </View>
+            )}
           </View>
+
+          {/* ── 9b. Era & Authenticity ─────────────────────────────────────
+              Everything here is the VALIDATED conclusion, never the model's raw
+              claim — era_status survives evidence checks, so "confirmed
+              vintage" shown here has actually earned it. */}
+          {(() => {
+            const status = v1?.eraStatus;
+            const auth: string[] = v1?.authenticityConcerns ?? [];
+            const eraEv: string[] = (baseFlip.structured as any)?.eraEvidence ?? [];
+            if (!status && auth.length === 0 && eraEv.length === 0) return null;
+            const STATUS_LABEL: Record<string, string> = {
+              confirmed_vintage: 'Confirmed vintage',
+              likely_vintage:    'Likely vintage',
+              vintage_inspired:  'Vintage-inspired (modern)',
+              modern:            'Modern',
+              unknown:           'Not determined',
+            };
+            const decade = v1?.productionDecade && v1.productionDecade !== 'unknown'
+              ? String(v1.productionDecade).replace(/^pre_/, 'pre-') : null;
+            const styleEra = v1?.styleEra && v1.styleEra !== 'none' && v1.styleEra !== 'unknown'
+              ? String(v1.styleEra).replace(/_/g, ' ') : null;
+            return (
+              <View style={d.card}>
+                <DeepHead icon="history-edu" title="Era & Authenticity" />
+                <View style={d.evidenceRow}>
+                  <Text style={d.evidenceLabel}>Era</Text>
+                  <Text style={d.evidenceValue}>{STATUS_LABEL[status] ?? 'Not determined'}</Text>
+                </View>
+                {!!decade && (
+                  <View style={d.evidenceRow}>
+                    <Text style={d.evidenceLabel}>Made</Text>
+                    <Text style={d.evidenceValue}>{decade}</Text>
+                  </View>
+                )}
+                {!!styleEra && (
+                  <View style={d.evidenceRow}>
+                    <Text style={d.evidenceLabel}>Styling</Text>
+                    <Text style={d.evidenceValue}>{styleEra}</Text>
+                  </View>
+                )}
+                {eraEv.length > 0 && (
+                  <>
+                    <Text style={[d.confSubHead, { marginTop: 10 }]}>Evidence</Text>
+                    {eraEv.slice(0, 4).map((e: string, i: number) => (
+                      <View key={i} style={d.bulletRow}>
+                        <MaterialIcons name="check-circle" size={13} color={FOREST} style={{ marginTop: 2 }} />
+                        <Text style={d.bulletText}>{e}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+                {auth.length > 0 && (
+                  <>
+                    <Text style={[d.confSubHead, { marginTop: 10, color: '#8A3A2A' }]}>Authenticity</Text>
+                    {auth.map((a: string, i: number) => (
+                      <View key={i} style={d.bulletRow}>
+                        <MaterialIcons name="report-problem" size={13} color="#8A3A2A" style={{ marginTop: 2 }} />
+                        <Text style={d.bulletText}>{a}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+              </View>
+            );
+          })()}
 
           {/* ── 10. What could change this rating? ── */}
           <View style={d.card}>
@@ -649,6 +780,57 @@ export default function AnalysisDetailsScreen() {
               </View>
             ))}
           </View>
+
+          {/* ── 11. What the AI saw ────────────────────────────────────────
+              Collapsed by default. This is "show your work" for a sceptical
+              user, not something anyone needs on a normal read — expanded by
+              default it would bury the actionable sections above it. */}
+          {(() => {
+            const front:  string[] = (baseFlip.structured as any)?.frontEvidence  ?? [];
+            const tag:    string[] = (baseFlip.structured as any)?.tagEvidence    ?? [];
+            const detail: string[] = (baseFlip.structured as any)?.detailEvidence ?? [];
+            const groups: [string, string[]][] = [
+              ['Front photo',  front],
+              ['Tag photo',    tag],
+              ['Detail photo', detail],
+            ].filter(([, v]) => (v as string[]).length > 0) as [string, string[]][];
+            if (groups.length === 0) return null;
+
+            return (
+              <View style={d.card}>
+                <Pressable
+                  onPress={() => setSawOpen(o => !o)}
+                  style={({ pressed }) => [d.sawHeader, pressed && { opacity: 0.7 }]}
+                  hitSlop={6}
+                >
+                  <View style={{ flex: 1 }}>
+                    <DeepHead icon="visibility" title="What the AI Saw" />
+                  </View>
+                  <MaterialIcons
+                    name={sawOpen ? 'expand-less' : 'expand-more'}
+                    size={22}
+                    color={BROWN}
+                  />
+                </Pressable>
+                {sawOpen && groups.map(([label, items]) => (
+                  <View key={label} style={{ marginTop: 8 }}>
+                    <Text style={d.confSubHead}>{label}</Text>
+                    {items.slice(0, 6).map((it, i) => (
+                      <View key={i} style={d.bulletRow}>
+                        <MaterialIcons name="fiber-manual-record" size={6} color={GOLD} style={{ marginTop: 7 }} />
+                        <Text style={d.bulletText}>{it}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ))}
+                {!sawOpen && (
+                  <Text style={d.sawHint}>
+                    Tap to see exactly what was read from each photo.
+                  </Text>
+                )}
+              </View>
+            );
+          })()}
 
           {/* Listings (generate / view) */}
           <View style={d.card}>
@@ -919,5 +1101,17 @@ const d = StyleSheet.create({
 
   evidenceRow:   { flexDirection: 'row', gap: 10, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: '#F4F1E8' },
   evidenceLabel: { width: 90, fontSize: 12, fontWeight: '800', color: FOREST },
+  sawHeader:    { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  sawHint:      { fontSize: 12, color: MUTED, fontStyle: 'italic', marginTop: 6 },
+  marketBlock:  { marginTop: 12, gap: 8 },
+  marketGrid:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  marketCell:   { flexGrow: 1, flexBasis: '46%', backgroundColor: '#FBF6E6', borderRadius: 10,
+                  borderWidth: 1, borderColor: GOLD + '33', paddingHorizontal: 10, paddingVertical: 8 },
+  marketKey:    { fontSize: 9.5, fontWeight: '800', color: BROWN, letterSpacing: 0.9, opacity: 0.8 },
+  marketVal:    { fontSize: 14, fontWeight: '800', color: FOREST, marginTop: 2 },
+  rescanRow:    { flexDirection: 'row', alignItems: 'flex-start', gap: 7, marginTop: 10,
+                  backgroundColor: '#FBF6E6', borderRadius: 10, borderWidth: 1,
+                  borderColor: GOLD + '33', paddingHorizontal: 10, paddingVertical: 9 },
+  rescanText:   { flex: 1, fontSize: 12.5, color: BROWN, lineHeight: 17, fontStyle: 'italic' },
   evidenceValue: { flex: 1, fontSize: 12.5, color: BROWN, lineHeight: 17 },
 });

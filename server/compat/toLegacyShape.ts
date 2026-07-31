@@ -24,6 +24,9 @@ export interface LegacyShape {
     estimated_era: string;
     style_labels: string[];
     material_guess: string;
+    /** Canonical values the legacy shape has no field for. Spread through by
+     *  loading.tsx and read by the screens via flip.structured?.v1. */
+    v1?: Record<string, unknown>;
     [k: string]: unknown;
   };
   market_data: {
@@ -37,7 +40,14 @@ export interface LegacyShape {
     price_adjustments: Array<{ reason: string; impact: number; type: "positive" | "negative" }>;
     adjusted_estimated_value: number;
   };
-  risk_analysis: { match_confidence: number; risk_flags: string[] };
+  risk_analysis: {
+    match_confidence: number;
+    risk_flags: string[];
+    /** The AI's own risky-buy reasoning. The old deep-analysis screen invented
+     *  its own justification from templates; passing these through lets it use
+     *  the model's actual reasons instead. */
+    risky_buy_reasons: string[];
+  };
   listings: { ebay_title: string; depop_title: string; description: string };
 }
 
@@ -102,9 +112,59 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
       eraEstimate: eraText,
       eraConfidence: d.era_effective.confidence,
       eraEvidence: d.era_effective.evidence.map(e => e.observation),
+      // Per-photo evidence for the "What the AI Saw" section. Kept as raw
+      // observation strings — this is deliberately the model's own words.
+      frontEvidence:  ai.photo_evidence.front_evidence,
+      tagEvidence:    ai.photo_evidence.tag_evidence,
+      detailEvidence: ai.photo_evidence.detail_evidence,
       sportsTeam: ai.identification.team,
       logoPlacement: ai.features.logo_placement,
       size_label: ai.visible_attributes.size_label,
+
+      // ── Canonical passthrough ────────────────────────────────────────────
+      // loading.tsx spreads `identification` wholesale, so anything added here
+      // reaches the screens without a schema change on the client. These are
+      // the fields the old shape has no home for but the UI genuinely needs —
+      // without them the app silently shows template text where the model
+      // produced a real answer.
+      v1: {
+        // Which photos the user actually supplied. The UI needs this to say
+        // "no flaws in the front photo" rather than implying it checked
+        // everything, or implying it failed to.
+        photoSlots:       c.meta.photo_slots_provided,
+        eraStatus:        d.era_effective.status,
+        eraConfidence:    d.era_effective.confidence,
+        productionDecade: d.era_effective.production_decade_effective,
+        styleEra:         ai.era.style_era,
+        vintageRoute:     d.era_effective.confirmed_vintage_route,
+
+        sizeLabel:        ai.visible_attributes.size_label,
+        sizeSystem:       ai.visible_attributes.size_system,
+        primaryColor:     ai.visible_attributes.primary_color,
+        materialSource:   ai.visible_attributes.material_source,
+
+        // Only the findings that passed the obvious-damage bar. The rest are
+        // informational and must not drive anything.
+        obviousDamage:    d.condition_summary.obvious_findings.map(
+                            f => `${f.type.replace(/_/g, ' ')} — ${f.location}`),
+        conditionUnknowns: ai.condition.condition_unknowns,
+        assessmentLimited: d.condition_summary.assessment_limited,
+
+        buyerPool:         ai.marketability.buyer_pool,
+        marketabilityReasons: ai.marketability.marketability_reasons,
+
+        pricingBasis:     ai.pricing.pricing_basis,
+        pricingUnknowns:  ai.pricing.pricing_unknowns,
+        priceConfidence:  ai.pricing.price_confidence,
+        estimateUnavailable: d.pricing.estimate_unavailable,
+
+        missingEvidence:  ai.photo_evidence.missing_or_unreadable_evidence,
+        rescanAdvice:     ai.photo_evidence.recommended_rescan_photo,
+        authenticityConcerns: ai.risks.authenticity_concerns,
+
+        displayName:      itemName,
+        eraPrefix:        d.identification.era_prefix_applied,
+      },
     },
     market_data: {
       estimated_resale_range: { low, high },
@@ -121,6 +181,15 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
     risk_analysis: {
       match_confidence: ai.identification.identity_confidence,
       risk_flags: flags.slice(0, 3),
+      // Verbatim from the model, plus anything validation established that the
+      // model could not know (obvious damage is a server conclusion).
+      risky_buy_reasons: [
+        ...ai.risks.risky_buy_reasons,
+        ...(d.condition_summary.has_obvious_damage
+          ? [`Visible ${d.condition_summary.max_obvious_severity} damage affects value`] : []),
+        ...(d.pricing.estimate_unavailable
+          ? ["No reliable resale estimate for this item"] : []),
+      ].slice(0, 6),
     },
     listings: {
       ebay_title: itemName,
