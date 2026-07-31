@@ -249,32 +249,11 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "front_evidence",
-          "tag_evidence",
-          "detail_evidence",
           "observable_field_evidence",
           "missing_or_unreadable_evidence",
           "recommended_rescan_photo"
         ],
         "properties": {
-          "front_evidence": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "tag_evidence": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "detail_evidence": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
           "observable_field_evidence": {
             "type": "array",
             "items": {
@@ -722,18 +701,11 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
         "additionalProperties": false,
         "required": [
           "risk_flags",
-          "risky_buy_reasons",
           "authenticity_concerns",
           "escalation_signals"
         ],
         "properties": {
           "risk_flags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "risky_buy_reasons": {
             "type": "array",
             "items": {
               "type": "string"

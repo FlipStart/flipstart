@@ -66,6 +66,31 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
   const ai = c.ai;
   const d = c.derived;
 
+  /**
+   * Everything the model observed on one photo, gathered from the structured
+   * evidence objects that each carry a photo_slot. Replaces the removed
+   * front/tag/detail_evidence arrays — same information, but sourced from the
+   * evidence validation actually operates on rather than a parallel copy.
+   */
+  const bySlot = (slot: "front" | "tag" | "detail"): string[] => {
+    const out: string[] = [];
+    for (const e of ai.identification.identification_evidence) {
+      if (e.photo_slot === slot) out.push(e.observation);
+    }
+    for (const e of ai.photo_evidence.observable_field_evidence) {
+      if (e.photo_slot === slot) out.push(e.observation);
+    }
+    for (const e of ai.era.era_evidence) {
+      if (e.photo_slot === slot) out.push(e.observation);
+    }
+    for (const f of ai.condition.condition_findings) {
+      if (f.photo_slot === slot) out.push(f.evidence);
+    }
+    // De-duplicate: one physical detail can legitimately support both an
+    // identity claim and an era claim, and the user should see it once.
+    return [...new Set(out.map(s => s.trim()).filter(Boolean))].slice(0, 8);
+  };
+
   // The validated display title — includes a Vintage/Y2K prefix only when the
   // evidence earned it. Never the raw model name.
   const itemName = d.identification.display_item_name || ai.identification.generic_item_name;
@@ -112,11 +137,13 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
       eraEstimate: eraText,
       eraConfidence: d.era_effective.confidence,
       eraEvidence: d.era_effective.evidence.map(e => e.observation),
-      // Per-photo evidence for the "What the AI Saw" section. Kept as raw
-      // observation strings — this is deliberately the model's own words.
-      frontEvidence:  ai.photo_evidence.front_evidence,
-      tagEvidence:    ai.photo_evidence.tag_evidence,
-      detailEvidence: ai.photo_evidence.detail_evidence,
+      // Per-photo evidence for "What the AI Saw", now DERIVED by grouping the
+      // structured evidence by photo_slot rather than read from dedicated
+      // arrays. Same content, one source, and it cannot drift from the
+      // evidence the validator actually acted on.
+      frontEvidence:  bySlot("front"),
+      tagEvidence:    bySlot("tag"),
+      detailEvidence: bySlot("detail"),
       sportsTeam: ai.identification.team,
       logoPlacement: ai.features.logo_placement,
       size_label: ai.visible_attributes.size_label,
@@ -181,10 +208,11 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
     risk_analysis: {
       match_confidence: ai.identification.identity_confidence,
       risk_flags: flags.slice(0, 3),
-      // Verbatim from the model, plus anything validation established that the
-      // model could not know (obvious damage is a server conclusion).
+      // risky_buy_reasons no longer comes from the model. The shared
+      // recommendation module derives risk factors from validated marketability,
+      // condition, pricing and era fields; only the two conclusions the model
+      // genuinely cannot know are added here.
       risky_buy_reasons: [
-        ...ai.risks.risky_buy_reasons,
         ...(d.condition_summary.has_obvious_damage
           ? [`Visible ${d.condition_summary.max_obvious_severity} damage affects value`] : []),
         ...(d.pricing.estimate_unavailable

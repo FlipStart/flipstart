@@ -335,6 +335,9 @@ export default function LoadingScreen() {
         const safeRiskAnalysis = {
           match_confidence: 0,
           risk_flags:       [] as string[],
+          // Still defaulted: the server adapter continues to emit this from
+          // its own derived conclusions (obvious damage, no price estimate).
+          // Only the MODEL no longer supplies it.
           risky_buy_reasons: [] as string[],
           ...(result.risk_analysis || {}),
         };

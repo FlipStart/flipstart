@@ -896,7 +896,7 @@ export default function AnalysisDetailsScreen() {
           {/* ── 11. Back to Analysis ── */}
           <Pressable
             onPress={() => router.back()}
-            style={({ pressed }) => [d.backToSummaryBtn, { marginTop: 4 }, pressed && { opacity: 0.88 }]}
+            style={({ pressed }) => [d.backToSummaryBtn, { marginTop: 24 }, pressed && { opacity: 0.88 }]}
           >
             <MaterialIcons name="arrow-back" size={18} color={CREAM} />
             <Text style={d.backToSummaryText}>Back to Analysis</Text>

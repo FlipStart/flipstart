@@ -143,10 +143,14 @@ export interface AiVisibleAttributes {
 }
 
 export interface AiPhotoEvidence {
-  front_evidence: string[];
-  tag_evidence: string[];
-  detail_evidence: string[];
-  /** Every visible attribute and feature used for recognition needs an entry
+  // front/tag/detail_evidence removed in schema v1.1: every observation already
+  // carries a photo_slot inside its structured evidence object, so the
+  // per-photo arrays were a second copy. Group identification_evidence,
+  // observable_field_evidence, era_evidence and condition_findings by
+  // photo_slot instead.
+  /** Required for consequential claims — anything that dates the item,
+   *  identifies a specific product, or moves its value. Optional for plainly
+   *  visible descriptive fields. Entries naming an unsupplied slot are
    *  here. Entries naming an unsupplied slot are discarded in validation. */
   observable_field_evidence: ObservableFieldEvidence[];
   missing_or_unreadable_evidence: string[];
@@ -220,9 +224,11 @@ export interface AiPricing {
 }
 
 export interface AiRisks {
+  /** Concrete warnings not already captured by marketability, condition,
+   *  pricing or era. risky_buy_reasons was removed in schema v1.1 — the shared
+   *  recommendation module derives risk reasons from validated fields, and
+   *  asking the model to restate them produced a drifting second list. */
   risk_flags: string[];
-  /** Signals for the rating code. NOT a rating. */
-  risky_buy_reasons: string[];
   authenticity_concerns: string[];
   escalation_signals: string[];
 }
