@@ -119,7 +119,7 @@ Preserve the printed format. "32x30" stays "32x30". Keep a shoe size with its vi
 
 **style_labels.** Short descriptive tags a reseller would search - "graphic", "streetwear", "workwear", "athletic", "western". Not era words, not condition words.
 
-Everything you observe goes into a structured evidence object carrying a photo_slot, so there is no separate per-photo summary to write. Grouping by slot is done in code.
+Evidence that supports consequential claims goes into a structured evidence object carrying a photo_slot. There are no separate per-photo summary arrays; grouping by slot is done in code.
 
 **observable_field_evidence.** Evidence objects for the claims that carry weight:
 
