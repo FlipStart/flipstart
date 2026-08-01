@@ -10,7 +10,7 @@ import { invokeLLM } from "./_core/llm.js";
 import { ENV } from "./_core/env.js";
 import {
   SCAN_PROMPT_VERSION, buildSystemMessage, vintageCutoffYear,
-} from "./prompts/scanPromptV1_1.js";
+} from "./prompts/scanPromptV1_2.js";
 import {
   canonicalResponseFormat, CANONICAL_SCHEMA_HASH, SCHEMA_VERSION,
 } from "./canonical/schema.js";
@@ -18,6 +18,9 @@ import { buildCanonicalAnalysis } from "./canonical/build.js";
 import type {
   AiAnalysis, CanonicalAnalysisV1, CanonicalMeta, PhotoSlot,
 } from "../shared/canonical.types.js";
+import {
+  renderUserContextBlock, buildUserContextInput, type UserContextInput,
+} from "../shared/userContext.js";
 
 const MAX_OUTPUT_TOKENS = 2000;
 
@@ -76,6 +79,10 @@ export interface ScanV1Input {
   analysisId: string;
   planAtScan: CanonicalMeta["plan_at_scan"];
   photoRefs: Record<PhotoSlot, string | null>;
+  /** Server-normalized, entitlement-checked camera context. Absent means the
+   *  runtime block is byte-identical to a context-free scan, preserving the
+   *  cache hit for those scans. */
+  userContext?: UserContextInput;
   now?: Date;
 }
 
@@ -94,10 +101,15 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
   }
 
   const cutoff = vintageCutoffYear(now);
+  const userCtx: UserContextInput = input.userContext ?? buildUserContextInput(null);
+
   const system = buildSystemMessage({
     currentYear: now.getFullYear(),
     vintageCutoffYear: cutoff,
     photoSlotsProvided: slots,
+    // Appended AFTER the static prompt. JSON-serialised so a note containing
+    // quotes or braces cannot break out of its slot and read as instruction.
+    userContextBlock: renderUserContextBlock(userCtx),
   });
 
   const content: Array<Record<string, unknown>> = [];
@@ -200,7 +212,18 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
     plan_at_scan: input.planAtScan,
     vintage_cutoff_year: cutoff,
     current_year_at_scan: now.getFullYear(),
-    user_context_supplied: false,   // extension point; feature deferred
+    user_context_supplied: userCtx.confirmed,
+    // Immutable analysis-input metadata. Server-owned: it records what the
+    // user told us and that it came from the camera, kept separate from the
+    // verbatim AI response so a user-confirmed fact is never mistaken for
+    // something the model saw.
+    input_context: {
+      user_context: userCtx.user_context,
+      source:       userCtx.source,
+      confirmed:    userCtx.confirmed,
+      hash:         userCtx.hash,
+      char_count:   userCtx.char_count,
+    },
     scan_attempt_id: input.scanAttemptId,
     analysis_id: input.analysisId,
     analyzed_at: now.getTime(),

@@ -657,6 +657,38 @@ export default function AnalysisDetailsScreen() {
             ))}
           </View>
 
+          {/* Per-area confidence. The single headline number hid that the model
+              can be sure of the brand and unsure of the condition — very
+              different situations for someone standing in a shop. */}
+          {(() => {
+            const rows = ([
+              ['Brand',       v1?.brandConfidence],
+              ['Era',         v1?.eraConfidence],
+              ['Condition',   v1?.conditionConfidence],
+              ['Market read', v1?.marketConfidence],
+              ['Price',       v1?.priceConfidence],
+            ] as [string, number | undefined][]).filter(([, n]) => typeof n === 'number' && n > 0);
+            if (rows.length === 0) return null;
+            return (
+              <View style={d.card}>
+                <DeepHead icon="tune" title="Confidence by Area" />
+                {rows.map(([label, n]) => (
+                  <View key={label} style={d.confBarRow}>
+                    <Text style={d.confBarLabel}>{label}</Text>
+                    <View style={d.confBarTrack}>
+                      <View style={[d.confBarFill, {
+                        width: `${Math.max(3, Math.min(100, n as number))}%`,
+                        backgroundColor: (n as number) >= 70 ? FOREST
+                          : (n as number) >= 50 ? GOLD : '#8A3A2A',
+                      }]} />
+                    </View>
+                    <Text style={d.confBarVal}>{n}%</Text>
+                  </View>
+                ))}
+              </View>
+            );
+          })()}
+
           {/* ── 7. Where to sell (platform strategy) ── */}
           <View style={d.card}>
             <DeepHead icon="storefront" title="Where to Sell" />
@@ -714,6 +746,30 @@ export default function AnalysisDetailsScreen() {
                 <Text style={d.inlineList}>{evidence.missing.join(' · ')}</Text>
               </>
             )}
+            {/* What the model WAS able to check. Pairs with "missing": listing
+                only the gaps made a complete inspection read as a failure. */}
+            {((v1?.conditionChecked ?? []).length > 0) && (
+              <>
+                <Text style={[d.confSubHead, { marginTop: 10 }]}>Condition checked</Text>
+                <Text style={d.inlineList}>{v1.conditionChecked.join(' · ')}</Text>
+              </>
+            )}
+
+            {/* Searchable identifiers. These drive the item name but were never
+                shown as their own values, so a user could not copy them into a
+                listing without retyping from the title. */}
+            {(() => {
+              const kw = [v1?.subject, v1?.artist, v1?.characterOrLicense,
+                          ...(v1?.secondaryColors ?? [])].filter(Boolean);
+              if (kw.length === 0) return null;
+              return (
+                <>
+                  <Text style={[d.confSubHead, { marginTop: 10 }]}>Also identified</Text>
+                  <Text style={d.inlineList}>{kw.join(' · ')}</Text>
+                </>
+              );
+            })()}
+
             {/* Same concern as "missing", so same card. There is no add-a-photo
                 flow, so this is advice for a FUTURE scan and reads that way. */}
             {!!v1?.rescanAdvice && (
@@ -1122,6 +1178,11 @@ const d = StyleSheet.create({
   evidenceLabel: { width: 90, fontSize: 12, fontWeight: '800', color: FOREST },
   sawHeader:    { flexDirection: 'row', alignItems: 'center', gap: 6 },
   sawHint:      { fontSize: 12, color: MUTED, fontStyle: 'italic', marginTop: 6 },
+  confBarRow:   { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8 },
+  confBarLabel: { fontSize: 12, color: BROWN, fontWeight: '700', width: 88 },
+  confBarTrack: { flex: 1, height: 7, borderRadius: 4, backgroundColor: 'rgba(190,156,44,0.18)', overflow: 'hidden' },
+  confBarFill:  { height: '100%', borderRadius: 4 },
+  confBarVal:   { fontSize: 11.5, color: BROWN, fontWeight: '800', width: 38, textAlign: 'right' },
   marketBlock:  { marginTop: 12, gap: 8 },
   marketGrid:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   marketCell:   { flexGrow: 1, flexBasis: '46%', backgroundColor: '#FBF6E6', borderRadius: 10,

@@ -16,6 +16,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View, Text, Pressable, StyleSheet, Alert, Platform, ScrollView,
   Modal, Animated, PanResponder, TouchableWithoutFeedback, Linking,
+  KeyboardAvoidingView, Keyboard,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -33,6 +34,8 @@ import {
   type CapturedPhoto,
   type PhotoSlot,
   SLOT_ORDER, normalizeCameraCapture } from '@/lib/capture';
+import { ProCameraContextInput } from '@/components/camera/ProCameraContextInput';
+import { normalizeUserContext } from '@shared/userContext';
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
 
@@ -42,216 +45,27 @@ const CREAM    = '#FFFEFA';
 const BG       = '#162D1A';
 const GHOST_SIZE = 70;
 
-// ─── Category definitions ─────────────────────────────────────────────────────
-// Labels map to fixed PhotoSlot keys: front / tag / detail.
-// Only what the USER SEES changes. The AI always receives front/tag/detail.
-// Order is based on thrift frequency and resale behavior — do not rearrange.
+// ─── Photo slot labels ───────────────────────────────────────────────────────
+//
+// The category carousel was removed: it was display-only (it never reached the
+// scan payload or the AI), and the new prompt self-classifies the item, so
+// asking the user to pick a category first was work with no effect.
+//
+// These are the labels the carousel's "Clothing" preset used. They are frozen
+// as the neutral default because they match the slot semantics the server
+// actually uses — front / tag / detail — and clothing is the launch category.
+// Kept as a named constant rather than inlined so the strings stay in one place
+// if per-category labelling ever returns.
+const SLOT_LABELS: Record<PhotoSlot, string> = {
+  front:  'Front',
+  tag:    'Tag',
+  detail: 'Graphic',
+};
 
-type CategoryLabels = Record<PhotoSlot, string>;
-
-interface Category {
-  name:   string;
-  icon?:  string;   // MaterialIcons name (gray)
-  emoji?: string;   // emoji — only where no good icon exists
-  labels: CategoryLabels;
-  badge:  (slot: PhotoSlot) => string;
-}
-
-const CATEGORIES: Category[] = [
-  {
-    name:   'Clothing',
-    icon:   'checkroom',
-    labels: { front: 'Front', tag: 'Tag', detail: 'Graphic' },
-    badge:  (s) => s === 'front' ? 'Front (required)' : s === 'tag' ? 'Tag (optional)' : 'Graphic (optional)',
-  },
-  {
-    name:   'Shoes',
-    emoji:  '👟',
-    labels: { front: 'Profile', tag: 'Size Tag', detail: 'Sole' },
-    badge:  (s) => s === 'front' ? 'Profile (required)' : s === 'tag' ? 'Size Tag (optional)' : 'Sole (optional)',
-  },
-  {
-    name:   'Hats',
-    emoji:  '🧢',
-    labels: { front: 'Front', tag: 'Tag', detail: 'Detail' },
-    badge:  (s) => s === 'front' ? 'Front (required)' : s === 'tag' ? 'Tag (optional)' : 'Detail (optional)',
-  },
-  {
-    name:   'Electronics',
-    icon:   'devices',
-    labels: { front: 'Front', tag: 'Model #', detail: 'Back' },
-    badge:  (s) => s === 'front' ? 'Front (required)' : s === 'tag' ? 'Model # (optional)' : 'Back (optional)',
-  },
-  {
-    name:   'Purses',
-    icon:   'shopping-bag',
-    labels: { front: 'Front', tag: 'Tag', detail: 'Logo' },
-    badge:  (s) => s === 'front' ? 'Front (required)' : s === 'tag' ? 'Tag (optional)' : 'Logo (optional)',
-  },
-  {
-    name:   'Furniture',
-    icon:   'weekend',
-    labels: { front: 'Full Item', tag: 'Label', detail: 'Extra' },
-    badge:  (s) => s === 'front' ? 'Full Item (required)' : s === 'tag' ? 'Label (optional)' : 'Extra (optional)',
-  },
-];
-
-const NUM_CATS = CATEGORIES.length;
-
-// Carousel scroll constants — defined after NUM_CATS so the reference is valid
-const ITEM_W      = 90;
-const COPIES      = 20;
-const TOTAL_ITEMS = NUM_CATS * COPIES;
-const START_V     = NUM_CATS * Math.floor(COPIES / 2);
-
-// ─── Category carousel component ─────────────────────────────────────────────
-// Uses a ScrollView with scrollEnabled=false and programmatic scrollTo for
-// native-thread smooth sliding. No Animated.Value reset = no jump ever.
-
-// Pre-build the repeated items array once (outside component to avoid recreation)
-const CAROUSEL_ITEMS = Array.from(
-  { length: TOTAL_ITEMS },
-  (_, i) => ({ cat: CATEGORIES[i % NUM_CATS], virtualIndex: i })
-);
-
-function CategoryCarousel({
-  index, onPrev, onNext,
-}: {
-  index:  number;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const scrollRef    = useRef<ScrollView>(null);
-  const virtualRef   = useRef(START_V);  // tracks position in the repeated list
-  const isScrolling  = useRef(false);
-
-  // Initial scroll position: show prev | CURR | next
-  // scrollX = (virtualRef - 1) * ITEM_W so curr lands in center slot
-  useEffect(() => {
-    setTimeout(() => {
-      scrollRef.current?.scrollTo({
-        x: (virtualRef.current - 1) * ITEM_W,
-        animated: false,
-      });
-    }, 0);
-  }, []);
-
-  const go = (dir: 1 | -1) => {
-    if (isScrolling.current) return;
-    isScrolling.current = true;
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    }
-    virtualRef.current += dir;
-    scrollRef.current?.scrollTo({
-      x: (virtualRef.current - 1) * ITEM_W,
-      animated: true,
-    });
-    if (dir === 1) onNext(); else onPrev();
-    // Re-enable after animation completes (~250ms native scroll)
-    setTimeout(() => { isScrolling.current = false; }, 280);
-  };
-
-  return (
-    <View style={cc.wrap}>
-      <Pressable
-        onPress={() => go(-1)}
-        hitSlop={14}
-        style={({ pressed }) => [cc.arrow, pressed && { opacity: 0.4 }]}
-      >
-        <MaterialIcons name="chevron-left" size={24} color="rgba(236,231,211,0.40)" />
-      </Pressable>
-
-      <ScrollView
-        ref={scrollRef}
-        horizontal
-        scrollEnabled={false}
-        showsHorizontalScrollIndicator={false}
-        style={cc.scroll}
-        contentContainerStyle={cc.track}
-      >
-        {CAROUSEL_ITEMS.map(({ cat, virtualIndex }) => {
-          const isActive = virtualIndex % NUM_CATS === index;
-          return (
-            <View key={virtualIndex} style={[cc.item, isActive && cc.itemActive]}>
-              {cat.emoji ? (
-                <Text style={{ fontSize: isActive ? 26 : 20, opacity: isActive ? 1 : 0.40 }}>
-                  {cat.emoji}
-                </Text>
-              ) : (
-                <MaterialIcons
-                  name={cat.icon as any}
-                  size={isActive ? 26 : 21}
-                  color={isActive ? 'rgba(236,231,211,0.90)' : 'rgba(236,231,211,0.28)'}
-                />
-              )}
-              <Text style={isActive ? cc.labelActive : cc.labelSide}>
-                {cat.name}
-              </Text>
-            </View>
-          );
-        })}
-      </ScrollView>
-
-      <Pressable
-        onPress={() => go(1)}
-        hitSlop={14}
-        style={({ pressed }) => [cc.arrow, pressed && { opacity: 0.4 }]}
-      >
-        <MaterialIcons name="chevron-right" size={24} color="rgba(236,231,211,0.40)" />
-      </Pressable>
-    </View>
-  );
-}
-
-const cc = StyleSheet.create({
-  wrap: {
-    flexDirection:     'row',
-    alignItems:        'center',
-    width:             '100%',
-    paddingHorizontal: 8,
-    paddingBottom:     16,
-  },
-  arrow: {
-    flex:           1,          // equal flex on both sides = ScrollView perfectly centered
-    alignItems:     'center',
-    justifyContent: 'center',
-  },
-  // ScrollView: fixed width shows exactly 3 items (prev + curr + next)
-  scroll: {
-    width:    ITEM_W * 3,
-    flexGrow: 0,
-  },
-  track: {
-    flexDirection: 'row',
-  },
-  item: {
-    width:          ITEM_W,
-    alignItems:     'center',
-    justifyContent: 'center',
-    paddingVertical:6,
-    gap:            4,
-  },
-  // Active item: same size, subtly brighter — confident not loud
-  itemActive: {},
-  labelActive: {
-    fontSize:      12,
-    fontWeight:    '800',
-    color:         CREAM,
-    letterSpacing: 0.4,
-    // Subtle text glow approximated via opacity 1 vs side opacity
-    textShadowColor:  'rgba(236,231,211,0.35)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 6,
-  },
-  labelSide: {
-    fontSize:   11,
-    fontWeight: '400',
-    color:      'rgba(236,231,211,0.32)',
-  },
-});
-
-// ─── Main component ────────────────────────────────────────────────────────────
+const SLOT_BADGE = (s: PhotoSlot): string =>
+  s === 'front' ? 'Front (required)'
+  : s === 'tag' ? 'Tag (optional)'
+  : 'Graphic (optional)';
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -282,11 +96,12 @@ export default function CameraScreen() {
   const slotViewRefs   = useRef<Partial<Record<PhotoSlot, View | null>>>({});
 
   // ── Category carousel state ──────────────────────────────────────────────────
-  const [catIndex, setCatIndex] = useState(0); // 0 = Clothing (default)
-  const handlePrev = () => setCatIndex(i => (i - 1 + NUM_CATS) % NUM_CATS);
-  const handleNext = () => setCatIndex(i => (i + 1) % NUM_CATS);
-
-  const currentCategory = CATEGORIES[catIndex];
+  // ── Additional-information context (Phase 1: local only) ────────────────────
+  // Lives for ONE camera session. Survives taking photos and switching slots;
+  // resets on unmount. Deliberately not added to the scan payload yet — Phase 2
+  // wires it into the analysis request.
+  const [contextText, setContextText]           = useState('');
+  const [contextConfirmed, setContextConfirmed] = useState(false);
 
   // ── Keep slotsRef in sync ────────────────────────────────────────────────────
   useEffect(() => { slotsRef.current = slots; }, [slots]);
@@ -423,10 +238,16 @@ export default function CameraScreen() {
       return;
     }
     haptic(Haptics.ImpactFeedbackStyle.Heavy);
+    // Only CONFIRMED context travels. contextConfirmed is reset to false by the
+    // onChangeText handler on any edit, so text typed after confirming cannot
+    // ride along unconfirmed.
+    const ctx = contextConfirmed ? normalizeUserContext(contextText) : '';
+
     setPendingScan({
       front: { base64: slots.front.base64, mimeType: slots.front.mimeType },
       ...(slots.detail?.base64 ? { detail: { base64: slots.detail.base64, mimeType: slots.detail.mimeType } } : {}),
       ...(slots.tag?.base64    ? { tag:    { base64: slots.tag.base64,    mimeType: slots.tag.mimeType    } } : {}),
+      ...(ctx ? { userContext: ctx } : {}),
     });
     console.log('[camera] analysis start — front✓ detail:', !!slots.detail, 'tag:', !!slots.tag);
     router.replace({
@@ -565,7 +386,14 @@ export default function CameraScreen() {
   const canDone     = !!slots.front;
 
   return (
-    <View style={s.root} {...(dragSource ? dragPan.panHandlers : {})}>
+    <KeyboardAvoidingView
+      style={s.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      // The camera preview is flex-sized, so lifting the column shrinks the
+      // preview instead of pushing controls off-screen.
+      keyboardVerticalOffset={0}
+      {...(dragSource ? dragPan.panHandlers : {})}
+    >
 
       {/* ── Header (unchanged) ── */}
       <View style={s.header}>
@@ -588,7 +416,7 @@ export default function CameraScreen() {
         {/* Badge uses category-specific text */}
         <View style={s.slotBadge}>
           <Text style={s.slotBadgeText}>
-            {currentCategory.badge(activeSlot)}
+            {SLOT_BADGE(activeSlot)}
           </Text>
         </View>
       </View>
@@ -660,7 +488,7 @@ export default function CameraScreen() {
               </Pressable>
               {/* Label from current category */}
               <Text style={[s.slotLabel, isActive && s.slotLabelActive]}>
-                {currentCategory.labels[slot]}
+                {SLOT_LABELS[slot]}
               </Text>
               {slot === 'front' && !photo && <View style={s.reqDot} />}
             </View>
@@ -705,21 +533,31 @@ export default function CameraScreen() {
       </View>
 
       {/* ── hint + category carousel — flex spacer fills empty bottom space ── */}
-      <View style={s.bottomZone}>
+      {/* Tapping anywhere in the bottom zone outside the field dismisses the
+          keyboard. Text is untouched — dismissing is not cancelling. */}
+      <Pressable style={s.bottomZone} onPress={() => Keyboard.dismiss()}>
         <Text style={s.hint}>
           {filledCount === 0
-            ? `Take a ${currentCategory.labels.front} photo to get started`
+            ? `Take a ${SLOT_LABELS.front} photo to get started`
             : filledCount === 3
             ? 'All 3 photos — tap Done to analyze'
             : `${filledCount}/3 — add more or tap Done`}
         </Text>
 
-        <CategoryCarousel
-          index={catIndex}
-          onPrev={handlePrev}
-          onNext={handleNext}
+        {/* Replaces the category carousel. Phase 1 is local state only —
+            nothing here reaches the scan payload or the AI yet. */}
+        <ProCameraContextInput
+          value={contextText}
+          onChangeText={(txt) => {
+            setContextText(txt);
+            // Editing after confirming returns to unconfirmed: the user must
+            // re-confirm what they actually want sent.
+            if (contextConfirmed) setContextConfirmed(false);
+          }}
+          confirmed={contextConfirmed}
+          onConfirm={() => setContextConfirmed(true)}
         />
-      </View>
+      </Pressable>
 
       {/* ── Drag ghost (unchanged) ── */}
       {dragSource && slots[dragSource] && (
@@ -763,7 +601,7 @@ export default function CameraScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -837,8 +675,13 @@ const s = StyleSheet.create({
     flex:           1,
     width:          '100%',
     alignItems:     'center',
-    justifyContent: 'space-between',
-    paddingBottom:  52,
+    // 'center' rather than 'space-between': space-between pinned the context
+    // row to the very bottom edge, which read as an afterthought below the
+    // controls. Centering floats hint + row in the gap between the shutter and
+    // the home indicator, which is where the sketch puts it.
+    justifyContent: 'center',
+    gap:            26,
+    paddingBottom:  46,
   },
 
   // Undo slot — replaces the empty slot after deletion, same size as slotEmpty

@@ -243,7 +243,7 @@ export default function LoadingScreen() {
       // Cache for retry — consumePendingScan() clears the module store
       lastPendingScan.current = pending;
 
-      const { front, tag, detail } = pending;
+      const { front, tag, detail, userContext } = pending;
       const imageBase64 = front.base64;
       const mimeType    = front.mimeType;
       console.log(`[loading] images ready — front✓ tag:${!!tag} detail:${!!detail}`);
@@ -251,7 +251,14 @@ export default function LoadingScreen() {
 
       // Analytics: scan submitted
       try {
-        logEvent("scan_submitted", { tagPresent: !!tag, detailPresent: !!detail });
+        // Telemetry records PRESENCE and LENGTH only. Users type personal
+        // details into this field; the raw text must never reach analytics.
+        logEvent("scan_submitted", {
+          tagPresent: !!tag,
+          detailPresent: !!detail,
+          contextPresent: !!userContext,
+          contextChars: userContext?.length ?? 0,
+        });
         incrementSessionCount("scanCount");
       } catch { /* never block analysis */ }
 
@@ -285,6 +292,10 @@ export default function LoadingScreen() {
             detailMimeType:     detail?.mimeType,
             scannerId,
             scanAttemptId,
+            // Confirmed camera context. Undefined for context-free scans, and
+            // for retries it comes from lastPendingScan.current, so an internal
+            // retry reuses the identical value rather than dropping it.
+            userContext,
           }),
           timeoutPromise,
         ]);

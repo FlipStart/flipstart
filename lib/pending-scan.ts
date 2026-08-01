@@ -18,6 +18,16 @@ export interface PendingScan {
   front:   PhotoData;
   tag?:    PhotoData;
   detail?: PhotoData;   // formerly 'back' — back print, graphic, flaw, logo, close-up
+  /**
+   * Camera context the user typed AND confirmed. Absent when the field was
+   * empty, unconfirmed, or edited after confirming — the camera screen only
+   * sets it in the confirmed state, so an unconfirmed draft can never reach
+   * the server by accident.
+   *
+   * Normalized here as well as on the server. The server re-normalizes and
+   * never trusts this value.
+   */
+  userContext?: string;
 }
 
 let _pending: PendingScan | null = null;

@@ -155,6 +155,33 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
       // without them the app silently shows template text where the model
       // produced a real answer.
       v1: {
+        // Verbatim confirmed context, so the results screen can show the user
+        // exactly what they typed. Read from meta (server-owned), never from
+        // `ai` — a user-confirmed fact must not be presentable as something the
+        // model observed.
+        // ── Previously blocked, now surfaced ──────────────────────────────
+        // Each of these reached neither the adapter nor the UI, so work the
+        // model did was invisible. Server-side-only fields (evidence strengths,
+        // features.*, validation gates) are deliberately still not here — they
+        // are consumed before this point, not blocked.
+        escalationSignals:   ai.risks.escalation_signals,
+        productLine:         ai.identification.product_line,
+        modelNumber:         ai.identification.model_or_product_number,
+        subject:             ai.identification.subject,
+        artist:              ai.identification.artist,
+        characterOrLicense:  ai.identification.character_or_license,
+        secondaryColors:     ai.visible_attributes.secondary_colors,
+        conditionChecked:    ai.condition.visible_condition_observations,
+        conditionConfidence: ai.condition.condition_confidence,
+        marketConfidence:    ai.marketability.marketability_confidence,
+        brandConfidence:     ai.identification.brand_confidence,
+
+        userContext:      c.meta.input_context?.user_context ?? null,
+        userContextChars: c.meta.input_context?.char_count ?? 0,
+        // Needed so Generate Listings can ask the server to look the confirmed
+        // context up by analysis. Without it the lookup always misses and
+        // listings silently lose the context.
+        analysisId:       c.meta.analysis_id,
         // Which photos the user actually supplied. The UI needs this to say
         // "no flaws in the front photo" rather than implying it checked
         // everything, or implying it failed to.

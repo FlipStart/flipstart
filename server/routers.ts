@@ -9,6 +9,9 @@ import { analyzeItemV1, ScanV1Error } from "./scanV1.js";
 import { persistScanPhotos } from "./photoPersistence.js";
 import { toLegacyShape } from "./compat/toLegacyShape.js";
 import { grantDevScans, revokeDevGrant, devGrantStatus } from "./devGrants.js";
+import { buildServerUserContext, userContextAllowedFor } from "./userContextServer.js";
+import { renderUserContextBlock } from "../shared/userContext.js";
+import { saveScanContext, getScanContext } from "./scanContextStore.js";
 import { randomUUID } from "node:crypto";
 import { uploadScanImage, analyzeItemFast, generateItemListings } from "./scan";
 
@@ -26,18 +29,32 @@ const RESULT_TTL_MS  = 10 * 60 * 1000; // 10 minutes
 const RESULT_CACHE_MAX = 200;
 const analysisCache = new Map<string, { at: number; result: any }>();
 
-function getCachedAnalysis(attemptId?: string): any | null {
+/**
+ * Cache key = attempt id + context hash.
+ *
+ * Keying on attempt id alone would let the same photos with DIFFERENT context
+ * reuse one result: scan an item, retry with "big stain on right sleeve" added,
+ * and you would get back the stainless analysis. The hash keeps the retry
+ * dedupe working while making a context change a genuine cache miss.
+ */
+function cacheKey(attemptId: string, contextHash: string | null): string {
+  return contextHash ? `${attemptId}::${contextHash}` : attemptId;
+}
+
+function getCachedAnalysis(attemptId?: string, contextHash: string | null = null): any | null {
   if (!attemptId) return null;
-  const hit = analysisCache.get(attemptId);
+  const hit = analysisCache.get(cacheKey(attemptId, contextHash));
   if (!hit) return null;
   if (Date.now() - hit.at > RESULT_TTL_MS) {
-    analysisCache.delete(attemptId);
+    analysisCache.delete(cacheKey(attemptId, contextHash));
     return null;
   }
   return hit.result;
 }
 
-function cacheAnalysis(attemptId: string | undefined, result: any): void {
+function cacheAnalysis(
+  attemptId: string | undefined, result: any, contextHash: string | null = null,
+): void {
   if (!attemptId) return;
   // Bound the map — drop the oldest entries once over the cap.
   if (analysisCache.size >= RESULT_CACHE_MAX) {
@@ -49,7 +66,7 @@ function cacheAnalysis(attemptId: string | undefined, result: any): void {
       analysisCache.delete(oldestKey);
     }
   }
-  analysisCache.set(attemptId, { at: Date.now(), result });
+  analysisCache.set(cacheKey(attemptId, contextHash), { at: Date.now(), result });
 }
 const appRouter_scan = router({
     /**
@@ -67,6 +84,10 @@ const appRouter_scan = router({
           tagMimeType:     z.string().optional(),
           scannerId:       z.string().optional(), // per-user/guest daily limit key
           scanAttemptId:   z.string().optional(), // stable id per item; dedupes retries so 1 item = 1 count
+          // Camera-confirmed user context. Capped generously here and hard-capped
+          // by normalization; a modified client cannot smuggle a longer string
+          // past USER_CONTEXT_MAX_LEN because the server re-normalizes.
+          userContext:     z.string().max(2000).optional(),
         })
       )
       .mutation(async ({ input }) => {
@@ -74,12 +95,21 @@ const appRouter_scan = router({
         console.log("[analyze] mimeType:", input.mimeType);
         console.log("[analyze] base64 length:", input.imageBase64?.length ?? 0);
 
+        // ── USER CONTEXT ────────────────────────────────────────────────────
+        // Normalized up front because the result cache key includes its hash.
+        // The server always re-normalizes: a modified client cannot bypass the
+        // length cap or push control characters through.
+        //
+        // Entitlement is applied below once sid is known. Normalizing first is
+        // safe — an unentitled context is discarded before it reaches the AI.
+        const rawCtx = buildServerUserContext(input.userContext);
+
         // ── RETRY SHORT-CIRCUIT ─────────────────────────────────────────────
         // This exact attempt already produced a successful analysis (the client
         // timed out, lost the response, or the user hit retry). Return the
         // result we already paid for: no second AI charge, no double count,
         // and the user finally gets their scan.
-        const cached = getCachedAnalysis(input.scanAttemptId);
+        const cached = getCachedAnalysis(input.scanAttemptId, rawCtx.hash);
         if (cached) {
           console.log("[analyze] served from cache — attempt", input.scanAttemptId?.slice(0, 16), "(no AI cost)");
           return cached;
@@ -128,6 +158,17 @@ const appRouter_scan = router({
         // path below is untouched and is the immediate rollback.
         if (canonicalV1EnabledFor(sid)) {
           const analysisId = randomUUID();
+
+          // ── Entitlement, enforced here rather than by hiding the UI ────────
+          // analyzeFast is a publicProcedure; a modified client can post
+          // anything. An unauthorised caller has their context stripped and the
+          // scan proceeds normally — failing the whole scan would punish the
+          // user for a client bug they cannot see.
+          const entitled = userContextAllowedFor(sid);
+          const userCtx = entitled ? rawCtx : buildServerUserContext(null);
+          if (!entitled && (input.userContext ?? "").trim()) {
+            console.warn(`[context] stripped — ${String(sid).slice(0, 12)}… not entitled`);
+          }
           try {
             const images = {
               front:  input.imageBase64,
@@ -155,7 +196,21 @@ const appRouter_scan = router({
               analysisId,
               planAtScan: "free",
               photoRefs,
+              userContext: userCtx,
             });
+
+            // Store for Generate Listings, tied to the owner so the listing
+            // endpoint can verify the caller owns this analysis rather than
+            // trusting a context string posted at listing time.
+            if (userCtx.user_context) {
+              saveScanContext({
+                analysisId,
+                scanAttemptId: input.scanAttemptId ?? analysisId,
+                ownerId: sid ?? "",
+                text: userCtx.user_context,
+                hash: userCtx.hash,
+              });
+            }
 
             console.log(
               `[analyzeV1] ok — ${Date.now() - v1Start}ms | model:${telemetry.model}` +
@@ -164,7 +219,9 @@ const appRouter_scan = router({
               ` | cost:$${telemetry.estimated_cost_usd?.toFixed(6) ?? "?"}` +
               ` | era:${canonical.derived.era_effective.status}` +
               `/${canonical.derived.era_effective.confirmed_vintage_route ?? "-"}` +
-              ` | downgrades:${canonical.derived.validation.downgrades.length}`
+              ` | downgrades:${canonical.derived.validation.downgrades.length}` +
+              // Presence, length and hash only — never the text itself.
+              ` | ctx:${userCtx.confirmed ? `${userCtx.char_count}c/${userCtx.hash}` : "none"}`
             );
 
             // Only NOW is the scan consumed. Skipped while V1 is allow-list
@@ -183,7 +240,7 @@ const appRouter_scan = router({
               canonical,
               schemaVersion: "1" as const,
             };
-            cacheAnalysis(input.scanAttemptId, v1Payload);
+            cacheAnalysis(input.scanAttemptId, v1Payload, userCtx.hash);
             return v1Payload;
           } catch (err) {
             const kind = err instanceof ScanV1Error ? err.kind : "transport_error";
@@ -234,7 +291,7 @@ const appRouter_scan = router({
             ...analysisResult,
           };
           // Store so any retry of THIS attempt is free and instant.
-          cacheAnalysis(input.scanAttemptId, payload);
+          cacheAnalysis(input.scanAttemptId, payload, rawCtx.hash);
           return payload;
         } catch (err: any) {
           console.error("[analyze] ERROR:", err?.message ?? String(err));
@@ -275,12 +332,32 @@ const appRouter_scan = router({
           style_labels:             z.array(z.string()).optional().default([]),
           adjusted_estimated_value: z.number(),
           demand:                   z.string().optional().default("Medium"),
+          // Identity + analysis reference. Required to look the confirmed
+          // context up server-side; a context string posted directly by the
+          // client is never trusted.
+          scannerId:                z.string().optional(),
+          analysisId:               z.string().optional(),
         })
       )
       .mutation(async ({ input }) => {
         const start = Date.now();
-        console.log(`[listings] generate — item:"${input.item_name}" brand:"${input.brand}"`);
-        const result = await generateItemListings(input);
+
+        // ── Confirmed context, loaded server-side ──────────────────────────
+        // Deliberately NOT accepted from the client. Taking a context string at
+        // listing time would let anyone write arbitrary text into a listing
+        // without it ever passing analysis or the entitlement check. The store
+        // returns null when the analysis does not exist, has expired, or
+        // belongs to someone else — the caller cannot tell which.
+        const sid = (input.scannerId ?? "").trim();
+        const stored = input.analysisId ? getScanContext(input.analysisId, sid) : null;
+        const userContext = stored?.text ?? "";
+
+        console.log(
+          `[listings] generate — item:"${input.item_name}" brand:"${input.brand}"` +
+          ` | ctx:${userContext ? `${userContext.length}c/${stored?.hash}` : "none"}`
+        );
+
+        const result = await generateItemListings({ ...input, userContext });
         console.log(`[listings] complete — ${Date.now() - start}ms`);
         return result;
       }),

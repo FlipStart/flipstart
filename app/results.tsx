@@ -854,6 +854,10 @@ export default function ResultsScreen() {
         estimated_era: id.estimated_era, material_guess: id.material_guess,
         style_labels: id.style_labels,
         adjusted_estimated_value: md.adjusted_estimated_value, demand: md.demand,
+        // Identity + analysis reference so the server can load the confirmed
+        // context itself. The context text is deliberately NOT sent from here.
+        scannerId:  (currentScan as any)?.scannerId ?? undefined,
+        analysisId: (id as any)?.v1?.analysisId ?? (currentScan as any)?.analysisId ?? undefined,
       });
       updateScan(currentScan.id, { listings: result });
       trackAnalyticsEvent('listing_generated', {
@@ -1093,6 +1097,19 @@ export default function ResultsScreen() {
                 <View style={s.chipWrap}>
                   {!!id.brand && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.brand}</Text></View>}
                   {!!id.category && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.category}</Text></View>}
+                  {/* Transcribed product line / model number. These only exist
+                      when the model READ them off the item, so they are worth
+                      showing verbatim — the user photographed a tag to get them. */}
+                  {!!(id as any).v1?.modelNumber && (
+                    <View style={s.chip}>
+                      <Text style={s.chipText} numberOfLines={1}>#{(id as any).v1.modelNumber}</Text>
+                    </View>
+                  )}
+                  {!!(id as any).v1?.productLine && (
+                    <View style={s.chip}>
+                      <Text style={s.chipText} numberOfLines={1}>{(id as any).v1.productLine}</Text>
+                    </View>
+                  )}
                   {/* Size, when it was actually read off a tag. Never inferred —
                       a wrong size is worse than no size for a reseller. */}
                   {!!(id as any).v1?.sizeLabel && (
@@ -1182,6 +1199,26 @@ export default function ResultsScreen() {
               </View>
             </View>
           </View>
+
+          {/* ── 1b. Escalation ───────────────────────────────────────────────
+              The model flagging an item as unusually valuable or unusually hard
+              to identify is the single most actionable thing it can say, and it
+              was reaching neither the adapter nor the screen. Sits ABOVE the
+              rating because it changes what the user does next — the rating
+              assumes the identification is right, and this says it might not be. */}
+          {(() => {
+            const signals: string[] = (id as any).v1?.escalationSignals ?? [];
+            if (signals.length === 0) return null;
+            return (
+              <View style={s.escalateCard}>
+                <MaterialIcons name="auto-awesome" size={17} color={GOLD} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.escalateTitle}>Worth a closer look</Text>
+                  <Text style={s.escalateBody}>{signals.slice(0, 2).join(' · ')}</Text>
+                </View>
+              </View>
+            );
+          })()}
 
           {/* ── 2a. Why risky? ──────────────────────────────────────────────
               Only on RISKY BUY, and only when there is something specific to
@@ -1301,6 +1338,27 @@ export default function ResultsScreen() {
                     No visible flaws in {coverage}.{gap ? ` ${gap}` : ''}
                   </Text>
                 </View>
+              </View>
+            );
+          })()}
+
+          {/* ── 2c. Your additional information ─────────────────────────────
+              Shows the user exactly what they typed, so a wrong or stale note
+              is visible rather than silently shaping the analysis. Renders only
+              when context was actually confirmed for THIS scan. */}
+          {(() => {
+            const ctx = (id as any).v1?.userContext;
+            if (!ctx) return null;
+            return (
+              <View style={s.userCtxCard}>
+                <View style={s.userCtxHead}>
+                  <MaterialIcons name="edit-note" size={16} color={BROWN} />
+                  <Text style={s.userCtxTitle}>Your additional information</Text>
+                </View>
+                <Text style={s.userCtxBody}>{ctx}</Text>
+                <Text style={s.userCtxNote}>
+                  Used as first-hand information about this item.
+                </Text>
               </View>
             );
           })()}
@@ -1679,6 +1737,19 @@ const s = StyleSheet.create({
   chipSoftText:  { fontStyle: 'italic' },
   // marginHorizontal 14 matches ratingCard / statsCard / every other card.
   // Without it these span the full screen and read as a different component.
+  userCtxCard:  { backgroundColor: '#FBF6E6', borderRadius: 14, borderWidth: 1,
+                  borderColor: GOLD + '55', paddingHorizontal: 14, paddingVertical: 12,
+                  marginTop: 10, marginHorizontal: 14, gap: 5 },
+  userCtxHead:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  userCtxTitle: { fontSize: 10.5, fontWeight: '800', color: BROWN, letterSpacing: 1 },
+  userCtxBody:  { fontSize: 13.5, color: BROWN, lineHeight: 19, fontWeight: '600' },
+  userCtxNote:  { fontSize: 10.5, color: BROWN, opacity: 0.65 },
+  escalateCard:  { flexDirection: 'row', alignItems: 'flex-start', gap: 9,
+                   backgroundColor: '#FBF6E6', borderRadius: 14, borderWidth: 1.25,
+                   borderColor: GOLD, paddingHorizontal: 13, paddingVertical: 11,
+                   marginTop: 10, marginHorizontal: 14 },
+  escalateTitle: { fontSize: 12.5, fontWeight: '800', color: FOREST, marginBottom: 2 },
+  escalateBody:  { fontSize: 12.5, color: BROWN, lineHeight: 17 },
   conditionStrip:      { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 14,
                          borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11,
                          marginTop: 10, marginHorizontal: 14 },

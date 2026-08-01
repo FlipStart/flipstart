@@ -273,8 +273,23 @@ export interface CanonicalMeta {
   /** current_year - 20. Stamped so a historical decision stays readable. */
   vintage_cutoff_year: number;
   current_year_at_scan: number;
-  /** Extension point for the deferred Pro context field. Always false for now. */
+  /** True when the user confirmed camera context for this scan. */
   user_context_supplied: boolean;
+  /**
+   * Immutable analysis-input metadata.
+   *
+   * Deliberately in `meta`, NOT in `ai`: `ai` is the verbatim model response,
+   * and putting user-supplied text there would blur the line between what the
+   * model observed and what the user told it. Provenance has to stay legible
+   * — a user-confirmed stain is a real fact, but it is not a photo-derived one.
+   */
+  input_context?: {
+    user_context: string | null;
+    source: "camera_confirmed";
+    confirmed: boolean;
+    hash: string | null;
+    char_count: number;
+  };
   scan_attempt_id: string;
   analysis_id: string;
   analyzed_at: number;

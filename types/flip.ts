@@ -16,6 +16,23 @@ import type { XpBreakdownItem } from '@/lib/huntXp';
 /** Canonical V1 values that the legacy shape has no field for. Undefined on
  *  v0 scans, so every reader must treat it as optional. */
 export interface CanonicalV1Passthrough {
+  /** Fields that previously reached neither the adapter nor the UI. */
+  escalationSignals?: string[];
+  productLine?: string;
+  modelNumber?: string;
+  subject?: string;
+  artist?: string;
+  characterOrLicense?: string;
+  secondaryColors?: string[];
+  conditionChecked?: string[];
+  conditionConfidence?: number;
+  marketConfidence?: number;
+  brandConfidence?: number;
+  /** Exactly what the user typed and confirmed in the camera. Display only. */
+  userContext?: string | null;
+  userContextChars?: number;
+  /** Server analysis id — used to look up confirmed context for listings. */
+  analysisId?: string;
   photoSlots?: string[];
   eraStatus?: string;
   eraConfidence?: number;
