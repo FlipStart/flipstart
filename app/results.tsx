@@ -1169,6 +1169,40 @@ export default function ResultsScreen() {
                     </View>
                   )}
                 </View>
+
+                {/* ── Front-only limitation ──────────────────────────────────
+                    A one-photo scan is capped at 75% identity and 55% era, but
+                    "75% Confidence" reads as HIGH to a casual eye. The cap is
+                    honest in the data and invisible on the screen, so this
+                    names what specifically could not be checked.
+
+                    Names only what is ACTUALLY unknown rather than a fixed
+                    sentence. If the user typed "Size XL, vintage 1990s" in the
+                    camera note, era and size ARE known — telling them otherwise
+                    would contradict the analysis directly above it and undercut
+                    the feature that supplied the facts. */}
+                {(() => {
+                  const v1 = (id as any).v1;
+                  const slots: string[] = v1?.photoSlots ?? [];
+                  if (slots.length !== 1) return null;
+
+                  const eraUnknown = !v1?.eraStatus || v1.eraStatus === 'unknown';
+                  const sizeUnknown = !v1?.sizeLabel;
+                  const gaps = [
+                    eraUnknown ? 'era' : null,
+                    sizeUnknown ? 'size' : null,
+                  ].filter(Boolean) as string[];
+
+                  // Everything the second photo would have told us is already
+                  // known — usually because the user typed it. Say nothing.
+                  if (gaps.length === 0) return null;
+
+                  return (
+                    <Text style={s.frontOnlyNote} numberOfLines={2}>
+                      Front photo only — {gaps.join(' and ')} couldn't be checked.
+                    </Text>
+                  );
+                })()}
               </View>
             </View>
           </View>
@@ -1199,26 +1233,6 @@ export default function ResultsScreen() {
               </View>
             </View>
           </View>
-
-          {/* ── 1b. Escalation ───────────────────────────────────────────────
-              The model flagging an item as unusually valuable or unusually hard
-              to identify is the single most actionable thing it can say, and it
-              was reaching neither the adapter nor the screen. Sits ABOVE the
-              rating because it changes what the user does next — the rating
-              assumes the identification is right, and this says it might not be. */}
-          {(() => {
-            const signals: string[] = (id as any).v1?.escalationSignals ?? [];
-            if (signals.length === 0) return null;
-            return (
-              <View style={s.escalateCard}>
-                <MaterialIcons name="auto-awesome" size={17} color={GOLD} />
-                <View style={{ flex: 1 }}>
-                  <Text style={s.escalateTitle}>Worth a closer look</Text>
-                  <Text style={s.escalateBody}>{signals.slice(0, 2).join(' · ')}</Text>
-                </View>
-              </View>
-            );
-          })()}
 
           {/* ── 2a. Why risky? ──────────────────────────────────────────────
               Only on RISKY BUY, and only when there is something specific to
@@ -1283,110 +1297,33 @@ export default function ResultsScreen() {
           )}
 
           {/* ── 2b. Condition ────────────────────────────────────────────────
-              Renders ONLY when there is something concrete to report. A clean,
-              well-photographed item shows nothing — an always-present "no
-              damage found" line would train users to ignore the row, which is
-              exactly when a real warning needs to land.
+              Renders ONLY on obvious damage. A clean scan shows nothing.
+
+              The previous version also reported the clean case — "no visible
+              flaws in the front photo, check the back to verify". That fired on
+              almost every scan, so the row became permanent furniture, and a
+              row users learn to skip is worthless on the one scan that carries
+              a real warning. Silence when clean is what gives the warning its
+              weight.
+
+              Nothing is lost: coverage gaps are still shown in Deep Analysis
+              under Missing / not visible, with the rescan advice beside them.
 
               Obvious findings only. Low-certainty maybes stay in Deep Analysis:
               a false damage warning costs more trust than a missed one costs
               money. */}
           {(() => {
-            const v1 = (id as any).v1;
-            const damage: string[] = v1?.obviousDamage ?? [];
-            const unknowns: string[] = v1?.conditionUnknowns ?? [];
-            const slots: string[] = v1?.photoSlots ?? ['front'];
-
-            // Damage always wins — it changes the decision.
-            if (damage.length > 0) {
-              return (
-                <View style={[s.conditionStrip, s.conditionStripWarn]}>
-                  <MaterialIcons name="report-problem" size={16} color="#8A3A2A" />
-                  <View style={{ flex: 1 }}>
-                    <Text style={[s.conditionStripTitle, { color: '#8A3A2A' }]}>Condition</Text>
-                    <Text style={s.conditionStripBody} numberOfLines={3}>
-                      {damage.slice(0, 3).join(' · ')}
-                    </Text>
-                  </View>
-                </View>
-              );
-            }
-
-            // No damage found. Say what WAS checked rather than only what was
-            // not — "condition not fully visible" reads as a failure when the
-            // model successfully assessed everything it was shown. A front
-            // photo genuinely does assess the front.
-            const coverage =
-              slots.length >= 3 ? 'all three photos'
-              : slots.length === 2 ? 'the photos provided'
-              : 'the front photo';
-            const gap =
-              slots.length >= 3 ? null
-              : slots.includes('tag') && !slots.includes('detail')
-                ? 'Check the back and any wear areas to confirm.'
-                : 'Check the back and inside of the item to verify.';
-
-            // Nothing useful to say at all — stay silent rather than filling space.
-            if (!gap && unknowns.length === 0) return null;
-
+            const damage: string[] = (id as any).v1?.obviousDamage ?? [];
+            if (damage.length === 0) return null;
             return (
-              <View style={[s.conditionStrip, s.conditionStripInfo]}>
-                <MaterialIcons name="check-circle-outline" size={16} color={FOREST} />
+              <View style={[s.conditionStrip, s.conditionStripWarn]}>
+                <MaterialIcons name="report-problem" size={16} color="#8A3A2A" />
                 <View style={{ flex: 1 }}>
-                  <Text style={s.conditionStripTitle}>Condition</Text>
+                  <Text style={[s.conditionStripTitle, { color: '#8A3A2A' }]}>Condition</Text>
                   <Text style={s.conditionStripBody} numberOfLines={3}>
-                    No visible flaws in {coverage}.{gap ? ` ${gap}` : ''}
+                    {damage.slice(0, 3).join(' · ')}
                   </Text>
                 </View>
-              </View>
-            );
-          })()}
-
-          {/* ── 2c. Your additional information ─────────────────────────────
-              Shows the user exactly what they typed, so a wrong or stale note
-              is visible rather than silently shaping the analysis. Renders only
-              when context was actually confirmed for THIS scan. */}
-          {(() => {
-            const ctx = (id as any).v1?.userContext;
-            if (!ctx) return null;
-            return (
-              <View style={s.userCtxCard}>
-                <View style={s.userCtxHead}>
-                  <MaterialIcons name="edit-note" size={16} color={BROWN} />
-                  <Text style={s.userCtxTitle}>Your additional information</Text>
-                </View>
-                <Text style={s.userCtxBody}>{ctx}</Text>
-
-                {/* Which specific facts the analysis took FROM the note. Shown
-                    so provenance stays legible: these are user-confirmed, not
-                    things the AI saw in a photo. */}
-                {(((id as any).v1?.userConfirmedFacts ?? []).length > 0) && (
-                  <View style={s.userCtxFacts}>
-                    {((id as any).v1.userConfirmedFacts as string[]).slice(0, 4).map((f, i) => (
-                      <View key={i} style={s.userCtxFactRow}>
-                        <MaterialIcons name="person" size={11} color={BROWN} />
-                        <Text style={s.userCtxFactText}>{f}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Photo evidence that disagrees. Both are kept — the user
-                    decides which is right. Silently deferring to the note would
-                    hide the one signal that reveals a note typed about the
-                    wrong item. */}
-                {(((id as any).v1?.sourceConflicts ?? []).length > 0) && (
-                  <View style={s.userCtxConflict}>
-                    <MaterialIcons name="compare-arrows" size={13} color="#8A3A2A" />
-                    <Text style={s.userCtxConflictText}>
-                      {((id as any).v1.sourceConflicts as string[])[0]}
-                    </Text>
-                  </View>
-                )}
-
-                <Text style={s.userCtxNote}>
-                  Used as first-hand information about this item.
-                </Text>
               </View>
             );
           })()}
@@ -1497,6 +1434,35 @@ export default function ResultsScreen() {
               </View>
             </View>
           </View>
+
+          {/* ── 5b. Worth a closer look ──────────────────────────────────────
+              Moved down from above the rating card. It was competing with the
+              buy/skip verdict on a screen people read in a couple of seconds
+              standing in an aisle, and losing that competition is the right
+              outcome — the rating is the decision, this is a footnote to it.
+
+              Kept rather than deleted because nothing else says "this may be
+              worth more than we estimated". The uncertainty half of escalation
+              is already covered by the risk chips; the upside half is not, and
+              a reseller who walks past a genuinely rare piece because the app
+              stayed quiet has been failed by it.
+
+              Sits directly above Generate Listings: by the time you reach here
+              you have decided to buy, and "get this one properly researched
+              before you list it" is exactly the right next action. */}
+          {(() => {
+            const signals: string[] = (id as any).v1?.escalationSignals ?? [];
+            if (signals.length === 0) return null;
+            return (
+              <View style={s.escalateCard}>
+                <MaterialIcons name="auto-awesome" size={16} color={GOLD} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.escalateTitle}>Worth a closer look</Text>
+                  <Text style={s.escalateBody}>{signals.slice(0, 2).join(' · ')}</Text>
+                </View>
+              </View>
+            );
+          })()}
 
           {/* ── 6. Generate Listings — full-width CTA ── */}
           <Pressable
@@ -1765,31 +1731,18 @@ const s = StyleSheet.create({
   chipSoftText:  { fontStyle: 'italic' },
   // marginHorizontal 14 matches ratingCard / statsCard / every other card.
   // Without it these span the full screen and read as a different component.
-  userCtxCard:  { backgroundColor: '#FBF6E6', borderRadius: 14, borderWidth: 1,
-                  borderColor: GOLD + '55', paddingHorizontal: 14, paddingVertical: 12,
-                  marginTop: 10, marginHorizontal: 14, gap: 5 },
-  userCtxHead:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  userCtxTitle: { fontSize: 10.5, fontWeight: '800', color: BROWN, letterSpacing: 1 },
-  userCtxBody:  { fontSize: 13.5, color: BROWN, lineHeight: 19, fontWeight: '600' },
-  userCtxNote:  { fontSize: 10.5, color: BROWN, opacity: 0.65 },
   escalateCard:  { flexDirection: 'row', alignItems: 'flex-start', gap: 9,
                    backgroundColor: '#FBF6E6', borderRadius: 14, borderWidth: 1.25,
                    borderColor: GOLD, paddingHorizontal: 13, paddingVertical: 11,
-                   marginTop: 10, marginHorizontal: 14 },
+                   marginTop: 14, marginHorizontal: 14 },
   escalateTitle: { fontSize: 12.5, fontWeight: '800', color: FOREST, marginBottom: 2 },
   escalateBody:  { fontSize: 12.5, color: BROWN, lineHeight: 17 },
-  userCtxFacts:     { gap: 3, marginTop: 2 },
-  userCtxFactRow:   { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  userCtxFactText:  { fontSize: 12, color: BROWN, flex: 1 },
-  userCtxConflict:  { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 4,
-                      backgroundColor: '#FBEFEA', borderRadius: 9, paddingHorizontal: 9,
-                      paddingVertical: 7 },
-  userCtxConflictText: { flex: 1, fontSize: 11.5, color: '#8A3A2A', lineHeight: 16 },
+  frontOnlyNote: { fontSize: 11, color: BROWN, opacity: 0.7, fontStyle: 'italic',
+                   marginTop: 7, lineHeight: 15 },
   conditionStrip:      { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 14,
                          borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11,
                          marginTop: 10, marginHorizontal: 14 },
   conditionStripWarn:  { backgroundColor: '#FBEFEA', borderColor: '#8A3A2A' + '44' },
-  conditionStripInfo:  { backgroundColor: '#FBF6E6', borderColor: GOLD + '44' },
   conditionStripTitle: { fontSize: 10.5, fontWeight: '800', color: BROWN, letterSpacing: 1, marginBottom: 2 },
   conditionStripBody:  { fontSize: 12.5, color: BROWN, lineHeight: 17 },
   riskWhyCard:    { backgroundColor: '#FBF6E6', borderRadius: 14, borderWidth: 1, borderColor: GOLD + '55',
