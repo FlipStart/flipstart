@@ -177,6 +177,28 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
         brandConfidence:     ai.identification.brand_confidence,
 
         userContext:      c.meta.input_context?.user_context ?? null,
+        // Which specific facts the model attributed to the user, so the UI can
+        // label them rather than presenting them as photo observations.
+        userConfirmedFacts: [
+          ...ai.condition.condition_findings
+              .filter(f => f.photo_slot === "user_confirmed")
+              .map(f => `${f.type.replace(/_/g, " ")} — ${f.location}`),
+          ...ai.era.era_evidence
+              .filter(e => e.photo_slot === "user_confirmed")
+              .map(e => e.observation),
+          ...ai.photo_evidence.observable_field_evidence
+              .filter(e => e.photo_slot === "user_confirmed")
+              .map(e => e.observation),
+          ...ai.identification.identification_evidence
+              .filter(e => e.photo_slot === "user_confirmed")
+              .map(e => e.observation),
+        ].slice(0, 8),
+        // Photo evidence directly contradicting a user-confirmed fact. Both are
+        // kept; the user decides.
+        sourceConflicts: d.validation.downgrades
+          .filter(dg => dg.rule_id === "SOURCE_CONFLICT")
+          .map(dg => dg.user_message)
+          .filter(Boolean),
         userContextChars: c.meta.input_context?.char_count ?? 0,
         // Needed so Generate Listings can ask the server to look the confirmed
         // context up by analysis. Without it the lookup always misses and

@@ -14,6 +14,22 @@
 
 export type PhotoSlot = 'front' | 'tag' | 'detail';
 
+/**
+ * Where a piece of evidence came from.
+ *
+ * 'user_confirmed' exists because every evidence object requires a source, the
+ * prompt forbids fabricating a photo slot for something the model did not see,
+ * and validation discards evidence citing an unsupplied slot. Without this
+ * value a user-confirmed fact had nowhere valid to live: it was either dropped
+ * or recorded as something the AI claimed to have seen.
+ *
+ * It is deliberately NOT a member of PhotoSlot. photo_refs and
+ * photo_slots_provided must keep meaning "actual photographs" — a
+ * user-confirmed fact must never count toward the meaningful-photo rules that
+ * gate Diamonds.
+ */
+export type EvidenceSource = PhotoSlot | 'user_confirmed';
+
 export type BroadCategory =
   | 'clothing' | 'shoes' | 'bags' | 'accessories' | 'jewelry' | 'watches'
   | 'electronics' | 'housewares' | 'media' | 'toys' | 'sporting_goods'
@@ -69,8 +85,8 @@ export type LogoPlacement =
 export type Silhouette =
   | 'boxy' | 'fitted' | 'oversized' | 'relaxed' | 'cropped' | 'long' | 'unknown';
 export type SizeSystem = 'alpha' | 'numeric' | 'waist_inseam' | 'shoe' | 'other' | 'unknown';
-export type SizeSource = 'tag_legible' | 'not_visible' | 'unknown';
-export type MaterialSource = 'tag_legible' | 'visual_estimate' | 'unknown';
+export type SizeSource = 'tag_legible' | 'user_confirmed' | 'not_visible' | 'unknown';
+export type MaterialSource = 'tag_legible' | 'user_confirmed' | 'visual_estimate' | 'unknown';
 export type CanonicalRating = 'STRONG_BUY' | 'BUY' | 'RISKY_BUY' | 'SKIP';
 export type RecognitionStatus = 'none' | 'candidate' | 'likely' | 'confirmed';
 
@@ -90,7 +106,7 @@ export interface IdentificationEvidence {
    *  require 'direct_transcription' — inference can never populate them.
    *  Replaces the prose-inspection heuristic. */
   evidence_mode: EvidenceMode;
-  photo_slot: PhotoSlot;
+  photo_slot: EvidenceSource;
 }
 
 /** Fields that can carry observable-field evidence. */
@@ -104,7 +120,7 @@ export type ObservableField =
 export interface ObservableFieldEvidence {
   field: ObservableField;
   observation: string;
-  photo_slot: PhotoSlot;
+  photo_slot: EvidenceSource;
 }
 
 export interface AiIdentification {
@@ -168,14 +184,14 @@ export interface AiEraEvidence {
    *  Never estimated. On copyright_date/dated_event this is the artwork year,
    *  not the production year — validation keeps them separate. */
   observed_year: number | null;
-  photo_slot: PhotoSlot;
+  photo_slot: EvidenceSource;
 }
 
 export interface AiEraConflict {
   observation: string;
   conflicts_with: string;
   proposed_strength: EvidenceStrength;
-  photo_slot: PhotoSlot;
+  photo_slot: EvidenceSource;
 }
 
 export interface AiEra {
@@ -195,7 +211,7 @@ export interface AiConditionFinding {
   severity: Severity;
   /** 0-100. >= 80 plus a value-affecting defect makes a finding "obvious". */
   certainty: Confidence;
-  photo_slot: PhotoSlot;
+  photo_slot: EvidenceSource;
   evidence: string;
 }
 
@@ -315,6 +331,14 @@ export interface DerivedValidation {
   downgrades: ValidationDowngrade[];
   rejected_fields: string[];
   confidence_caps_applied: string[];
+  /**
+   * Photos that actually contributed usable evidence.
+   *
+   * Counted from real photo slots only. A user_confirmed fact is authoritative
+   * but is not a photograph, so it can never satisfy the two-meaningful-photo
+   * requirement that gates Diamonds — otherwise typing a note would unlock one.
+   */
+  meaningful_photo_count: number;
 }
 
 /** Era evidence after the server re-derives strength. */
@@ -355,7 +379,16 @@ export interface DerivedEraEffective {
    *  B_enhanced  — B_standard plus label+construction clue classes, a third
    *                corroborating clue, two meaningful photos, and confidence >= 90.
    */
-  confirmed_vintage_route: 'A' | 'B_standard' | 'B_enhanced' | null;
+  /**
+   * 'U' is user-confirmed: the user told us the item's age while holding it.
+   *
+   * It sets ANALYSIS truth — status, decade, display prefix, pricing — but
+   * never grants unlock eligibility. Analysis truth and reward eligibility are
+   * separate decisions: without this route the Diamond gate was silently
+   * gating the analysis too, so "this is vintage" came back likely_vintage
+   * with the decade wiped.
+   */
+  confirmed_vintage_route: 'A' | 'B_standard' | 'B_enhanced' | 'U' | null;
   /** Gates vintage Diamonds ONLY. False for B_standard, true for A and
    *  B_enhanced when all normal Diamond rules also pass. Never affects
    *  era_status, the "Vintage" title, or displayed analysis. */
@@ -417,6 +450,8 @@ export interface DerivedConditionSummary {
 }
 
 export interface PhotoContribution {
+  /** Real photo slots only. user_confirmed evidence never appears here — it is
+   *  not a photograph and must not satisfy the two-meaningful-photo rule. */
   slot: PhotoSlot;
   requirements_supported: Array<
     | 'brand_identity' | 'specific_product_identity' | 'era_qualification'

@@ -11,7 +11,7 @@
  * evidence-free scan look confident.
  */
 import type {
-  AiAnalysis, AiConditionFinding, PhotoSlot, ValidationDowngrade,
+  AiAnalysis, AiConditionFinding, PhotoSlot, EvidenceSource, ValidationDowngrade,
   DerivedConditionSummary, PhotoContribution,
 } from "../../shared/canonical.types.js";
 
@@ -70,6 +70,20 @@ const clampInt = (n: unknown, lo = 0, hi = 100): number => {
   return Math.max(lo, Math.min(hi, v));
 };
 
+/**
+ * Stable identity for one condition finding, used to match a recorded conflict
+ * back to the exact fact it disputes.
+ *
+ * Exported and shared so the validator (which writes conflicts) and the listing
+ * path (which reads them) build the key identically. Two hand-rolled key
+ * formats drifting apart is the same class of bug this exists to prevent.
+ *
+ * Normalised because "Left Elbow" and "left elbow" are the same place.
+ */
+export function conditionFactKey(type: string, location: string): string {
+  return `${type.trim().toLowerCase()}@${location.trim().toLowerCase()}`;
+}
+
 export function validateAnalysis(input: ValidationInput): ValidationOutput {
   const ai = structuredClone(input.ai);
   const slots = new Set(input.photoSlotsProvided);
@@ -101,8 +115,11 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
 
   // ── B. Phantom-slot rejection (runs BEFORE trimming so a discarded entry
   //      cannot displace a real one) ─────────────────────────────────────────
-  const dropPhantom = <T extends { photo_slot: PhotoSlot }>(arr: T[], field: string): T[] =>
+  const dropPhantom = <T extends { photo_slot: EvidenceSource }>(arr: T[], field: string): T[] =>
     arr.filter(e => {
+      // user_confirmed is a legitimate source, not a phantom slot. The user held
+      // the item; there is no photograph to cite and none should be invented.
+      if (e.photo_slot === "user_confirmed") return true;
       if (!slots.has(e.photo_slot)) {
         down("EVIDENCE_PHANTOM_SLOT", field, e.photo_slot, "discarded",
              `cited ${e.photo_slot}; supplied: ${[...slots].join(",") || "none"}`);
@@ -265,8 +282,14 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
     ai.visible_attributes.material_confidence = 60;
   }
   // Size is transcription-only. Never inferred from appearance.
+  //
+  // user_confirmed passes: the user read the tag in their hand, which is a
+  // transcription — just not one the camera performed. Without this exemption a
+  // user typing "Size XL" had it silently deleted, which is exactly the failure
+  // this feature exists to prevent.
   if (ai.visible_attributes.size_label.trim() &&
-      ai.visible_attributes.size_source !== "tag_legible") {
+      ai.visible_attributes.size_source !== "tag_legible" &&
+      ai.visible_attributes.size_source !== "user_confirmed") {
     down("SIZE_NOT_TRANSCRIBED", "visible_attributes.size_label",
          ai.visible_attributes.size_label, "", "size requires size_source=tag_legible");
     ai.visible_attributes.size_label = "";
@@ -277,6 +300,10 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   const isObvious = (f: AiConditionFinding): boolean => {
     if (f.certainty < OBVIOUS_CERTAINTY) return false;
     if (!f.location.trim() || !f.evidence.trim()) return false;
+    // A user-confirmed flaw is obvious by construction: someone was holding the
+    // item. The photo-artefact test below exists because the model cannot
+    // distinguish a shadow from a stain — a person can, so it does not apply.
+    if (f.photo_slot === "user_confirmed") return true;
     if (!slots.has(f.photo_slot)) return false;
     if (ARTEFACT_PATTERNS.some(p => p.test(f.evidence) || p.test(f.location))) return false;
     return true;
@@ -353,6 +380,9 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   for (const slot of input.photoSlotsProvided) {
     const reqs = new Set<PhotoContribution["requirements_supported"][number]>();
     const refs: string[] = [];
+    // Only real photographs contribute. user_confirmed evidence is authoritative
+    // but it is not a photo, and letting it satisfy the two-meaningful-photo
+    // rule would let a typed note unlock a Diamond.
     for (const e of ai.identification.identification_evidence) {
       if (e.photo_slot !== slot) continue;
       if (e.field === "canonical_brand") { reqs.add("brand_identity"); refs.push(e.observation); }
@@ -385,6 +415,36 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
     });
   }
   const meaningfulPhotoCount = contributions.filter(c => c.requirements_supported.length > 0).length;
+
+  // ── Source conflict: user-confirmed vs photo-derived ────────────────────────
+  //
+  // Both are kept. Neither silently wins. The user held the item so their fact
+  // stands, but a photo showing the opposite is real information the user
+  // deserves to see — a note typed about the wrong item is a common mistake and
+  // silently deferring to it would hide the one signal that reveals it.
+  //
+  // Recorded as a downgrade so it appears in derived.validation and can surface
+  // in the UI without inventing a second channel.
+  const userFindings = ai.condition.condition_findings.filter(f => f.photo_slot === "user_confirmed");
+  const photoFindings = ai.condition.condition_findings.filter(f => f.photo_slot !== "user_confirmed");
+  for (const uf of userFindings) {
+    const contradicting = photoFindings.find(pf =>
+      pf.location.trim().toLowerCase() === uf.location.trim().toLowerCase() &&
+      pf.type !== uf.type,
+    );
+    if (contradicting) {
+      // `from` carries the exact fact key, not just the category. Recording the
+      // category alone meant one disputed finding suppressed EVERY
+      // user-confirmed condition fact from the listing — so a note reading
+      // "hole in elbow, zipper broken" lost the undisputed broken zipper too,
+      // shipping a listing with an undisclosed defect.
+      down("SOURCE_CONFLICT", "condition.condition_findings",
+           conditionFactKey(uf.type, uf.location), `photo:${contradicting.type}`,
+           `user-confirmed and photo-derived findings disagree at ${uf.location}; both retained`,
+           `You reported ${uf.type.replace(/_/g, " ")} at the ${uf.location}, but the photos show ${contradicting.type.replace(/_/g, " ")} there. Both are kept — worth a second look.`,
+           true);
+    }
+  }
 
   // ── K. Confidence ceilings ──────────────────────────────────────────────────
   const n = input.photoSlotsProvided.length;

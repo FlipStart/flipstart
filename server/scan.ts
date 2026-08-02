@@ -432,6 +432,7 @@ The input may include USER_PROVIDED_CONTEXT: information the seller entered and 
 
 Treat it as authoritative first-hand information and use it to make the listing more accurate and more complete.
 
+- Every entry in confirmed_facts MUST appear in the description. A confirmed flaw, size, colour, material, date or included accessory that the seller took the trouble to enter and does not appear in the listing is a defect in the listing.
 - Reflect confirmed flaws honestly in the description. A buyer discovering an undisclosed hole is a return and a bad review; disclosing it up front is what a good listing does.
 - Use confirmed measurements, size, colour and material, and prefer them over your own guess when they conflict.
 - Mention confirmed included accessories.
@@ -490,6 +491,10 @@ interface ListingInput {
   /** Confirmed camera context, loaded server-side from the analysis store.
    *  Never accepted directly from the client. */
   userContext?:             string;
+  /** Validated facts derived FROM that context. These are what must actually
+   *  appear in the listing text — the raw note is the user's words, these are
+   *  the normalised conclusions. */
+  userConfirmedFacts?:      string[];
 }
 
 export async function generateItemListings(input: ListingInput): Promise<{
@@ -510,7 +515,15 @@ export async function generateItemListings(input: ListingInput): Promise<{
     // value so a note containing quotes cannot break out of its slot, and it
     // marks the text visibly as data rather than instruction.
     (input.userContext
-      ? `\n\nUSER_PROVIDED_CONTEXT:\n${JSON.stringify({ present: true, source: "camera_confirmed", text: input.userContext }, null, 2)}`
+      ? `\n\nUSER_PROVIDED_CONTEXT:\n${JSON.stringify({
+          present: true,
+          source: "camera_confirmed",
+          text: input.userContext,
+          // The validated conclusions. Listed separately so the writer has
+          // discrete facts to work into the description rather than having to
+          // re-parse a free-text sentence.
+          confirmed_facts: input.userConfirmedFacts ?? [],
+        }, null, 2)}`
       : "");
 
   const response = await invokeLLM({
@@ -534,7 +547,7 @@ export async function generateItemListings(input: ListingInput): Promise<{
     throw new Error("Failed to parse listings response as JSON");
   }
 
-  return {
+  const out = {
     ebay: {
       title:       String(parsed.ebay?.title       || `${input.brand} ${input.item_name}`).slice(0, 80),
       description: String(parsed.ebay?.description || "See photos for details."),
@@ -543,6 +556,74 @@ export async function generateItemListings(input: ListingInput): Promise<{
       title:       String(parsed.depop?.title       || input.item_name).slice(0, 60),
       description: String(parsed.depop?.description || "Great find! DM for details."),
     },
+  };
+
+  return ensureConfirmedFacts(out, input.userConfirmedFacts ?? []);
+}
+
+/**
+ * Deterministic completeness check.
+ *
+ * Telling the model a fact "must appear" is not the same as it appearing.
+ * A seller who typed "zipper is broken" and gets a listing that omits it has
+ * been actively harmed — that is an undisclosed defect in a live listing, and
+ * a returns case.
+ *
+ * Deliberately a deterministic repair rather than a retry: a second model call
+ * costs money, adds seconds, and might omit it again. Appending the missing
+ * facts is guaranteed and free.
+ */
+function ensureConfirmedFacts<T extends {
+  ebay: { title: string; description: string };
+  depop: { title: string; description: string };
+}>(out: T, facts: string[]): T {
+  if (facts.length === 0) return out;
+
+  // Equivalents that count as "already present". Without these, "Size XL"
+  // would be appended to a description that already says "Extra Large".
+  const EQUIV: Array<[RegExp, RegExp]> = [
+    [/\bxl\b/i,        /\b(xl|extra[- ]large)\b/i],
+    [/\bx{2,}l\b/i,    /\b(xxl|2xl|double[- ]extra[- ]large)\b/i],
+    [/\bl\b/i,         /\b(l|large)\b/i],
+    [/\bm\b/i,         /\b(m|medium)\b/i],
+    [/\bs\b/i,         /\b(s|small)\b/i],
+    [/\bnavy\b/i,      /\bnavy( blue)?\b/i],
+    [/\b1990s?\b/i,    /\b(1990s|90s|'90s|nineties)\b/i],
+    [/\b2000s?\b/i,    /\b(2000s|00s|'00s|y2k)\b/i],
+    [/\bvintage\b/i,   /\bvintage\b/i],
+  ];
+
+  const present = (fact: string, haystack: string): boolean => {
+    const h = haystack.toLowerCase();
+    // Whole fact verbatim.
+    if (h.includes(fact.toLowerCase())) return true;
+    // Equivalent form.
+    for (const [probe, accepts] of EQUIV) {
+      if (probe.test(fact) && accepts.test(haystack)) return true;
+    }
+    // Every content word present somewhere. Catches "hole at left elbow"
+    // rendered as "small hole on the left elbow".
+    const words = fact.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2);
+    return words.length > 0 && words.every(w => h.includes(w));
+  };
+
+  const repair = (block: { title: string; description: string }, limit: number) => {
+    const combined = `${block.title} ${block.description}`;
+    const missing = facts.filter(f => !present(f, combined));
+    if (missing.length === 0) return block;
+    // Appended to the DESCRIPTION, never the title: titles have hard character
+    // limits and rigid platform conventions, and truncating one to force a fact
+    // in would damage searchability for no gain.
+    const note = ` ${missing.map(m => m.replace(/\s+/g, " ").trim())
+                        .map(m => m.charAt(0).toUpperCase() + m.slice(1))
+                        .join(". ")}.`;
+    return { title: block.title.slice(0, limit), description: (block.description + note).trim() };
+  };
+
+  return {
+    ...out,
+    ebay:  repair(out.ebay, 80),
+    depop: repair(out.depop, 60),
   };
 }
 

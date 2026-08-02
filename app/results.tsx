@@ -1356,6 +1356,34 @@ export default function ResultsScreen() {
                   <Text style={s.userCtxTitle}>Your additional information</Text>
                 </View>
                 <Text style={s.userCtxBody}>{ctx}</Text>
+
+                {/* Which specific facts the analysis took FROM the note. Shown
+                    so provenance stays legible: these are user-confirmed, not
+                    things the AI saw in a photo. */}
+                {(((id as any).v1?.userConfirmedFacts ?? []).length > 0) && (
+                  <View style={s.userCtxFacts}>
+                    {((id as any).v1.userConfirmedFacts as string[]).slice(0, 4).map((f, i) => (
+                      <View key={i} style={s.userCtxFactRow}>
+                        <MaterialIcons name="person" size={11} color={BROWN} />
+                        <Text style={s.userCtxFactText}>{f}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Photo evidence that disagrees. Both are kept — the user
+                    decides which is right. Silently deferring to the note would
+                    hide the one signal that reveals a note typed about the
+                    wrong item. */}
+                {(((id as any).v1?.sourceConflicts ?? []).length > 0) && (
+                  <View style={s.userCtxConflict}>
+                    <MaterialIcons name="compare-arrows" size={13} color="#8A3A2A" />
+                    <Text style={s.userCtxConflictText}>
+                      {((id as any).v1.sourceConflicts as string[])[0]}
+                    </Text>
+                  </View>
+                )}
+
                 <Text style={s.userCtxNote}>
                   Used as first-hand information about this item.
                 </Text>
@@ -1750,6 +1778,13 @@ const s = StyleSheet.create({
                    marginTop: 10, marginHorizontal: 14 },
   escalateTitle: { fontSize: 12.5, fontWeight: '800', color: FOREST, marginBottom: 2 },
   escalateBody:  { fontSize: 12.5, color: BROWN, lineHeight: 17 },
+  userCtxFacts:     { gap: 3, marginTop: 2 },
+  userCtxFactRow:   { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  userCtxFactText:  { fontSize: 12, color: BROWN, flex: 1 },
+  userCtxConflict:  { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 4,
+                      backgroundColor: '#FBEFEA', borderRadius: 9, paddingHorizontal: 9,
+                      paddingVertical: 7 },
+  userCtxConflictText: { flex: 1, fontSize: 11.5, color: '#8A3A2A', lineHeight: 16 },
   conditionStrip:      { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 14,
                          borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11,
                          marginTop: 10, marginHorizontal: 14 },

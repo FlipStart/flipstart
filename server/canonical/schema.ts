@@ -162,7 +162,8 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
                   "enum": [
                     "front",
                     "tag",
-                    "detail"
+                    "detail",
+                    "user_confirmed"
                   ]
                 }
               }
@@ -204,6 +205,7 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
             "type": "string",
             "enum": [
               "tag_legible",
+              "user_confirmed",
               "not_visible",
               "unknown"
             ]
@@ -230,6 +232,7 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
             "type": "string",
             "enum": [
               "tag_legible",
+              "user_confirmed",
               "visual_estimate",
               "unknown"
             ]
@@ -296,7 +299,8 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
                   "enum": [
                     "front",
                     "tag",
-                    "detail"
+                    "detail",
+                    "user_confirmed"
                   ]
                 }
               }
@@ -447,7 +451,8 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
                   "enum": [
                     "front",
                     "tag",
-                    "detail"
+                    "detail",
+                    "user_confirmed"
                   ]
                 }
               }
@@ -484,7 +489,8 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
                   "enum": [
                     "front",
                     "tag",
-                    "detail"
+                    "detail",
+                    "user_confirmed"
                   ]
                 }
               }
@@ -551,7 +557,8 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
                   "enum": [
                     "front",
                     "tag",
-                    "detail"
+                    "detail",
+                    "user_confirmed"
                   ]
                 },
                 "evidence": {

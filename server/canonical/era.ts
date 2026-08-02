@@ -368,7 +368,12 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
   });
 
   // 1. Discard evidence citing a slot that was never supplied.
+  //    user_confirmed is exempt: the user read the tag in their hand, so there
+  //    is no photo to cite. It still passes through the normal evidence
+  //    hierarchy below — a user reading "Made in USA" is a real tag fact but
+  //    still cannot alone establish an exact decade or confirmed vintage.
   const slotFiltered = era.era_evidence.filter(e => {
+    if (e.photo_slot === "user_confirmed") return true;
     if (!slots.has(e.photo_slot)) {
       log("ERA_PHANTOM_SLOT", "era.era_evidence", e.photo_slot, "discarded",
           `evidence cited ${e.photo_slot}, supplied slots: ${[...slots].join(",")}`);
@@ -403,7 +408,8 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
 
   // 4. Production year.
   const yearRes = resolveProductionYear(effective);
-  const conflicts = [...era.conflicting_era_evidence].filter(c => slots.has(c.photo_slot));
+  const conflicts = [...era.conflicting_era_evidence]
+    .filter(c => c.photo_slot === "user_confirmed" || slots.has(c.photo_slot));
   if (yearRes.conflict) {
     conflicts.push({
       observation: `Manufacturing year ${yearRes.conflict.a.observed_year} (${yearRes.conflict.a.type})`,
@@ -441,6 +447,15 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
 
   const wantsVintage = era.era_status === "confirmed_vintage";
 
+  // User-confirmed era evidence that speaks to PRODUCTION, not styling. A
+  // style_only claim is excluded on purpose: "this is Y2K style" describes the
+  // look, not when it was made, and must never confirm vintage.
+  const userEra = effective.filter(
+    e => e.photo_slot === "user_confirmed" &&
+         e.type !== "style_only" &&
+         e.supports !== "modern_broad",
+  );
+
   if (wantsVintage) {
     if (unresolvedModern || hardConflict) {
       status = "likely_vintage";
@@ -450,6 +465,24 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
             : "unresolved hard era conflict",
           "We could not confirm this as vintage because some details look modern.", true);
       cap = Math.min(cap, 60);
+    } else if (userEra.length > 0) {
+      // ── Route U: the user told us, while holding the item ─────────────────
+      //
+      // Checked BEFORE A and B because it answers a different question. A and B
+      // ask "did the photos prove age?"; U asks "did a person who can see the
+      // item say so?" Requiring photo proof before accepting the user's own
+      // statement made the feature pointless — "this is vintage" came back as
+      // likely_vintage with the decade discarded.
+      //
+      // vintageForUnlocks stays FALSE. Analysis truth and reward eligibility
+      // are separate: the item is vintage, and a typed sentence still cannot
+      // unlock a Diamond.
+      route = "U";
+      vintageForUnlocks = false;
+      cap = Math.min(cap, 95);
+      log("ERA_USER_CONFIRMED", "confirmed_vintage_route", "none", "U",
+          `user-confirmed era: ${userEra.map(e => e.type).join(", ")}`,
+          "", false);
     } else if (hardMfg.length >= 1 && mfgClues.length >= 2) {
       route = "A";
       vintageForUnlocks = true;
@@ -529,10 +562,23 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
            MANUFACTURING_DATE_TYPES.has(e.type) &&
            e.supports === decade,
     );
-    if (!supported) {
+    // A user stating the decade is direct testimony from someone holding the
+    // item — it does not need photographic corroboration to be recorded. The
+    // hard-evidence rule exists to stop the MODEL inferring a decade from
+    // styling; it was never meant to discard what the user actually said.
+    // Excludes style_only: "Y2K styling" is not a production claim.
+    const userStated = effective.some(
+      e => e.photo_slot === "user_confirmed" &&
+           e.type !== "style_only" &&
+           e.supports === decade,
+    );
+    if (!supported && !userStated) {
       log("DECADE_NO_HARD_EVIDENCE", "era.production_decade", decade, "unknown",
           "no hard manufacturing evidence supports this decade");
       decade = "unknown";
+    } else if (!supported && userStated) {
+      log("DECADE_USER_CONFIRMED", "era.production_decade", decade, decade,
+          "decade reported by the user, not photo-verified", "", false);
     }
   }
 

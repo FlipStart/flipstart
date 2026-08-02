@@ -15,65 +15,68 @@
  * listing generated without it.
  */
 export interface StoredScanContext {
-    analysisId: string;
-    scanAttemptId: string;
-    /** Ownership check for Generate Listings. */
-    ownerId: string;
-    text: string;
-    hash: string | null;
-    savedAt: number;
+  analysisId: string;
+  scanAttemptId: string;
+  /** Ownership check for Generate Listings. */
+  ownerId: string;
+  text: string;
+  hash: string | null;
+  /** What the model concluded FROM the note — normalised and validated. The
+   *  listing writer needs these, not just the user's raw words. */
+  confirmedFacts: string[];
+  savedAt: number;
+}
+
+const TTL_MS = 6 * 60 * 60 * 1000;   // 6 hours
+const MAX_ENTRIES = 500;
+
+const store = new Map<string, StoredScanContext>();
+
+function prune(): void {
+  const now = Date.now();
+  for (const [k, v] of store) {
+    if (now - v.savedAt > TTL_MS) store.delete(k);
   }
-  
-  const TTL_MS = 6 * 60 * 60 * 1000;   // 6 hours
-  const MAX_ENTRIES = 500;
-  
-  const store = new Map<string, StoredScanContext>();
-  
-  function prune(): void {
-    const now = Date.now();
-    for (const [k, v] of store) {
-      if (now - v.savedAt > TTL_MS) store.delete(k);
-    }
-    while (store.size > MAX_ENTRIES) {
-      const oldest = store.keys().next().value as string | undefined;
-      if (!oldest) break;
-      store.delete(oldest);
-    }
+  while (store.size > MAX_ENTRIES) {
+    const oldest = store.keys().next().value as string | undefined;
+    if (!oldest) break;
+    store.delete(oldest);
   }
-  
-  export function saveScanContext(entry: Omit<StoredScanContext, "savedAt">): void {
-    if (!entry.text) return;             // nothing to store
-    prune();
-    store.set(entry.analysisId, { ...entry, savedAt: Date.now() });
-    // Hash only. The raw text must not appear in logs.
-    console.log(`[context] stored — analysis:${entry.analysisId.slice(0, 8)} hash:${entry.hash}`);
+}
+
+export function saveScanContext(entry: Omit<StoredScanContext, "savedAt">): void {
+  if (!entry.text) return;             // nothing to store
+  prune();
+  store.set(entry.analysisId, { ...entry, savedAt: Date.now() });
+  // Hash only. The raw text must not appear in logs.
+  console.log(`[context] stored — analysis:${entry.analysisId.slice(0, 8)} hash:${entry.hash}`);
+}
+
+/**
+ * Look up context for an analysis. Returns null when it does not exist, has
+ * expired, or belongs to someone else — the caller cannot tell which, so a
+ * probing client learns nothing about other users' scans.
+ */
+export function getScanContext(analysisId: string, ownerId: string): StoredScanContext | null {
+  prune();
+  const hit = store.get(analysisId);
+  if (!hit) return null;
+  if (!ownerId || hit.ownerId !== ownerId) {
+    console.warn(`[context] ownership mismatch on analysis:${analysisId.slice(0, 8)}`);
+    return null;
   }
-  
-  /**
-   * Look up context for an analysis. Returns null when it does not exist, has
-   * expired, or belongs to someone else — the caller cannot tell which, so a
-   * probing client learns nothing about other users' scans.
-   */
-  export function getScanContext(analysisId: string, ownerId: string): StoredScanContext | null {
-    prune();
-    const hit = store.get(analysisId);
-    if (!hit) return null;
-    if (!ownerId || hit.ownerId !== ownerId) {
-      console.warn(`[context] ownership mismatch on analysis:${analysisId.slice(0, 8)}`);
-      return null;
-    }
-    return hit;
+  return hit;
+}
+
+/** Used by scan and account deletion. */
+export function deleteScanContext(analysisId: string): void {
+  store.delete(analysisId);
+}
+
+export function deleteAllScanContextFor(ownerId: string): number {
+  let n = 0;
+  for (const [k, v] of store) {
+    if (v.ownerId === ownerId) { store.delete(k); n++; }
   }
-  
-  /** Used by scan and account deletion. */
-  export function deleteScanContext(analysisId: string): void {
-    store.delete(analysisId);
-  }
-  
-  export function deleteAllScanContextFor(ownerId: string): number {
-    let n = 0;
-    for (const [k, v] of store) {
-      if (v.ownerId === ownerId) { store.delete(k); n++; }
-    }
-    return n;
-  }
+  return n;
+}

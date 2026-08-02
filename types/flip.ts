@@ -30,6 +30,10 @@ export interface CanonicalV1Passthrough {
   brandConfidence?: number;
   /** Exactly what the user typed and confirmed in the camera. Display only. */
   userContext?: string | null;
+  /** Facts the model attributed to the user rather than to a photo. */
+  userConfirmedFacts?: string[];
+  /** Photo evidence that directly contradicts a user-confirmed fact. */
+  sourceConflicts?: string[];
   userContextChars?: number;
   /** Server analysis id — used to look up confirmed context for listings. */
   analysisId?: string;

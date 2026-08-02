@@ -10,6 +10,7 @@ import { persistScanPhotos } from "./photoPersistence.js";
 import { toLegacyShape } from "./compat/toLegacyShape.js";
 import { grantDevScans, revokeDevGrant, devGrantStatus } from "./devGrants.js";
 import { buildServerUserContext, userContextAllowedFor } from "./userContextServer.js";
+import { conditionFactKey } from "./canonical/validate.js";
 import { renderUserContextBlock } from "../shared/userContext.js";
 import { saveScanContext, getScanContext } from "./scanContextStore.js";
 import { randomUUID } from "node:crypto";
@@ -209,6 +210,48 @@ const appRouter_scan = router({
                 ownerId: sid ?? "",
                 text: userCtx.user_context,
                 hash: userCtx.hash,
+                // Derived from the canonical analysis, which exists here;
+                // v1Payload is built further down.
+                //
+                // Deliberately sourced from VALIDATED evidence objects rather
+                // than the raw note. That is what keeps "worth $500", "super
+                // rare" and "guaranteed authentic" out of listings — they never
+                // become evidence, so they can never be appended as facts.
+                //
+                // Conflicted facts are excluded too: a fact the photos dispute
+                // must not be stated flatly in a listing as though it were
+                // settled. It stays in the analysis where the conflict is shown
+                // alongside it.
+                confirmedFacts: (() => {
+                  // Conflicts are matched PER FACT, not per category. Excluding
+                  // a whole category meant one disputed finding suppressed every
+                  // other user-confirmed fact of that kind — a note reading
+                  // "hole in elbow, zipper broken" lost the undisputed broken
+                  // zipper along with the disputed hole, and shipped a listing
+                  // with an undisclosed defect.
+                  //
+                  // Holding back a disputed fact is cautious and stays visible
+                  // in the analysis. Dropping an undisputed flaw is a live
+                  // listing with a hidden problem. Those are not symmetric.
+                  const conflictedKeys = new Set(
+                    canonical.derived.validation.downgrades
+                      .filter(d => d.rule_id === "SOURCE_CONFLICT" &&
+                                   d.field === "condition.condition_findings")
+                      .map(d => d.from),
+                  );
+                  const out: string[] = [];
+                  out.push(...canonical.ai.condition.condition_findings
+                    .filter(f => f.photo_slot === "user_confirmed")
+                    .filter(f => !conflictedKeys.has(conditionFactKey(f.type, f.location)))
+                    .map(f => `${f.type.replace(/_/g, " ")} at ${f.location}`));
+                  out.push(...canonical.ai.era.era_evidence
+                    .filter(e => e.photo_slot === "user_confirmed")
+                    .map(e => e.observation));
+                  out.push(...canonical.ai.photo_evidence.observable_field_evidence
+                    .filter(e => e.photo_slot === "user_confirmed")
+                    .map(e => e.observation));
+                  return out.slice(0, 8);
+                })(),
               });
             }
 
@@ -357,7 +400,14 @@ const appRouter_scan = router({
           ` | ctx:${userContext ? `${userContext.length}c/${stored?.hash}` : "none"}`
         );
 
-        const result = await generateItemListings({ ...input, userContext });
+        // Item 4: the confirmed facts must actually reach the listing text, not
+        // just the raw note. The note is the user's words; the facts are what
+        // the model concluded from them, already normalised and validated.
+        const result = await generateItemListings({
+          ...input,
+          userContext,
+          userConfirmedFacts: stored?.confirmedFacts ?? [],
+        });
         console.log(`[listings] complete — ${Date.now() - start}ms`);
         return result;
       }),

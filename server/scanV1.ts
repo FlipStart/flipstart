@@ -10,7 +10,7 @@ import { invokeLLM } from "./_core/llm.js";
 import { ENV } from "./_core/env.js";
 import {
   SCAN_PROMPT_VERSION, buildSystemMessage, vintageCutoffYear,
-} from "./prompts/scanPromptV1_2.js";
+} from "./prompts/scanPromptV1_3.js";
 import {
   canonicalResponseFormat, CANONICAL_SCHEMA_HASH, SCHEMA_VERSION,
 } from "./canonical/schema.js";
