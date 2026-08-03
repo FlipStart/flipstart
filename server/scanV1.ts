@@ -10,10 +10,11 @@ import { invokeLLM } from "./_core/llm.js";
 import { ENV } from "./_core/env.js";
 import {
   SCAN_PROMPT_VERSION, buildSystemMessage, vintageCutoffYear,
-} from "./prompts/scanPromptV1_3.js";
+} from "./prompts/scanPromptV1_7.js";
 import {
-  canonicalResponseFormat, CANONICAL_SCHEMA_HASH, SCHEMA_VERSION,
+  canonicalResponseFormat, canonicalSchemaHash, SCHEMA_VERSION,
 } from "./canonical/schema.js";
+import { anyRecognitionEnabled } from "./recognition/registry.js";
 import { buildCanonicalAnalysis } from "./canonical/build.js";
 import type {
   AiAnalysis, CanonicalAnalysisV1, CanonicalMeta, PhotoSlot,
@@ -103,10 +104,15 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
   const cutoff = vintageCutoffYear(now);
   const userCtx: UserContextInput = input.userContext ?? buildUserContextInput(null);
 
+  // Evaluated per request, so enabling a definition takes effect on the next
+  // scan with no redeploy of anything else.
+  const includeFeatures = anyRecognitionEnabled();
+
   const system = buildSystemMessage({
     currentYear: now.getFullYear(),
     vintageCutoffYear: cutoff,
     photoSlotsProvided: slots,
+    includeFeatures,
     // Appended AFTER the static prompt. JSON-serialised so a note containing
     // quotes or braces cannot break out of its slot and read as instruction.
     userContextBlock: renderUserContextBlock(userCtx),
@@ -130,7 +136,10 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
         { role: "system", content: system },
         { role: "user", content: content as never },
       ],
-      response_format: canonicalResponseFormat() as never,
+      // `features` is requested only when a recognition definition is live.
+      // While all nine are disabled it is ~119 output tokens of data the
+      // matcher discards — about 1.6s of generation on every scan.
+      response_format: canonicalResponseFormat(includeFeatures) as never,
       max_tokens: MAX_OUTPUT_TOKENS,
     });
   } catch (err) {
@@ -159,7 +168,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
     model: raw.model || ENV.openaiScanModel,
     prompt_version: SCAN_PROMPT_VERSION,
     schema_version: SCHEMA_VERSION,
-    schema_hash: CANONICAL_SCHEMA_HASH,
+    schema_hash: canonicalSchemaHash(includeFeatures),
     duration_ms: duration,
     finish_reason: choice?.finish_reason ?? null,
     refusal: (choice?.message as { refusal?: string } | undefined)?.refusal ?? null,
@@ -206,7 +215,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
   const meta: CanonicalMeta = {
     schema_version: SCHEMA_VERSION,
     prompt_version: SCAN_PROMPT_VERSION,
-    schema_hash: CANONICAL_SCHEMA_HASH,
+    schema_hash: canonicalSchemaHash(includeFeatures),
     model: telemetry.model,
     photo_slots_provided: slots,
     plan_at_scan: input.planAtScan,

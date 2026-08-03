@@ -167,6 +167,24 @@ async function normalizeAsset(
 // reason for the two paths to feed the model differently.
 const AI_MAX_PX = 1440;
 
+/**
+ * Per-slot resize targets.
+ *
+ * 1440 is the ceiling the model can use, but only the TAG and DETAIL photos
+ * need it — those carry small printed text and close-up flaws. The FRONT photo
+ * is read for silhouette, colour, logo placement and overall condition, none of
+ * which need tag-reading resolution.
+ *
+ * Sending the front at 1440 costs 2,406 image tokens; at 1024 it costs 1,244.
+ * That is 1,162 tokens and ~200KB of upload saved on every three-photo scan,
+ * for detail the model was not using.
+ */
+const SLOT_MAX_PX: Record<PhotoSlot, number> = {
+  front:  1024,
+  tag:    AI_MAX_PX,
+  detail: AI_MAX_PX,
+};
+
 const GALLERY_MAX_PX  = AI_MAX_PX;
 const GALLERY_QUALITY = 0.82;  // tags/logos remain crisp at this compression
 
@@ -182,15 +200,20 @@ export async function normalizeCameraCapture(
   origW = 0,
   origH = 0,
   label = 'camera',
+  /** Which slot this photo is for. Decides the resize target — see
+   *  SLOT_MAX_PX. Defaults to the tag ceiling so an unknown slot never loses
+   *  detail it might have needed. */
+  slot: PhotoSlot = 'tag',
 ): Promise<CapturedPhoto | null> {
   if (!uri) return null;
   const startMs = Date.now();
+  const target = SLOT_MAX_PX[slot] ?? AI_MAX_PX;
 
   // Only downsize, never upscale.
   const actions: ImageManipulator.Action[] = [];
-  if (origW > AI_MAX_PX || origH > AI_MAX_PX || (!origW && !origH)) {
-    if (origW >= origH) actions.push({ resize: { width:  AI_MAX_PX } });
-    else                actions.push({ resize: { height: AI_MAX_PX } });
+  if (origW > target || origH > target || (!origW && !origH)) {
+    if (origW >= origH) actions.push({ resize: { width:  target } });
+    else                actions.push({ resize: { height: target } });
   }
 
   try {
@@ -205,8 +228,8 @@ export async function normalizeCameraCapture(
     }
     const finalKB = Math.round((result.base64.length * 3) / 4 / 1024);
     console.log(
-      `[capture:${label}] done — ${result.width ?? '?'}x${result.height ?? '?'} ~${finalKB}KB ` +
-      `${Date.now() - startMs}ms${actions.length ? ` (resized from ${origW}x${origH})` : ''}`
+      `[capture:${label}:${slot}] done — ${result.width ?? '?'}x${result.height ?? '?'} ~${finalKB}KB ` +
+      `${Date.now() - startMs}ms${actions.length ? ` (resized from ${origW}x${origH} -> ${target})` : ''}`
     );
     return { uri: result.uri, base64: result.base64, mimeType: 'image/jpeg' };
   } catch (err) {
@@ -218,10 +241,14 @@ export async function normalizeCameraCapture(
 export async function normalizeGalleryAsset(
   asset: ImagePicker.ImagePickerAsset,
   label = 'gallery',
+  /** Same per-slot sizing as the camera path. Defaults to the tag ceiling so a
+   *  gallery import of unknown purpose keeps full detail. */
+  slot: PhotoSlot = 'tag',
 ): Promise<CapturedPhoto | null> {
   if (!asset.uri) return null;
 
   const startMs = Date.now();
+  const galleryTarget = SLOT_MAX_PX[slot] ?? GALLERY_MAX_PX;
   const origW   = asset.width  ?? 0;
   const origH   = asset.height ?? 0;
   const origMime = (asset.mimeType ?? 'unknown').toLowerCase();
@@ -230,13 +257,13 @@ export async function normalizeGalleryAsset(
     `[capture:${label}] original — ${origW}×${origH} mime:${origMime}`
   );
 
-  // Only downsize — never upscale. Resize the longest edge to GALLERY_MAX_PX.
+  // Only downsize — never upscale. Resize the longest edge to galleryTarget.
   const actions: ImageManipulator.Action[] = [];
-  if (origW > GALLERY_MAX_PX || origH > GALLERY_MAX_PX) {
+  if (origW > galleryTarget || origH > galleryTarget) {
     if (origW >= origH) {
-      actions.push({ resize: { width: GALLERY_MAX_PX } });
+      actions.push({ resize: { width: galleryTarget } });
     } else {
-      actions.push({ resize: { height: GALLERY_MAX_PX } });
+      actions.push({ resize: { height: galleryTarget } });
     }
   }
 
@@ -510,7 +537,9 @@ export async function captureMultipleFromGallery(max = 3): Promise<CapturedPhoto
     const normalized = await Promise.all(
       result.assets.slice(0, max).map((asset, i) => {
         const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][i] ?? `gallery-${i}`;
-        return normalizeGalleryAsset(asset, label);
+        // Index maps to slot order, so an imported front photo gets the smaller
+        // target exactly like a captured one.
+        return normalizeGalleryAsset(asset, label, SLOT_ORDER[i] ?? 'tag');
       }),
     );
     const photos: CapturedPhoto[] = normalized.filter((p): p is CapturedPhoto => p !== null);

@@ -177,6 +177,8 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
         "required": [
           "size_label",
           "size_system",
+          "target_department",
+          "target_department_confidence",
           "size_source",
           "primary_color",
           "secondary_colors",
@@ -200,6 +202,21 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
               "other",
               "unknown"
             ]
+          },
+          "target_department": {
+            "type": "string",
+            "enum": [
+              "mens",
+              "womens",
+              "unisex",
+              "kids",
+              "unknown"
+            ],
+            "description": "Who the garment was made for. unknown is correct when there is no evidence; never inferred from a person in the photo."
+          },
+          "target_department_confidence": {
+            "type": "integer",
+            "description": "0-100. Tag wording or user confirmation may be high; visual cut alone must stay low."
           },
           "size_source": {
             "type": "string",
@@ -272,6 +289,7 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
                   "type": "string",
                   "enum": [
                     "size_label",
+                    "target_department",
                     "primary_color",
                     "secondary_colors",
                     "material_composition",
@@ -874,20 +892,59 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
 
 /** Stamped onto every analysis so a stored result is attributable to the exact
  *  schema that produced it. */
-export const CANONICAL_SCHEMA_HASH: string =
-  "sha256:" + crypto.createHash("sha256")
-    .update(JSON.stringify(CANONICAL_SCHEMA_V1))
+/**
+ * The schema actually sent, which omits `features` while recognition is off.
+ *
+ * `features` exists solely to feed the recognition registry. Strict mode
+ * requires every property to be present, so even an empty block costs ~96
+ * output tokens; a populated one costs ~119, or roughly 1.6s of sequential
+ * generation. While all nine definitions are disabled that is time spent
+ * producing data the matcher throws away.
+ *
+ * Built rather than frozen so it repairs itself: enable any definition and the
+ * block returns on the next request with nothing else to change.
+ *
+ * Safe to vary per request because the schema travels in response_format, NOT
+ * in the cached message prefix — changing it costs no prompt-cache benefit.
+ */
+export function buildCanonicalSchema(includeFeatures: boolean): Record<string, unknown> {
+  if (includeFeatures) return CANONICAL_SCHEMA_V1;
+
+  const base = CANONICAL_SCHEMA_V1 as {
+    properties: Record<string, unknown>; required: string[]; [k: string]: unknown;
+  };
+  const { features: _omit, ...properties } = base.properties;
+  return {
+    ...base,
+    properties,
+    // strict mode demands required === the property list exactly.
+    required: base.required.filter(k => k !== "features"),
+  };
+}
+
+/**
+ * Hash of the schema ACTUALLY sent, so a stored analysis stays attributable to
+ * the exact contract that produced it. The two shapes hash differently on
+ * purpose — that is the record of which one was used.
+ */
+export function canonicalSchemaHash(includeFeatures: boolean): string {
+  return "sha256:" + crypto.createHash("sha256")
+    .update(JSON.stringify(buildCanonicalSchema(includeFeatures)))
     .digest("hex")
     .slice(0, 16);
+}
+
+/** Full-schema hash. Retained for callers that predate the conditional build. */
+export const CANONICAL_SCHEMA_HASH: string = canonicalSchemaHash(true);
 
 /** The response_format block passed to OpenAI. */
-export function canonicalResponseFormat() {
+export function canonicalResponseFormat(includeFeatures = true) {
   return {
     type: "json_schema" as const,
     json_schema: {
       name: CANONICAL_SCHEMA_NAME,
       strict: true,
-      schema: CANONICAL_SCHEMA_V1,
+      schema: buildCanonicalSchema(includeFeatures),
     },
   };
 }

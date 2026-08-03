@@ -136,7 +136,9 @@ export default function CameraScreen() {
       // capture and a 1440px capture look identical to the AI — the API
       // downscales anything larger before the model sees it — so this is pure
       // upload savings with no loss of detail. See AI_MAX_PX in lib/capture.ts.
-      const photo = await normalizeCameraCapture(pic.uri, pic.width, pic.height);
+      // activeSlot decides the resize target: the front photo does not need
+      // tag-reading resolution, so it is captured smaller.
+      const photo = await normalizeCameraCapture(pic.uri, pic.width, pic.height, 'camera', activeSlot);
       if (!photo) {
         Alert.alert('Photo failed', 'Could not process that photo. Please try again.');
         return;

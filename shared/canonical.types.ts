@@ -87,6 +87,15 @@ export type Silhouette =
 export type SizeSystem = 'alpha' | 'numeric' | 'waist_inseam' | 'shoe' | 'other' | 'unknown';
 export type SizeSource = 'tag_legible' | 'user_confirmed' | 'not_visible' | 'unknown';
 export type MaterialSource = 'tag_legible' | 'user_confirmed' | 'visual_estimate' | 'unknown';
+
+/**
+ * Who the garment was made for.
+ *
+ * 'unknown' and 'unisex' are honest answers, not failures — most plain tees
+ * genuinely are unisex, and department is frequently undeterminable. Never
+ * inferred from a person appearing in the photo.
+ */
+export type TargetDepartment = 'mens' | 'womens' | 'unisex' | 'kids' | 'unknown';
 export type CanonicalRating = 'STRONG_BUY' | 'BUY' | 'RISKY_BUY' | 'SKIP';
 export type RecognitionStatus = 'none' | 'candidate' | 'likely' | 'confirmed';
 
@@ -111,7 +120,7 @@ export interface IdentificationEvidence {
 
 /** Fields that can carry observable-field evidence. */
 export type ObservableField =
-  | 'size_label' | 'primary_color' | 'secondary_colors' | 'material_composition'
+  | 'size_label' | 'target_department' | 'primary_color' | 'secondary_colors' | 'material_composition'
   | 'style_labels' | 'closure_type' | 'collar_type' | 'hood_present'
   | 'pocket_configuration' | 'logo_identity' | 'logo_placement' | 'logo_scale'
   | 'material_signals' | 'construction_signals' | 'stitching_signals' | 'silhouette'
@@ -148,6 +157,10 @@ export interface AiVisibleAttributes {
   /** Exactly as printed. "32x30" stays "32x30". */
   size_label: string;
   size_system: SizeSystem;
+  target_department: TargetDepartment;
+  /** Tag wording or user confirmation may be high. Visual cut alone stays low —
+   *  a boxy fit is not evidence of who an item was sold to. */
+  target_department_confidence: Confidence;
   size_source: SizeSource;
   primary_color: string;
   secondary_colors: string[];
@@ -274,7 +287,13 @@ export interface AiAnalysis {
   marketability: AiMarketability;
   pricing: AiPricing;
   risks: AiRisks;
-  features: AiFeatures;
+  /**
+   * Omitted from the request while every recognition definition is disabled —
+   * it exists only to feed the matcher, and strict mode makes even an empty
+   * block cost ~96 output tokens. Returns automatically when any definition is
+   * enabled. Historical analyses still carry it, so readers must use `?.`.
+   */
+  features?: AiFeatures;
 }
 
 // ─── meta ─────────────────────────────────────────────────────────────────────

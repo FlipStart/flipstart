@@ -819,15 +819,36 @@ export default function AnalysisDetailsScreen() {
                     <Text style={d.evidenceValue}>{styleEra}</Text>
                   </View>
                 )}
+                {/* Route U means the era came from the user, not the photos.
+                    Saying so here stops a confirmed_vintage with no visible
+                    date looking like the AI found something it did not. */}
+                {v1?.vintageRoute === 'U' && (
+                  <View style={d.evidenceRow}>
+                    <Text style={d.evidenceLabel}>Source</Text>
+                    <Text style={[d.evidenceValue, { color: GOLD }]}>Your information</Text>
+                  </View>
+                )}
                 {eraEv.length > 0 && (
                   <>
                     <Text style={[d.confSubHead, { marginTop: 10 }]}>Evidence</Text>
-                    {eraEv.slice(0, 4).map((e: string, i: number) => (
-                      <View key={i} style={d.bulletRow}>
-                        <MaterialIcons name="check-circle" size={13} color={FOREST} style={{ marginTop: 2 }} />
-                        <Text style={d.bulletText}>{e}</Text>
-                      </View>
-                    ))}
+                    {eraEv.slice(0, 5).map((e: string, i: number) => {
+                      // User statements get a person icon and their own colour so
+                      // they never read as something the AI saw in a photo. The
+                      // prompt writes these as "User said era is Vintage 1990s",
+                      // so the line already carries its own attribution.
+                      const fromUser = /^user said/i.test(e);
+                      return (
+                        <View key={i} style={d.bulletRow}>
+                          <MaterialIcons
+                            name={fromUser ? 'person' : 'check-circle'}
+                            size={13}
+                            color={fromUser ? GOLD : FOREST}
+                            style={{ marginTop: 2 }}
+                          />
+                          <Text style={[d.bulletText, fromUser && { fontWeight: '700' }]}>{e}</Text>
+                        </View>
+                      );
+                    })}
                   </>
                 )}
                 {auth.length > 0 && (

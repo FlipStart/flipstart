@@ -342,6 +342,7 @@ export default function ResultsScreen() {
         buyerPool:        (_id as any)?.v1?.buyerPool,
         hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
         eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
+        priceConfidence:  (_id as any)?.v1?.priceConfidence,
       },
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1110,6 +1111,21 @@ export default function ResultsScreen() {
                       <Text style={s.chipText} numberOfLines={1}>{(id as any).v1.productLine}</Text>
                     </View>
                   )}
+                  {/* Department, when it is actually known. unisex and unknown
+                      are honest but not worth a chip — they tell the user
+                      nothing they could act on. */}
+                  {(() => {
+                    const d2 = (id as any).v1?.targetDepartment;
+                    if (!d2 || d2 === 'unknown' || d2 === 'unisex') return null;
+                    const LABEL: Record<string, string> = {
+                      mens: "Men's", womens: "Women's", kids: 'Kids',
+                    };
+                    return (
+                      <View style={s.chip}>
+                        <Text style={s.chipText} numberOfLines={1}>{LABEL[d2] ?? d2}</Text>
+                      </View>
+                    );
+                  })()}
                   {/* Size, when it was actually read off a tag. Never inferred —
                       a wrong size is worse than no size for a reseller. */}
                   {!!(id as any).v1?.sizeLabel && (

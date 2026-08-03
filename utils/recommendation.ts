@@ -26,6 +26,9 @@ export interface RecommendationInput {
   buyerPool?:       string;   // 'broad' | 'moderate' | 'narrow' | 'very_narrow'
   hasObviousDamage?: boolean;
   eraUnconfirmed?:  boolean;
+  /** ai.pricing.price_confidence, 0-100. Gates STRONG_BUY: a resale estimate
+   *  the model is unsure of cannot support the app's strongest verdict. */
+  priceConfidence?: number;
 }
 
 export interface Recommendation {
@@ -44,7 +47,7 @@ export interface Recommendation {
 export type RiskFactorCode =
   | 'SLOW_SELL' | 'HIGH_COMPETITION' | 'LOW_CONFIDENCE'
   | 'NARROW_POOL' | 'OBVIOUS_DAMAGE' | 'ERA_UNCONFIRMED' | 'THIN_MARGIN'
-  | 'LOW_DEMAND' | 'VERY_SLOW_SELL';
+  | 'LOW_DEMAND' | 'VERY_SLOW_SELL' | 'PRICE_CONFIDENCE_TOO_LOW_FOR_STRONG_BUY';
 
 export interface RiskFactor { code: RiskFactorCode; label: string }
 
@@ -60,7 +63,13 @@ const RISK_LABELS: Record<RiskFactorCode, string> = {
   OBVIOUS_DAMAGE:   'Visible damage',
   ERA_UNCONFIRMED:  'Era unconfirmed',
   THIN_MARGIN:      'Thin margin',
+  PRICE_CONFIDENCE_TOO_LOW_FOR_STRONG_BUY: 'Price estimate uncertain',
 };
+
+/** STRONG_BUY needs a resale number worth betting on. At or below this the
+ *  estimate is a guess, and the app's strongest verdict should not rest on a
+ *  guess however good the margin looks. */
+const STRONG_BUY_MIN_PRICE_CONFIDENCE = 75;
 
 /** Ranked by how much each should worry a reseller. The card shows the top few,
  *  so ordering decides what the user actually reads. */
@@ -156,6 +165,26 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   else                      demote = Math.min(weight, 2);
 
   let tier = Math.max(0, base - demote);
+
+  // ── STRONG_BUY price-confidence gate ────────────────────────────────────────
+  //
+  // Applied AFTER demotion, before the floor. A big margin on a price the model
+  // is unsure of is not a strong buy — it is an uncertain buy that happens to
+  // look good on paper, and presenting it as the app's strongest verdict is how
+  // a user ends up overpaying on a number nobody stood behind.
+  //
+  // Deliberately NOT a mechanical drop to BUY. The tier steps down by one and
+  // the remaining risk factors still apply, so an item with real problems can
+  // land at RISKY_BUY or SKIP rather than being handed a floor it did not earn.
+  const priceConf = input.priceConfidence;
+  if (tier === 3 && typeof priceConf === "number" &&
+      priceConf > 0 && priceConf <= STRONG_BUY_MIN_PRICE_CONFIDENCE) {
+    tier = 2;
+    add("PRICE_CONFIDENCE_TOO_LOW_FOR_STRONG_BUY");
+    // Re-apply demotion pressure at the new tier: a blocked STRONG_BUY with
+    // two live risk factors should not out-rank a clean BUY.
+    if (weight >= 2 && netProfit < 40) tier = Math.max(1, tier - 1);
+  }
 
   // Real profit never falls all the way to SKIP on risk alone. If the money is
   // there, the user deserves to see it flagged rather than hidden.

@@ -145,7 +145,13 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
       tagEvidence:    bySlot("tag"),
       detailEvidence: bySlot("detail"),
       sportsTeam: ai.identification.team,
-      logoPlacement: ai.features.logo_placement,
+      // features is omitted while recognition is disabled, so fall back to the
+      // evidence array — the prompt requires an evidence object for logo fields
+      // whenever they carry weight, so the observation is there when it matters.
+      logoPlacement: ai.features?.logo_placement
+        ?? ai.photo_evidence.observable_field_evidence
+             .find(e => e.field === "logo_placement")?.observation
+        ?? "",
       size_label: ai.visible_attributes.size_label,
 
       // ── Canonical passthrough ────────────────────────────────────────────
@@ -215,6 +221,8 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
         vintageRoute:     d.era_effective.confirmed_vintage_route,
 
         sizeLabel:        ai.visible_attributes.size_label,
+        targetDepartment:       (ai.visible_attributes as any).target_department ?? "unknown",
+        targetDepartmentConf:   (ai.visible_attributes as any).target_department_confidence ?? 0,
         sizeSystem:       ai.visible_attributes.size_system,
         primaryColor:     ai.visible_attributes.primary_color,
         materialSource:   ai.visible_attributes.material_source,

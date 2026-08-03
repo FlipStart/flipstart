@@ -254,3 +254,21 @@ export const RECOGNITION_REGISTRY: RecognitionDefinition[] = [
     enabled_in_production: false,
   },
 ];
+
+/**
+ * Is any recognition definition live?
+ *
+ * Drives whether the `features` block is requested from the model at all.
+ * Every definition scores against features.*, so while none are enabled the
+ * block is ~119 output tokens — about 1.6s of generation — feeding a system
+ * that discards the result.
+ *
+ * Reading the flags rather than hardcoding false is the whole point: flipping
+ * any definition to enabled_in_production:true restores the block
+ * automatically, with no schema, prompt or type edit. Deleting `features`
+ * outright would have silently broken all nine definitions the day recognition
+ * shipped, with no obvious cause.
+ */
+export function anyRecognitionEnabled(): boolean {
+  return RECOGNITION_REGISTRY.some(d => d.enabled_in_production);
+}

@@ -228,7 +228,8 @@ export function findMaxBuyPriceForRating(
   competitionLevel: string,
   demandLevel:      string = '',
   sellSpeed:        string = '',
-  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean } = {},
+  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
+               priceConfidence?: number } = {},
 ): number | null {
   const fees = calculateFees(resaleValue);
   const ceiling = Math.max(0, Math.round(resaleValue));
@@ -242,6 +243,7 @@ export function findMaxBuyPriceForRating(
       buyerPool:        v1Signals.buyerPool,
       hasObviousDamage: v1Signals.hasObviousDamage,
       eraUnconfirmed:   v1Signals.eraUnconfirmed,
+      priceConfidence:  v1Signals.priceConfidence,
     });
     if (rec.label !== 'SKIP') return price;
   }
@@ -262,7 +264,8 @@ export function findBuyThresholdPrice(
   competitionLevel: string,
   demandLevel:      string = '',
   sellSpeed:        string = '',
-  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean } = {},
+  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
+               priceConfidence?: number } = {},
 ): number | null {
   const fees = calculateFees(resaleValue);
   for (let price = Math.max(0, Math.round(resaleValue)); price >= 0; price--) {
@@ -274,6 +277,7 @@ export function findBuyThresholdPrice(
       buyerPool:        v1Signals.buyerPool,
       hasObviousDamage: v1Signals.hasObviousDamage,
       eraUnconfirmed:   v1Signals.eraUnconfirmed,
+      priceConfidence:  v1Signals.priceConfidence,
     });
     if (rec.label === 'BUY' || rec.label === 'STRONG_BUY') return price;
   }
@@ -339,6 +343,7 @@ export function computeFlipCalc(
     buyerPool?: string;
     hasObviousDamage?: boolean;
     eraUnconfirmed?: boolean;
+    priceConfidence?: number;
   } = {},
 ): FlipCalc {
   const fees        = calculateFees(resaleValue);
@@ -362,6 +367,7 @@ export function computeFlipCalc(
     buyerPool:        v1Signals.buyerPool,
     hasObviousDamage: v1Signals.hasObviousDamage,
     eraUnconfirmed:   v1Signals.eraUnconfirmed,
+    priceConfidence:  v1Signals.priceConfidence,
   });
 
   return {

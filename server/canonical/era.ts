@@ -450,6 +450,15 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
   // User-confirmed era evidence that speaks to PRODUCTION, not styling. A
   // style_only claim is excluded on purpose: "this is Y2K style" describes the
   // look, not when it was made, and must never confirm vintage.
+  // Independent corroborating age observations — everything pointing older that
+  // is NOT itself one of the strong manufacturing clues. Style is permitted
+  // here and only here.
+  const corroborating = effective.filter(
+    e => e.supports !== "modern_broad" &&
+         !mfgClues.includes(e) &&
+         !ARTWORK_DATE_TYPES.has(e.type),
+  );
+
   const userEra = effective.filter(
     e => e.photo_slot === "user_confirmed" &&
          e.type !== "style_only" &&
@@ -487,6 +496,32 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
       route = "A";
       vintageForUnlocks = true;
       cap = Math.min(cap, 100);
+    } else if (mfgClues.length === 1 && corroborating.length >= 2) {
+      // ── Route B-corroborated ────────────────────────────────────────────────
+      //
+      // One strong manufacturing clue plus two independent corroborating age
+      // observations. Added because genuine vintage without a printed date was
+      // coming back unknown constantly: most old garments have exactly one
+      // readable manufacturing signal, and demanding two meant the common case
+      // failed.
+      //
+      // Style may be ONE corroborator but can never be the strong clue, and at
+      // least one corroborator must come from a different part of the item —
+      // three observations of the same tag are one piece of evidence described
+      // three ways, not three pieces of evidence.
+      const strong = mfgClues[0];
+      const differentArea = corroborating.some(
+        c => c.photo_slot !== strong.photo_slot ||
+             (!LABEL_CLASS.has(c.type) && LABEL_CLASS.has(strong.type)),
+      );
+      if (differentArea) {
+        route = "B_standard";
+        vintageForUnlocks = false;
+        cap = Math.min(cap, 85);
+        log("ERA_ROUTE_B_CORROBORATED", "confirmed_vintage_route", "none", "B_standard",
+            `1 strong clue (${strong.type}) + ${corroborating.length} corroborating`,
+            "", false);
+      }
     } else if (mfgClues.length >= 2) {
       // Standard reached. Test Enhanced.
       const labelClue = mfgClues.find(e => LABEL_CLASS.has(e.type)) ?? null;

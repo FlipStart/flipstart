@@ -37,6 +37,8 @@ export interface CanonicalV1Passthrough {
   userContextChars?: number;
   /** Server analysis id — used to look up confirmed context for listings. */
   analysisId?: string;
+  targetDepartment?: string;
+  targetDepartmentConf?: number;
   photoSlots?: string[];
   eraStatus?: string;
   eraConfidence?: number;

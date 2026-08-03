@@ -281,6 +281,33 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
     cap("material_confidence -> 60 (visual estimate, not read from a tag)");
     ai.visible_attributes.material_confidence = 60;
   }
+  // ── Target department ───────────────────────────────────────────────────────
+  //
+  // Historical scans have no such field, so a missing value defaults to unknown
+  // rather than failing validation.
+  //
+  // The confidence cap is the point of this block: visual cut alone is weak
+  // evidence, and a confident "womens" derived from a silhouette is both often
+  // wrong and the kind of wrong that reads badly. Tag wording or user
+  // confirmation may go high; anything else is capped.
+  const dept = (ai.visible_attributes as any).target_department ?? "unknown";
+  const deptConf = (ai.visible_attributes as any).target_department_confidence ?? 0;
+  if (dept !== "unknown" && dept !== "unisex") {
+    const deptEvidence = ai.photo_evidence.observable_field_evidence.some(
+      e => e.field === "target_department",
+    );
+    const fromTagOrUser =
+      ai.visible_attributes.size_source === "tag_legible" ||
+      ai.visible_attributes.size_source === "user_confirmed" ||
+      deptEvidence;
+    if (!fromTagOrUser && deptConf > 55) {
+      down("DEPARTMENT_VISUAL_ONLY", "visible_attributes.target_department_confidence",
+           String(deptConf), "55",
+           "department inferred from appearance only; capped");
+      (ai.visible_attributes as any).target_department_confidence = 55;
+    }
+  }
+
   // Size is transcription-only. Never inferred from appearance.
   //
   // user_confirmed passes: the user read the tag in their hand, which is a
