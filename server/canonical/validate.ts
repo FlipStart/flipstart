@@ -84,6 +84,65 @@ export function conditionFactKey(type: string, location: string): string {
   return `${type.trim().toLowerCase()}@${location.trim().toLowerCase()}`;
 }
 
+/**
+ * How confident may an era conclusion be, given the evidence behind it?
+ *
+ * Replaces a flat photo-count ceiling. The governing idea: uncertainty about
+ * the DECADE is not uncertainty about whether an item is broadly old or new,
+ * and a broad classification should not be punished for lacking exact dating.
+ *
+ * Style-only evidence stays low on purpose — a faded boxy graphic tee looks old
+ * and may be a 2023 reprint, which is exactly the false positive the era system
+ * exists to prevent.
+ */
+function deriveEraCeiling(ai: AiAnalysis, photoCount: number): number {
+  // A user statement is authoritative; nothing here applies.
+  if (ai.era.era_evidence.some(e => e.photo_slot === "user_confirmed" && e.type !== "style_only")) {
+    return 100;
+  }
+
+  const ev = ai.era.era_evidence;
+  const substantive = ev.filter(e => e.type !== "style_only");
+  const styleOnly = ev.length > 0 && substantive.length === 0;
+
+  // Independent means separate observations, not one detail restated. Distinct
+  // evidence TYPES is the closest proxy the schema gives us.
+  const independent = new Set(substantive.map(e => e.type)).size;
+  const modernConflict = ai.era.conflicting_era_evidence.some(
+    c => /modern|qr|rfid|heat[- ]transfer|tagless|url/i.test(c.observation),
+  );
+
+  // Photo count is a modifier, not a gate: a second useful photo genuinely does
+  // add corroboration, but its absence no longer collapses the conclusion.
+  const photoBonus = photoCount >= 2 ? 8 : 0;
+
+  switch (ai.era.era_status) {
+    case "modern": {
+      // Contemporary construction, tags and printing are visually obvious in a
+      // way that dating an old garment is not.
+      if (styleOnly) return 65;
+      return Math.min(95, 75 + independent * 5 + photoBonus);
+    }
+    case "likely_vintage": {
+      // The case the 55 ceiling was breaking. Several coherent age signals can
+      // support a useful broad judgement with no printed date anywhere.
+      if (styleOnly) return 55;              // appearance alone stays weak
+      if (independent === 0) return 55;
+      if (modernConflict) return 60;         // a modern marker outweighs looks
+      const base = independent >= 3 ? 78 : independent === 2 ? 72 : 65;
+      return Math.min(90, base + photoBonus);
+    }
+    case "confirmed_vintage":
+      // Route A / B caps in era.ts are stricter and authoritative here; this
+      // only prevents an unsupported claim sneaking past them.
+      return styleOnly ? 55 : 100;
+    case "vintage_inspired":
+      return 85;
+    default:
+      return 100;   // unknown needs no ceiling
+  }
+}
+
 export function validateAnalysis(input: ValidationInput): ValidationOutput {
   const ai = structuredClone(input.ai);
   const slots = new Set(input.photoSlotsProvided);
@@ -325,12 +384,21 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
 
   // ── G. Condition ────────────────────────────────────────────────────────────
   const isObvious = (f: AiConditionFinding): boolean => {
-    if (f.certainty < OBVIOUS_CERTAINTY) return false;
     if (!f.location.trim() || !f.evidence.trim()) return false;
+
+    // Checked BEFORE the certainty floor, not after.
+    //
     // A user-confirmed flaw is obvious by construction: someone was holding the
-    // item. The photo-artefact test below exists because the model cannot
-    // distinguish a shadow from a stain — a person can, so it does not apply.
+    // item. `certainty` is the MODEL's confidence in its own reading, which is
+    // meaningless for a fact it did not observe — and gating on it meant a
+    // user-reported tear the model scored below 80 was silently dropped before
+    // the exemption could apply, so it never reached pricing.
+    //
+    // The photo-artefact test below exists because the model cannot tell a
+    // shadow from a stain. A person can, so it does not apply here either.
     if (f.photo_slot === "user_confirmed") return true;
+
+    if (f.certainty < OBVIOUS_CERTAINTY) return false;
     if (!slots.has(f.photo_slot)) return false;
     if (ARTEFACT_PATTERNS.some(p => p.test(f.evidence) || p.test(f.location))) return false;
     return true;
@@ -476,7 +544,23 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   // ── K. Confidence ceilings ──────────────────────────────────────────────────
   const n = input.photoSlotsProvided.length;
   const identityCeiling = n <= 1 ? 75 : 100;
-  const eraCeiling      = n <= 1 ? 55 : 100;
+
+  // ── Era ceiling: evidence-based, not photo-count-based ──────────────────────
+  //
+  // The old rule was `n <= 1 ? 55 : 100` — a flat 55% ceiling on any one-photo
+  // era read. That treated photo COUNT as the measure of era certainty, which
+  // it is not: one clear photo of a tee showing an older print, a period collar
+  // and age-consistent wear carries three independent signals, while two blurry
+  // photos of a blank hoodie carry none.
+  //
+  // The 55 ceiling was the reason genuine vintage kept surfacing as unknown —
+  // the model would reach a reasonable likely_vintage conclusion and the
+  // validator would cap it below the threshold where anything downstream
+  // treated it as real.
+  //
+  // Confidence now scales with what the evidence actually supports. Photo count
+  // still contributes, but as one input rather than a hard gate.
+  const eraCeiling = deriveEraCeiling(ai, n);
   if (identityConfidence > identityCeiling) {
     cap(`identity_confidence ${identityConfidence} -> ${identityCeiling} (${n} photo${n === 1 ? "" : "s"})`);
     identityConfidence = identityCeiling;

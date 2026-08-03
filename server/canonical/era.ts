@@ -459,10 +459,22 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
          !ARTWORK_DATE_TYPES.has(e.type),
   );
 
+  // Route U selector: user statements that could CONFIRM VINTAGE. Excludes
+  // modern_broad on purpose — "this is modern" must not open a vintage route.
   const userEra = effective.filter(
     e => e.photo_slot === "user_confirmed" &&
          e.type !== "style_only" &&
          e.supports !== "modern_broad",
+  );
+
+  // Confidence selector: ANY user era statement, including "this is modern".
+  // Separate from the above because the two questions differ — Route U asks
+  // "can this confirm vintage", this asks "did the user state the era". A user
+  // saying the item is modern is exactly as authoritative as one saying it is
+  // vintage, and using the Route U list left "Modern" stuck at the model's own
+  // number while every other phrasing reached 100.
+  const userEraAny = effective.filter(
+    e => e.photo_slot === "user_confirmed" && e.type !== "style_only",
   );
 
   if (wantsVintage) {
@@ -488,7 +500,11 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
       // unlock a Diamond.
       route = "U";
       vintageForUnlocks = false;
-      cap = Math.min(cap, 95);
+      // 100, not 95. FlipStart is fully confident about what the user
+      // explicitly reported — that is a statement about the REPORT, not an
+      // independent authentication. Capping at 95 was a hedge with no meaning:
+      // there is no residual doubt about what someone typed.
+      cap = Math.min(cap, 100);
       log("ERA_USER_CONFIRMED", "confirmed_vintage_route", "none", "U",
           `user-confirmed era: ${userEra.map(e => e.type).join(", ")}`,
           "", false);
@@ -570,6 +586,30 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
   // 7. Apply cap, then re-check the Enhanced confidence floor. A photo-slot
   //    ceiling can bite after route selection and drag confidence under 90.
   let confidence = Math.max(0, Math.min(100, Math.round(era.era_confidence)));
+
+  // ── User-confirmed era is a FLOOR, not a ceiling ────────────────────────────
+  //
+  // Every other control here caps. Raising the cap for user-confirmed era did
+  // nothing, because the model's own number passes straight through: it was
+  // returning era_confidence 55 for a fact the user had stated outright, and 55
+  // survived a ceiling of 100 untouched.
+  //
+  // There is no residual doubt about what somebody typed. 100 is a statement
+  // about the REPORT — FlipStart is certain what the user said — not an
+  // independent authentication of the item.
+  //
+  // Requires a non-style user_confirmed evidence entry, so "Y2K style" cannot
+  // buy authoritative confidence for a production claim. A real contradiction
+  // still wins: the conflict cap below is applied after this.
+  const hasUserEra = userEraAny.length > 0;
+  if (hasUserEra && confidence < 100) {
+    log("ERA_CONFIDENCE_USER_AUTHORITATIVE", "era.era_confidence",
+        String(confidence), "100",
+        "era stated by the user; confidence reflects certainty about the statement",
+        "", false);
+    confidence = 100;
+  }
+
   if (conflicts.length > 0) cap = Math.min(cap, 60);
   confidence = Math.min(confidence, cap);
 
@@ -663,11 +703,32 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
 /** Y2K title eligibility. Requires a validated MANUFACTURING year in the window —
  *  style_era y2k alone never qualifies, and Route B cannot produce a year. */
 export function qualifiesForY2kPrefix(e: DerivedEraEffective): boolean {
-  return e.status === "confirmed_vintage" &&
-         e.production_year_effective != null &&
-         e.production_year_effective >= 1998 &&
-         e.production_year_effective <= 2004 &&
-         (e.production_year_source === "verified_manufacturing_date" ||
-          e.production_year_source === "verified_date_code" ||
-          e.production_year_source === "agreed_multiple");
+  // Photo-derived path: an exact year from a verified manufacturing source.
+  // Unchanged — a Y2K prefix inferred from styling is exactly what this bars.
+  const photoVerified =
+    e.status === "confirmed_vintage" &&
+    e.production_year_effective != null &&
+    e.production_year_effective >= 1998 &&
+    e.production_year_effective <= 2004 &&
+    (e.production_year_source === "verified_manufacturing_date" ||
+     e.production_year_source === "verified_date_code" ||
+     e.production_year_source === "agreed_multiple");
+  if (photoVerified) return true;
+
+  // User-confirmed path.
+  //
+  // "Y2K" from someone holding the item IS a production-era claim. It spans
+  // 1998-2004, so it yields no single year and no verified year source — which
+  // meant the photo rule above could never pass and the prefix never appeared,
+  // even with era_status already confirmed_vintage.
+  //
+  // Requires a user_confirmed evidence entry that actually names Y2K or the
+  // millennium, and is NOT style_only: "Y2K style" describes the look and must
+  // not produce a Y2K production prefix.
+  const userY2k = e.evidence.some(
+    ev => ev.photo_slot === "user_confirmed" &&
+          ev.type !== "style_only" &&
+          /\by2\s?k\b|\bmillennium\b/i.test(ev.observation),
+  );
+  return e.status === "confirmed_vintage" && userY2k;
 }

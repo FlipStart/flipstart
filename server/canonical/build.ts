@@ -12,9 +12,13 @@
 import type {
   AiAnalysis, CanonicalAnalysisV1, CanonicalMeta, DerivedAnalysis,
   DerivedIdentification, DerivedPricing, PhotoSlot,
+  DerivedConditionSummary, DerivedEraEffective,
 } from "../../shared/canonical.types.js";
 import { validateAnalysis } from "./validate.js";
 import { validateEra, qualifiesForY2kPrefix } from "./era.js";
+import {
+  conditionAdjustments, isCommonModernBasic, commonBasicCeiling,
+} from "./priceAdjust.js";
 import { evaluateRecognition, evaluateDiamondEligibility } from "../recognition/matcher.js";
 
 export interface BuildInput {
@@ -59,7 +63,10 @@ export function buildCanonicalAnalysis(input: BuildInput): CanonicalAnalysisV1 {
   const identification = buildDisplayName(v.cleaned, recognition, eraRes.effective);
 
   // 5. Pricing. Null is a real state and must never render as $0.
-  const pricing = buildPricing(v.cleaned);
+  // Pricing is built AFTER era and condition are validated, and receives both.
+  // Previously it took only ai.pricing and returned adjustments: [] — so a
+  // confirmed tear or a confirmed vintage could never move the number.
+  const pricing = buildPricing(v.cleaned, v.conditionSummary, eraRes.effective);
 
   // 6. Progress and Diamonds — structured fields only.
   const validationPassed = true; // hard failures throw before reaching here
@@ -141,9 +148,14 @@ function buildDisplayName(
   };
 }
 
-function buildPricing(ai: AiAnalysis): DerivedPricing {
-  const { low, high } = ai.pricing.ai_estimated_resale_range;
-  const usable = low != null && high != null && Number.isFinite(low) && Number.isFinite(high);
+function buildPricing(
+  ai: AiAnalysis,
+  condition: DerivedConditionSummary,
+  era: DerivedEraEffective,
+): DerivedPricing {
+  const { low: rawLow, high: rawHigh } = ai.pricing.ai_estimated_resale_range;
+  const usable = rawLow != null && rawHigh != null &&
+                 Number.isFinite(rawLow) && Number.isFinite(rawHigh);
 
   if (!usable) {
     return {
@@ -153,12 +165,49 @@ function buildPricing(ai: AiAnalysis): DerivedPricing {
     };
   }
 
+  const adjustments = [...conditionAdjustments(ai, condition)];
+  let adjLow = rawLow as number, adjHigh = rawHigh as number;
+
+  // ── Common modern basic ceiling ─────────────────────────────────────────────
+  // The model still overprices recognisable-brand basics despite the prompt
+  // telling it not to. A recognisable label is not a value driver, so this caps
+  // the estimate unless a concrete premium signal is present — in which case
+  // isCommonModernBasic returns false and nothing here applies.
+  if (isCommonModernBasic(ai, era)) {
+    const ceiling = commonBasicCeiling(ai);
+    if (ceiling != null && adjHigh > ceiling) {
+      const factor = ceiling / adjHigh;
+      adjustments.push({
+        reason: `Common modern ${ai.identification.item_type} — no premium model, graphic or material identified`,
+        impact: -Math.round((1 - factor) * 100) / 100,
+        source: "server",
+      });
+      adjLow = adjLow * factor;
+      adjHigh = ceiling;
+    }
+  }
+
+  // ── Condition ───────────────────────────────────────────────────────────────
+  const condPct = adjustments
+    .filter(a => a.reason.startsWith("Reduced for"))
+    .reduce((s, a) => s + Math.abs(a.impact), 0);
+  if (condPct > 0) {
+    const keep = Math.max(0.35, 1 - condPct);
+    adjLow  = adjLow  * keep;
+    adjHigh = adjHigh * keep;
+    // A serious defect on a cheap item must not round away to nothing.
+    if (condPct >= 0.3 && adjHigh > 4) adjHigh = Math.min(adjHigh, (rawHigh as number) - 3);
+  }
+
+  const low  = Math.max(1, Math.round(adjLow));
+  const high = Math.max(low, Math.round(adjHigh));
   const point = Math.round((low + high) / 2);
   return {
-    resale_low: Math.round(low),
-    resale_high: Math.round(high),
+    resale_low: low,
+    resale_high: high,
     resale_point: point,
-    adjustments: [],
+    // Was hardcoded [] — the reason condition and era could never move price.
+    adjustments,
     // Left null here on purpose: max buy depends on the user's minimum-profit
     // setting, which belongs to the recommendation module, not the analysis.
     max_buy_price: null,
