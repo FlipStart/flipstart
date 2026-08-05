@@ -507,6 +507,40 @@ const compsRouter = router({
                cappedTo: capped, ...estimateBatchCost(capped) };
     }),
 
+  /**
+   * Live provider probe — the smallest possible real call.
+   *
+   * Takes a raw keyword and nothing else, so it can be run before any scan
+   * exists. Its only job is to prove the integration works end to end: key
+   * accepted, header format right, documented parameter names correct, response
+   * shape matching the normalizer, statistics computing.
+   *
+   * Every one of those is currently unverified — the adapter has never made a
+   * real call. If this fails, no amount of item-mix testing matters, so it is
+   * the correct first request to spend.
+   *
+   * Counts against the budget exactly like any other request.
+   */
+  probe: publicProcedure
+    .input(z.object({
+      secret: z.string().min(1).max(512),
+      keyword: z.string().min(2).max(120),
+      historyDays: z.number().int().min(1).max(365).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      if (!compsFounderAuthorised(input.secret)) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
+      if ((process.env.COMPS_ENABLED ?? "").trim() !== "true") {
+        return { ok: false as const, errorCode: "FEATURE_DISABLED" };
+      }
+      const { probeCompsKeyword } = await import("./comps/probe.js");
+      const rec = await probeCompsKeyword(input.keyword, input.historyDays ?? 90);
+      console.log(`[comps:probe] "${input.keyword}" ${rec.ok ? "ok" : rec.errorCode}` +
+                  ` raw:${rec.rawCount ?? 0} kept:${rec.kept ?? 0}` +
+                  (rec.median != null ? ` median:$${rec.median}` : "") +
+                  ` ${rec.totalMs}ms`);
+      return rec;
+    }),
+
   run: publicProcedure
     .input(z.object({
       secret: z.string().min(1).max(512),
