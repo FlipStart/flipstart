@@ -11,6 +11,10 @@ import { toLegacyShape } from "./compat/toLegacyShape.js";
 import { grantDevScans, revokeDevGrant, devGrantStatus } from "./devGrants.js";
 import { buildServerUserContext, userContextAllowedFor } from "./userContextServer.js";
 import { conditionFactKey } from "./canonical/validate.js";
+import { runCompsForAnalysis } from "./comps/index.js";
+import { compsFounderAuthorised } from "./comps/auth.js";
+import { compsCacheStats } from "./comps/cache.js";
+import { budgetState, estimateBatchCost } from "./comps/budget.js";
 import { renderUserContextBlock } from "../shared/userContext.js";
 import { saveScanContext, getScanContext } from "./scanContextStore.js";
 import { randomUUID } from "node:crypto";
@@ -454,6 +458,128 @@ const devRouter = router({
     .mutation(({ input }) => ({ ok: revokeDevGrant(input.secret, input.scannerId) })),
 });
 
+/**
+ * Sold comps — PHASE 0, founder-only manual validation.
+ *
+ * Deliberately NOT wired into the scan pipeline. Nothing here touches pricing,
+ * ratings, listings or the UI. Its only job is to let a founder run comps by
+ * hand against a stored analysis and see whether the data is trustworthy before
+ * any of it influences a buy/skip decision.
+ *
+ * Gated on COMPS_FOUNDER_SECRET with a timing-safe comparison. Two independent
+ * gates: the feature flag AND the secret. Either being absent means no request
+ * reaches the provider, so a misconfigured deploy cannot quietly start spending
+ * quota.
+ */
+/** Hard ceiling on a single founder batch. Not configurable — an env variable
+ *  here would be one typo away from defeating the point. */
+const BATCH_MAX = 25;
+
+const compsRouter = router({
+  status: publicProcedure
+    .input(z.object({ secret: z.string().min(1).max(512) }))
+    .query(({ input }) => {
+      if (!compsFounderAuthorised(input.secret)) return { ok: false as const, reason: "FOUNDER_ONLY" };
+      return {
+        ok: true as const,
+        enabled: (process.env.COMPS_ENABLED ?? "").trim() === "true",
+        // Presence only. The key itself never leaves the adapter.
+        providerConfigured: Boolean((process.env.SOLDCOMPS_API_KEY ?? "").trim()),
+        cache: compsCacheStats(),
+        budget: budgetState(),
+      };
+    }),
+
+  /**
+   * Estimate a batch BEFORE running it.
+   *
+   * Separate call on purpose: a founder sees the worst-case request count and
+   * the remaining headroom, then decides. A batch that silently spent 25
+   * requests because someone pasted a longer list than they meant to is exactly
+   * the accident worth one extra round trip to avoid.
+   */
+  estimateBatch: publicProcedure
+    .input(z.object({ secret: z.string().min(1).max(512), analysisCount: z.number().int().min(0).max(1000) }))
+    .query(({ input }) => {
+      if (!compsFounderAuthorised(input.secret)) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
+      const capped = Math.min(input.analysisCount, BATCH_MAX);
+      return { ok: true as const, batchMax: BATCH_MAX, requested: input.analysisCount,
+               cappedTo: capped, ...estimateBatchCost(capped) };
+    }),
+
+  run: publicProcedure
+    .input(z.object({
+      secret: z.string().min(1).max(512),
+      // The analysis to run comps against. Passed whole so Phase 0 needs no
+      // analysis store — the founder already has it from the scan response.
+      canonical: z.any(),
+    }))
+    .mutation(async ({ input }) => {
+      const authorised = compsFounderAuthorised(input.secret);
+      if (!authorised) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
+      if (!input.canonical?.ai || !input.canonical?.derived) {
+        return { ok: false as const, errorCode: "INVALID_REQUEST" };
+      }
+      // Flag, eligibility, cache and budget are all enforced inside
+      // runCompsForAnalysis so the order cannot drift between call sites.
+      const rec = await runCompsForAnalysis(input.canonical, { founderAuthorised: authorised });
+      // Telemetry carries no listing content and never the API key.
+      console.log(
+        `[comps] ${rec.ok ? "ok" : "fail"} ${rec.totalMs}ms` +
+        (rec.query ? ` q:"${rec.query.text}" days:${rec.query.historyDays}` : "") +
+        (rec.provider ? ` raw:${rec.provider.rawCount} cache:${rec.provider.cacheHit}` : "") +
+        (rec.summary ? ` kept:${rec.summary.stats?.sampleSize ?? 0} conf:${rec.summary.confidence}` : "") +
+        (rec.errorCode ? ` err:${rec.errorCode}` : "") +
+        (rec.ineligibleReason ? ` skip:${rec.ineligibleReason}` : "") +
+        (rec.budget ? ` budget:${rec.budget.dailyUsed}/${rec.budget.dailyLimit}d ${rec.budget.monthlyUsed}/${rec.budget.monthlyLimit}m` : "")
+      );
+      return rec;
+    }),
+
+  /**
+   * Founder batch validation.
+   *
+   * Requires an EXPLICIT list of analyses — there is deliberately no "run every
+   * saved scan" path, because that is the single easiest way to convert a typo
+   * into a month of quota.
+   *
+   * Sequential, never concurrent: the provider allows 60 requests/minute, and a
+   * parallel burst would trip its rate limiter and waste the very quota this is
+   * protecting. Sequential also means a mid-run budget exhaustion stops the
+   * batch instead of firing the rest anyway.
+   */
+  runBatch: publicProcedure
+    .input(z.object({
+      secret: z.string().min(1).max(512),
+      analyses: z.array(z.any()).min(1).max(BATCH_MAX),
+      /** Must be true. The estimate call shows the cost; this acknowledges it. */
+      confirmed: z.literal(true),
+    }))
+    .mutation(async ({ input }) => {
+      const authorised = compsFounderAuthorised(input.secret);
+      if (!authorised) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
+      if (input.analyses.length > BATCH_MAX) {
+        return { ok: false as const, errorCode: "BATCH_TOO_LARGE", batchMax: BATCH_MAX };
+      }
+
+      const results: unknown[] = [];
+      let stopped: string | null = null;
+      for (const a of input.analyses) {
+        if (!a?.ai || !a?.derived) { results.push({ ok: false, errorCode: "INVALID_REQUEST" }); continue; }
+        const rec = await runCompsForAnalysis(a, { founderAuthorised: authorised });
+        results.push(rec);
+        // Stop the whole batch the moment budget runs out. Continuing would
+        // produce a run of identical failures and hide the real cause.
+        if (rec.errorCode === "COMPS_BUDGET_EXHAUSTED") { stopped = "COMPS_BUDGET_EXHAUSTED"; break; }
+      }
+      console.log(`[comps] batch ${results.length}/${input.analyses.length}` +
+                  (stopped ? ` stopped:${stopped}` : "") +
+                  ` budget:${budgetState().dailyUsed}/${budgetState().dailyLimit}d`);
+      return { ok: true as const, processed: results.length, requested: input.analyses.length,
+               stopped, results, budget: budgetState() };
+    }),
+});
+
 const feedbackRouter = router({
 
   submit: publicProcedure
@@ -516,6 +642,7 @@ const feedbackRouter = router({
 
 export const appRouter = router({
   dev: devRouter,
+  comps: compsRouter,
   scan:     appRouter_scan,
   feedback: feedbackRouter,
   system:   systemRouter,
