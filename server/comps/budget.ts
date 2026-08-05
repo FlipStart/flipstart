@@ -35,10 +35,44 @@ export interface BudgetState {
 const DEFAULT_DAILY = 50;
 const DEFAULT_MONTHLY = 500;
 
-function envInt(name: string, fallback: number): number {
-  const raw = Number.parseInt((process.env[name] ?? "").trim(), 10);
-  if (!Number.isFinite(raw) || raw < 0) return fallback;
-  return raw;
+/**
+ * Read the first of several accepted names.
+ *
+ * Both the short and long forms are honoured because a budget variable that is
+ * silently ignored is the worst possible failure here: it looks configured, and
+ * you only discover it was not when the real spend arrives. Accepting either
+ * name costs nothing and removes a whole class of typo.
+ */
+function envInt(names: string[], fallback: number): number {
+  for (const name of names) {
+    const v = (process.env[name] ?? "").trim();
+    if (!v) continue;
+    const raw = Number.parseInt(v, 10);
+    if (Number.isFinite(raw) && raw >= 0) return raw;
+    // Present but malformed — fail closed to the safe default rather than
+    // treating garbage as "unlimited".
+    console.warn(`[comps] ${name}="${v}" is not a valid number; using ${fallback}`);
+    return fallback;
+  }
+  return fallback;
+}
+
+const DAILY_NAMES = [
+  "SOLD_COMPS_DAILY_BUDGET",
+  "SOLD_COMPS_DAILY_REQUEST_BUDGET",
+  "COMPS_DAILY_BUDGET",
+];
+const MONTHLY_NAMES = [
+  "SOLD_COMPS_MONTHLY_BUDGET",
+  "SOLD_COMPS_MONTHLY_REQUEST_BUDGET",
+  "COMPS_MONTHLY_BUDGET",
+];
+
+/** Which variable name actually supplied each limit. Surfaced by comps.status so
+ *  a misconfiguration is visible instead of silent. */
+export function budgetSource(): { daily: string | null; monthly: string | null } {
+  const found = (names: string[]) => names.find(n => (process.env[n] ?? "").trim()) ?? null;
+  return { daily: found(DAILY_NAMES), monthly: found(MONTHLY_NAMES) };
 }
 
 function startOfUtcDay(now: number): number {
@@ -66,10 +100,10 @@ export function budgetState(now = Date.now()): BudgetState {
   roll(now);
   return {
     dailyUsed: counters.dayCount,
-    dailyLimit: envInt("SOLD_COMPS_DAILY_REQUEST_BUDGET", DEFAULT_DAILY),
+    dailyLimit: envInt(DAILY_NAMES, DEFAULT_DAILY),
     dailyResetsAt: counters.dayKey + 86_400_000,
     monthlyUsed: counters.monthCount,
-    monthlyLimit: envInt("SOLD_COMPS_MONTHLY_REQUEST_BUDGET", DEFAULT_MONTHLY),
+    monthlyLimit: envInt(MONTHLY_NAMES, DEFAULT_MONTHLY),
     monthlyResetsAt: new Date(Date.UTC(
       new Date(counters.monthKey).getUTCFullYear(),
       new Date(counters.monthKey).getUTCMonth() + 1, 1)).getTime(),
@@ -104,21 +138,6 @@ export function releaseRequest(): void {
   if (counters.monthCount > 0) counters.monthCount--;
 }
 
-/** How many requests a batch of N items could cost, worst case. Shown to the
- *  founder BEFORE anything runs. */
-export function estimateBatchCost(itemCount: number, now = Date.now()) {
-  const s = budgetState(now);
-  const remainingDaily = Math.max(0, s.dailyLimit - s.dailyUsed);
-  const remainingMonthly = Math.max(0, s.monthlyLimit - s.monthlyUsed);
-  const headroom = Math.min(remainingDaily, remainingMonthly);
-  return {
-    maxRequests: itemCount,          // worst case: every item a cache miss
-    remainingDaily, remainingMonthly,
-    wouldExceed: itemCount > headroom,
-    canRunNow: Math.min(itemCount, headroom),
-    state: s,
-  };
-}
 
 /** Test seam only. */
 export function __resetBudget(): void {

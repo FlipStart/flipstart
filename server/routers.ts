@@ -13,8 +13,9 @@ import { buildServerUserContext, userContextAllowedFor } from "./userContextServ
 import { conditionFactKey } from "./canonical/validate.js";
 import { runCompsForAnalysis } from "./comps/index.js";
 import { compsFounderAuthorised } from "./comps/auth.js";
+import { saveAnalysis, getLatestAnalysis, getAnalysis } from "./analysisStore.js";
 import { compsCacheStats } from "./comps/cache.js";
-import { budgetState, estimateBatchCost } from "./comps/budget.js";
+import { budgetState, budgetSource } from "./comps/budget.js";
 import { renderUserContextBlock } from "../shared/userContext.js";
 import { saveScanContext, getScanContext } from "./scanContextStore.js";
 import { randomUUID } from "node:crypto";
@@ -202,6 +203,15 @@ const appRouter_scan = router({
               planAtScan: "free",
               photoRefs,
               userContext: userCtx,
+            });
+
+            // Stored so comps (and later, anything else) can be run against
+            // this exact analysis without the client re-posting 15KB of JSON.
+            saveAnalysis({
+              analysisId,
+              scanAttemptId: input.scanAttemptId ?? analysisId,
+              ownerId: sid ?? "",
+              canonical,
             });
 
             // Store for Generate Listings, tied to the owner so the listing
@@ -471,10 +481,6 @@ const devRouter = router({
  * reaches the provider, so a misconfigured deploy cannot quietly start spending
  * quota.
  */
-/** Hard ceiling on a single founder batch. Not configurable — an env variable
- *  here would be one typo away from defeating the point. */
-const BATCH_MAX = 25;
-
 const compsRouter = router({
   status: publicProcedure
     .input(z.object({ secret: z.string().min(1).max(512) }))
@@ -487,135 +493,79 @@ const compsRouter = router({
         providerConfigured: Boolean((process.env.SOLDCOMPS_API_KEY ?? "").trim()),
         cache: compsCacheStats(),
         budget: budgetState(),
+        // Which env var name supplied each limit, so a typo shows up here
+        // instead of silently applying the default.
+        budgetSource: budgetSource(),
       };
     }),
 
   /**
-   * Estimate a batch BEFORE running it.
+   * In-app comps for a scan the caller owns.
    *
-   * Separate call on purpose: a founder sees the worst-case request count and
-   * the remaining headroom, then decides. A batch that silently spent 25
-   * requests because someone pasted a longer list than they meant to is exactly
-   * the accident worth one extra round trip to avoid.
+   * No founder secret: this is the path the app itself uses. Gated on the same
+   * allow-list as CanonicalAnalysisV1, so during testing it reaches your account
+   * only and cannot leak to real users — but it needs no terminal.
+   *
+   * PHASE 1a: DISPLAY ONLY. The result is shown next to the AI estimate and does
+   * not change it. Pricing stays on the AI number until comps have proven
+   * accurate on real items; wiring them in first would risk making prices worse
+   * than they are today, which is the one outcome worth avoiding more than
+   * shipping late.
    */
-  estimateBatch: publicProcedure
-    .input(z.object({ secret: z.string().min(1).max(512), analysisCount: z.number().int().min(0).max(1000) }))
-    .query(({ input }) => {
-      if (!compsFounderAuthorised(input.secret)) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
-      const capped = Math.min(input.analysisCount, BATCH_MAX);
-      return { ok: true as const, batchMax: BATCH_MAX, requested: input.analysisCount,
-               cappedTo: capped, ...estimateBatchCost(capped) };
-    }),
-
-  /**
-   * Live provider probe — the smallest possible real call.
-   *
-   * Takes a raw keyword and nothing else, so it can be run before any scan
-   * exists. Its only job is to prove the integration works end to end: key
-   * accepted, header format right, documented parameter names correct, response
-   * shape matching the normalizer, statistics computing.
-   *
-   * Every one of those is currently unverified — the adapter has never made a
-   * real call. If this fails, no amount of item-mix testing matters, so it is
-   * the correct first request to spend.
-   *
-   * Counts against the budget exactly like any other request.
-   */
-  probe: publicProcedure
+  forScan: publicProcedure
     .input(z.object({
-      secret: z.string().min(1).max(512),
-      keyword: z.string().min(2).max(120),
-      historyDays: z.number().int().min(1).max(365).optional(),
+      scannerId: z.string().min(1).max(200),
+      analysisId: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
-      if (!compsFounderAuthorised(input.secret)) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
-      if ((process.env.COMPS_ENABLED ?? "").trim() !== "true") {
-        return { ok: false as const, errorCode: "FEATURE_DISABLED" };
+      const sid = input.scannerId.trim();
+      // Same gate as V1 scanning. Ordinary users get a clean "unavailable".
+      if (!canonicalV1EnabledFor(sid)) {
+        return { ok: false as const, errorCode: "NOT_AVAILABLE" };
       }
-      const { probeCompsKeyword } = await import("./comps/probe.js");
-      const rec = await probeCompsKeyword(input.keyword, input.historyDays ?? 90);
-      console.log(`[comps:probe] "${input.keyword}" ${rec.ok ? "ok" : rec.errorCode}` +
-                  ` raw:${rec.rawCount ?? 0} kept:${rec.kept ?? 0}` +
-                  (rec.median != null ? ` median:$${rec.median}` : "") +
-                  ` ${rec.totalMs}ms`);
-      return rec;
-    }),
+      const stored = input.analysisId
+        ? getAnalysis(input.analysisId, sid)
+        : getLatestAnalysis(sid);
+      if (!stored) return { ok: false as const, errorCode: "ANALYSIS_NOT_FOUND" };
 
-  run: publicProcedure
-    .input(z.object({
-      secret: z.string().min(1).max(512),
-      // The analysis to run comps against. Passed whole so Phase 0 needs no
-      // analysis store — the founder already has it from the scan response.
-      canonical: z.any(),
-    }))
-    .mutation(async ({ input }) => {
-      const authorised = compsFounderAuthorised(input.secret);
-      if (!authorised) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
-      if (!input.canonical?.ai || !input.canonical?.derived) {
-        return { ok: false as const, errorCode: "INVALID_REQUEST" };
-      }
-      // Flag, eligibility, cache and budget are all enforced inside
-      // runCompsForAnalysis so the order cannot drift between call sites.
-      const rec = await runCompsForAnalysis(input.canonical, { founderAuthorised: authorised });
-      // Telemetry carries no listing content and never the API key.
+      const rec = await runCompsForAnalysis(stored.canonical, { founderAuthorised: true });
+      const ai = stored.canonical.derived.pricing;
       console.log(
-        `[comps] ${rec.ok ? "ok" : "fail"} ${rec.totalMs}ms` +
-        (rec.query ? ` q:"${rec.query.text}" days:${rec.query.historyDays}` : "") +
-        (rec.provider ? ` raw:${rec.provider.rawCount} cache:${rec.provider.cacheHit}` : "") +
-        (rec.summary ? ` kept:${rec.summary.stats?.sampleSize ?? 0} conf:${rec.summary.confidence}` : "") +
-        (rec.errorCode ? ` err:${rec.errorCode}` : "") +
-        (rec.ineligibleReason ? ` skip:${rec.ineligibleReason}` : "") +
-        (rec.budget ? ` budget:${rec.budget.dailyUsed}/${rec.budget.dailyLimit}d ${rec.budget.monthlyUsed}/${rec.budget.monthlyLimit}m` : "")
+        `[comps:forScan] "${stored.canonical.derived.identification.display_item_name}"` +
+        ` ${rec.ok ? "ok" : rec.errorCode ?? rec.ineligibleReason}` +
+        (rec.query ? ` q:"${rec.query.text}"` : "") +
+        (rec.summary?.stats ? ` n:${rec.summary.stats.sampleSize} median:$${rec.summary.stats.median} conf:${rec.summary.confidence} match:${rec.summary.medianMatchScore}` : "") +
+        ` ai:$${ai.resale_low}-$${ai.resale_high} ${rec.totalMs}ms`
       );
-      return rec;
-    }),
 
-  /**
-   * Founder batch validation.
-   *
-   * Requires an EXPLICIT list of analyses — there is deliberately no "run every
-   * saved scan" path, because that is the single easiest way to convert a typo
-   * into a month of quota.
-   *
-   * Sequential, never concurrent: the provider allows 60 requests/minute, and a
-   * parallel burst would trip its rate limiter and waste the very quota this is
-   * protecting. Sequential also means a mid-run budget exhaustion stops the
-   * batch instead of firing the rest anyway.
-   */
-  runBatch: publicProcedure
-    .input(z.object({
-      secret: z.string().min(1).max(512),
-      analyses: z.array(z.any()).min(1).max(BATCH_MAX),
-      /** Must be true. The estimate call shows the cost; this acknowledges it. */
-      confirmed: z.literal(true),
-    }))
-    .mutation(async ({ input }) => {
-      const authorised = compsFounderAuthorised(input.secret);
-      if (!authorised) return { ok: false as const, errorCode: "FOUNDER_ONLY" };
-      if (input.analyses.length > BATCH_MAX) {
-        return { ok: false as const, errorCode: "BATCH_TOO_LARGE", batchMax: BATCH_MAX };
-      }
-
-      const results: unknown[] = [];
-      let stopped: string | null = null;
-      for (const a of input.analyses) {
-        if (!a?.ai || !a?.derived) { results.push({ ok: false, errorCode: "INVALID_REQUEST" }); continue; }
-        const rec = await runCompsForAnalysis(a, { founderAuthorised: authorised });
-        results.push(rec);
-        // Stop the whole batch the moment budget runs out. Continuing would
-        // produce a run of identical failures and hide the real cause.
-        if (rec.errorCode === "COMPS_BUDGET_EXHAUSTED") { stopped = "COMPS_BUDGET_EXHAUSTED"; break; }
-      }
-      console.log(`[comps] batch ${results.length}/${input.analyses.length}` +
-                  (stopped ? ` stopped:${stopped}` : "") +
-                  ` budget:${budgetState().dailyUsed}/${budgetState().dailyLimit}d`);
-      return { ok: true as const, processed: results.length, requested: input.analyses.length,
-               stopped, results, budget: budgetState() };
+      // Trimmed to what the screen needs. Full diagnostics stay on runLatest.
+      return {
+        ok: rec.ok,
+        errorCode: rec.errorCode,
+        ineligibleReason: rec.ineligibleReason,
+        query: rec.query?.text ?? null,
+        historyDays: rec.query?.historyDays ?? null,
+        cacheHit: rec.provider?.cacheHit ?? false,
+        stats: rec.summary?.stats ?? null,
+        confidence: rec.summary?.confidence ?? null,
+        matchScore: rec.summary?.medianMatchScore ?? null,
+        examined: rec.provider?.rawCount ?? 0,
+        rejectedCount: rec.rejected?.length ?? 0,
+        // Why listings were dropped. This was the only thing the removed
+        // terminal endpoints gave that the screen did not — it is the fastest
+        // signal when a median looks wrong, so it moves here rather than dying
+        // with them.
+        rejectionCounts: rec.rejectionCounts ?? {},
+        comps: (rec.accepted ?? []).slice(0, 8).map(a => ({
+          title: a.title, price: a.soldPrice, shipping: a.shipping,
+          soldAt: a.soldAt, score: a.score, url: a.url,
+        })),
+        aiLow: ai.resale_low, aiHigh: ai.resale_high,
+      };
     }),
 });
 
 const feedbackRouter = router({
-
   submit: publicProcedure
     .input(z.object({
       scanId:             z.string(),

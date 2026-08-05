@@ -8,6 +8,7 @@
 import {
   Text, View, ScrollView, Pressable, Platform, Modal, Animated,
   StyleSheet, TextInput, Alert, KeyboardAvoidingView, Clipboard, BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -275,6 +276,16 @@ export default function ResultsScreen() {
   const { user } = useAuth();
 
   const [thriftEditing,   setThriftEditing]   = useState(false);
+
+  // ── Sold comps ──────────────────────────────────────────────────────────────
+  // Fetched AFTER the analysis lands, never before: the search query is built
+  // from the AI's brand and item type, so comps cannot run in parallel. Doing it
+  // in the background rather than in-line keeps the rating on screen at the same
+  // speed it is today.
+  const [comps, setComps] = useState<any | null>(null);
+  const [compsLoading, setCompsLoading] = useState(false);
+  const compsFetchedFor = useRef<string | null>(null);
+  const compsMutation = trpc.comps.forScan.useMutation();
   const [listingsLoading, setListingsLoading] = useState(false);
   const [listingsError,   setListingsError]   = useState(false);
   const [imageModalOpen,  setImageModalOpen]  = useState(false);
@@ -315,6 +326,34 @@ export default function ResultsScreen() {
   // Use underscored optionals before the guard so useMemo can run unconditionally
   const _md = currentScan?.market_data;
   const _id = currentScan?.identification;
+
+  // Fire once per analysis. Keyed on analysisId rather than scan id so a
+  // re-render, a screen return or a thrift-price edit cannot trigger a second
+  // metered request.
+  useEffect(() => {
+    const analysisId = (_id as any)?.v1?.analysisId;
+    if (!analysisId) return;
+    if (compsFetchedFor.current === analysisId) return;
+    compsFetchedFor.current = analysisId;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getScannerId } = await import('@/lib/analytics');
+        const scannerId = user?.id ?? await getScannerId().catch(() => undefined);
+        if (!scannerId) return;
+        setCompsLoading(true);
+        const res = await compsMutation.mutateAsync({ scannerId, analysisId });
+        if (!cancelled) setComps(res);
+      } catch {
+        // A comps failure must never affect the scan the user is reading.
+        if (!cancelled) setComps(null);
+      } finally {
+        if (!cancelled) setCompsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [(_id as any)?.v1?.analysisId]);
   const _ra = currentScan?.risk_analysis;
 
   const thriftPriceStr  = pendingThriftPrices[currentScan?.id ?? ''] ?? '';
@@ -1392,10 +1431,102 @@ export default function ResultsScreen() {
                 </View>
               ))}
             </ScrollView>
-            <View style={s.compNoteRow}>
-              <MaterialIcons name="schedule" size={12} color={MUTED} />
-              <Text style={s.compNote}>Live comp breakdown coming soon.</Text>
-            </View>
+            {/* ── Live comps ──────────────────────────────────────────────
+                DISPLAY ONLY for now. Shown beside the AI estimate rather than
+                replacing it, because comps have not been validated on real
+                items yet — letting them move the price before that could make
+                estimates worse than they are today. */}
+            {compsLoading && (
+              <View style={s.compNoteRow}>
+                <ActivityIndicator size="small" color={GOLD} />
+                <Text style={s.compNote}>Checking recent sold listings…</Text>
+              </View>
+            )}
+
+            {!compsLoading && comps?.ok && comps.stats && (
+              <>
+                <View style={s.compStatsRow}>
+                  <View style={s.compStatBox}>
+                    <Text style={s.compStatLabel}>MEDIAN SOLD</Text>
+                    <Text style={s.compStatValue}>${Math.round(comps.stats.median)}</Text>
+                  </View>
+                  <View style={s.compStatBox}>
+                    <Text style={s.compStatLabel}>TYPICAL RANGE</Text>
+                    <Text style={s.compStatValue}>
+                      ${Math.round(comps.stats.p25)}–${Math.round(comps.stats.p75)}
+                    </Text>
+                  </View>
+                  <View style={s.compStatBox}>
+                    <Text style={s.compStatLabel}>SOLD</Text>
+                    <Text style={s.compStatValue}>{comps.stats.sampleSize}</Text>
+                  </View>
+                </View>
+
+                <View style={s.compMetaRow}>
+                  <View style={[s.compConfPill, {
+                    borderColor: comps.confidence === 'high' ? '#2A5A2A'
+                               : comps.confidence === 'medium' ? GOLD : '#8A4A1A',
+                  }]}>
+                    <Text style={[s.compConfText, {
+                      color: comps.confidence === 'high' ? '#2A5A2A'
+                           : comps.confidence === 'medium' ? BROWN : '#8A4A1A',
+                    }]}>
+                      {comps.confidence === 'high' ? 'Strong comps'
+                        : comps.confidence === 'medium' ? 'Decent comps' : 'Weak comps'}
+                    </Text>
+                  </View>
+                  {comps.stats.medianShipping != null && (
+                    <Text style={s.compMetaText}>+${Math.round(comps.stats.medianShipping)} ship</Text>
+                  )}
+                  <Text style={s.compMetaText}>
+                    {comps.examined} examined · {comps.rejectedCount} filtered out
+                  </Text>
+                </View>
+
+                {/* The actual listings. Seeing them is the point — a wrong
+                    median is obvious the moment you read the titles. */}
+                {comps.comps.length > 0 && (
+                  <View style={s.compListWrap}>
+                    {comps.comps.slice(0, 5).map((c: any, i: number) => (
+                      <View key={i} style={s.compListRow}>
+                        <Text style={s.compListPrice}>${Math.round(c.price)}</Text>
+                        <Text style={s.compListTitle} numberOfLines={1}>{c.title}</Text>
+                        <Text style={s.compListScore}>{c.score}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                <Text style={s.compQuery} numberOfLines={2}>
+                  Searched “{comps.query}” · last {comps.historyDays} days
+                  {comps.cacheHit ? ' · cached' : ''}
+                </Text>
+              </>
+            )}
+
+            {!compsLoading && comps && !comps.ok && (
+              <View style={s.compNoteRow}>
+                <MaterialIcons name="info-outline" size={12} color={MUTED} />
+                <Text style={s.compNote}>
+                  {comps.ineligibleReason === 'IDENTITY_TOO_WEAK'
+                    ? 'Not enough detail to search sold listings for this item.'
+                    : comps.ineligibleReason === 'ITEM_TYPE_UNKNOWN'
+                    ? 'Item type unclear — no sold listings searched.'
+                    : comps.errorCode === 'COMPS_BUDGET_EXHAUSTED'
+                    ? 'Daily comp lookups used up.'
+                    : comps.errorCode === 'NOT_AVAILABLE'
+                    ? 'Live comp breakdown coming soon.'
+                    : `No sold comps (${comps.ineligibleReason ?? comps.errorCode}).`}
+                </Text>
+              </View>
+            )}
+
+            {!compsLoading && !comps && (
+              <View style={s.compNoteRow}>
+                <MaterialIcons name="schedule" size={12} color={MUTED} />
+                <Text style={s.compNote}>Live comp breakdown coming soon.</Text>
+              </View>
+            )}
           </View>
 
           {/* ── 5. Your thrift price + compact breakdown ── */}
@@ -1771,6 +1902,21 @@ const s = StyleSheet.create({
                     paddingHorizontal: 10, paddingVertical: 5 },
   riskWhyChipText:{ fontSize: 12, fontWeight: '700', color: BROWN },
   riskWhyNote:    { fontSize: 12, color: BROWN, opacity: 0.85, lineHeight: 17 },
+  compStatsRow:   { flexDirection: 'row', gap: 8, marginTop: 4 },
+  compStatBox:    { flex: 1, backgroundColor: '#FBF6E6', borderRadius: 10, borderWidth: 1,
+                    borderColor: GOLD + '33', paddingHorizontal: 8, paddingVertical: 7 },
+  compStatLabel:  { fontSize: 8.5, fontWeight: '800', color: BROWN, letterSpacing: 0.8, opacity: 0.8 },
+  compStatValue:  { fontSize: 15, fontWeight: '800', color: FOREST, marginTop: 2 },
+  compMetaRow:    { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7, marginTop: 8 },
+  compConfPill:   { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
+  compConfText:   { fontSize: 10.5, fontWeight: '800', letterSpacing: 0.2 },
+  compMetaText:   { fontSize: 10.5, color: MUTED },
+  compListWrap:   { marginTop: 9, gap: 5 },
+  compListRow:    { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  compListPrice:  { fontSize: 12.5, fontWeight: '800', color: FOREST, width: 44 },
+  compListTitle:  { flex: 1, fontSize: 11.5, color: BROWN },
+  compListScore:  { fontSize: 10, fontWeight: '700', color: MUTED, width: 22, textAlign: 'right' },
+  compQuery:      { fontSize: 10, color: MUTED, fontStyle: 'italic', marginTop: 8, lineHeight: 14 },
   statsCard: {
     flexDirection: 'row', backgroundColor: CARD, borderRadius: 18, borderWidth: 1, borderColor: CARD_B,
     marginHorizontal: 14, marginTop: 14, paddingVertical: 16, paddingHorizontal: 6,
