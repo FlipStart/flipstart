@@ -13,6 +13,11 @@ import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
 import { buildCompsQuery } from "./queryBuilder.js";
 import { scoreComp, type ScoredComp, type RejectionReason } from "./matching.js";
 import { summarize, type CompsSummary } from "./stats.js";
+import { evaluateComps, STATS_VERSION, type CompsEvaluation } from "./evaluate.js";
+import {
+  toPublicMatch, normalizeMarketplace, COMP_CONTRACT_VERSION,
+  type PublicSoldCompMatch, type DebugSoldCompMatch,
+} from "./publicContract.js";
 import { compsCacheKey, getCachedComps, putCachedComps } from "./cache.js";
 import { SoldCompsAdapter } from "./soldCompsAdapter.js";
 import { CompsError, type SoldCompsProvider, type CompsIneligibleReason } from "./types.js";
@@ -28,12 +33,33 @@ export interface CompsRunRecord {
   budget?: BudgetState;
   query?: { text: string; historyDays: number; components: unknown[]; candidates: string[] };
   provider?: { name: string; rawCount: number; latencyMs: number; cacheHit: boolean; malformed: number };
-  accepted?: Array<{ title: string; soldPrice: number; shipping: number | null; soldAt: string | null;
-                     score: number; positives: string[]; penalties: string[]; url: string | null }>;
-  rejected?: Array<{ title: string; reason: RejectionReason }>;
+  accepted?: Array<Record<string, unknown>>;
+  topMatches?: Array<Record<string, unknown>>;
+  weak?: Array<Record<string, unknown>>;
+  weakCount?: number;
+  rejected?: Array<{ title: string; reason: RejectionReason; detail: string | null; score: number }>;
+  matchMs?: number;
   rejectionCounts?: Record<string, number>;
+  /** Phase 1 shape, retained for backward compatibility. New consumers should
+   *  read `evaluation.public` — a suppressed median is null there, so it cannot
+   *  be rendered by accident. */
   summary?: CompsSummary;
-  versions: { queryBuilder: string; matchAlgo: string };
+  /** Phase 2. Owns which numbers may be shown. */
+  evaluation?: CompsEvaluation;
+  versions: { queryBuilder: string; matchAlgo: string; stats: string; compContract: string };
+  /** Honest source attribution. `marketplaces` lists only what was actually
+   *  queried — never Depop, Poshmark or Mercari, which are not searched. */
+  source?: {
+    provider: string;
+    marketplaces: string[];
+    fetchedAt: string;
+    historyDays: number;
+    cacheStatus: "hit" | "miss";
+  };
+  /** At most three, fully normalised for the future carousel. */
+  displayMatches?: PublicSoldCompMatch[];
+  /** Founder-only twin of displayMatches. */
+  debugMatches?: DebugSoldCompMatch[];
   totalMs: number;
 }
 
@@ -73,7 +99,8 @@ export async function runCompsForAnalysis(
   ctx: CompsRunContext,
 ): Promise<CompsRunRecord> {
   const t0 = Date.now();
-  const versions = { queryBuilder: QUERY_BUILDER_VERSION, matchAlgo: MATCH_ALGO_VERSION };
+  const versions = { queryBuilder: QUERY_BUILDER_VERSION, matchAlgo: MATCH_ALGO_VERSION,
+                     stats: STATS_VERSION, compContract: COMP_CONTRACT_VERSION };
 
   // 1. Feature flag.
   if ((process.env.COMPS_ENABLED ?? "").trim() !== "true") {
@@ -145,26 +172,89 @@ export async function runCompsForAnalysis(
   }
 
   const seen = new Set<string>();
+  const matchStart = Date.now();
   const scored: ScoredComp[] = items.map(i => scoreComp(c, i, seen));
-  const accepted = scored.filter(s => s.accepted).sort((a, b) => b.score - a.score);
-  const rejected = scored.filter(s => !s.accepted);
+
+  /**
+   * Ranked by SIMILARITY, with deterministic tie-breakers.
+   *
+   * Never by price. A $100 listing outranking a $30 one because it is expensive
+   * is how a plain hoodie ends up with a $65 median.
+   */
+  const accepted = scored.filter(s => s.accepted).sort((a, b) =>
+    b.score - a.score ||
+    a.penalties.length - b.penalties.length ||
+    b.positives.length - a.positives.length ||
+    (b.comp.soldAt ?? "").localeCompare(a.comp.soldAt ?? "") ||
+    a.comp.externalId.localeCompare(b.comp.externalId),
+  );
+  // Cleared the hard rules but under the score floor. Debug only — never shown,
+  // never in the median. Retained because "why was nothing accepted" is
+  // otherwise unanswerable.
+  const weak = scored.filter(s => s.weak);
+  const rejected = scored.filter(s => !s.accepted && !s.weak);
+  const matchMs = Date.now() - matchStart;
   const rejectionCounts: Record<string, number> = {};
   for (const r of rejected) if (r.rejection) rejectionCounts[r.rejection] = (rejectionCounts[r.rejection] ?? 0) + 1;
 
+  const marketplace = normalizeMarketplace("ebay");
+
   return {
     ok: true,
+    source: {
+      provider: provider().providerName,
+      // Only what was actually searched. The screen's Depop / Poshmark / Mercari
+      // logos were implying coverage that does not exist.
+      marketplaces: [marketplace],
+      fetchedAt: new Date(cached?.fetchedAt ?? Date.now()).toISOString(),
+      historyDays: built.historyDays,
+      cacheStatus: cacheHit ? "hit" : "miss",
+    },
     query: { text: built.query, historyDays: built.historyDays,
              components: built.components, candidates: built.candidates },
     provider: { name: provider().providerName, rawCount, latencyMs, cacheHit, malformed },
     budget,
     accepted: accepted.map(s => ({
+      // FULL title, never truncated in storage. The UI clips it visually with
+      // numberOfLines, which does not mutate the value.
       title: s.comp.title, soldPrice: s.comp.soldPrice, shipping: s.comp.shippingPrice,
-      soldAt: s.comp.soldAt, score: s.score, positives: s.positives,
-      penalties: s.penalties, url: s.comp.listingUrl,
+      buyerPaidTotal: s.comp.buyerPaidTotal,
+      soldAt: s.comp.soldAt, score: s.score, matchClass: s.matchClass,
+      positives: s.positives, penalties: s.penalties,
+      url: s.comp.listingUrl, imageUrl: s.comp.imageUrl,
+      externalId: s.comp.externalId, provider: s.comp.provider,
+      bestOfferAccepted: s.comp.bestOfferAccepted,
+      detected: s.detected,
     })),
-    rejected: rejected.map(s => ({ title: s.comp.title.slice(0, 90), reason: s.rejection! })),
+    /** Phase 1 shape, retained so existing consumers keep working. */
+    topMatches: accepted.slice(0, 3).map(s => ({
+      title: s.comp.title, soldPrice: s.comp.soldPrice, shipping: s.comp.shippingPrice,
+      soldAt: s.comp.soldAt, score: s.score, matchClass: s.matchClass,
+      url: s.comp.listingUrl, imageUrl: s.comp.imageUrl,
+      provider: s.comp.provider, positives: s.positives, penalties: s.penalties,
+    })),
+    /**
+     * Phase 3 contract. At most three, ordered by similarity.
+     *
+     * Image presence deliberately plays no part in selection or ordering: a
+     * strong comp with no photo outranks a weaker one that has one, because the
+     * point is accuracy and a prettier carousel built from worse comps is a
+     * worse product.
+     */
+    displayMatches: accepted.slice(0, 3).map(s => toPublicMatch(s, marketplace).pub),
+    debugMatches: accepted.slice(0, 3).map(s => toPublicMatch(s, marketplace).dbg),
+    weak: weak.map(s => ({ title: s.comp.title, soldPrice: s.comp.soldPrice,
+                           score: s.score, penalties: s.penalties })),
+    weakCount: weak.length,
+    rejected: rejected.map(s => ({ title: s.comp.title, reason: s.rejection!,
+                                   detail: s.rejectionDetail, score: s.score })),
     rejectionCounts,
+    matchMs,
     summary: summarize(scored),
+    // Decides eligibility. summarize() returned a $65 median alongside
+    // "insufficient" and the screen rendered it — this is the layer that makes
+    // that impossible, because a suppressed value is null rather than hidden.
+    evaluation: evaluateComps(scored, rawCount),
     versions,
     totalMs: Date.now() - t0,
   };

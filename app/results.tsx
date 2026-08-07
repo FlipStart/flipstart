@@ -24,6 +24,7 @@ import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt, updateHu
 import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
 import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview, openAppStoreReviewPage } from '@/lib/reviewPrompt';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
+import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
 import { FlipResult, isHuntBundle } from '@/types/flip';
@@ -55,7 +56,6 @@ import { trackAnalyticsEvent } from '@/lib/analytics';
 import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice, findBuyThresholdPrice } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
-import PoshmarkLogo from '@/components/logos/PoshmarkLogo';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
@@ -80,25 +80,6 @@ const MUTED  = '#8A7050';
 const GOLD   = '#BE9C2C';
 const CREAM  = '#F4EED8';
 
-// ─── Sold Comp Sources config ─────────────────────────────────────────────────
-// PLACEHOLDER marketplaces (no live data yet). eBay shows logo only; the rest
-// show logo + name. Widths are set per-logo to preserve each one's aspect ratio
-// at a shared height. Poshmark is a real SVG (rendered via PoshmarkLogo); the
-// others are PNGs in assets/images/logos.
-const COMP_LOGO_H = 16;
-const COMP_SOURCES: {
-  name: string;
-  showText: boolean;
-  png?: any;
-  width?: number;     // for PNGs: width at COMP_LOGO_H
-  svg?: 'poshmark';   // marks the SVG-component logo
-}[] = [
-  { name: 'eBay',     showText: false, png: require('@/assets/images/logos/ebay.png'),    width: 40 },
-  { name: 'Depop',    showText: false,  png: require('@/assets/images/logos/depop.png'),   width: 62 },
-  { name: 'Poshmark', showText: false,  svg: 'poshmark' },
-  { name: 'Mercari',  showText: false,  png: require('@/assets/images/logos/mercari.png'), width: 64 },
-  { name: 'Vinted',   showText: false,  png: require('@/assets/images/logos/vinted.png'),  width: 50 },
-];
 
 
 function confidenceLabel(conf: number): { text: string; color: string } {
@@ -1407,127 +1388,15 @@ export default function ResultsScreen() {
             ))}
           </View>
 
-          {/* ── 4. Sold Comp Sources (placeholder marketplaces) ── */}
-          <View style={s.card}>
-            <View style={s.compHeaderRow}>
-              <Text style={s.compTitle}>Sold Comp Sources</Text>
-              <MaterialIcons name="info-outline" size={15} color={MUTED} />
-            </View>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={s.compScrollContent}
-            >
-              {COMP_SOURCES.map(src => (
-                <View key={src.name} style={s.compItem}>
-                  {src.svg === 'poshmark'
-                    ? <PoshmarkLogo height={10} />
-                    : <Image
-                        source={src.png}
-                        style={{ width: Math.min(src.width ?? 48, 48), height: COMP_LOGO_H }}
-                        contentFit="contain"
-                      />}
-                  {src.showText && <Text style={s.compPillText}>{src.name}</Text>}
-                </View>
-              ))}
-            </ScrollView>
-            {/* ── Live comps ──────────────────────────────────────────────
-                DISPLAY ONLY for now. Shown beside the AI estimate rather than
-                replacing it, because comps have not been validated on real
-                items yet — letting them move the price before that could make
-                estimates worse than they are today. */}
-            {compsLoading && (
-              <View style={s.compNoteRow}>
-                <ActivityIndicator size="small" color={GOLD} />
-                <Text style={s.compNote}>Checking recent sold listings…</Text>
-              </View>
-            )}
+          {/* ── 4. Recent Sold Comps ─────────────────────────────────────────
+              Replaced a debug-style box: a hardcoded row of five marketplace
+              logos (only eBay is actually searched), a plain pill for stats, and
+              one-line titles with no way to read the rest.
 
-            {!compsLoading && comps?.ok && comps.stats && (
-              <>
-                <View style={s.compStatsRow}>
-                  <View style={s.compStatBox}>
-                    <Text style={s.compStatLabel}>MEDIAN SOLD</Text>
-                    <Text style={s.compStatValue}>${Math.round(comps.stats.median)}</Text>
-                  </View>
-                  <View style={s.compStatBox}>
-                    <Text style={s.compStatLabel}>TYPICAL RANGE</Text>
-                    <Text style={s.compStatValue}>
-                      ${Math.round(comps.stats.p25)}–${Math.round(comps.stats.p75)}
-                    </Text>
-                  </View>
-                  <View style={s.compStatBox}>
-                    <Text style={s.compStatLabel}>SOLD</Text>
-                    <Text style={s.compStatValue}>{comps.stats.sampleSize}</Text>
-                  </View>
-                </View>
-
-                <View style={s.compMetaRow}>
-                  <View style={[s.compConfPill, {
-                    borderColor: comps.confidence === 'high' ? '#2A5A2A'
-                               : comps.confidence === 'medium' ? GOLD : '#8A4A1A',
-                  }]}>
-                    <Text style={[s.compConfText, {
-                      color: comps.confidence === 'high' ? '#2A5A2A'
-                           : comps.confidence === 'medium' ? BROWN : '#8A4A1A',
-                    }]}>
-                      {comps.confidence === 'high' ? 'Strong comps'
-                        : comps.confidence === 'medium' ? 'Decent comps' : 'Weak comps'}
-                    </Text>
-                  </View>
-                  {comps.stats.medianShipping != null && (
-                    <Text style={s.compMetaText}>+${Math.round(comps.stats.medianShipping)} ship</Text>
-                  )}
-                  <Text style={s.compMetaText}>
-                    {comps.examined} examined · {comps.rejectedCount} filtered out
-                  </Text>
-                </View>
-
-                {/* The actual listings. Seeing them is the point — a wrong
-                    median is obvious the moment you read the titles. */}
-                {comps.comps.length > 0 && (
-                  <View style={s.compListWrap}>
-                    {comps.comps.slice(0, 5).map((c: any, i: number) => (
-                      <View key={i} style={s.compListRow}>
-                        <Text style={s.compListPrice}>${Math.round(c.price)}</Text>
-                        <Text style={s.compListTitle} numberOfLines={1}>{c.title}</Text>
-                        <Text style={s.compListScore}>{c.score}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                <Text style={s.compQuery} numberOfLines={2}>
-                  Searched “{comps.query}” · last {comps.historyDays} days
-                  {comps.cacheHit ? ' · cached' : ''}
-                </Text>
-              </>
-            )}
-
-            {!compsLoading && comps && !comps.ok && (
-              <View style={s.compNoteRow}>
-                <MaterialIcons name="info-outline" size={12} color={MUTED} />
-                <Text style={s.compNote}>
-                  {comps.ineligibleReason === 'IDENTITY_TOO_WEAK'
-                    ? 'Not enough detail to search sold listings for this item.'
-                    : comps.ineligibleReason === 'ITEM_TYPE_UNKNOWN'
-                    ? 'Item type unclear — no sold listings searched.'
-                    : comps.errorCode === 'COMPS_BUDGET_EXHAUSTED'
-                    ? 'Daily comp lookups used up.'
-                    : comps.errorCode === 'NOT_AVAILABLE'
-                    ? 'Live comp breakdown coming soon.'
-                    : `No sold comps (${comps.ineligibleReason ?? comps.errorCode}).`}
-                </Text>
-              </View>
-            )}
-
-            {!compsLoading && !comps && (
-              <View style={s.compNoteRow}>
-                <MaterialIcons name="schedule" size={12} color={MUTED} />
-                <Text style={s.compNote}>Live comp breakdown coming soon.</Text>
-              </View>
-            )}
-          </View>
+              All presentation now lives in components/comps/. This screen only
+              decides where the section sits and hands it the public contract —
+              no comps logic, no statistics, no eligibility decisions. */}
+          <SoldCompsSection loading={compsLoading} data={comps} />
 
           {/* ── 5. Your thrift price + compact breakdown ── */}
           <View style={s.card}>
@@ -1902,21 +1771,21 @@ const s = StyleSheet.create({
                     paddingHorizontal: 10, paddingVertical: 5 },
   riskWhyChipText:{ fontSize: 12, fontWeight: '700', color: BROWN },
   riskWhyNote:    { fontSize: 12, color: BROWN, opacity: 0.85, lineHeight: 17 },
-  compStatsRow:   { flexDirection: 'row', gap: 8, marginTop: 4 },
-  compStatBox:    { flex: 1, backgroundColor: '#FBF6E6', borderRadius: 10, borderWidth: 1,
-                    borderColor: GOLD + '33', paddingHorizontal: 8, paddingVertical: 7 },
-  compStatLabel:  { fontSize: 8.5, fontWeight: '800', color: BROWN, letterSpacing: 0.8, opacity: 0.8 },
-  compStatValue:  { fontSize: 15, fontWeight: '800', color: FOREST, marginTop: 2 },
-  compMetaRow:    { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7, marginTop: 8 },
-  compConfPill:   { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
-  compConfText:   { fontSize: 10.5, fontWeight: '800', letterSpacing: 0.2 },
-  compMetaText:   { fontSize: 10.5, color: MUTED },
-  compListWrap:   { marginTop: 9, gap: 5 },
-  compListRow:    { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  compListPrice:  { fontSize: 12.5, fontWeight: '800', color: FOREST, width: 44 },
-  compListTitle:  { flex: 1, fontSize: 11.5, color: BROWN },
-  compListScore:  { fontSize: 10, fontWeight: '700', color: MUTED, width: 22, textAlign: 'right' },
-  compQuery:      { fontSize: 10, color: MUTED, fontStyle: 'italic', marginTop: 8, lineHeight: 14 },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   statsCard: {
     flexDirection: 'row', backgroundColor: CARD, borderRadius: 18, borderWidth: 1, borderColor: CARD_B,
     marginHorizontal: 14, marginTop: 14, paddingVertical: 16, paddingHorizontal: 6,
@@ -1929,14 +1798,14 @@ const s = StyleSheet.create({
   statValue:     { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800' },
 
   // 4 · Sold comp sources — compact
-  compHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
-  compTitle:     { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '700', color: FOREST },
+
+
   compPillsRow:  { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 16, rowGap: 12 },
-  compScrollContent: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingRight: 8, paddingVertical: 2 },
-  compItem:      { height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: '#1A1A1A', backgroundColor: '#FFFEFA', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+
+
   compPillText:  { fontSize: 13, fontWeight: '700', color: BROWN },
-  compNoteRow:   { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 10 },
-  compNote:      { fontSize: 11.5, color: MUTED, fontStyle: 'italic' },
+
+
 
   // 5 · Your thrift price + breakdown
   priceTopRow:   { flexDirection: 'row', alignItems: 'center', paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#DDD2AC' },

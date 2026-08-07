@@ -10,7 +10,7 @@
  */
 import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
 import type { CompsIneligibleReason } from "./types.js";
-import { QUERY_BUILDER_VERSION, normalizeText } from "./normalize.js";
+import { QUERY_BUILDER_VERSION, normalizeText, detectClosure } from "./normalize.js";
 
 export interface QueryComponent {
   kind: string;
@@ -119,6 +119,27 @@ export function buildCompsQuery(c: CanonicalAnalysisV1): BuiltQuery | Ineligible
   push("license", id.character_or_license, "licensed IP is a primary search term");
   push("item_type", id.item_type, "item type is required for a usable search");
 
+  // ── Closure ────────────────────────────────────────────────────────────────
+  // "Polo by Ralph Lauren hoodie" returned pullovers, zip-ups and everything
+  // else, because closure never reached the query. For a hoodie or a jacket it
+  // is one of the most discriminating words available.
+  const closure = detectClosure(
+    [id.item_type, id.subtype, id.generic_item_name,
+     (c.ai.features?.closure_type ?? "")].join(" "),
+  );
+  const CLOSURE_WORD: Record<string, string> = {
+    full_zip: "full zip", quarter_zip: "quarter zip", half_zip: "half zip",
+    pullover: "pullover", button: "button up", snap: "snap front",
+  };
+  // Only add the closure word when the item type has not already implied it.
+  // "zip-up hoodie full zip" is keyword stuffing, and eBay's matching punishes it.
+  const closureAlreadyStated = detectClosure(parts.join(" ")) === closure;
+  if (closure && CLOSURE_WORD[closure] && !closureAlreadyStated) {
+    push("closure", CLOSURE_WORD[closure], `closure ${closure} narrows the result pool sharply`);
+  } else {
+    add("closure", closure ?? "", false, closure ? "already implied by the item type" : "closure not determined");
+  }
+
   // Era only when the validated conclusion supports it commercially.
   const era = c.derived.era_effective;
   if (era.status === "confirmed_vintage" || era.status === "likely_vintage") {
@@ -135,8 +156,18 @@ export function buildCompsQuery(c: CanonicalAnalysisV1): BuiltQuery | Ineligible
   // Deliberately omitted, recorded so the decision is visible.
   add("size", c.ai.visible_attributes.size_label, false,
       "size narrows results faster than it improves them; revisit in Phase 1");
-  add("color", c.ai.visible_attributes.primary_color, false,
-      "colour wording varies too much between listings to help matching");
+  // Colour, only when the model was confident. An uncertain colour narrows the
+  // pool by the wrong axis and can exclude every good comp.
+  const colour = c.ai.visible_attributes.primary_color.trim();
+  const colourConf = c.ai.visible_attributes.color_confidence ?? 0;
+  const OBVIOUS = /^(black|white|red|blue|green|yellow|navy|grey|gray|orange|purple|pink|brown|tan|beige|cream)$/i;
+  if (colour && colourConf >= 85 && OBVIOUS.test(colour)) {
+    push("color", colour, `obvious colour at ${colourConf}% confidence`);
+  } else {
+    add("color", colour, false,
+        colour ? `colour confidence ${colourConf}% below the 85% bar, or not an unambiguous colour`
+               : "no colour determined");
+  }
   add("department", (c.ai.visible_attributes as { target_department?: string }).target_department ?? "", false,
       "department is used for FILTERING results, not for narrowing the search");
 

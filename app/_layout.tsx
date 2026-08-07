@@ -436,6 +436,17 @@ export default function RootLayout() {
             {__DEV__ && <Stack.Screen name="dev-achievements" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
             {__DEV__ && <Stack.Screen name="dev-brand-compendium" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
             {__DEV__ && <Stack.Screen name="dev-diamonds" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
+            {/* Sold Comps visual preview.
+                Stack.Protected blocks NAVIGATION to the route. The route file
+                still exists in the production bundle — Expo Router is
+                file-based, and a Stack.Screen declaration configures a route
+                rather than creating one. The screen carries its own __DEV__
+                denial as defence in depth. Both are client-side controls, which
+                is acceptable here only because the payload is fake UI fixtures
+                with no secrets and no network. */}
+            <Stack.Protected guard={__DEV__}>
+              <Stack.Screen name="dev-sold-comps" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+            </Stack.Protected>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
             <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />

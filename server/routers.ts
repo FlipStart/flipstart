@@ -16,6 +16,7 @@ import { compsFounderAuthorised } from "./comps/auth.js";
 import { saveAnalysis, getLatestAnalysis, getAnalysis } from "./analysisStore.js";
 import { compsCacheStats } from "./comps/cache.js";
 import { budgetState, budgetSource } from "./comps/budget.js";
+import { resolveAvailability, buildDiagnostic } from "./comps/availability.js";
 import { renderUserContextBlock } from "../shared/userContext.js";
 import { saveScanContext, getScanContext } from "./scanContextStore.js";
 import { randomUUID } from "node:crypto";
@@ -520,35 +521,90 @@ const compsRouter = router({
     .mutation(async ({ input }) => {
       const sid = input.scannerId.trim();
       // Same gate as V1 scanning. Ordinary users get a clean "unavailable".
+      // Public category only. The internal reason stays in the server log — a
+      // user cannot act on "not on the allow-list" and does not need to know it.
       if (!canonicalV1EnabledFor(sid)) {
-        return { ok: false as const, errorCode: "NOT_AVAILABLE" };
+        return { ok: false as const, availability: { state: "temporarily_unavailable" as const,
+          reviewedCount: null, filteredOutCount: null, searchPerformed: false } };
       }
       const stored = input.analysisId
         ? getAnalysis(input.analysisId, sid)
         : getLatestAnalysis(sid);
-      if (!stored) return { ok: false as const, errorCode: "ANALYSIS_NOT_FOUND" };
+      // A stored analysis we cannot find is, from the screen's point of view, an
+      // older scan without the current contract.
+      if (!stored) {
+        return { ok: false as const, availability: { state: "legacy_unavailable" as const,
+          reviewedCount: null, filteredOutCount: null, searchPerformed: false } };
+      }
 
       const rec = await runCompsForAnalysis(stored.canonical, { founderAuthorised: true });
       const ai = stored.canonical.derived.pricing;
+      const diag = buildDiagnostic({
+        ok: rec.ok,
+        errorCode: rec.errorCode ?? null,
+        ineligibleReason: rec.ineligibleReason ?? null,
+        detail: rec.detail ?? null,
+        reliableMatchCount: rec.evaluation?.counts.finalSample ?? 0,
+        providerCalled: Boolean(rec.provider),
+      });
       console.log(
         `[comps:forScan] "${stored.canonical.derived.identification.display_item_name}"` +
-        ` ${rec.ok ? "ok" : rec.errorCode ?? rec.ineligibleReason}` +
+        // FOUNDER DIAGNOSTIC. The public payload carries no internal code, so
+        // this line is the only place the real reason survives — including the
+        // detail that separates a daily from a monthly budget stop, which the
+        // previous version dropped. Contains no key, secret or provider body.
+        ` ${diag.internalCode}/${diag.stage}` +
+        (diag.detail ? `(${diag.detail})` : "") +
+        ` reached:${diag.providerReached} reserved:${diag.requestReserved}` +
         (rec.query ? ` q:"${rec.query.text}"` : "") +
-        (rec.summary?.stats ? ` n:${rec.summary.stats.sampleSize} median:$${rec.summary.stats.median} conf:${rec.summary.confidence} match:${rec.summary.medianMatchScore}` : "") +
+        (rec.evaluation ? ` reliable:${rec.evaluation.counts.finalSample}` +
+          ` median:${rec.evaluation.public.canShowMedian ? `$${rec.evaluation.public.medianSoldPrice}` : "suppressed"}` +
+          ` conf:${rec.evaluation.confidencePercent}%/${rec.evaluation.confidenceLabel}` +
+          ` state:${rec.evaluation.resultState} disp:${rec.evaluation.debug.dispersion}` +
+          (rec.evaluation.public.statisticsSuppressedReason ? ` why:${rec.evaluation.public.statisticsSuppressedReason}` : "") : "") +
+        // Contract telemetry. Image HOSTS only, never full URLs — those carry
+        // query parameters that should not sit in logs.
+        (rec.displayMatches ? ` shown:${rec.displayMatches.length}` +
+          ` img:${rec.displayMatches.filter(m => m.imageStatus === "available").length}/${rec.displayMatches.length}` +
+          ` mkt:${rec.source?.marketplaces.join("+") ?? "?"}` : "") +
         ` ai:$${ai.resale_low}-$${ai.resale_high} ${rec.totalMs}ms`
       );
 
       // Trimmed to what the screen needs. Full diagnostics stay on runLatest.
       return {
         ok: rec.ok,
-        errorCode: rec.errorCode,
-        ineligibleReason: rec.ineligibleReason,
+        // errorCode and ineligibleReason are NO LONGER returned to the app.
+        // `availability.state` carries everything the screen may safely know;
+        // the exact reason remains in the server log and founder tooling.
         query: rec.query?.text ?? null,
         historyDays: rec.query?.historyDays ?? null,
         cacheHit: rec.provider?.cacheHit ?? false,
-        stats: rec.summary?.stats ?? null,
-        confidence: rec.summary?.confidence ?? null,
-        matchScore: rec.summary?.medianMatchScore ?? null,
+        // ── Phase 5: safe public availability category ─────────────────────
+        // Internal codes (COMPS_BUDGET_EXHAUSTED, PROVIDER_TIMEOUT,
+        // PROVIDER_NOT_CONFIGURED, FOUNDER_ONLY) are deliberately NOT returned.
+        // They were previously in this payload, which put our billing and
+        // configuration one error-boundary dump away from a user's screen.
+        availability: resolveAvailability({
+          ok: rec.ok,
+          errorCode: rec.errorCode ?? null,
+          ineligibleReason: rec.ineligibleReason ?? null,
+          reliableMatchCount: rec.evaluation?.counts.finalSample ?? 0,
+          displayMatchCount: rec.displayMatches?.length ?? 0,
+          rawCount: rec.provider?.rawCount ?? null,
+          filteredOutCount: rec.evaluation?.summary.filteredOutCount ?? null,
+        }),
+
+        // ── Phase 2: only ELIGIBLE numbers cross the wire ──────────────────
+        // A suppressed median is null here, so the screen cannot render it by
+        // mistake. That was the entire bug: summarize() reported "insufficient"
+        // and handed over a $65 median anyway.
+        publicStats: rec.evaluation?.public ?? null,
+        resultState: rec.evaluation?.resultState ?? null,
+        confidencePercent: rec.evaluation?.confidencePercent ?? null,
+        confidenceLabel: rec.evaluation?.confidenceLabel ?? null,
+        countSummary: rec.evaluation?.summary ?? null,
+        statsVersion: rec.evaluation?.statsVersion ?? null,
+        matchScore: rec.evaluation?.debug.medianMatchScore ?? null,
         examined: rec.provider?.rawCount ?? 0,
         rejectedCount: rec.rejected?.length ?? 0,
         // Why listings were dropped. This was the only thing the removed
@@ -556,9 +612,15 @@ const compsRouter = router({
         // signal when a median looks wrong, so it moves here rather than dying
         // with them.
         rejectionCounts: rec.rejectionCounts ?? {},
-        comps: (rec.accepted ?? []).slice(0, 8).map(a => ({
-          title: a.title, price: a.soldPrice, shipping: a.shipping,
-          soldAt: a.soldAt, score: a.score, url: a.url,
+        // Phase 3 contract: up to three fully normalised matches for the future
+        // carousel. Complete titles, validated image URLs, honest marketplace.
+        displayMatches: rec.displayMatches ?? [],
+        source: rec.source ?? null,
+        contractVersion: rec.versions.compContract,
+        // Phase 1/2 shape, retained so nothing breaks mid-deploy.
+        comps: (rec.displayMatches ?? []).map(m => ({
+          title: m.fullTitle, price: m.soldPrice.amount, shipping: m.shippingPrice?.amount ?? null,
+          soldAt: m.soldAt, score: m.matchScore, url: m.listingUrl,
         })),
         aiLow: ai.resale_low, aiHigh: ai.resale_high,
       };
