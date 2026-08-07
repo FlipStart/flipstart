@@ -514,7 +514,24 @@ export default function ResultsScreen() {
   // the user types their own — NOT the breakeven ceiling above, which is a
   // different number used only for the recommendation line below.
   const aiEstimatedPrice = Math.max(1, md.suggested_buy_price ?? 0);
-  const maxBuy           = parsedThrift > 0 ? parsedThrift : aiEstimatedPrice;
+  /**
+   * The user's own price — what they typed, or the AI's per-item suggestion
+   * until they type something.
+   *
+   * This was called `maxBuy`, which was simply wrong: it is not a ceiling, not
+   * a recommendation, and not derived from the rating model. That name is why
+   * the thrift equation labelled the user's $7 "Max Buy Price" and why Deep
+   * Analysis printed "MAX BUY $7". Three different concepts had collapsed into
+   * one variable name.
+   *
+   *   userPrice       — what you paid                (this)
+   *   buyThreshold    — what we recommend paying     (Buy Under)
+   *   absoluteCeiling — above this it is a SKIP      (Absolute Ceiling)
+   */
+  const userPrice        = parsedThrift > 0 ? parsedThrift : aiEstimatedPrice;
+  /** Renamed from suggestedMax at the point of use, so the meaning travels
+   *  with the value into the copy below. */
+  const absoluteCeiling  = suggestedMax;
   // True until the user edits the price — drives the "Est." label in the UI.
   const isEstimatedPrice = parsedThrift <= 0;
   const rangeStr        = (md.estimated_resale_range?.low != null && md.estimated_resale_range?.high != null)
@@ -535,11 +552,16 @@ export default function ResultsScreen() {
       return 'Hard to make money on this one at any price.';
     }
     if (canonicalRating === 'RISKY BUY') {
-      // Mention the BUY price only when one exists AND is meaningfully below
-      // the ceiling — otherwise it is noise.
+      // Lead with the RECOMMENDATION, not the ceiling.
+      //
+      // The old copy read "Pay $20 at most — a solid buy under $6", which put
+      // the absolute ceiling first and made $20 look like advice. $20 is
+      // merely the point before this becomes a SKIP; $6 is the price we
+      // actually recommend. Leading with the ceiling encourages overpaying by
+      // three times the recommended price.
       return (buyThreshold !== null && buyThreshold > 0 && buyThreshold < suggestedMax - 1)
-        ? `Pay ${fmtMoney(suggestedMax)} at most — a solid buy under ${fmtMoney(buyThreshold)}.`
-        : `Pay ${fmtMoney(suggestedMax)} at most for this to be worth it.`;
+        ? `Buy under ${fmtMoney(buyThreshold)} for a strong margin. Absolute ceiling ${fmtMoney(suggestedMax)}.`
+        : `Absolute ceiling ${fmtMoney(suggestedMax)} — above that it is a skip.`;
     }
     return `Worth grabbing if you can buy at ${fmtMoney(suggestedMax)} or less.`;
   })();
@@ -1422,7 +1444,7 @@ export default function ResultsScreen() {
                   style={s.priceDisplayRow}
                 >
                   {isEstimatedPrice && <Text style={s.priceEstTag}>Est.</Text>}
-                  <Text style={s.priceDisplayText}>{fmtMoney(maxBuy)}</Text>
+                  <Text style={s.priceDisplayText}>{fmtMoney(userPrice)}</Text>
                   <View style={s.priceEditBtn}><MaterialIcons name="edit" size={15} color={CREAM} /></View>
                 </Pressable>
               )}
@@ -1440,8 +1462,11 @@ export default function ResultsScreen() {
               </View>
               <Text style={s.breakdownOp}>−</Text>
               <View style={s.breakdownCol}>
-                <Text style={s.breakdownLabel}>Max Buy Price</Text>
-                <Text style={[s.breakdownValue, { color: '#8A3A2A' }]}>-{fmtMoney(maxBuy)}</Text>
+                {/* "Your Price", not "Max Buy Price". This is the amount the
+                    user actually paid; calling it a max-buy recommendation was
+                    the single most misleading label in the app. */}
+                <Text style={s.breakdownLabel}>Your Price</Text>
+                <Text style={[s.breakdownValue, { color: '#8A3A2A' }]}>-{fmtMoney(userPrice)}</Text>
               </View>
               <Text style={s.breakdownOp}>=</Text>
               <View style={[s.breakdownCol, s.breakdownColResult]}>

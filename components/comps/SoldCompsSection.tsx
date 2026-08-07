@@ -20,6 +20,7 @@ import {
   useWindowDimensions, AccessibilityInfo,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { C, marketplaceLabel } from './tokens';
 import { SoldCompCard, type PublicMatch } from './SoldCompCard';
 import { SoldCompMetrics, SoldCompConfidence, type PublicStats } from './SoldCompMetrics';
@@ -117,13 +118,33 @@ export function SoldCompsSection({
       <View style={s.headerRow}>
         <Text style={s.title}>Recent Sold Comps</Text>
         <View style={s.headerRight}>
-          {/* Only marketplaces the server says were actually searched. Never a
-              hardcoded row of five logos. */}
-          {sourceLabels.map(m => (
-            <View key={m} style={s.sourceBadge}>
-              <Text style={s.sourceText} accessibilityLabel={`Source: ${m}`}>{m}</Text>
-            </View>
-          ))}
+          {/* Real eBay logo, replacing the text pill.
+              Still driven by server source metadata — an unknown marketplace
+              renders NOTHING rather than defaulting to eBay. */}
+          {markets.map(key => {
+            const label = marketplaceLabel(key);
+            if (!label) return null;                    // unknown: no badge
+            if (key.toLowerCase() === 'ebay') {
+              return (
+                <View key={key} style={s.logoBadge}>
+                  <Image
+                    source={require('@/assets/images/logos/ebay.png')}
+                    /* Fixed height, width from the asset's own ratio — the eBay
+                       mark is ~2.5:1 and must never be stretched or recoloured. */
+                    style={s.ebayLogo}
+                    contentFit="contain"
+                    accessibilityLabel="Sold comp source: eBay"
+                  />
+                </View>
+              );
+            }
+            // Any other supported marketplace keeps the compact text treatment.
+            return (
+              <View key={key} style={s.sourceBadge}>
+                <Text style={s.sourceText} accessibilityLabel={`Sold comp source: ${label}`}>{label}</Text>
+              </View>
+            );
+          })}
           <Pressable
             onPress={() => setInfoOpen(v => !v)}
             hitSlop={10}
@@ -240,6 +261,12 @@ const s = StyleSheet.create({
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   sourceBadge: { backgroundColor: C.cream, borderRadius: 999, borderWidth: 1,
                  borderColor: C.gold + '66', paddingHorizontal: 8, paddingVertical: 2.5 },
+  /* Cream/gold surround ties the brand mark into the FlipStart palette without
+     recolouring the logo itself. Deliberately smaller than the section title. */
+  logoBadge:   { backgroundColor: C.cream, borderRadius: 8, borderWidth: 1,
+                 borderColor: C.gold + '66', paddingHorizontal: 7, paddingVertical: 4,
+                 justifyContent: 'center' },
+  ebayLogo:    { width: 42, height: 17 },
   sourceText: { fontSize: 10, fontWeight: '800', color: C.brown },
   info: { backgroundColor: C.cream, borderRadius: 11, padding: 10, marginTop: 9, gap: 6 },
   infoText: { fontSize: 11.5, color: C.brown, lineHeight: 16.5 },

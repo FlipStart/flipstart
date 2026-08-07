@@ -19,6 +19,7 @@ export interface PublicMatch {
   marketplace: string;
   fullTitle: string;
   primaryImageUrl: string | null;
+  fallbackImageUrl?: string | null;
   imageStatus: string;
   soldPrice: { amount: number; currency: string };
   shippingPrice: { amount: number; currency: string } | null;
@@ -39,12 +40,27 @@ export function SoldCompCard({
   onExpandChange?: (expanded: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  // Tracked locally so a dead URL swaps to the placeholder instead of showing a
-  // broken-image glyph. Never reported to the server — image loading is the
-  // client's business.
-  const [imgFailed, setImgFailed] = useState(false);
+  /**
+   * Three-stage image fallback: upgraded → provider thumbnail → placeholder.
+   *
+   * The upgraded URL is a larger eBay derivative. It exists for the vast
+   * majority of listings, but if a particular one 404s the card must not show a
+   * hole — it silently drops to exactly what the provider gave us. Only when
+   * that fails too does the placeholder appear.
+   *
+   * Purely client-side. No retry, no server request, nothing reported back.
+   */
+  const [stage, setStage] = useState<0 | 1 | 2>(0);
+  const imageUri =
+    stage === 0 ? match.primaryImageUrl
+    : stage === 1 ? (match.fallbackImageUrl ?? null)
+    : null;
+  const onImageError = () => {
+    // Skip straight past stage 1 when there is no distinct fallback.
+    setStage(s => (s === 0 && match.fallbackImageUrl ? 1 : 2));
+  };
 
-  const showImage = Boolean(match.primaryImageUrl) && !imgFailed;
+  const showImage = Boolean(imageUri);
   const market = marketplaceLabel(match.marketplace);
   const soldDate = formatSoldDate(match.soldAt);
 
@@ -112,11 +128,14 @@ export function SoldCompCard({
       <View style={[s.imageWrap, { width, height: width }]}>
         {showImage ? (
           <Image
-            source={{ uri: match.primaryImageUrl as string }}
+            source={{ uri: imageUri as string }}
             style={{ width, height: width }}
             contentFit="cover"
             transition={150}
-            onError={() => setImgFailed(true)}
+            /* Decode at the rendered size on a 3x screen so the larger source
+               is actually used rather than downsampled before display. */
+            recyclingKey={imageUri as string}
+            onError={onImageError}
             accessibilityLabel={title}
           />
         ) : (

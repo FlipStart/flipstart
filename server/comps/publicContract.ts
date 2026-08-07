@@ -32,6 +32,50 @@ export type ImageStatus = "available" | "missing" | "invalid" | "unsupported";
 
 export interface Money { amount: number; currency: string }
 
+/**
+ * eBay's documented image-size selector.
+ *
+ * ── Why the images were blurry ────────────────────────────────────────────────
+ * eBay serves every listing photo from i.ebayimg.com at a size chosen by the
+ * `s-l{N}` path segment. SoldComps returns `thumbnailUrl`, which is a SMALL
+ * derivative — typically s-l140 or s-l225. The card renders at up to 210pt,
+ * which on a 3x iPhone is 630 real pixels, so a 140px source is being upscaled
+ * four-fold. That is the blur: nothing to do with resize mode, the Image
+ * component, or the provider's data quality.
+ *
+ * ── Why this is safe ─────────────────────────────────────────────────────────
+ * The size segment is a stable, long-standing eBay CDN convention, not a guess.
+ * The transformation is applied ONLY to i.ebayimg.com hosts whose path already
+ * matches the pattern — a non-eBay URL, or an eBay URL in an unexpected shape,
+ * is returned untouched rather than blindly string-replaced.
+ *
+ * ── Why 800 and not 1600 ─────────────────────────────────────────────────────
+ * 800px clears the 630px worst case with headroom. 1600 would roughly quadruple
+ * the bytes for pixels a 210pt card physically cannot show, on a screen someone
+ * is using in a shop on mobile data.
+ *
+ * The original thumbnail is always preserved as a fallback: if the larger
+ * derivative 404s for a particular listing, the card silently uses what the
+ * provider gave us rather than showing a hole.
+ */
+const EBAY_IMAGE_HOST = /(^|\.)ebayimg\.com$/i;
+const EBAY_SIZE_SEGMENT = /\/s-l\d+(\.[a-z]+)$/i;
+const TARGET_SIZE = 800;
+
+export function upgradeEbayImageUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  let u: URL;
+  try { u = new URL(raw); } catch { return null; }
+  // Never apply eBay-specific logic to a non-eBay host.
+  if (!EBAY_IMAGE_HOST.test(u.hostname)) return null;
+  if (!EBAY_SIZE_SEGMENT.test(u.pathname)) return null;
+
+  const upgraded = u.pathname.replace(EBAY_SIZE_SEGMENT, `/s-l${TARGET_SIZE}$1`);
+  if (upgraded === u.pathname) return null;   // already at target
+  u.pathname = upgraded;
+  return u.toString();
+}
+
 export interface PublicSoldCompMatch {
   /** Stable and safe to use as a list key. Derived from provider + external id,
    *  never from the title — titles are not unique. */
@@ -44,7 +88,12 @@ export interface PublicSoldCompMatch {
    *  ellipsis. Phase 4 decides how many lines to show. */
   fullTitle: string;
 
+  /** Highest safe resolution. Falls back to the provider thumbnail when no
+   *  upgrade is available. */
   primaryImageUrl: string | null;
+  /** The untouched provider thumbnail. The client falls back to this if the
+   *  upgraded URL fails to load. Null when it IS the primary. */
+  fallbackImageUrl: string | null;
   imageUrls: string[];
   imageStatus: ImageStatus;
 
@@ -229,13 +278,17 @@ export function toPublicMatch(
   })();
   if (listingReason) warnings.push(listingReason);
 
+  // Upgrade only when the URL is a recognised eBay image in the expected shape.
+  const upgraded = img.primary ? upgradeEbayImageUrl(img.primary) : null;
+
   const pub: PublicSoldCompMatch = {
     id: stableId(c.provider, c),
     provider: c.provider,
     marketplace,
     externalId: c.externalId || null,
     fullTitle: title,
-    primaryImageUrl: img.primary,
+    primaryImageUrl: upgraded ?? img.primary,
+    fallbackImageUrl: upgraded ? img.primary : null,
     imageUrls: img.extras,
     imageStatus: img.status,
     listingUrl: safeListing,

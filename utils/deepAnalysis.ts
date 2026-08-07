@@ -18,7 +18,16 @@ export interface DeepInputs {
   profit: number;
   roi: number;
   fees: number;
-  maxBuy: number;         // the price shown / used for the breakdown
+  /**
+   * The USER'S price — what they paid or entered. Renamed from `maxBuy`, which
+   * caused Deep Analysis to print "MAX BUY $7" for a value that was simply the
+   * user's own thrift price.
+   */
+  userPrice: number;
+  /** findBuyThresholdPrice() — the price we actually recommend. May be null. */
+  buyThreshold?: number | null;
+  /** findMaxBuyPriceForRating() — above this it becomes a SKIP. May be null. */
+  absoluteCeiling?: number | null;
   resaleValue: number;
   rating: CanonicalRating; // 'STRONG BUY' | 'BUY' | 'RISKY BUY' | 'SKIP'
 }
@@ -42,7 +51,7 @@ const lc = (v?: string) => (v ?? '').trim().toLowerCase();
  * template did not. Derived reasons only fill the gaps.
  */
 export function whyThisRating(i: DeepInputs): string[] {
-  const { flip, profit, roi, rating, resaleValue, maxBuy } = i;
+  const { flip, profit, roi, rating, resaleValue, userPrice, buyThreshold, absoluteCeiling } = i;
   const comp   = lc(flip.competitionLevel);
   const demand = lc(flip.demand);
   const speed  = lc(flip.sellSpeed);
@@ -52,8 +61,8 @@ export function whyThisRating(i: DeepInputs): string[] {
   // ── Reason pools ───────────────────────────────────────────────────────────
 
   const marginReason = (): string => {
-    if (profit >= 25)  return `Strong margin — about $${profit} profit between the ~$${resaleValue} resale estimate and a ~$${maxBuy} buy price.`;
-    if (profit >= 11)  return `Workable margin — roughly $${profit} profit at a ~$${maxBuy} buy price.`;
+    if (profit >= 25)  return `Strong margin — about $${profit} profit between the ~$${resaleValue} resale estimate and your $${userPrice} price.`;
+    if (profit >= 11)  return `Workable margin — roughly $${profit} profit at your $${userPrice} price.`;
     if (profit >= 0)   return `Thin margin — only about $${profit} profit at this buy price, so there's little room for error.`;
     return `Negative margin at this buy price — you'd lose about $${Math.abs(profit)} after fees.`;
   };
@@ -140,7 +149,15 @@ export function whyThisRating(i: DeepInputs): string[] {
     if (upside.length) {
       out.push(`Still worth considering — ${upside[0].charAt(0).toLowerCase()}${upside[0].slice(1)}`);
     }
-    out.push(`Buy it only at or below ~$${maxBuy}, and only if you can wait for the right buyer.`);
+    // Was "$7" — the user's own price described as a buy ceiling. Now uses the
+    // real recommended threshold, and says nothing when one does not exist
+    // rather than inventing a number.
+    if (buyThreshold != null && buyThreshold > 0) {
+      out.push(`For a strong buy, aim for about $${buyThreshold} or less.`);
+    }
+    if (absoluteCeiling != null && absoluteCeiling > 0) {
+      out.push(`Above roughly $${absoluteCeiling}, FlipStart would consider this a skip.`);
+    }
     return out.slice(0, 6);
   }
 
@@ -182,7 +199,7 @@ export function ratingQuestion(rating: CanonicalRating): string {
 // ─── 2. Price logic (one concise paragraph) ───────────────────────────────────
 
 export function priceLogicText(i: DeepInputs): string {
-  const { flip, profit, fees, maxBuy, resaleValue } = i;
+  const { flip, profit, fees, userPrice, resaleValue, buyThreshold, absoluteCeiling } = i;
   const brandBit = isUnknown(flip.brand) ? 'item type and visible condition' : `${flip.brand}'s brand strength, item type, and condition`;
   if (resaleValue <= 0) {
     return `There isn't enough pricing data from this scan to estimate resale value reliably. Add clearer photos of the brand tag and item to improve the estimate.`;
@@ -200,10 +217,10 @@ export function priceLogicText(i: DeepInputs): string {
     const reasons = basis.slice(0, 2).join('; ');
     const caveat = (v1?.pricingUnknowns ?? [])[0];
     return `FlipStart estimates this can resell around $${resaleValue} — ${reasons}. ` +
-           `At a buy price of about $${maxBuy}, ${profitPhrase}.` +
+           `At your $${userPrice} price, ${profitPhrase}.` +
            (caveat ? ` ${caveat.charAt(0).toUpperCase()}${caveat.slice(1)}.` : '');
   }
-  return `FlipStart estimates this can resell around $${resaleValue} based on ${brandBit}. At a buy price of about $${maxBuy}, ${profitPhrase}.`;
+  return `FlipStart estimates this can resell around $${resaleValue} based on ${brandBit}. At your $${userPrice} price, ${profitPhrase}.`;
 }
 
 // ─── 3. Risk assessment ───────────────────────────────────────────────────────
@@ -423,7 +440,9 @@ export function whatCouldChange(i: DeepInputs): string[] {
 export function buildDeepInputs(
   flip: FlipResult,
   calc: { profit: number; roi: number; fees: number },
-  maxBuy: number,
+  userPrice: number,
+  buyThreshold: number | null,
+  absoluteCeiling: number | null,
   liveRating?: CanonicalRating,
 ): DeepInputs {
   return {
@@ -431,7 +450,9 @@ export function buildDeepInputs(
     profit: calc.profit,
     roi: calc.roi,
     fees: calc.fees,
-    maxBuy,
+    userPrice,
+    buyThreshold,
+    absoluteCeiling,
     resaleValue: flip.resaleValue,
     rating: liveRating
       ?? normalizeBuyRating(flip.recommendation?.label ?? (flip as any).buyLabel ?? 'SKIP'),

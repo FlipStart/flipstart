@@ -19,7 +19,8 @@ import { useScanContext } from '@/lib/scan-context';
 import { trpc } from '@/lib/trpc';
 import { FlipResult, ListingData } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
-import { computeFlipCalc, resolveEffectiveThriftPrice } from '@/utils/flipCalculations';
+import { computeFlipCalc, resolveEffectiveThriftPrice,
+         findMaxBuyPriceForRating, findBuyThresholdPrice } from '@/utils/flipCalculations';
 import { REC_THEMES, normalizeBuyRating } from '@/utils/recommendation';
 import {
   buildDeepInputs, whyThisRating, ratingQuestion, priceLogicText,
@@ -429,12 +430,38 @@ export default function AnalysisDetailsScreen() {
   const canonicalRating = normalizeBuyRating(
     rec?.label ?? baseFlip.recommendation?.label ?? (baseFlip as any).buyLabel ?? 'SKIP',
   );
-  const maxBuyShown = isHistory && editedThrift > 0 ? editedThrift : baseFlip.thriftPrice;
+  // The USER'S price. Was named maxBuyShown and passed as `maxBuy`, which is
+  // why Deep Analysis rendered "MAX BUY $7" for the user's own thrift price.
+  const userPriceShown = isHistory && editedThrift > 0 ? editedThrift : baseFlip.thriftPrice;
+
+  /**
+   * The two real thresholds, from the SAME functions the Analysis screen uses.
+   *
+   * Recomputed here rather than passed through navigation so the two screens
+   * cannot drift — and computed from the rating model only, never from the
+   * user's price, because a ceiling is a property of the opportunity.
+   */
+  const v1Sig = {
+    buyerPool:        (baseFlip as any)?.identification?.v1?.buyerPool,
+    hasObviousDamage: (((baseFlip as any)?.identification?.v1?.obviousDamage?.length) ?? 0) > 0,
+    eraUnconfirmed:   (((baseFlip as any)?.identification?.v1?.eraStatus) ?? '') === 'unknown',
+  };
+  const absoluteCeiling = findMaxBuyPriceForRating(
+    baseFlip.resaleValue, baseFlip.matchConfidence, baseFlip.competitionLevel,
+    baseFlip.demand ?? '', baseFlip.sellSpeed ?? '', v1Sig,
+  );
+  const buyThreshold = findBuyThresholdPrice(
+    baseFlip.resaleValue, baseFlip.matchConfidence, baseFlip.competitionLevel,
+    baseFlip.demand ?? '', baseFlip.sellSpeed ?? '', v1Sig,
+  );
+
   // Pass the LIVE rating so the explanation matches the badge above it.
   const di = buildDeepInputs(
     baseFlip,
     { profit: calc.profit, roi: calc.roi, fees: calc.fees },
-    maxBuyShown,
+    userPriceShown,
+    buyThreshold,
+    absoluteCeiling,
     normalizeBuyRating(calc.recommendation?.label ?? 'SKIP'),
   );
   // buildDeepInputs already received the live rating; no override needed.
@@ -558,10 +585,15 @@ export default function AnalysisDetailsScreen() {
           <View style={d.card}>
             <DeepHead icon="payments" title="Price Logic" />
             <View style={d.priceLogicStats}>
+              {/* Four cards, every label semantically accurate.
+                  "Max Buy $7" is gone — that $7 was the user's own price, and
+                  labelling it as a recommendation was the worst offender in
+                  the app. Buy Under is the real recommendation; the Absolute
+                  Ceiling lives in the prose below so the row stays at four. */}
               <PriceStat label="Est. Resale" value={baseFlip.resaleValue > 0 ? `$${baseFlip.resaleValue}` : '—'} />
-              <PriceStat label="Max Buy"     value={`$${maxBuyShown}`} />
+              <PriceStat label="Buy Under"   value={buyThreshold != null && buyThreshold > 0 ? `$${buyThreshold}` : '—'} />
+              <PriceStat label="Your Price"  value={`$${userPriceShown}`} />
               <PriceStat label="Profit"      value={calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`} color={profitColor} />
-              <PriceStat label="ROI"         value={calc.roi > 0 ? `${calc.roi}%` : '—'} />
             </View>
             <Text style={d.paragraph}>{priceText}</Text>
 

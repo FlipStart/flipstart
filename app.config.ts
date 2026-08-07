@@ -6,7 +6,7 @@ const scheme   = "flipstart";
 const config: ExpoConfig = {
   name:                "FlipStart",
   slug:                "flipstart",
-  version:             "2.0",
+  version:             "1.2.3",
   orientation:         "portrait",
   icon:                "./assets/images/icon.png",
   scheme,
@@ -49,11 +49,23 @@ const config: ExpoConfig = {
     ],
   },
 
-  web: {
-    bundler: "metro",
-    output:  "static",
-    favicon: "./assets/images/favicon.png",
-  },
+  // ── Web target: intentionally REMOVED ──────────────────────────────────────
+  //
+  // Was: { bundler: "metro", output: "static", favicon: "..." }
+  //
+  // `output: "static"` makes expo-router prerender EVERY route to HTML on
+  // startup. With 42 routes that added roughly two minutes to a cold
+  // `npx expo start -c` and filled the terminal with repeated
+  // "Bundled … expo-router/node/render.js" lines — all of it producing a web
+  // build nobody opens.
+  //
+  // FlipStart ships to iOS. There is no web deploy, and @expo/metro-runtime
+  // (which Expo wants for web fast-refresh) was never installed, so this block
+  // almost certainly came from a project template rather than a decision.
+  //
+  // To restore web: put the block back and run `npx expo install
+  // @expo/metro-runtime react-dom react-native-web`. react-dom and
+  // react-native-web are already present.
 
   plugins: [
     "expo-router",

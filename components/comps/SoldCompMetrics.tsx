@@ -104,11 +104,24 @@ export function SoldCompConfidence({
 }
 
 const s = StyleSheet.create({
+  /**
+   * One visual family: deep green, muted gold, cream. Brown is gone — it was
+   * what made Typical Range and Reliable Matches read as a different component
+   * from Median Sold.
+   *
+   * Hierarchy is kept through WEIGHT rather than hue: Median Sold is the solid
+   * green card, the other two are cream with a green value and a full gold
+   * border, so they are clearly the same set and clearly secondary.
+   */
   grid: { flexDirection: 'row', gap: 8, marginTop: 12 },
   metric: { flex: 1, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 9, borderWidth: 1.25 },
   metricGreen: { backgroundColor: C.forest, borderColor: C.gold },
-  metricCream: { backgroundColor: C.cream, borderColor: C.gold + '77' },
-  label: { fontSize: 8.5, fontWeight: '800', color: C.brown, letterSpacing: 0.8 },
+  // Near-white with the faintest green cast, so it sits beside the green card
+  // as a lighter member of the same family rather than a beige outlier.
+  metricCream: { backgroundColor: '#FBFAF3', borderColor: C.gold },
+  // Deep green labels, not brown. Gold is reserved for the label on the green
+  // card and for borders, so it stays an accent instead of dominating.
+  label: { fontSize: 8.5, fontWeight: '800', color: C.forest, letterSpacing: 0.8 },
   labelOnGreen: { color: C.gold },
   value: { fontSize: 16, fontWeight: '800', color: C.forest, marginTop: 3 },
   valueOnGreen: { color: '#F7F2DE' },
