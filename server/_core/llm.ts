@@ -1,4 +1,5 @@
 import { ENV } from "./env";
+import { resolveOpenAIKey } from "./costTestKeys";  // TEMPORARY — cost testing
 
 // ─── Model pricing (USD per token) ────────────────────────────────────────────
 // Used only for the [llm] cost log line. Verify against OpenAI's pricing page
@@ -289,7 +290,20 @@ const normalizeResponseFormat = ({
   };
 };
 
-export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
+/**
+ * TEMPORARY cost-test metadata. Optional, so every existing call site keeps
+ * working untouched and omitting it means production-key behaviour exactly as
+ * before. Remove with the rest of the cost-test mechanism.
+ */
+export interface CostTestMeta {
+  action: "scan" | "listings" | "other";
+  photoCount?: number;
+  hasUserContext?: boolean;
+}
+
+export async function invokeLLM(
+  params: InvokeParams & { costTest?: CostTestMeta },
+): Promise<InvokeResult> {
   assertApiKey();
 
   const {
@@ -343,8 +357,21 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      // Use Forge key when Forge URL is configured, otherwise use OpenAI key
-      authorization: `Bearer ${ENV.forgeApiUrl ? ENV.forgeApiKey : ENV.openaiApiKey}`,
+      // Use Forge key when Forge URL is configured, otherwise use OpenAI key.
+      //
+      // TEMPORARY cost-test hook: resolveOpenAIKey returns the production key
+      // unless test mode is on AND this exact request matches the selected
+      // bucket. Forge takes precedence when configured, because routing a Forge
+      // request with an OpenAI key would fail rather than mismeasure.
+      authorization: `Bearer ${
+        ENV.forgeApiUrl
+          ? ENV.forgeApiKey
+          : resolveOpenAIKey({
+              action: params.costTest?.action ?? "other",
+              photoCount: params.costTest?.photoCount,
+              hasUserContext: params.costTest?.hasUserContext,
+            }).key
+      }`,
     },
     body: JSON.stringify(payload),
   });
