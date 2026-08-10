@@ -131,14 +131,6 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
   let raw: Awaited<ReturnType<typeof invokeLLM>>;
   try {
     raw = await invokeLLM({
-      // TEMPORARY cost-test metadata. Photo count and context presence come
-      // from the values already computed above, so the bucket match reflects
-      // what was actually sent rather than what was requested.
-      costTest: {
-        action: "scan",
-        photoCount: slots.length,
-        hasUserContext: userCtx.confirmed === true,
-      },
       model: ENV.openaiScanModel,
       messages: [
         { role: "system", content: system },

@@ -390,11 +390,6 @@ export async function analyzeItemFast(
 
   const photoCount = 1 + (detail ? 1 : 0) + (tag ? 1 : 0);
   const response = await invokeLLM({
-    // TEMPORARY cost-test metadata. This is the LEGACY V0 scan path. It is
-    // tagged so a V0 scan cannot silently charge a photo bucket that is meant
-    // to measure the V1 pipeline — the two produce different token counts.
-    // hasUserContext is false because V0 has no camera-context field at all.
-    costTest: { action: "scan", photoCount, hasUserContext: false },
     model: ENV.openaiScanModel,
     messages: [
       { role: "system", content: FAST_ANALYSIS_PROMPT },
@@ -532,9 +527,6 @@ export async function generateItemListings(input: ListingInput): Promise<{
       : "");
 
   const response = await invokeLLM({
-    // TEMPORARY cost-test metadata. Listings is its own bucket: no photos, no
-    // large cached prefix, so its cost profile is nothing like a scan.
-    costTest: { action: "listings" },
     model: ENV.openaiListingModel,
     messages: [
       { role: "system", content: LISTING_PROMPT },
