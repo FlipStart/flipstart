@@ -69,6 +69,9 @@ const provider = (): SoldCompsProvider => (defaultProvider ??= new SoldCompsAdap
 export function __setCompsProvider(p: SoldCompsProvider | null) { defaultProvider = p; }
 
 export interface CompsRunContext {
+  /** Charged against this user's per-user daily cap. Absent means global-only,
+   *  which is correct for founder tooling but never for a user-facing scan. */
+  userId?: string | null;
   /** Step 2 result, decided by the caller. Passed in rather than read here so
    *  this module never has to know how founders are identified. */
   founderAuthorised: boolean;
@@ -132,7 +135,7 @@ export async function runCompsForAnalysis(
   } else {
     // 5 + 6. Daily then monthly. Reserved BEFORE the call so two concurrent
     //        requests cannot both pass a check that only one of them fits.
-    const res = reserveRequest();
+    const res = reserveRequest(ctx.userId ?? null);
     budget = res.state;
     if (!res.allowed) {
       return { ok: false, errorCode: "COMPS_BUDGET_EXHAUSTED",
@@ -160,7 +163,7 @@ export async function runCompsForAnalysis(
       // quietly overruns the budget.
       if (code === "PROVIDER_NOT_CONFIGURED" || code === "UNAUTHORIZED" ||
           code === "INVALID_REQUEST") {
-        releaseRequest();
+        releaseRequest(ctx.userId ?? null);
       }
       // A comps failure is never fatal — Phase 0 records it and moves on.
       return { ok: false, errorCode: code, detail: (err as Error).message,

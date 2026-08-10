@@ -537,7 +537,9 @@ const compsRouter = router({
           reviewedCount: null, filteredOutCount: null, searchPerformed: false } };
       }
 
-      const rec = await runCompsForAnalysis(stored.canonical, { founderAuthorised: true });
+      // userId charges this against the caller's per-user daily cap, so one heavy
+      // user cannot drain the shared monthly pool.
+      const rec = await runCompsForAnalysis(stored.canonical, { founderAuthorised: true, userId: sid });
       const ai = stored.canonical.derived.pricing;
       const diag = buildDiagnostic({
         ok: rec.ok,

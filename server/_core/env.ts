@@ -47,11 +47,48 @@ export const ENV = {
   // founder account test in production without exposing anyone else.
   canonicalV1AllowedUserIds: (process.env.CANONICAL_ANALYSIS_V1_USER_IDS ?? "")
     .split(",").map(s => s.trim()).filter(Boolean),
+
+  // ── Pro camera context ────────────────────────────────────────────────────
+  //
+  // Deliberately its OWN flag, separate from canonicalV1Enabled.
+  //
+  // Both features previously read canonicalV1Enabled, which meant opening the
+  // AI to everyone also handed every free user the Pro camera text box. There
+  // was no way to launch one without the other.
+  //
+  // Left OFF for launch: the box stays on the allow-list until entitlements
+  // exist. When they do, PRO_CONTEXT_ENABLED becomes the kill switch and the
+  // real check happens per-user in userContextServer.ts.
+  proContextEnabled: (process.env.PRO_CONTEXT_ENABLED ?? "").trim() === "true",
+
+  proContextAllowedUserIds: (process.env.PRO_CONTEXT_USER_IDS ?? "")
+    .split(",").map(s => s.trim()).filter(Boolean),
 };
 
 /** V1 is on for everyone, or this specific user is on the allow-list. */
 export function canonicalV1EnabledFor(userId: string | undefined | null): boolean {
   if (ENV.canonicalV1Enabled) return true;
   if (!userId) return false;
+  return ENV.canonicalV1AllowedUserIds.includes(userId);
+}
+
+/**
+ * Is this user entitled to the Pro camera context box?
+ *
+ * Falls back to PRO_CONTEXT_USER_IDS, then to the V1 allow-list, so the founder
+ * account keeps access without a second variable to maintain. Never opens to
+ * everyone just because the AI did.
+ *
+ * When subscriptions land, the plan lookup goes in the marked block below and
+ * nothing else changes — every call site already routes through here.
+ */
+export function proContextEnabledFor(userId: string | undefined | null): boolean {
+  if (ENV.proContextEnabled) return true;
+  if (!userId) return false;
+  if (ENV.proContextAllowedUserIds.includes(userId)) return true;
+  // ── SUBSCRIPTION HOOK ────────────────────────────────────────────────────
+  // Replace with the real entitlement lookup when monetization exists:
+  //   if (await isProSubscriber(userId)) return true;
+  // Kept synchronous for now so no call site needs to become async today.
   return ENV.canonicalV1AllowedUserIds.includes(userId);
 }

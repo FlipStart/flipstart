@@ -1410,17 +1410,13 @@ export default function ResultsScreen() {
             ))}
           </View>
 
-          {/* ── 4. Recent Sold Comps ─────────────────────────────────────────
-              Replaced a debug-style box: a hardcoded row of five marketplace
-              logos (only eBay is actually searched), a plain pill for stats, and
-              one-line titles with no way to read the rest.
+          {/* ── 4. Your thrift price + compact breakdown ──────────────────
+              Sits directly under the stats, ABOVE Sold Comps, because it
+              completes the buying decision: the rating says whether to buy, and
+              this says what it is worth at the price actually paid.
 
-              All presentation now lives in components/comps/. This screen only
-              decides where the section sits and hands it the public contract —
-              no comps logic, no statistics, no eligibility decisions. */}
-          <SoldCompsSection loading={compsLoading} data={comps} />
-
-          {/* ── 5. Your thrift price + compact breakdown ── */}
+              Sold Comps used to sit here and interrupted that. They are
+              supporting evidence for the estimate, not the next thing to do. */}
           <View style={s.card}>
             <View style={s.priceTopRow}>
               <View style={{ flex: 1 }}>
@@ -1475,6 +1471,20 @@ export default function ResultsScreen() {
               </View>
             </View>
           </View>
+
+          {/* ── 5. Recent Sold Comps ─────────────────────────────────────────
+              Replaced a debug-style box: a hardcoded row of five marketplace
+              logos (only eBay is actually searched), a plain pill for stats, and
+              one-line titles with no way to read the rest.
+
+              All presentation now lives in components/comps/. This screen only
+              decides where the section sits and hands it the public contract —
+              no comps logic, no statistics, no eligibility decisions.
+
+              Positioned AFTER the thrift price on purpose: comps validate the
+              decision the two cards above just made, so they read as evidence
+              rather than as a step in the flow. */}
+          <SoldCompsSection loading={compsLoading} data={comps} />
 
           {/* ── 5b. Worth a closer look ──────────────────────────────────────
               Moved down from above the rating card. It was competing with the
@@ -1832,7 +1842,7 @@ const s = StyleSheet.create({
 
 
 
-  // 5 · Your thrift price + breakdown
+  // 4 · Your thrift price + breakdown
   priceTopRow:   { flexDirection: 'row', alignItems: 'center', paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#DDD2AC' },
   priceTitle:    { fontFamily: FONTS.serif, fontSize: 16, fontWeight: '700', color: FOREST },
   priceSub:      { fontSize: 12, color: MUTED, marginTop: 2 },

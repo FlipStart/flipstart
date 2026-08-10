@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import {
   normalizeUserContext, buildUserContextInput, type UserContextInput,
 } from "../shared/userContext.js";
-import { ENV } from "./_core/env.js";
+import { proContextEnabledFor } from "./_core/env.js";
 
 /** Short SHA-256. Used as a cache-key component and as telemetry that
  *  distinguishes two scans without ever logging what the user typed. */
@@ -42,8 +42,10 @@ export function buildServerUserContext(raw: unknown): UserContextInput {
  * this comment — the call sites do not change.
  */
 export function userContextAllowedFor(userId: string | undefined | null): boolean {
-  // Global flag on: the feature is live for everyone the product intends.
-  if (ENV.canonicalV1Enabled) return true;
-  if (!userId) return false;
-  return ENV.canonicalV1AllowedUserIds.includes(userId);
+  // Delegates to the Pro entitlement check.
+  //
+  // Previously duplicated the V1 allow-list logic inline, which coupled the Pro
+  // camera box to the AI rollout: turning V1 on for everyone silently gave every
+  // free user a Pro feature. One flag now controls the AI, another controls this.
+  return proContextEnabledFor(userId);
 }
