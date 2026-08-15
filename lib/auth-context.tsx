@@ -52,6 +52,15 @@ interface AuthState {
   profile:        Profile | null;
   loading:        boolean;
   profileChecked: boolean;
+  /**
+   * True when the profile query FAILED, as distinct from "loaded and empty".
+   *
+   * This is the field whose absence sent an existing account to username
+   * creation. `profile?.onboarding_complete` was falsy for three different
+   * situations — still loading, query failed, genuinely incomplete — and only
+   * the third should ever route to setup.
+   */
+  profileError: boolean;
   signOut:        () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -66,6 +75,7 @@ const GUEST_STATE: AuthState = {
   profile:        null,
   loading:        true,   // true until dynamic import + getSession resolves
   profileChecked: false,
+  profileError: false,
   signOut:        async () => {},
   refreshProfile: async () => {},
 };
@@ -80,6 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile,        setProfile]        = useState<Profile | null>(null);
   const [loading,        setLoading]        = useState(true);
   const [profileChecked, setProfileChecked] = useState(false);
+  const [profileError, setProfileError]     = useState(false);
   // signOut and refreshProfile are useCallbacks using refs — no stale closures
 
   // refreshProfile and signOut are defined as useCallbacks that read from refs
@@ -138,6 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const safe = {
     setLoading:        (v: boolean)        => { if (mounted.current) setLoading(v); },
     setProfileChecked: (v: boolean)        => { if (mounted.current) setProfileChecked(v); },
+    setProfileError:   (v: boolean)        => { if (mounted.current) setProfileError(v); },
     setProfile:        (v: Profile | null) => { if (mounted.current) setProfile(v); },
     setSession:        (v: Session | null) => { if (mounted.current) setSession(v); },
     setUser:           (v: User    | null) => { if (mounted.current) setUser(v); },
@@ -215,13 +227,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             .from("profiles")
             .select("*")
             .eq("id", userId)
-            .single();
+            .maybeSingle();
           if (!mounted.current) return;
+
           if (!error && data) {
+            safe.setProfileError(false);
             safe.setProfile(data as Profile);
             if (__DEV__) console.log("[auth] ensureProfile: loaded:", data?.username);
             return;
           }
+
+          /**
+           * A QUERY FAILURE IS NOT A MISSING PROFILE.
+           *
+           * This is the bug that sent a real existing account to username
+           * creation. The old code read `if (!error && data)` and treated
+           * everything else as "profile missing" — including a network timeout,
+           * a transient 5xx, and an RLS hiccup. It then attempted to INSERT a
+           * replacement profile with a generated `user_xxxxxxxx` username and
+           * `onboarding_complete: false`.
+           *
+           * The primary key on `profiles.id` is the only reason no data was
+           * destroyed: the insert conflicted and was swallowed. But `profile`
+           * stayed null, so the home gate routed to username setup anyway.
+           *
+           * `.maybeSingle()` replaces `.single()` deliberately: `.single()`
+           * raises an error for zero rows, which is precisely the case we need
+           * to tell apart from a real failure.
+           */
+          if (error) {
+            if (__DEV__) console.warn("[auth] ensureProfile: query FAILED (not treating as new account):", error.code ?? error.message);
+            safe.setProfileError(true);
+            safe.setProfileChecked(true);
+            return;   // leave any previously-loaded profile intact
+          }
+
+          // error === null && data === null: the row genuinely does not exist.
+          safe.setProfileError(false);
 
           // Profile missing. Before trying to CREATE one, confirm the auth user
           // still exists server-side. If the account was deleted (e.g. from the
@@ -277,8 +319,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (mounted.current) await fetchProfile(userId);
           }
         } catch (err) {
+          // A thrown error is a failure, not an empty account. Do NOT clear a
+          // profile that may already be loaded and correct.
           if (__DEV__) console.warn("[auth] ensureProfile threw:", err);
-          safe.setProfile(null);
+          safe.setProfileError(true);
+          safe.setProfileChecked(true);
         }
       };
 
@@ -353,7 +398,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const value: AuthState = {
-    session, user, profile, loading, profileChecked,
+    session, user, profile, loading, profileChecked, profileError,
     signOut,
     refreshProfile,
   };

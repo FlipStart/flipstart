@@ -13,6 +13,9 @@ import { buildServerUserContext, userContextAllowedFor } from "./userContextServ
 import { conditionFactKey } from "./canonical/validate.js";
 import { runCompsForAnalysis } from "./comps/index.js";
 import { compsFounderAuthorised } from "./comps/auth.js";
+import { monetizationV1EnabledFor } from "./_core/env.js";
+import { resolveSupabaseUserId } from "./monetization/identity.js";
+import { reserveScan, commitScan, refundScan } from "./monetization/ledger.js";
 import { saveAnalysis, getLatestAnalysis, getAnalysis } from "./analysisStore.js";
 import { compsCacheStats } from "./comps/cache.js";
 import { budgetState, budgetSource } from "./comps/budget.js";
@@ -97,7 +100,7 @@ const appRouter_scan = router({
           userContext:     z.string().max(2000).optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         console.log("[analyze] request received");
         console.log("[analyze] mimeType:", input.mimeType);
         console.log("[analyze] base64 length:", input.imageBase64?.length ?? 0);
@@ -139,12 +142,80 @@ const appRouter_scan = router({
           );
         }
 
+        // ── MONETIZATION IDENTITY ───────────────────────────────────────────
+        //
+        // `sid` above is input.scannerId — CLIENT-SUPPLIED and unverified. Fine
+        // for the legacy beta counter, which only ever separated devices, but it
+        // must never key a ledger that holds money: a modified client could post
+        // any string and spend another account's scans.
+        //
+        // muid is the Supabase uid the SERVER verified from the x-supabase-auth
+        // header. Null means unverified, and V1 then does not apply.
+        const muid = await resolveSupabaseUserId(ctx?.req as never);
+        const useV1 = Boolean(muid) && monetizationV1EnabledFor(muid);
+
+        // Non-null ONLY when this request created a NEW reservation. A replay
+        // leaves it null, which is what stops a retry committing twice.
+        let reservationId: string | null = null;
+
+        if (useV1) {
+          /**
+           * The attempt id is the idempotency key, and the schema marks it
+           * optional — an outdated client can omit it. Without one, a retry
+           * cannot be recognised and would spend a second scan, so V1 requires
+           * it rather than inventing a random id that would defeat the whole
+           * dedupe mechanism.
+           */
+          if (!input.scanAttemptId?.trim()) {
+            console.warn("[analyze] V1 rejected — no scanAttemptId (outdated client?)");
+            throw Object.assign(
+              new Error("Please update FlipStart to continue scanning."),
+              { code: "SCAN_ATTEMPT_ID_MISSING" },
+            );
+          }
+          /**
+           * Reserve BEFORE the AI call.
+           *
+           * Expired reservations for this user are recovered inside reserve_scan
+           * in the same statement, so the balance read here cannot be stale —
+           * an async sweep could still have been running.
+           */
+          const r = await reserveScan(muid as string, input.scanAttemptId.trim());
+          if (!r.ok) {
+            console.warn(`[analyze] V1 refused — ${r.reason} (plan ${r.plan ?? "?"})`);
+            throw Object.assign(
+              new Error("You're out of scans. Add more to keep going."),
+              { code: r.reason ?? "NO_SCANS_REMAINING" },
+            );
+          }
+          /**
+           * A REPLAY THAT REACHED HERE MUST NOT RUN THE AI.
+           *
+           * The retry cache is written only AFTER success, so during a pending
+           * first request it is empty. A duplicate attempt therefore reached
+           * this point, found an existing reservation, set reservationId to null
+           * — and would then have run a SECOND OpenAI call that consumed no
+           * scan. A bounded but real cost leak.
+           *
+           * Refusing is correct: the original request is still in flight and
+           * will populate the cache. The client's next retry gets that cached
+           * result for free, which is the behaviour the cache exists for.
+           */
+          if (r.replayed) {
+            console.warn("[analyze] duplicate attempt while original is pending — refusing to re-run AI");
+            throw Object.assign(
+              new Error("This scan is already being processed. One moment."),
+              { code: "SCAN_IN_PROGRESS" },
+            );
+          }
+          reservationId = r.reservationId ?? null;
+          console.log(`[analyze] V1 reserved from ${r.source} plan:${r.plan}`);
+        }
+
         // ── PER-USER SCAN LIMIT CHECK (read-only) ───────────────────────────
-        // Check quota BEFORE the AI call so over-limit users don't cost us AI
-        // spend — but do NOT consume the count here. The count is only committed
-        // AFTER a successful analysis (below), so failed/timed-out/canceled
-        // scans never burn a scan. Keyed by scannerId (user id or guest id).
-        const allowed = checkScanAllowed(sid);
+        // Legacy beta path. Skipped entirely for a V1 user so exactly ONE quota
+        // system decides any given request — never both.
+        const allowed = useV1 ? true : checkScanAllowed(sid);
         if (!allowed) {
           const stats = getUserScanStats(sid);
           throw Object.assign(
@@ -285,9 +356,18 @@ const appRouter_scan = router({
             // Only NOW is the scan consumed. Skipped while V1 is allow-list
             // only, so founder testing does not burn the 7/day quota on
             // results that are still being validated.
-            const testingOnly = !ENV.canonicalV1Enabled;
-            if (!testingOnly) commitScanCount(sid, input.scanAttemptId);
-            else console.log("[analyzeV1] allow-list scan — quota NOT consumed");
+            if (useV1) {
+              // Exactly once. A replay left reservationId null, so a retried
+              // attempt cannot consume a second scan.
+              if (reservationId) {
+                await commitScan(reservationId);
+                console.log("[analyzeV1] V1 scan COMMITTED");
+              }
+            } else {
+              const testingOnly = !ENV.canonicalV1Enabled;
+              if (!testingOnly) commitScanCount(sid, input.scanAttemptId);
+              else console.log("[analyzeV1] allow-list scan — quota NOT consumed");
+            }
 
             // Emit BOTH shapes. The shipped app reads the legacy keys and
             // renders normally with no EAS build; `canonical` rides along for
@@ -308,6 +388,11 @@ const appRouter_scan = router({
               err instanceof Error ? err.message : String(err),
               JSON.stringify(diag).slice(0, 800),
             );
+            // Refund to the SAME bucket. Only a reservation THIS request made.
+            if (useV1 && reservationId) {
+              await refundScan(reservationId).catch(() => {});
+              console.log("[analyzeV1] V1 scan REFUNDED after failure");
+            }
             // Fail closed. No scan consumed, nothing saved, nothing unlocked.
             // Deliberately NOT silently downgraded to the legacy route: that
             // would hide a broken V1 behind a working-looking response.
@@ -342,7 +427,16 @@ const appRouter_scan = router({
           // Idempotent per scanAttemptId: retries of the same item won't double
           // count. A failed AI call above throws before reaching this line, so
           // failed scans cost nothing.
-          commitScanCount(sid, input.scanAttemptId);
+          // Legacy AI path. A V1 user still commits through the ledger, so
+          // success is never recorded in two systems.
+          if (useV1) {
+            if (reservationId) {
+              await commitScan(reservationId);
+              console.log("[analyze] V1 scan COMMITTED (legacy AI path)");
+            }
+          } else {
+            commitScanCount(sid, input.scanAttemptId);
+          }
 
           const payload = {
             imageUrl,
@@ -354,6 +448,12 @@ const appRouter_scan = router({
         } catch (err: any) {
           console.error("[analyze] ERROR:", err?.message ?? String(err));
           if (err?.stack) console.error("[analyze] STACK:", err.stack);
+          // Refund to the SAME bucket. Guarded on reservationId, so a replay —
+          // which never reserved — cannot credit a scan it did not spend.
+          if (useV1 && reservationId) {
+            await refundScan(reservationId).catch(() => {});
+            console.log("[analyze] V1 scan REFUNDED after failure");
+          }
           throw err;
         }
       }),

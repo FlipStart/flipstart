@@ -48,6 +48,24 @@ export const ENV = {
   canonicalV1AllowedUserIds: (process.env.CANONICAL_ANALYSIS_V1_USER_IDS ?? "")
     .split(",").map(s => s.trim()).filter(Boolean),
 
+  // ── Monetization V1 rollout ───────────────────────────────────────────────
+  //
+  // OFF by default, and it must stay off until purchases exist. Turning it on
+  // today would strand every user at 15 lifetime scans with no way to buy more
+  // — the beta 7/day quota is wrong, but it is not "wall with no door" wrong.
+  //
+  // OFF:  the beta JSON quota decides access, exactly as now. The Supabase
+  //       ledger is written by nothing and enforces nothing.
+  // ON:   an authenticated Supabase user is required, the ledger is
+  //       authoritative, and the beta counter stops deciding anything.
+  monetizationV1Enabled: (process.env.MONETIZATION_V1_ENABLED ?? "").trim() === "true",
+
+  // Per-account V1 testing while the flag is off, so the ledger can be
+  // exercised in production without exposing anyone else to it. Same pattern as
+  // the canonical V1 rollout.
+  monetizationV1UserIds: (process.env.MONETIZATION_V1_USER_IDS ?? "")
+    .split(",").map(s => s.trim()).filter(Boolean),
+
   // ── Pro camera context ────────────────────────────────────────────────────
   //
   // Deliberately its OWN flag, separate from canonicalV1Enabled.
@@ -91,4 +109,16 @@ export function proContextEnabledFor(userId: string | undefined | null): boolean
   //   if (await isProSubscriber(userId)) return true;
   // Kept synchronous for now so no call site needs to become async today.
   return ENV.canonicalV1AllowedUserIds.includes(userId);
+}
+/**
+ * Is Monetization V1 authoritative for this user?
+ *
+ * Mirrors canonicalV1EnabledFor. The allow-list exists so the ledger can be
+ * tested against a real account in production while everyone else stays on the
+ * beta path — and, critically, a normal client cannot put itself on that list.
+ */
+export function monetizationV1EnabledFor(userId: string | undefined | null): boolean {
+  if (ENV.monetizationV1Enabled) return true;
+  if (!userId) return false;
+  return ENV.monetizationV1UserIds.includes(userId);
 }

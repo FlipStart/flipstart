@@ -43,6 +43,24 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // multiple keys and reassembled transparently.
 const CHUNK_SIZE = 1900;
 
+/**
+ * Remove a chunked representation entirely.
+ *
+ * Deletes a few extra indices past the recorded count as cheap insurance
+ * against a previously interrupted write leaving an orphan behind.
+ */
+async function clearChunks(key: string): Promise<void> {
+  try {
+    const recorded = await SecureStore.getItemAsync(`${key}_chunks`);
+    const n = recorded ? parseInt(recorded, 10) : 0;
+    const upTo = Number.isFinite(n) && n > 0 ? n + 3 : 3;
+    for (let i = 0; i < upTo; i++) {
+      await SecureStore.deleteItemAsync(`${key}_chunk_${i}`).catch(() => {});
+    }
+    await SecureStore.deleteItemAsync(`${key}_chunks`).catch(() => {});
+  } catch { /* non-fatal */ }
+}
+
 const ExpoSecureStoreAdapter = {
   async getItem(key: string): Promise<string | null> {
     try {
@@ -52,7 +70,14 @@ const ExpoSecureStoreAdapter = {
         const chunks: string[] = [];
         for (let i = 0; i < n; i++) {
           const chunk = await SecureStore.getItemAsync(`${key}_chunk_${i}`);
-          if (chunk == null) return null;
+          // An incomplete chunk set is corrupt. Returning null makes Supabase
+          // treat it as "no stored session" — the user signs in again once,
+          // which is far better than restoring a half-read session that then
+                    // fails to refresh and looks like a random logout.
+          if (chunk == null) {
+            await clearChunks(key);
+            return await SecureStore.getItemAsync(key);
+          }
           chunks.push(chunk);
         }
         return chunks.join("");
@@ -63,9 +88,31 @@ const ExpoSecureStoreAdapter = {
     }
   },
 
+  /**
+   * CRITICAL: every write must destroy the OTHER representation.
+   *
+   * ── The bug this fixes (random logouts) ───────────────────────────────────
+   * getItem() checks `${key}_chunks` FIRST. The old setItem wrote the plain key
+   * for small values and the chunked keys for large ones, but never removed the
+   * form it was not using. Session JSON crosses the 1900-byte line as token
+   * claims change, so:
+   *
+   *   1. login          2400 bytes -> chunked, _chunks = 2
+   *   2. token refresh  1800 bytes -> plain key written, _chunks STILL 2
+   *   3. next launch    getItem sees _chunks, returns the OLD chunks
+   *
+   * Supabase then refreshed with an already-rotated token, got
+   * "Invalid Refresh Token", and signed the user out. Intermittent, because it
+   * depended on token length — which is exactly how it presented.
+   *
+   * Cleanup happens BEFORE the write, so a crash mid-operation leaves no
+   * readable stale value rather than a plausible-looking wrong one.
+   */
   async setItem(key: string, value: string): Promise<void> {
     try {
       if (value.length <= CHUNK_SIZE) {
+        // Destroy any chunked form first, or getItem would prefer it forever.
+        await clearChunks(key);
         await SecureStore.setItemAsync(key, value);
         return;
       }
@@ -73,9 +120,16 @@ const ExpoSecureStoreAdapter = {
       for (let i = 0; i < value.length; i += CHUNK_SIZE) {
         chunks.push(value.slice(i, i + CHUNK_SIZE));
       }
+      // Drop the old chunk set before writing: a shrinking session (3 chunks to
+      // 2) would otherwise leave _chunk_2 behind as a readable fragment.
+      await clearChunks(key);
+      // And drop the plain form, so the two can never disagree.
+      await SecureStore.deleteItemAsync(key).catch(() => {});
       for (let i = 0; i < chunks.length; i++) {
         await SecureStore.setItemAsync(`${key}_chunk_${i}`, chunks[i]);
       }
+      // Written LAST: until this exists, getItem falls back to the plain key, so
+      // a crash mid-write cannot surface a half-written chunk set.
       await SecureStore.setItemAsync(`${key}_chunks`, String(chunks.length));
     } catch {
       /* never crash — session persistence failure is non-fatal */
@@ -84,15 +138,8 @@ const ExpoSecureStoreAdapter = {
 
   async removeItem(key: string): Promise<void> {
     try {
-      const chunkCount = await SecureStore.getItemAsync(`${key}_chunks`);
-      if (chunkCount) {
-        const n = parseInt(chunkCount, 10);
-        for (let i = 0; i < n; i++) {
-          await SecureStore.deleteItemAsync(`${key}_chunk_${i}`);
-        }
-        await SecureStore.deleteItemAsync(`${key}_chunks`);
-      }
-      await SecureStore.deleteItemAsync(key);
+      await clearChunks(key);
+      await SecureStore.deleteItemAsync(key).catch(() => {});
     } catch {
       /* never crash */
     }

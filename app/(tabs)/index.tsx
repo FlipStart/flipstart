@@ -140,7 +140,7 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
 
   // ── Onboarding ──────────────────────────────────────────────────────────────
-  const { user, profile, loading: authLoading, profileChecked } = useAuth();
+  const { user, profile, loading: authLoading, profileChecked, profileError } = useAuth();
   const roar = useAudioPlayer(ROAR_SOUND);
   const [showScanModal,   setShowScanModal]   = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -169,13 +169,41 @@ export default function HomeScreen() {
     }
     if (routedForUser.current === user.id) return;       // already routed this session
 
-    if (profile?.onboarding_complete) {
-      routedForUser.current = user.id;
-    } else {
-      routedForUser.current = user.id;
+    /**
+     * ONLY a definitively-loaded, definitively-incomplete profile may route to
+     * username setup.
+     *
+     * The old condition was `if (profile?.onboarding_complete)` with an else
+     * that navigated. Optional chaining made that else fire for three unrelated
+     * situations, and a real existing account hit it:
+     *
+     *   profile === null because it is still loading   -> setup   WRONG
+     *   profile === null because the query failed      -> setup   WRONG
+     *   profile loaded, onboarding_complete false      -> setup   correct
+     *
+     * A failed query now holds position instead. The profile is retried by the
+     * auth layer, and the user stays on Home rather than being asked to invent a
+     * username they already have.
+     */
+    if (profileError) {
+      // Unknown, not new. Do NOT mark this user as routed — leaving it unset
+      // means the decision is retaken once the profile resolves.
+      if (__DEV__) console.warn('[home] profile unavailable — holding position, not treating as a new account');
+      return;
+    }
+
+    if (!profile) {
+      // profileChecked is true and there is no error, so this is genuinely a
+      // brand-new account with no row yet. Wait for the auth layer to create it
+      // rather than guessing here.
+      return;
+    }
+
+    routedForUser.current = user.id;
+    if (!profile.onboarding_complete) {
       router.replace('/username-setup' as any);
     }
-  }, [authLoading, profileChecked, user, profile]);
+  }, [authLoading, profileChecked, profileError, user, profile]);
 
   // ── Scan balance (honest) ───────────────────────────────────────────────────
   const { remaining, failed: scanFailed } = useScansRemaining();

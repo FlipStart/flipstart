@@ -25,6 +25,8 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as Linking from 'expo-linking';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { supabase } from '@/lib/supabase';
+import { sanitizeAuthError } from '@/lib/authErrors';
+import { claimAuthCode } from '@/lib/oauthCodeClaim';
 
 const FOREST = '#2A4A2A';
 const CREAM  = '#F4EED8';
@@ -95,8 +97,43 @@ export default function AuthCallbackScreen() {
 
         let ok = false;
         if (p.code) {
+          /**
+           * DO NOT exchange a code that the OAuth flow already handled.
+           *
+           * Google's redirectTo is `flipstart://auth/callback`, which is also
+           * this Expo Router route. So one deep link produced TWO exchanges:
+           * app/auth.tsx did it inline (with the PKCE verifier it created) and
+           * then this screen mounted and did it again. Supabase deletes the
+           * verifier after a successful exchange, so the second attempt failed
+           * with "PKCE code verifier not found in storage" — which was then
+           * printed verbatim in the login form.
+           *
+           * An existing session means the first exchange won. Standing down is
+           * the fix; there is nothing left for this screen to do.
+           */
+          /**
+           * Claim, or stand down.
+           *
+           * The claim is synchronous, so if app/auth.tsx already owns this code
+           * — including while its exchange is still awaiting — this returns
+           * false and no second exchange happens. That replaces the previous
+           * getSession() check, which was check-then-act and could let both
+           * paths through if callback.tsx mounted mid-flight.
+           *
+           * Claiming SUCCEEDS only when auth.tsx never ran: the app was killed
+           * mid-OAuth and this deep link cold-started it. Owning the exchange
+           * there is correct, because auth.tsx's promise is gone.
+           */
+          if (!claimAuthCode(p.code)) {
+            if (__DEV__) console.log("[auth/callback] code owned by the sign-in screen — standing down");
+            if (!cancelled) setPhase("confirmed");
+            return;
+          }
           const { error } = await supabase.auth.exchangeCodeForSession(p.code);
           ok = !error;
+          // A failed exchange here is almost always the duplicate above losing a
+          // race. Never surface it: classify, log, and show the neutral screen.
+          if (error) sanitizeAuthError(error);
         } else if (p.token_hash) {
           const { error } = await supabase.auth.verifyOtp({
             token_hash: p.token_hash,
@@ -107,7 +144,18 @@ export default function AuthCallbackScreen() {
           ok = true;
         }
 
-        await supabase.auth.signOut().catch(() => {});
+        /**
+         * signOut ONLY for the email-confirmation path.
+         *
+         * This used to run unconditionally, so a Google sign-in that reached
+         * this screen would have its brand-new session destroyed — turning a
+         * successful login into an immediate logout. Email confirmation genuinely
+         * wants it (confirm the address, then sign in deliberately); OAuth
+         * absolutely does not.
+         */
+        if (p.token_hash) {
+          await supabase.auth.signOut().catch(() => {});
+        }
 
         if (!cancelled) setPhase(ok ? 'confirmed' : 'invalid');
       } catch {

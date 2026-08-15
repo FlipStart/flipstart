@@ -23,6 +23,8 @@ import { useAuth } from '@/lib/auth-context';
 import { PENDING_USERNAME_KEY } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
 import * as WebBrowser from 'expo-web-browser';
+import { sanitizeAuthError, isCancellation } from '@/lib/authErrors';
+import { claimAuthCode } from '@/lib/oauthCodeClaim';
 import * as Linking from 'expo-linking';
 
 // Complete any pending auth sessions on mount (required by expo-web-browser)
@@ -197,7 +199,9 @@ export default function AuthScreen() {
         options: { redirectTo: 'flipstart://auth/callback', skipBrowserRedirect: true },
       });
       if (oauthError || !data?.url) {
-        setGoogleError('Could not start Google Sign-In. Please try again.');
+        setGoogleError(oauthError
+          ? sanitizeAuthError(oauthError).userMessage
+          : 'Google sign-in couldn\u2019t be started. Please try again.');
         return;
       }
       const result = await WebBrowser.openAuthSessionAsync(data.url, 'flipstart://');
@@ -209,9 +213,24 @@ export default function AuthScreen() {
         setGoogleError('Google Sign-In did not return a code. Please try again.');
         return;
       }
+      /**
+       * Take exclusive ownership BEFORE the await.
+       *
+       * This is the sole owner of Google code exchange in the normal flow.
+       * Claiming synchronously means callback.tsx cannot also exchange this
+       * code even if it mounts while the request below is still in flight —
+       * which the previous getSession() check could not prevent.
+       */
+      if (!claimAuthCode(code)) {
+        if (__DEV__) console.log('[auth] code already claimed elsewhere — not exchanging twice');
+        return;
+      }
       const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
       if (sessionError) {
-        setGoogleError(`Sign-In failed: ${sessionError.message}`);
+        // THE leak that showed a user a paragraph about @supabase/ssr. Raw
+        // provider text can never reach a screen again — components render
+        // `userMessage` and nothing else.
+        setGoogleError(sanitizeAuthError(sessionError).userMessage);
         return;
       }
       // SIGNED_IN fires → AuthProvider → ensureProfile
@@ -224,7 +243,8 @@ export default function AuthScreen() {
       await completeOnboarding('resell').catch(() => {});
       goAfterAuth();
     } catch (err) {
-      setGoogleError('Google Sign-In failed. Please try again.');
+      // Cancellation is a normal outcome, not something to alarm anyone with.
+      if (!isCancellation(err)) setGoogleError(sanitizeAuthError(err).userMessage);
     } finally {
       setGoogleLoading(false);
     }
@@ -268,7 +288,7 @@ export default function AuthScreen() {
       });
 
       if (sessionError) {
-        setAppleError(`Sign-In failed: ${sessionError.message}`);
+        setAppleError(sanitizeAuthError(sessionError).userMessage);
         setAppleStep('idle');
         return;
       }
@@ -320,10 +340,12 @@ export default function AuthScreen() {
         options: { emailRedirectTo: 'flipstart://auth/callback' },
       });
       if (authError) {
-        const msg = authError.message.toLowerCase();
-        if (msg.includes('already registered')) { setError('__EMAIL_EXISTS__'); }
-        else if (msg.includes('rate limit') || msg.includes('too many')) { setError('Too many attempts. Please wait a few minutes.'); }
-        else { setError(authError.message); }
+        // The existing-email case keeps its sentinel because the UI renders a
+        // dedicated "sign in instead" affordance for it. Everything else routes
+        // through the sanitizer rather than printing provider text.
+        const s = sanitizeAuthError(authError);
+        if (s.kind === 'account_exists') { setError('__EMAIL_EXISTS__'); }
+        else { setError(s.userMessage); }
         setSaving(false); return;
       }
       // Duplicate email — Supabase returns empty identities array
@@ -364,10 +386,7 @@ export default function AuthScreen() {
         email: trimEmail, password: trimPassword,
       });
       if (authError) {
-        const msg = authError.message.toLowerCase();
-        if (msg.includes('invalid'))   setError('Incorrect email or password.');
-        else if (msg.includes('confirm')) setError('Please confirm your email before logging in. Check your inbox.');
-        else setError(authError.message);
+        setError(sanitizeAuthError(authError).userMessage);
         setSaving(false); return;
       }
       await completeOnboarding('resell');
@@ -383,8 +402,10 @@ export default function AuthScreen() {
     try {
       const { error } = await supabase.auth.resend({ type: 'signup', email: confirmEmail });
       if (error) {
-        const msg = error.message.toLowerCase();
-        setResendMsg(msg.includes('rate') || msg.includes('limit') ? 'Please wait a moment before resending.' : 'Could not resend. Please try again.');
+        const s = sanitizeAuthError(error);
+        setResendMsg(s.kind === 'rate_limited'
+          ? 'Please wait a moment before resending.'
+          : 'Could not resend. Please try again.');
       } else {
         setResendMsg('Email resent! Check your inbox.');
         startCooldown();
