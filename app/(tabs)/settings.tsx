@@ -536,6 +536,12 @@ export default function SettingsScreen() {
             >
               <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 Scan Quota (Dev)</Text>
             </Pressable>
+            <Pressable
+              onPress={() => router.push('/dev-monetization' as any)}
+              style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 RevenueCat Diagnostics (Dev)</Text>
+            </Pressable>
           </>
         )}
 

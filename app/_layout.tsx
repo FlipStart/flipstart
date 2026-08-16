@@ -446,6 +446,11 @@ export default function RootLayout() {
                 with no secrets and no network. */}
             <Stack.Protected guard={__DEV__}>
               <Stack.Screen name="dev-sold-comps" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+              {/* RevenueCat diagnostics. Same protection rationale: the route
+                  file ships regardless, so Stack.Protected blocks navigation,
+                  the screen guards itself, and the server secret is the real
+                  boundary. */}
+              <Stack.Screen name="dev-monetization" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
             </Stack.Protected>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
