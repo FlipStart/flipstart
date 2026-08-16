@@ -39,7 +39,18 @@ export function verifyWebhookAuth(headerValue: unknown): boolean {
 
 export interface WebhookResult {
   status: number;
-  body: { ok: boolean; reason?: string };
+  body: {
+    ok: boolean;
+    reason?: string;
+    /**
+     * Present only on dashboard TEST acknowledgements.
+     *
+     * Explicit in the type rather than loosened to an index signature, so the
+     * response shape stays a contract: a future field has to be declared here
+     * before it can be returned, which is what caught this one.
+     */
+    test?: boolean;
+  };
 }
 
 export async function handleRevenueCatWebhook(
@@ -58,6 +69,39 @@ export async function handleRevenueCatWebhook(
   if (!eventId) return { status: 400, body: { ok: false, reason: "missing event id" } };
 
   console.log(`[revenuecat-webhook] received type=${eventType ?? "?"}`);
+
+  /**
+   * ── DASHBOARD TEST EVENTS ────────────────────────────────────────────────
+   *
+   * Placed AFTER Authorization and basic payload validation, and BEFORE the
+   * ledger, the subscriber fetch and any reconciliation. Order matters in both
+   * directions: an unauthenticated TEST must still be rejected, and an
+   * authenticated TEST must touch nothing.
+   *
+   * ── What went wrong live ─────────────────────────────────────────────────
+   * RevenueCat's dashboard TEST carries a SYNTHETIC app_user_id that happens to
+   * be UUID-shaped. `isFlipStartUserId` only ever checked SHAPE, so the TEST
+   * sailed through as a real identity and reconciliation ran:
+   *
+   *   GET /v1/subscribers/<synthetic>  -> 201, a phantom RevenueCat customer
+   *   apply_revenuecat_snapshot        -> account_usage_user_id_fkey violation
+   *   RevenueCat received              -> HTTP 500
+   *
+   * A TEST is diagnostic traffic, not subscription state. It is acknowledged
+   * here and goes no further.
+   *
+   * ── Why TEST does not enter the event ledger ─────────────────────────────
+   * The ledger records subscription lifecycle for idempotency and audit. A TEST
+   * has no lifecycle to be idempotent about, and RevenueCat reuses ids across
+   * repeated dashboard tests — so a stored TEST row could collide with, or be
+   * mistaken for, a real event. Keeping it out leaves the ledger meaning exactly
+   * one thing. The log line is the diagnostic record.
+   */
+  if (eventType === "TEST") {
+    console.log("[revenuecat-webhook] authenticated TEST event received");
+    console.log("[revenuecat-webhook] TEST acknowledged without reconciliation");
+    return { status: 200, body: { ok: true, test: true } };
+  }
 
   const sb = getSupabaseAdmin();
   if (!sb) return { status: 503, body: { ok: false, reason: "unavailable" } };
@@ -116,19 +160,57 @@ export async function handleRevenueCatWebhook(
     return { status: 503, body: { ok: false, reason: "in_progress" } };
   }
 
-  // Anonymous or malformed identity: recorded, never acted on. FlipStart always
-  // configures RevenueCat with a Supabase uuid, so anything else is not ours and
-  // guessing at an owner would be an account merge by heuristic.
+  /**
+   * Structurally invalid identity: $RCAnonymousID, an email, a username, a
+   * legacy scannerId, a device id. Recorded, never acted on.
+   *
+   * No heuristic mapping, no email or username lookup, no account creation. A
+   * guess here would be an account merge, and a wrong one is unrecoverable.
+   * Acknowledged rather than retried, because no future attempt would resolve it.
+   */
   if (!isFlipStartUserId(appUserId)) {
-    console.warn("[revenuecat-webhook] non-FlipStart app_user_id — no account changed");
-    // Marked OK so it is never retried: no future attempt would resolve it.
+    console.warn("[revenuecat-webhook] identity is not a FlipStart user id — ignoring, no account changed");
     await sb.rpc("finish_revenuecat_event", {
-      p_event_id: eventId, p_ok: true, p_detail: null,
+      p_event_id: eventId, p_ok: true, p_detail: "ignored_invalid_identity",
     });
-    return { status: 200, body: { ok: true, reason: "ignored" } };
+    return { status: 200, body: { ok: true, reason: "ignored_invalid_identity" } };
   }
 
   const result = await reconcileUser(appUserId as string);
+
+  /**
+   * Definitively no FlipStart account for this id.
+   *
+   * Legitimate causes: the user deleted their account, a stale customer from an
+   * old environment, historical RevenueCat data. NOT an error and NOT "free" —
+   * free means an existing account without Pro, whereas this means there is no
+   * account to mutate at all.
+   *
+   * Acknowledged with 200 so RevenueCat stops retrying an event that can never
+   * be reconciled, and recorded so the ledger still shows what arrived.
+   */
+  if (!result.ok && result.reason === "UNKNOWN_USER") {
+    console.warn("[revenuecat-webhook] ignored event for unknown FlipStart user");
+    await sb.rpc("finish_revenuecat_event", {
+      p_event_id: eventId, p_ok: true, p_detail: "ignored_unknown_user",
+    });
+    return { status: 200, body: { ok: true, reason: "ignored_unknown_user" } };
+  }
+
+  /**
+   * We could not determine whether the account exists.
+   *
+   * A Supabase outage, timeout or unexpected response. Deliberately NOT treated
+   * as absent: acknowledging here would silently discard a real subscription
+   * event. Left FAILED so the redelivery reclaims it.
+   */
+  if (!result.ok && result.reason === "USER_LOOKUP_FAILED") {
+    console.warn("[revenuecat-webhook] user lookup failed — retryable, NOT acknowledged");
+    await sb.rpc("finish_revenuecat_event", {
+      p_event_id: eventId, p_ok: false, p_detail: "user_lookup_failed",
+    });
+    return { status: 503, body: { ok: false, reason: "user_lookup_failed" } };
+  }
 
   if (!result.ok) {
     // Recorded as FAILED, which is now genuinely reclaimable — the next delivery

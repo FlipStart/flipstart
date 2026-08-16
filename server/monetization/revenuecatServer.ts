@@ -28,7 +28,11 @@ export interface ReconcileResult {
   ok: boolean;
   plan?: SubscriptionSnapshot["plan"];
   periodReset?: boolean;
-  reason?: "NOT_CONFIGURED" | "RC_UNAVAILABLE" | "DB_ERROR" | "INVALID_USER";
+  reason?: "NOT_CONFIGURED" | "RC_UNAVAILABLE" | "DB_ERROR" | "INVALID_USER"
+    /** Authoritatively established: no FlipStart account with this id. */
+    | "UNKNOWN_USER"
+    /** Could not determine existence. Retryable — never treated as absent. */
+    | "USER_LOOKUP_FAILED";
   snapshot?: SubscriptionSnapshot;
 }
 
@@ -106,6 +110,44 @@ export function isFlipStartUserId(appUserId: string | null | undefined): boolean
   return UUID_RE.test(appUserId);
 }
 
+export type UserExistence = "exists" | "absent" | "unknown";
+
+/**
+ * Does this Supabase auth user actually exist?
+ *
+ * ── Why this had to be added ────────────────────────────────────────────────
+ * `account_usage.user_id` is a foreign key to `auth.users(id)`. A syntactically
+ * valid UUID that belongs to no account therefore blows up on INSERT with an FK
+ * violation — which is exactly what the live dashboard TEST produced. The uuid
+ * shape check was never an existence check, and treating it as one was the gap.
+ *
+ * ── The three-way return is the whole point ─────────────────────────────────
+ * "absent" and "unknown" must never be collapsed. Absent means we asked and the
+ * account genuinely is not there, so retrying forever is pointless. Unknown
+ * means Supabase did not answer, and treating that as absent would silently drop
+ * a real subscription event during an outage.
+ */
+export async function checkUserExists(userId: string): Promise<UserExistence> {
+  const sb = getSupabaseAdmin();
+  if (!sb) return "unknown";
+  try {
+    const { data, error } = await sb.auth.admin.getUserById(userId);
+    if (error) {
+      // A genuine "not found" is authoritative. Anything else is not.
+      const status = (error as { status?: number }).status;
+      const msg = (error.message ?? "").toLowerCase();
+      if (status === 404 || /not found|user not found/.test(msg)) return "absent";
+      console.warn("[revenuecat] user lookup FAILED (not treating as absent):", error.message);
+      return "unknown";
+    }
+    return data?.user?.id ? "exists" : "absent";
+  } catch (e) {
+    // Timeout, network, unexpected shape — all unknown.
+    console.warn("[revenuecat] user lookup threw (not treating as absent):", (e as Error).message);
+    return "unknown";
+  }
+}
+
 /**
  * THE reconciliation path. Both callers end here.
  *
@@ -121,6 +163,25 @@ export async function reconcileUser(
     return { ok: false, reason: "INVALID_USER" };
   }
   if (!isRevenueCatConfigured()) return { ok: false, reason: "NOT_CONFIGURED" };
+
+  /**
+   * Existence check BEFORE the RevenueCat fetch.
+   *
+   * Two reasons for this ordering. It avoids an FK violation on a user who does
+   * not exist — and, because `GET /v1/subscribers` is get-or-create, it avoids
+   * MINTING a RevenueCat customer for an id that has no FlipStart account. The
+   * live TEST created exactly such a phantom customer (status 201).
+   */
+  const existence = await checkUserExists(supabaseUserId);
+  if (existence === "unknown") {
+    // Do NOT proceed. We cannot tell absent from an outage, and guessing either
+    // way is worse than retrying.
+    return { ok: false, reason: "USER_LOOKUP_FAILED" };
+  }
+  if (existence === "absent") {
+    console.warn("[revenuecat] no FlipStart account for this id — not reconciling");
+    return { ok: false, reason: "UNKNOWN_USER" };
+  }
 
   const sub = await fetchSubscriber(supabaseUserId);
 
