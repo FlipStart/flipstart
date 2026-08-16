@@ -21,6 +21,7 @@ import { View, Text, ScrollView, Pressable, TextInput, StyleSheet, ActivityIndic
 import { ScreenContainer } from '@/components/screen-container';
 import { useAuth } from '@/lib/auth-context';
 import { trpc } from '@/lib/trpc';
+import { purchase, restorePurchases, isPurchaseInProgress } from '@/lib/purchases';
 
 const FOREST = '#2A4A2A';
 const BROWN  = '#5A3A1A';
@@ -49,6 +50,59 @@ export default function DevMonetization() {
   const [error, setError] = useState<string | null>(null);
 
   const diagnose = trpc.monetization.diagnose.useMutation();
+  const entitlement = trpc.monetization.entitlement.useQuery(undefined, { enabled: !!user?.id });
+
+  const [busy, setBusy] = useState<null | 'monthly' | 'annual' | 'restore'>(null);
+  const [purchaseMsg, setPurchaseMsg] = useState<string | null>(null);
+
+  /**
+   * Identity capture.
+   *
+   * The uid is read at the moment the button is tapped and re-checked by the
+   * service after the store sheet closes. If the account changed in between,
+   * User A's purchase is never applied to User B.
+   */
+  const runPurchase = async (target: 'monthly' | 'annual') => {
+    const started = user?.id ?? null;
+    setBusy(target); setPurchaseMsg(null);
+    try {
+      const r = await purchase(target, started, () => user?.id ?? null);
+      setPurchaseMsg(
+        r.status === 'success'      ? `Success — server plan: ${r.serverPlan ?? 'unknown'}`
+      : r.status === 'cancelled'    ? 'Cancelled.'
+      : r.status === 'pending'      ? (r.message ?? 'Pending approval.')
+      : r.status === 'sync_pending'   ? (r.message ?? 'Purchased; sync pending.')
+      : r.status === 'account_changed' ? (r.message ?? 'Account changed — not applied here.')
+      : r.status === 'unavailable'  ? (r.message ?? 'Requires a development build.')
+      :                               (r.message ?? 'Purchase failed.'),
+      );
+      // Re-read the authoritative server state after any terminal outcome.
+      entitlement.refetch();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runRestore = async () => {
+    const started = user?.id ?? null;
+    setBusy('restore'); setPurchaseMsg(null);
+    try {
+      const r = await restorePurchases(started, () => user?.id ?? null);
+      setPurchaseMsg(
+        r.status === 'restored'           ? `Restored — server plan: ${r.serverPlan ?? 'unknown'}`
+      : r.status === 'nothing_to_restore' ? 'Nothing to restore.'
+      : r.status === 'unavailable'        ? (r.message ?? 'Requires a development build.')
+      : r.status === 'sync_pending'       ? (r.message ?? 'Restored; sync pending.')
+      : r.status === 'account_changed'    ? (r.message ?? 'Account changed — not applied here.')
+      : r.status === 'owned_by_another_account'
+                                          ? (r.message ?? 'Held by another FlipStart account.')
+      :                                     (r.message ?? 'Restore failed.'),
+      );
+      entitlement.refetch();
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const run = async () => {
     setError(null); setReport(null);
@@ -93,6 +147,46 @@ export default function DevMonetization() {
           for applying the real subscription state the store already reports.
         </Text>
 
+        {/* ── Purchase harness ──────────────────────────────────────────────
+            Temporary engineering UI. Deliberately plain — the real paywall is a
+            later phase. There is NO control here that writes plan state: every
+            button initiates a real RevenueCat operation and the server decides
+            the outcome. */}
+        <Text style={s.section}>Subscription (DEV)</Text>
+        <Text style={s.note}>
+          Server plan: {entitlement.data?.entitlement?.plan ?? '—'}
+          {entitlement.data?.entitlement?.balances
+            ? `  ·  ${entitlement.data.entitlement.balances.totalUsableScans} usable scans`
+            : ''}
+        </Text>
+
+        <View style={s.btnRow}>
+          {(['monthly','annual'] as const).map(k => (
+            <Pressable
+              key={k}
+              onPress={() => runPurchase(k)}
+              disabled={busy !== null}
+              style={({ pressed }) => [s.smallBtn, busy !== null && s.runBtnDisabled, pressed && { opacity: 0.85 }]}
+            >
+              {busy === k
+                ? <ActivityIndicator size="small" color={CREAM} />
+                : <Text style={s.smallBtnText}>Buy {k === 'monthly' ? 'Monthly' : 'Annual'}</Text>}
+            </Pressable>
+          ))}
+        </View>
+        <Pressable
+          onPress={runRestore}
+          disabled={busy !== null}
+          style={({ pressed }) => [s.smallBtn, { marginTop: 8 }, busy !== null && s.runBtnDisabled, pressed && { opacity: 0.85 }]}
+        >
+          {busy === 'restore'
+            ? <ActivityIndicator size="small" color={CREAM} />
+            : <Text style={s.smallBtnText}>Restore Purchases</Text>}
+        </Pressable>
+
+        {!!purchaseMsg && <Text style={s.purchaseMsg}>{purchaseMsg}</Text>}
+
+        <Text style={s.section}>Diagnostics</Text>
         <Text style={s.label}>MONETIZATION_DIAG_SECRET</Text>
         <TextInput
           style={s.input}
@@ -211,6 +305,11 @@ const s = StyleSheet.create({
   checkIcon: { fontSize: 14, fontWeight: '800', width: 16, textAlign: 'center' },
   checkName: { fontSize: 12.5, fontWeight: '700', color: FOREST },
   checkDetail: { fontSize: 11.5, color: MUTED, lineHeight: 16, marginTop: 1 },
+  btnRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  smallBtn: { flex: 1, backgroundColor: FOREST, borderRadius: 10, paddingVertical: 11,
+              alignItems: 'center' },
+  smallBtnText: { color: CREAM, fontSize: 13, fontWeight: '800' },
+  purchaseMsg: { fontSize: 12.5, color: BROWN, marginTop: 10, lineHeight: 18 },
   denied: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   deniedText: { fontSize: 14, color: MUTED },
 });
