@@ -646,6 +646,43 @@ const monetizationRouter = router({
       return report;
     }),
 
+  /**
+   * Scan-pack recovery.
+   *
+   * Grants any purchase RevenueCat knows about that FlipStart has not yet
+   * recorded. Exists because a webhook can be delayed or dropped, and someone
+   * who paid should not wait on delivery.
+   *
+   * Takes NO parameters describing the purchase — no transaction id, no product,
+   * no scan count. The uid comes from the verified session and RevenueCat is the
+   * authority on what was bought. Idempotent by construction.
+   */
+  recoverScanPacks: publicProcedure
+    .mutation(async ({ ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+
+      const { recoverScanPacks } = await import("./monetization/scanPackGrant.js");
+      const { getEntitlementReadModel } = await import("./monetization/enforce.js");
+
+      // Environment is resolved inside the service from configuration and is
+      // never passed in — a caller-supplied environment would be a way to reach
+      // sandbox purchases from production.
+      const r = await recoverScanPacks(uid);
+
+      console.log(
+        `[scan-pack] recovery via endpoint: granted=${r.grantedCount} ` +
+        `scans=${r.totalScansGranted} already=${r.alreadyGranted}`,
+      );
+      return {
+        ok: r.ok,
+        grantedCount: r.grantedCount,
+        totalScansGranted: r.totalScansGranted,
+        alreadyGranted: r.alreadyGranted,
+        entitlement: await getEntitlementReadModel(uid),
+      };
+    }),
+
   /** Read-only entitlement state for the UI. No mutation, no sync. */
   entitlement: publicProcedure
     .query(async ({ ctx }) => {

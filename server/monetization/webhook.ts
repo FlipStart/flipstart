@@ -176,6 +176,38 @@ export async function handleRevenueCatWebhook(
     return { status: 200, body: { ok: true, reason: "ignored_invalid_identity" } };
   }
 
+  /**
+   * NON_RENEWING_PURCHASE — scan packs.
+   *
+   * Handled BEFORE subscription reconciliation because a consumable has no
+   * subscription state to reconcile; running the subscription path would be a
+   * wasted RevenueCat call and could log a misleading plan=free.
+   *
+   * `event.transaction_id` is a LOOKUP HINT only. V2 proves the purchase exists
+   * and supplies the canonical `purchase.id` the ledger keys on.
+   */
+  if (eventType === "NON_RENEWING_PURCHASE") {
+    const storeTxn = typeof ev?.transaction_id === "string" ? ev.transaction_id : "";
+    const { grantFromWebhookTransaction } = await import("./scanPackGrant.js");
+    const g = await grantFromWebhookTransaction(appUserId as string, storeTxn);
+
+    if (g.retryable) {
+      // Catalog drift, V2 unavailable, or the purchase not yet indexed. NEVER
+      // acknowledged: a paid pack must not be silently dropped.
+      console.warn(`[revenuecat-webhook] scan pack not granted (${g.outcome}) — retryable`);
+      await sb.rpc("finish_revenuecat_event", {
+        p_event_id: eventId, p_ok: false, p_detail: `scan_pack_${g.outcome}`,
+      });
+      return { status: 503, body: { ok: false, reason: g.outcome } };
+    }
+
+    await sb.rpc("finish_revenuecat_event", {
+      p_event_id: eventId, p_ok: true, p_detail: `scan_pack_${g.outcome}`,
+    });
+    console.log(`[revenuecat-webhook] scan pack ${g.outcome}`);
+    return { status: 200, body: { ok: true, reason: g.outcome } };
+  }
+
   const result = await reconcileUser(appUserId as string);
 
   /**

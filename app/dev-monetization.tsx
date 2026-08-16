@@ -21,7 +21,9 @@ import { View, Text, ScrollView, Pressable, TextInput, StyleSheet, ActivityIndic
 import { ScreenContainer } from '@/components/screen-container';
 import { useAuth } from '@/lib/auth-context';
 import { trpc } from '@/lib/trpc';
-import { purchase, restorePurchases, isPurchaseInProgress } from '@/lib/purchases';
+import { purchase, restorePurchases, isPurchaseInProgress,
+         purchaseScanPack, recoverPacksOnServer,
+         SCAN_PACK_SKUS, type ScanPackSku } from '@/lib/purchases';
 
 const FOREST = '#2A4A2A';
 const BROWN  = '#5A3A1A';
@@ -52,7 +54,7 @@ export default function DevMonetization() {
   const diagnose = trpc.monetization.diagnose.useMutation();
   const entitlement = trpc.monetization.entitlement.useQuery(undefined, { enabled: !!user?.id });
 
-  const [busy, setBusy] = useState<null | 'monthly' | 'annual' | 'restore'>(null);
+  const [busy, setBusy] = useState<null | 'monthly' | 'annual' | 'restore' | 'recover' | ScanPackSku>(null);
   const [purchaseMsg, setPurchaseMsg] = useState<string | null>(null);
 
   /**
@@ -81,6 +83,37 @@ export default function DevMonetization() {
     } finally {
       setBusy(null);
     }
+  };
+
+  const [packMsg, setPackMsg] = useState<string | null>(null);
+
+  const runPack = async (sku: ScanPackSku) => {
+    const started = user?.id ?? null;
+    setBusy(sku); setPackMsg(null);
+    try {
+      const r = await purchaseScanPack(sku, started, () => user?.id ?? null);
+      setPackMsg(
+        r.status === 'success'         ? `Granted +${r.scansGranted ?? 0} scans · balance ${r.packBalance ?? '?'}`
+      : r.status === 'cancelled'       ? 'Cancelled.'
+      : r.status === 'pending'         ? (r.message ?? 'Pending approval.')
+      : r.status === 'sync_pending'    ? (r.message ?? 'Purchased; grant pending.')
+      : r.status === 'account_changed' ? (r.message ?? 'Account changed — not granted here.')
+      : r.status === 'unavailable'     ? (r.message ?? 'Requires a development build.')
+      :                                  (r.message ?? 'Purchase failed.'),
+      );
+      entitlement.refetch();
+    } finally { setBusy(null); }
+  };
+
+  const runRecover = async () => {
+    setBusy('recover'); setPackMsg(null);
+    try {
+      const r = await recoverPacksOnServer();
+      setPackMsg(r.ok
+        ? `Recovery: ${r.grantedCount} granted (+${r.totalScansGranted} scans), ${r.alreadyGranted} already`
+        : 'Recovery could not complete — try again.');
+      entitlement.refetch();
+    } finally { setBusy(null); }
   };
 
   const runRestore = async () => {
@@ -185,6 +218,42 @@ export default function DevMonetization() {
         </Pressable>
 
         {!!purchaseMsg && <Text style={s.purchaseMsg}>{purchaseMsg}</Text>}
+
+        {/* ── Scan packs (DEV) ──────────────────────────────────────────────
+            Every button initiates a REAL RevenueCat purchase. There is no
+            control here that writes a balance or names a scan count — the
+            server resolves the grant from the store SKU it verifies itself. */}
+        <Text style={s.section}>Scan Packs (DEV)</Text>
+        <Text style={s.note}>
+          Pack balance: {entitlement.data?.entitlement?.balances?.packScansRemaining ?? '—'}
+        </Text>
+
+        {SCAN_PACK_SKUS.map(sku => (
+          <Pressable
+            key={sku}
+            onPress={() => runPack(sku)}
+            disabled={busy !== null}
+            style={({ pressed }) => [s.smallBtn, { marginTop: 8 },
+              busy !== null && s.runBtnDisabled, pressed && { opacity: 0.85 }]}
+          >
+            {busy === sku
+              ? <ActivityIndicator size="small" color={CREAM} />
+              : <Text style={s.smallBtnText}>Buy {sku.replace('flipstart_scan_pack_', '')} scans</Text>}
+          </Pressable>
+        ))}
+
+        <Pressable
+          onPress={runRecover}
+          disabled={busy !== null}
+          style={({ pressed }) => [s.smallBtn, { marginTop: 8, backgroundColor: BROWN },
+            busy !== null && s.runBtnDisabled, pressed && { opacity: 0.85 }]}
+        >
+          {busy === 'recover'
+            ? <ActivityIndicator size="small" color={CREAM} />
+            : <Text style={s.smallBtnText}>Recover unclaimed packs</Text>}
+        </Pressable>
+
+        {!!packMsg && <Text style={s.purchaseMsg}>{packMsg}</Text>}
 
         <Text style={s.section}>Diagnostics</Text>
         <Text style={s.label}>MONETIZATION_DIAG_SECRET</Text>
