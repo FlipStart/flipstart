@@ -615,6 +615,37 @@ const monetizationRouter = router({
       };
     }),
 
+  /**
+   * Founder-only RevenueCat verification harness.
+   *
+   * Exists so the integration can be validated WITHOUT spending 45 minutes on an
+   * EAS build discovering that an env var is wrong. Every check is read-only or
+   * applies the real fetched state; nothing here can fabricate a plan, grant
+   * scans, or simulate a purchase.
+   *
+   * Gated on its own secret. Fails closed when unset, so leaving this deployed
+   * without the variable means the endpoint effectively does not exist.
+   */
+  diagnose: publicProcedure
+    .input(z.object({
+      secret: z.string().min(1).max(512),
+      /** Optional Supabase uuid to probe live. Never a plan, never an override. */
+      probeUserId: z.string().uuid().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const { diagnosticsAuthorised, runDiagnostics } =
+        await import("./monetization/diagnostics.js");
+      if (!diagnosticsAuthorised(input.secret)) {
+        return { ok: false as const, errorCode: "FOUNDER_ONLY" as const };
+      }
+      const report = await runDiagnostics(input.probeUserId ?? null);
+      console.log(
+        `[monetization:diagnose] ${report.summary.pass} pass, ${report.summary.fail} fail, ` +
+        `${report.summary.warn} warn, ${report.summary.skip} skip`,
+      );
+      return report;
+    }),
+
   /** Read-only entitlement state for the UI. No mutation, no sync. */
   entitlement: publicProcedure
     .query(async ({ ctx }) => {
