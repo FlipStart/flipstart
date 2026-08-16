@@ -582,6 +582,49 @@ const devRouter = router({
  * reaches the provider, so a misconfigured deploy cannot quietly start spending
  * quota.
  */
+/**
+ * Monetization entitlement + subscription sync.
+ *
+ * Separate router so subscription concerns never tangle with scanning.
+ */
+const monetizationRouter = router({
+  /**
+   * "Refresh my subscription."
+   *
+   * The client supplies NOTHING about itself — no plan, no product, no isPro.
+   * The uid comes from the verified session and the server asks RevenueCat about
+   * that uid. There is deliberately no parameter a client could use to sync, or
+   * inspect, another account.
+   */
+  syncSubscription: publicProcedure
+    .mutation(async ({ ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+
+      const { reconcileUser } = await import("./monetization/revenuecatServer.js");
+      const { getEntitlementReadModel } = await import("./monetization/enforce.js");
+
+      const r = await reconcileUser(uid);
+      // A failed sync still returns the read model: the stored state is the last
+      // authoritative snapshot, and showing it beats showing an error when the
+      // subscription is perfectly valid and RevenueCat is merely down.
+      return {
+        ok: r.ok,
+        reason: r.ok ? undefined : r.reason,
+        entitlement: await getEntitlementReadModel(uid),
+      };
+    }),
+
+  /** Read-only entitlement state for the UI. No mutation, no sync. */
+  entitlement: publicProcedure
+    .query(async ({ ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      const { getEntitlementReadModel } = await import("./monetization/enforce.js");
+      return { ok: true as const, entitlement: await getEntitlementReadModel(uid) };
+    }),
+});
+
 const compsRouter = router({
   status: publicProcedure
     .input(z.object({ secret: z.string().min(1).max(512) }))
@@ -791,6 +834,7 @@ const feedbackRouter = router({
 export const appRouter = router({
   dev: devRouter,
   comps: compsRouter,
+  monetization: monetizationRouter,
   scan:     appRouter_scan,
   feedback: feedbackRouter,
   system:   systemRouter,

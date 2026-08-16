@@ -307,6 +307,24 @@ async function startServer() {
     }
   });
 
+  /**
+   * RevenueCat webhook.
+   *
+   * Mounted on the existing express.json() body parser — RevenueCat's
+   * Authorization-header scheme needs no raw body, so no separate raw-body
+   * pipeline is introduced. HMAC would require one; see the report.
+   */
+  app.post("/api/revenuecat/webhook", async (req, res) => {
+    try {
+      const { handleRevenueCatWebhook } = await import("../monetization/webhook.js");
+      const out = await handleRevenueCatWebhook(req.headers["authorization"], req.body);
+      res.status(out.status).json(out.body);
+    } catch (e) {
+      console.error("[revenuecat-webhook] handler threw:", (e as Error).message);
+      res.status(500).json({ ok: false });
+    }
+  });
+
   app.post("/api/analytics/event", (req, res) => {
     try {
       const { logEvent } = require("../persist");
