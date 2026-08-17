@@ -35,6 +35,8 @@ import { computeDiscoveredBrands, getUnseenBrandNames } from '@/lib/brandCompend
 import { subscribeToHunt, getActiveHunt } from '@/lib/hunt-context';
 import { type HuntBundle } from '@/types/flip';
 import UpdateGate from '@/components/UpdateGate';
+
+import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
 // Deep link auth handler remains disabled until AuthProvider boot is confirmed stable.
 // import * as Linking from "expo-linking";
 
@@ -446,10 +448,13 @@ export default function RootLayout() {
                 with no secrets and no network. */}
             <Stack.Protected guard={__DEV__}>
               <Stack.Screen name="dev-sold-comps" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
-              {/* RevenueCat diagnostics. Same protection rationale: the route
-                  file ships regardless, so Stack.Protected blocks navigation,
-                  the screen guards itself, and the server secret is the real
-                  boundary. */}
+            </Stack.Protected>
+
+            {/* TEMPORARY: monetization harness, reachable in TestFlight.
+                Guarded by MONETIZATION_HARNESS_VISIBLE rather than __DEV__ so it
+                can be turned off in ONE place. Diagnostics still need the server
+                secret; pack grants still need the sandbox allowlist. */}
+            <Stack.Protected guard={__DEV__ || MONETIZATION_HARNESS_VISIBLE}>
               <Stack.Screen name="dev-monetization" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
             </Stack.Protected>
             <Stack.Screen name="(tabs)" />

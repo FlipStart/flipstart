@@ -21,6 +21,7 @@ import { View, Text, ScrollView, Pressable, TextInput, StyleSheet, ActivityIndic
 import { ScreenContainer } from '@/components/screen-container';
 import { useAuth } from '@/lib/auth-context';
 import { trpc } from '@/lib/trpc';
+import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
 import { purchase, restorePurchases, isPurchaseInProgress,
          purchaseScanPack, recoverPacksOnServer,
          SCAN_PACK_SKUS, type ScanPackSku } from '@/lib/purchases';
@@ -162,8 +163,9 @@ export default function DevMonetization() {
   const real = checks.filter(c => !c.needsPurchase);
   const deviceOnly = checks.filter(c => c.needsPurchase);
 
-  // Production denial, after all hooks.
-  if (!__DEV__) {
+  // Denial after all hooks. TEMPORARILY permits release builds while
+  // MONETIZATION_HARNESS_VISIBLE is true — see lib/devFlags.ts.
+  if (!__DEV__ && !MONETIZATION_HARNESS_VISIBLE) {
     return (
       <ScreenContainer>
         <View style={s.denied}><Text style={s.deniedText}>Not available.</Text></View>

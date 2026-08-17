@@ -23,6 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { resetOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
+import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { getClearHistoryImpact, type ClearHistoryImpact, type ImpactContext } from '@/lib/scanDeletionImpact';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
@@ -502,6 +503,19 @@ export default function SettingsScreen() {
         </View>
 
         {/* DEV — reset onboarding */}
+        {/* TEMPORARY: visible outside __DEV__ so the monetization system can be
+            validated in TestFlight. Its own block, so turning
+            MONETIZATION_HARNESS_VISIBLE off restores dev-only behaviour without
+            touching the other dev tools. */}
+        {(__DEV__ || MONETIZATION_HARNESS_VISIBLE) && (
+          <Pressable
+            onPress={() => router.push('/dev-monetization' as any)}
+            style={({ pressed }) => [s.row, { marginTop: 8 }, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 Monetization Test Harness</Text>
+          </Pressable>
+        )}
+
         {__DEV__ && (
           <>
             <Pressable
@@ -536,12 +550,7 @@ export default function SettingsScreen() {
             >
               <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 Scan Quota (Dev)</Text>
             </Pressable>
-            <Pressable
-              onPress={() => router.push('/dev-monetization' as any)}
-              style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}
-            >
-              <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 RevenueCat Diagnostics (Dev)</Text>
-            </Pressable>
+
           </>
         )}
 

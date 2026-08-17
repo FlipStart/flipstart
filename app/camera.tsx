@@ -35,6 +35,7 @@ import {
   type PhotoSlot,
   SLOT_ORDER, normalizeCameraCapture } from '@/lib/capture';
 import { ProCameraContextInput } from '@/components/camera/ProCameraContextInput';
+import { useEntitlement, PRO_REQUIRED_COPY } from '@/lib/useEntitlement';
 import { normalizeUserContext } from '@shared/userContext';
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
@@ -68,6 +69,12 @@ const SLOT_BADGE = (s: PhotoSlot): string =>
   : 'Graphic (optional)';
 
 export default function CameraScreen() {
+  /**
+   * Entitlement drives the SHAPE of the camera: how many slots exist, and
+   * whether the context box is offered. Server-enforced regardless — this is
+   * presentation, not authorization.
+   */
+  const ent = useEntitlement();
   const router = useRouter();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
@@ -510,7 +517,7 @@ export default function CameraScreen() {
 
         <Pressable
           onPress={handleCapture}
-          disabled={isTaking || filledCount >= 3}
+          disabled={isTaking || filledCount >= ent.maxPhotoSlots}
           style={({ pressed }) => [
             s.captureBtn,
             pressed && { transform: [{ scale: 0.93 }] },
@@ -548,7 +555,10 @@ export default function CameraScreen() {
 
         {/* Replaces the category carousel. Phase 1 is local state only —
             nothing here reaches the scan payload or the AI yet. */}
-        <ProCameraContextInput
+        {/* Pro-only. Hidden rather than shown-and-disabled: a permanently
+            greyed field on every scan is noise for a Free user, and the server
+            strips unentitled context anyway. */}
+        {ent.can('camera_context') && <ProCameraContextInput
           value={contextText}
           onChangeText={(txt) => {
             setContextText(txt);
@@ -558,7 +568,7 @@ export default function CameraScreen() {
           }}
           confirmed={contextConfirmed}
           onConfirm={() => setContextConfirmed(true)}
-        />
+        />}
       </Pressable>
 
       {/* ── Drag ghost (unchanged) ── */}

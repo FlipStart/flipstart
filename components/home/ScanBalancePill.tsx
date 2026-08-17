@@ -1,73 +1,65 @@
 /**
  * components/home/ScanBalancePill.tsx
  *
- * Fetches scan balance via plain REST GET /api/scan-stats.
- * Fetches on: mount, Home focus, app foreground.
- * No polling. No spam logs.
+ * Shows the SIGNED-IN USER'S authoritative scan balance.
+ *
+ * ── What changed and why ────────────────────────────────────────────────────
+ * This used to fetch `GET /api/scan-stats` and display
+ * `globalScansRemainingToday` — a GLOBAL beta backstop shared by everyone. It
+ * had nothing to do with the viewer's own allowance, so buying a scan pack would
+ * not move it and running out personally would not show.
+ *
+ * It now reads the same authoritative entitlement read model every gate uses, so
+ * the number on Home is the number a scan will actually spend.
+ *
+ * Visual treatment is unchanged.
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { View, Text, Pressable, StyleSheet, AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { FONTS } from '@/constants/typography';
+import { useEntitlement } from '@/lib/useEntitlement';
 
 const GOLD    = '#BE9C2C';
 const FOREST  = '#2A4A2A';
 const WARNING = '#A04020';
 const LIMIT   = 200;
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
-
-async function fetchScanStats(): Promise<number> {
-  const res  = await fetch(`${API_BASE}/api/scan-stats`, { method: 'GET' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  const val  = data?.globalScansRemainingToday;
-  return typeof val === 'number' && !isNaN(val) ? val : LIMIT;
-}
-
 export function ScanBalancePill() {
-  const [remaining, setRemaining] = useState<number>(LIMIT);
-  const [loading,   setLoading]   = useState(true);
-  const [tipOpen,   setTipOpen]   = useState(false);
+  const ent = useEntitlement();
+  const [tipOpen, setTipOpen] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const val = await fetchScanStats();
-      setRemaining(val);
-    } catch {
-      // Silent fail — keep showing current value, don't spam logs
-      if (remaining === LIMIT && loading) {
-        // Only on first load failure, keep showing LIMIT
-        setRemaining(LIMIT);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const remaining = ent.totalUsableScans;
+  const loading   = ent.loading;
 
-  useEffect(() => { load(); }, [load]);
-
-  // Refetch when Home gains focus (returns from scan)
-  useFocusEffect(useCallback(() => {
-    load();
-  }, [load]));
-
-  // Refetch when app returns to foreground
+  // Refresh on Home focus (returning from a scan) and on foreground. The scan
+  // flow invalidates directly too; this is the safety net for anything that
+  // changed the balance outside the app.
+  useFocusEffect(useCallback(() => { ent.refresh(); }, [ent.refresh]));
   useEffect(() => {
-    const sub = AppState.addEventListener('change', s => {
-      if (s === 'active') load();
-    });
+    const sub = AppState.addEventListener('change', s => { if (s === 'active') ent.refresh(); });
     return () => sub.remove();
-  }, [load]);
+  }, [ent.refresh]);
 
   const isZero = remaining <= 0;
-  const isLow  = remaining > 0 && remaining <= 30;
+  // 5, not 30. A Free account starts with 15 lifetime scans, so a 30-scan
+  // warning would be permanently on.
+  const isLow  = remaining > 0 && remaining <= 5;
   const accent = isZero || isLow ? WARNING : GOLD;
   const color  = isZero || isLow ? WARNING : FOREST;
 
+  /**
+   * "remaining" — not "remaining today".
+   *
+   * Nothing here resets daily any more: Free scans are lifetime, pack scans
+   * never expire, and subscription scans reset on the store's period boundary.
+   * The old copy described the beta daily quota and would now be wrong.
+   */
   const tooltipText = loading
     ? 'Checking scan balance…'
-    : `${remaining} scans remaining today.`;
+    : ent.packScansRemaining > 0
+      ? `${remaining} scans remaining (${ent.packScansRemaining} from packs).`
+      : `${remaining} scans remaining.`;
 
   return (
     <View style={s.wrap}>

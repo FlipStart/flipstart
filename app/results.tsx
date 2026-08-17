@@ -25,6 +25,7 @@ import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
 import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview, openAppStoreReviewPage } from '@/lib/reviewPrompt';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
+import { useEntitlement, useRefreshEntitlement, PRO_REQUIRED_COPY } from '@/lib/useEntitlement';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
 import { FlipResult, isHuntBundle } from '@/types/flip';
@@ -255,6 +256,13 @@ export default function ResultsScreen() {
   const { addFlip, updateFlip, removeFlip, flips, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
   const { addUnseenBrands } = useAchievementNotifications();
   const { user } = useAuth();
+  const ent = useEntitlement();
+  /**
+   * A scan has just been committed by the time this screen renders, so the
+   * balance shown anywhere else in the app is stale. Refreshing here is what
+   * makes the Home pill correct when the user goes back.
+   */
+  const refreshEntitlement = useRefreshEntitlement();
 
   const [thriftEditing,   setThriftEditing]   = useState(false);
 
@@ -314,6 +322,9 @@ export default function ResultsScreen() {
   useEffect(() => {
     const analysisId = (_id as any)?.v1?.analysisId;
     if (!analysisId) return;
+    // The scan committed server-side before this screen rendered, so every
+    // balance in the app is now one behind.
+    void refreshEntitlement();
     if (compsFetchedFor.current === analysisId) return;
     compsFetchedFor.current = analysisId;
 
@@ -968,6 +979,15 @@ export default function ResultsScreen() {
         ? { ebay: currentScan.listings!.ebay, depop: currentScan.listings!.depop }
         : null,
     });
+    // Pro-only. Gated at navigation because Deep Analysis has no server
+    // endpoint — its content is derived client-side from data `analyze` already
+    // returned, so hiding the route is the only control available today.
+    // Making it server-enforceable means trimming the analyze payload, which is
+    // a Phase 4 decision.
+    if (!ent.can('deep_analysis')) {
+      Alert.alert('Pro feature', PRO_REQUIRED_COPY.deep_analysis);
+      return;
+    }
     router.push({ pathname: '/analysis-details' as any, params: { scanId: currentScan.id, snapshot, source: 'results' } });
   };
 
@@ -1515,10 +1535,13 @@ export default function ResultsScreen() {
             );
           })()}
 
-          {/* ── 6. Generate Listings — full-width CTA ── */}
+          {/* ── 6. Generate Listings — full-width CTA ──────────────────────
+              Pro-only. Shown but disabled for Free, rather than hidden: the
+              feature is a reason to upgrade, and hiding it entirely would make
+              the value invisible. Server enforces independently. */}
           <Pressable
-            onPress={handleGenerateListings}
-            disabled={listingsLoading}
+            onPress={ent.can('generate_listings') ? handleGenerateListings : undefined}
+            disabled={listingsLoading || !ent.can('generate_listings')}
             style={({ pressed }) => [s.generateBtn, (pressed || listingsLoading) && { opacity: 0.85 }]}
           >
             <MaterialIcons name={listingsLoading ? 'hourglass-empty' : 'sell'} size={19} color={FOREST} />
@@ -1526,6 +1549,10 @@ export default function ResultsScreen() {
               {listingsLoading ? 'Generating…' : hasGeneratedListings(listings) ? 'View Listings' : 'Generate Listings'}
             </Text>
           </Pressable>
+
+          {!ent.can('generate_listings') && (
+            <Text style={s.listingsErrText}>{PRO_REQUIRED_COPY.generate_listings}</Text>
+          )}
 
           {listingsError && (
             <Text style={s.listingsErrText}>Couldn't generate listings. Tap to retry.</Text>
