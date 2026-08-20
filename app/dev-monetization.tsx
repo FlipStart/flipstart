@@ -22,6 +22,7 @@ import { ScreenContainer } from '@/components/screen-container';
 import { useAuth } from '@/lib/auth-context';
 import { trpc } from '@/lib/trpc';
 import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
+import { collectDiagnostics, type RcDiagnostics } from '@/lib/revenuecat';
 import { purchase, restorePurchases, isPurchaseInProgress,
          purchaseScanPack, recoverPacksOnServer,
          SCAN_PACK_SKUS, type ScanPackSku } from '@/lib/purchases';
@@ -87,6 +88,20 @@ export default function DevMonetization() {
   };
 
   const [packMsg, setPackMsg] = useState<string | null>(null);
+
+  /**
+   * Client-side RevenueCat state.
+   *
+   * The server harness could not see the failure that cost a build: no SDK, no
+   * configure call, and no key in any EAS profile were all on the device.
+   */
+  const [rc, setRc] = useState<RcDiagnostics | null>(null);
+  const [rcBusy, setRcBusy] = useState(false);
+  const runRcCheck = async () => {
+    setRcBusy(true);
+    try { setRc(await collectDiagnostics()); }
+    finally { setRcBusy(false); }
+  };
 
   const runPack = async (sku: ScanPackSku) => {
     const started = user?.id ?? null;
@@ -187,6 +202,57 @@ export default function DevMonetization() {
             later phase. There is NO control here that writes plan state: every
             button initiates a real RevenueCat operation and the server decides
             the outcome. */}
+        {/* ── Client SDK check ─────────────────────────────────────────────
+            Run this FIRST. If the SDK is missing or unconfigured, every
+            purchase button below will fail before touching the network. */}
+        <Text style={s.section}>RevenueCat Client</Text>
+        <Pressable
+          onPress={runRcCheck}
+          disabled={rcBusy}
+          style={({ pressed }) => [s.smallBtn, rcBusy && s.runBtnDisabled, pressed && { opacity: 0.85 }]}
+        >
+          {rcBusy
+            ? <ActivityIndicator size="small" color={CREAM} />
+            : <Text style={s.smallBtnText}>Check RevenueCat SDK</Text>}
+        </Pressable>
+
+        {rc && (
+          <View style={{ marginTop: 10 }}>
+            {[
+              ['SDK installed', rc.sdkInstalled ? 'yes' : 'NO'],
+              ['SDK version', rc.sdkVersion ?? 'unknown'],
+              ['Configured', rc.configured ? `yes (${rc.configuredFor?.slice(0, 8)}…)` : 'NO'],
+              ['Key type', rc.keyKind],
+              // Prefix only — never the key.
+              ['Key prefix', rc.keyPrefix ?? '—'],
+              ['Build', rc.isDevBuild ? 'development' : 'release'],
+              ['Current offering', rc.currentOfferingId ?? '—'],
+              ['Offerings', rc.offeringIds.join(', ') || 'none'],
+            ].map(([k, v]) => (
+              <View key={k} style={s.check}>
+                <Text style={[s.checkName, { width: 128 }]}>{k}</Text>
+                <Text style={[s.checkDetail, { flex: 1 }]}>{v}</Text>
+              </View>
+            ))}
+
+            {rc.packages.length > 0 && (
+              <>
+                <Text style={s.section}>Packages</Text>
+                {rc.packages.map((p, i) => (
+                  <View key={i} style={s.check}>
+                    <Text style={[s.checkName, { width: 96 }]}>{p.offering}</Text>
+                    <Text style={[s.checkDetail, { flex: 1 }]}>{p.packageId} → {p.productId}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+
+            {rc.errors.map((e, i) => (
+              <Text key={i} style={[s.checkDetail, { color: '#8A3A2A', marginTop: 6 }]}>• {e}</Text>
+            ))}
+          </View>
+        )}
+
         <Text style={s.section}>Subscription (DEV)</Text>
         <Text style={s.note}>
           Server plan: {entitlement.data?.entitlement?.plan ?? '—'}

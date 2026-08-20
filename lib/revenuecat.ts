@@ -227,3 +227,123 @@ export function __resetRevenueCat(): void {
   Purchases = null; configuredFor = null; listenerAttached = false;
 }
 export function __configuredFor(): string | null { return configuredFor; }
+
+// ════════════════════════════════════════════════════════════════════════════
+// CLIENT DIAGNOSTICS
+//
+// The server harness could not have caught the failure that cost a TestFlight
+// build: no SDK installed, configureForUser never called, and no key in any EAS
+// profile were ALL client-side and invisible to Railway.
+//
+// Reports only non-sensitive facts. The API key is NEVER printed — a short
+// prefix at most, which identifies the key TYPE without revealing it.
+// ════════════════════════════════════════════════════════════════════════════
+
+export type KeyKind = "TEST_STORE" | "IOS" | "MISSING";
+
+export interface RcDiagnostics {
+  sdkInstalled: boolean;
+  sdkVersion: string | null;
+  configured: boolean;
+  configuredFor: string | null;
+  keyKind: KeyKind;
+  /** First few characters only — enough to tell a key apart, not to use one. */
+  keyPrefix: string | null;
+  /** True when a Test Store key is present but refused for being a release build. */
+  keyRefusedForReleaseBuild: boolean;
+  isDevBuild: boolean;
+  offeringIds: string[];
+  currentOfferingId: string | null;
+  packages: Array<{ offering: string; packageId: string; productId: string }>;
+  errors: string[];
+}
+
+/** Key TYPE from its documented prefix, without exposing the key. */
+function classifyKey(key: string): KeyKind {
+  if (key.startsWith("appl_")) return "IOS";
+  if (key.startsWith("test_") || key.startsWith("sk_test") || key.startsWith("rcb_")) return "TEST_STORE";
+  // Unrecognised prefix. Reported as TEST_STORE only when it came from the test
+  // variable, so an unknown key is never mistaken for an Apple one.
+  return "TEST_STORE";
+}
+
+export async function collectDiagnostics(): Promise<RcDiagnostics> {
+  const errors: string[] = [];
+  const isDev = Boolean(__DEV__);
+
+  const appleRaw = (process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY ?? "").trim();
+  const testRaw  = (process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY ?? "").trim();
+  const rawKey   = appleRaw || testRaw;
+
+  const keyKind: KeyKind =
+    appleRaw ? "IOS" : testRaw ? classifyKey(testRaw) : "MISSING";
+  // 8 characters is enough to distinguish appl_ from test_ and to tell two keys
+  // apart, and far too little to authenticate with.
+  const keyPrefix = rawKey ? `${rawKey.slice(0, 8)}…` : null;
+
+  const refused = Boolean(testRaw && !appleRaw && !isDev);
+  if (keyKind === "MISSING") {
+    errors.push("No RevenueCat key in this build. Add EXPO_PUBLIC_REVENUECAT_TEST_API_KEY to the EAS development environment.");
+  }
+  if (refused) {
+    errors.push("Test Store key present but this is a RELEASE build — refused by design. Use a development build.");
+  }
+
+  const sdk = await loadSdk();
+  if (!sdk) {
+    errors.push("react-native-purchases is not available. Run: npx expo install react-native-purchases");
+    return {
+      sdkInstalled: false, sdkVersion: null, configured: false, configuredFor: null,
+      keyKind, keyPrefix, keyRefusedForReleaseBuild: refused, isDevBuild: isDev,
+      offeringIds: [], currentOfferingId: null, packages: [], errors,
+    };
+  }
+
+  let sdkVersion: string | null = null;
+  try {
+    const mod: any = await import("react-native-purchases");
+    sdkVersion = mod?.VERSION ?? mod?.default?.VERSION ?? null;
+  } catch { /* version is a nice-to-have */ }
+
+  const configured = configuredFor !== null;
+  if (!configured) {
+    errors.push("RevenueCat is not configured. configureForUser() runs on sign-in — check that a user is signed in.");
+  }
+
+  const offeringIds: string[] = [];
+  const packages: RcDiagnostics["packages"] = [];
+  let currentOfferingId: string | null = null;
+
+  if (configured) {
+    try {
+      const offerings = await sdk.getOfferings();
+      currentOfferingId = offerings?.current?.identifier ?? null;
+      const all = offerings?.all ?? {};
+      for (const [id, offering] of Object.entries<any>(all)) {
+        offeringIds.push(id);
+        for (const p of offering?.availablePackages ?? []) {
+          packages.push({
+            offering: id,
+            packageId: p?.identifier ?? "?",
+            productId: p?.product?.identifier ?? "?",
+          });
+        }
+      }
+      if (offeringIds.length === 0) {
+        errors.push("getOfferings() returned no offerings. Check the RevenueCat dashboard for this project.");
+      }
+    } catch (e) {
+      // Sanitized: code and short message only, never a payload or a key.
+      const err = e as { code?: unknown; message?: unknown };
+      const code = typeof err?.code === "string" ? err.code : "unknown";
+      const msg = typeof err?.message === "string" ? err.message.slice(0, 120) : "";
+      errors.push(`getOfferings failed [${code}] ${msg}`);
+    }
+  }
+
+  return {
+    sdkInstalled: true, sdkVersion, configured, configuredFor,
+    keyKind, keyPrefix, keyRefusedForReleaseBuild: refused, isDevBuild: isDev,
+    offeringIds, currentOfferingId, packages, errors,
+  };
+}

@@ -91,6 +91,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading,        setLoading]        = useState(true);
   const [profileChecked, setProfileChecked] = useState(false);
   const [profileError, setProfileError]     = useState(false);
+
+  /**
+   * RevenueCat configuration.
+   *
+   * ── Why it lives here ───────────────────────────────────────────────────
+   * Nothing called configureForUser() before this, so RevenueCat was never
+   * configured in any build — which is why getOfferings() failed for both
+   * subscriptions and scan packs.
+   *
+   * Auth is the right home: RevenueCat must be configured with the Supabase
+   * uid as appUserID, and this is the only place that knows when a uid exists.
+   *
+   * ── Never anonymous ─────────────────────────────────────────────────────
+   * Runs ONLY when a uid is present. Configuring earlier would mint an
+   * $RCAnonymousID customer, and a later logIn would leave an orphan customer
+   * holding purchases — the exact failure the identity design avoids.
+   *
+   * Keyed on user.id: a different account switches identity via logIn(), and
+   * the same account re-rendering is a no-op inside configureForUser().
+   */
+  const rcConfiguredFor = useRef<string | null>(null);
+  useEffect(() => {
+    const uid = user?.id;
+    if (!uid) return;
+    if (rcConfiguredFor.current === uid) return;
+    rcConfiguredFor.current = uid;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        // Lazy import: react-native-purchases is a native module, and a
+        // module-level import breaks Expo Go and has historically broken iOS
+        // standalone startup in this project.
+        const rc = await import("@/lib/revenuecat");
+        const res = await rc.configureForUser(uid);
+        if (!cancelled && __DEV__) {
+          console.log(`[auth] RevenueCat configure -> ${res.status}${res.error ? ` (${res.error})` : ""}`);
+        }
+      } catch (e) {
+        // Never fatal. Free functionality continues; only purchases are lost.
+        if (__DEV__) console.warn("[auth] RevenueCat configure failed:", (e as Error).message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id]);
   // signOut and refreshProfile are useCallbacks using refs — no stale closures
 
   // refreshProfile and signOut are defined as useCallbacks that read from refs
@@ -348,6 +393,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               } else if (event === "SIGNED_OUT") {
                 safe.setProfile(null);
                 safe.setProfileChecked(true);
+                // Clear FlipStart's local RevenueCat view so User A's Pro state
+                // can never be visible while User B signs in. Deliberately does
+                // NOT call Purchases.logOut() — that mints an anonymous
+                // customer. The SDK keeps its identified user until the next
+                // logIn() switches it.
+                rcConfiguredFor.current = null;
+                void import("@/lib/revenuecat")
+                  .then(rc => rc.clearLocalState())
+                  .catch(() => { /* SDK absent — nothing to clear */ });
               }
             } catch (e) {
               if (__DEV__) console.warn("[auth] onAuthStateChange handler threw:", e);
