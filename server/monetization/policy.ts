@@ -87,7 +87,7 @@ export type ScanSource = "trial" | "free" | "subscription" | "pack";
 
 export type Feature =
   | "scan_photo_3" | "camera_context" | "generate_listings"
-  | "deep_analysis" | "sold_comps" | "hunt_mode" | "premium_stats";
+  | "deep_analysis" | "sold_comps" | "hunt_mode";
 
 /** FlipStart-owned usage. Mirrors account_usage. */
 export interface AccountUsage {
@@ -210,8 +210,8 @@ export function canUseFeature(plan: PlanState, feature: Feature): boolean {
     case "scan_photo_3":
     case "camera_context":
     case "generate_listings":
-    case "deep_analysis":
-    case "premium_stats":     return pro;
+    case "deep_analysis":     return pro;
+    // Unknown feature -> locked. A new gate stays closed until deliberately opened.
     default:                  return false;
   }
 }
@@ -274,7 +274,7 @@ export function buildReadModel(u: AccountUsage, now = new Date()): EntitlementRe
   const plan = derivePlan(u, now);
   const feats = [
     "scan_photo_3", "camera_context", "generate_listings",
-    "deep_analysis", "sold_comps", "hunt_mode", "premium_stats",
+    "deep_analysis", "sold_comps", "hunt_mode",
   ] as const;
   return {
     plan,

@@ -24,7 +24,7 @@ export type Plan = "free" | "monthly" | "annual";
 
 export type GatedFeature =
   | "scan_photo_3" | "camera_context" | "generate_listings"
-  | "deep_analysis" | "sold_comps" | "hunt_mode" | "premium_stats";
+  | "deep_analysis" | "sold_comps" | "hunt_mode";
 
 /**
  * Resolution status.
@@ -215,7 +215,6 @@ export const PRO_REQUIRED_COPY: Record<GatedFeature, string> = {
   deep_analysis:     "Deep Analysis is a Pro feature.",
   sold_comps:        "",
   hunt_mode:         "",
-  premium_stats:     "Detailed stats are a Pro feature.",
 };
 
 export const OUT_OF_SCANS_COPY =
