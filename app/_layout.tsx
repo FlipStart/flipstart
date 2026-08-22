@@ -467,6 +467,9 @@ export default function RootLayout() {
             <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="results" options={{ animation: "fade", gestureEnabled: false }} />
             <Stack.Screen name="analysis-details" options={{ animation: "fade" }} />
+            {/* Scan Store. Pushed, not modal — so the root ProGateHost still
+                covers it and Back returns to Home without reopening the sheet. */}
+            <Stack.Screen name="scan-store" options={{ headerShown: false, animation: "slide_from_right" }} />
             {/* Flip Record. Was never registered — expo-router still resolved
                 it by file, but declaring it keeps the transition consistent
                 with every other pushed screen. */}

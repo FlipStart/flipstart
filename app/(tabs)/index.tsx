@@ -47,6 +47,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEntitlement } from '@/lib/useEntitlement';
 
 import { ScanCircleLabel } from '@/components/home/ScanCircleLabel';
+import { useScanPillAffordance } from '@/components/home/ScanPillAffordance';
 import {
   includedHeading, includedCount,
   detailExplanation, showPackColumn, packLabel, fmt, modalCaption, scanUrgency,
@@ -203,6 +204,9 @@ export default function HomeScreen() {
    * so Home can no longer disagree with the rest of the app.
    */
   const ent = useEntitlement();
+  // Makes the circle read as a control: rim highlight, press give, and a
+  // self-retiring first-run pulse.
+  const pillFx = useScanPillAffordance(user?.id ?? null);
   const balance = {
     plan: ent.plan,
     freeScansRemaining: ent.freeScansRemaining,
@@ -231,7 +235,6 @@ export default function HomeScreen() {
    * The pill shows the TOTAL usable count; the compact wording lives in
    * scanBalanceDisplay so Home and the modal can never word it differently.
    */
-  const scanCountText = scanResolved ? fmt(ent.totalUsableScans) : (scanFailed ? '—' : '…');
 
   // ── XP / avatar ─────────────────────────────────────────────────────────────
   const [xpProfile, setXpProfile] = useState<HuntXpProfile | null>(null);
@@ -357,13 +360,15 @@ export default function HomeScreen() {
                   The plain caption was removed earlier: it explained the plan
                   in a 7pt font, which is the modal's job, and made the pill
                   wide enough to crowd the FlipStart header. */}
+            <Animated.View style={pillFx.animatedStyle}>
             <Pressable
-              onPress={() => setShowScanModal(true)}
-              style={({ pressed }) => [
+              onPress={() => { pillFx.markUsed(); setShowScanModal(true); }}
+              onPressIn={pillFx.onPressIn}
+              onPressOut={pillFx.onPressOut}
+              style={[
                 s.scanPill,
                 urgency === 'low'      && s.scanPillWarn,
                 urgency === 'critical' && s.scanPillCrit,
-                pressed && { opacity: 0.85 },
               ]}
               hitSlop={8}
               accessibilityRole="button"
@@ -393,6 +398,7 @@ export default function HomeScreen() {
                 {scanResolved ? fmt(ent.totalUsableScans) : (scanFailed ? '\u2014' : '\u2026')}
               </Text>
           </Pressable>
+        </Animated.View>
         </View>
       </Animated.View>
       <View style={s.headerDivider} />
@@ -646,6 +652,19 @@ export default function HomeScreen() {
             >
               <Text style={sm.dismissText}>Got it</Text>
             </Pressable>
+
+            {/* Secondary action.
+                Dismiss FIRST, then navigate — pushing while the modal is still
+                mounted leaves the sheet floating over the new screen on iOS, and it
+                would still be there on Back. */}
+            <Pressable
+              onPress={() => { setShowScanModal(false); router.push('/scan-store' as any); }}
+              style={({ pressed }) => [sm.storeBtn, pressed && { opacity: 0.75 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Go to Scan Store"
+            >
+              <Text style={sm.storeText}>Go to Scan Store</Text>
+            </Pressable>
           </Pressable>
         </Pressable>
       </Modal>
@@ -695,6 +714,18 @@ const s = StyleSheet.create({
     // rectangle did, but without the empty side padding.
     flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
     width: 46, height: 46, borderRadius: 23,
+    /**
+     * GOLD rim, at full strength.
+     *
+     * The first attempt used cream at 22% opacity — a hairline that was
+     * effectively invisible against the dark green, so the circle still read as
+     * a flat badge. Subtle is good; absent is not.
+     *
+     * Gold at 1.5pt ties the circle to the arced SCANS label directly above it,
+     * so the two read as one control rather than a label floating near a blob,
+     * and it is unmistakably a bordered button.
+     */
+    borderWidth: 1.5, borderColor: GOLD,
     // 14, not 6: the arced SCANS label overhangs the circle by ~11pt per side,
     // so a smaller margin would push it off the screen edge.
     marginRight: 14,
@@ -885,4 +916,18 @@ const sm = StyleSheet.create({
     paddingVertical: 12, paddingHorizontal: 44,
   },
   dismissText: { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: CREAM },
+    /**
+     * Secondary treatment.
+     *
+     * Same pill radius and vertical padding as "Got it" so the pair reads as one
+     * stack, but outlined in gold on a transparent fill rather than solid green.
+     * Clearly subordinate without looking disabled — and deliberately quiet: no
+     * glow, no glimmer. The real Scan Store gets the strong treatment.
+     */
+    storeBtn: {
+      marginTop: 10, backgroundColor: 'transparent',
+      borderWidth: 1.5, borderColor: GOLD, borderRadius: 50,
+      paddingVertical: 12, paddingHorizontal: 30,
+    },
+    storeText: { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '800', color: BROWN },
 });
