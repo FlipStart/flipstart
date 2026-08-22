@@ -57,6 +57,24 @@ import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
 import FeatureGate from '@/components/FeatureGate';
 
+
+/**
+ * Dev-override modules, resolved ONCE per session.
+ *
+ * These are __DEV__-only, but in a development build every `await import()` is a
+ * round trip to the Metro server — and this screen made three of them on EVERY
+ * focus. Repeat visits paid the full cost again each time.
+ *
+ * Caching the promises means the first visit pays it once and every subsequent
+ * focus resolves instantly. Production is unaffected: the branches never run.
+ */
+let _devAchv: Promise<typeof import('@/lib/devAchievementOverrides')> | null = null;
+let _devBrand: Promise<typeof import('@/lib/devBrandOverrides')> | null = null;
+let _devDiamond: Promise<typeof import('@/lib/devDiamondOverrides')> | null = null;
+const devAchvMod    = () => (_devAchv    ??= import('@/lib/devAchievementOverrides'));
+const devBrandMod   = () => (_devBrand   ??= import('@/lib/devBrandOverrides'));
+const devDiamondMod = () => (_devDiamond ??= import('@/lib/devDiamondOverrides'));
+
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const FOREST = '#2A4A2A';
 const GOLD   = '#BE9C2C';
@@ -225,7 +243,7 @@ export default function ProgressScreen() {
       let devExtra = 0;
       if (__DEV__) {
         try {
-          const { getDevUnlocked } = await import('@/lib/devAchievementOverrides');
+          const { getDevUnlocked } = await devAchvMod();
           const devSet  = await getDevUnlocked();
           const statSet = new Set(unlockedIds);
           devSet.forEach(id => { if (!statSet.has(id)) devExtra++; });
@@ -268,7 +286,7 @@ export default function ProgressScreen() {
 
       // DEV — merge dev-unlocked brands so the count matches the compendium.
       if (__DEV__) {
-        const { getDevUnlockedBrands } = await import('@/lib/devBrandOverrides');
+        const { getDevUnlockedBrands } = await devBrandMod();
         const devSet = await getDevUnlockedBrands();
         if (devSet.size > 0) discoveredBrands = new Set([...discoveredBrands, ...devSet]);
       }
@@ -294,7 +312,7 @@ export default function ProgressScreen() {
 
       // DEV — merge dev force-unlocked Diamonds so the count matches the collection.
       if (__DEV__) {
-        const { getDevDiamondIds } = await import('@/lib/devDiamondOverrides');
+        const { getDevDiamondIds } = await devDiamondMod();
         const devIds = await getDevDiamondIds();
         if (devIds.length > 0) unlockedDiamondIds = Array.from(new Set([...unlockedDiamondIds, ...devIds]));
       }

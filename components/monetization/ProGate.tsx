@@ -175,9 +175,17 @@ export function ProGateHost({ rootHost = false }: { rootHost?: boolean }) {
           <View style={s.actions}>
             <Pressable
               onPress={_close}
-              style={({ pressed }) => [s.btnGhost, pressed && { opacity: 0.7 }]}
+              /* With no offer this is the only button, so it takes the full
+                 width as a single confident action rather than a small ghost
+                 floating in the corner. */
+              style={({ pressed }) => [
+                _offer ? s.btnGhost : s.btn,
+                pressed && { opacity: _offer ? 0.7 : 0.85 },
+              ]}
             >
-              <Text style={s.btnGhostText}>{_offer ? 'Not Now' : 'Got It'}</Text>
+              <Text style={_offer ? s.btnGhostText : s.btnText}>
+                {_offer ? 'Not Now' : 'Got It'}
+              </Text>
             </Pressable>
 
             {_offer && (
@@ -185,7 +193,7 @@ export function ProGateHost({ rootHost = false }: { rootHost?: boolean }) {
                 onPress={() => { const fn = _offer.onAccept; _close(); fn(); }}
                 style={({ pressed }) => [s.btn, pressed && { opacity: 0.85 }]}
               >
-                <Text style={s.btnText}>{_offer.label}</Text>
+                <Text style={s.btnText} numberOfLines={1}>{_offer.label}</Text>
               </Pressable>
             )}
           </View>
@@ -203,11 +211,21 @@ const s = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { fontSize: 18, fontWeight: '800', color: FOREST },
   body: { fontSize: 14, color: MUTED, lineHeight: 20 },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end',
-             alignItems: 'center', gap: 8, marginTop: 2 },
-  btn: { backgroundColor: FOREST, borderRadius: 10,
-         paddingVertical: 10, paddingHorizontal: 20 },
-  btnGhost: { paddingVertical: 10, paddingHorizontal: 14 },
+  /**
+   * Buttons share the row width rather than hugging the right edge.
+   *
+   * `justifyContent: 'flex-end'` left both crammed against the right side with
+   * a wide dead gap on the left — fine for a single "Got It", bad the moment
+   * there are two and the sheet is a decision rather than an acknowledgement.
+   *
+   * flex: 1 on each gives an even split, so the pair reads as a balanced choice
+   * and both are comfortably reachable by thumb.
+   */
+  actions: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
+  btn: { flex: 1, backgroundColor: FOREST, borderRadius: 10,
+         paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
+  btnGhost: { flex: 1, borderRadius: 10, borderWidth: 1.25, borderColor: '#DDD2AC',
+              paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
   btnGhostText: { color: MUTED, fontSize: 14, fontWeight: '700' },
   btnText: { color: CREAM, fontSize: 14, fontWeight: '800' },
 });
