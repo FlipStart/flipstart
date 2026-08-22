@@ -15,27 +15,53 @@
  * authorization — every gated action is independently enforced server-side, so
  * a tampered client gets a nicer-looking screen and no extra capability.
  */
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/lib/auth-context";
 
-export type Plan = "free" | "trial" | "monthly" | "annual";
+/** FlipStart has three capability states. There is no trial. */
+export type Plan = "free" | "monthly" | "annual";
 
 export type GatedFeature =
   | "scan_photo_3" | "camera_context" | "generate_listings"
   | "deep_analysis" | "sold_comps" | "hunt_mode" | "premium_stats";
 
+/**
+ * Resolution status.
+ *
+ * ── Why this replaced a boolean ─────────────────────────────────────────────
+ * `loading: boolean` forced every consumer to pick a plan to render while
+ * waiting, and the previous choice was "free". That mislabels a paying
+ * subscriber as Free on every cold start — the one thing this UI must not do.
+ *
+ * "unresolved" is a THIRD state, not a flavour of free. Consumers render a
+ * neutral placeholder for it and infer nothing.
+ */
+export type EntitlementStatus = "unresolved" | "ready" | "error";
+
 export interface EntitlementView {
+  status: EntitlementStatus;
+  /** True only when authoritative state for the CURRENT user is available. */
+  resolved: boolean;
+  /** @deprecated Prefer `status`. Retained so existing callers keep compiling. */
   loading: boolean;
+  /**
+   * Meaningful ONLY when status === "ready". While unresolved it is "free" as a
+   * type placeholder and must never be displayed.
+   */
   plan: Plan;
   isPro: boolean;
   /** Scans this account can actually spend right now, across every bucket. */
   totalUsableScans: number;
   freeScansRemaining: number;
-  trialScansRemaining: number;
   subscriptionScansRemaining: number;
   packScansRemaining: number;
   maxPhotoSlots: 2 | 3;
+  /** Free user still holds their one-time Deep Analysis preview. */
+  deepAnalysisPreviewAvailable: boolean;
+  /** ISO date the current subscription period ends. Null for Free.
+   *  Used to tell the user WHEN their scans reset, rather than just that they do. */
+  subscriptionPeriodEnd: string | null;
   /** True when nothing is left in ANY bucket. */
   outOfScans: boolean;
   can: (f: GatedFeature) => boolean;
@@ -50,15 +76,50 @@ export interface EntitlementView {
  * tap into a scan that is refused server-side. Under-promising is the safer
  * error in both directions.
  */
-const LOADING_VIEW: Omit<EntitlementView, "can" | "refresh"> = {
-  loading: true, plan: "free", isPro: false,
-  totalUsableScans: 0, freeScansRemaining: 0, trialScansRemaining: 0,
+/**
+ * The unresolved shape.
+ *
+ * Numeric fields are 0 and plan is "free" ONLY as type placeholders — every
+ * consumer must branch on `status` before reading them. Capability stays false
+ * throughout, which keeps the DISPLAY fail-closed without claiming the user is
+ * on the Free plan.
+ */
+const UNRESOLVED: Omit<EntitlementView, "can" | "refresh"> = {
+  status: "unresolved", resolved: false, loading: true,
+  plan: "free", isPro: false,
+  totalUsableScans: 0, freeScansRemaining: 0,
   subscriptionScansRemaining: 0, packScansRemaining: 0,
-  maxPhotoSlots: 2, outOfScans: false,   // not "out" — simply unknown yet
+  maxPhotoSlots: 2, deepAnalysisPreviewAvailable: false,
+  subscriptionPeriodEnd: null, outOfScans: false,
 };
 
 export function useEntitlement(): EntitlementView {
   const { user } = useAuth();
+  const utils = trpc.useUtils();
+
+  /**
+   * Account-switch guard.
+   *
+   * tRPC keys this query on the procedure alone, so the cache entry is NOT
+   * scoped to a user. Without this, account A logs out with 2,435 scans,
+   * account B logs in, and B sees A's balance and A's membership status from
+   * cache until the refetch lands.
+   *
+   * Two defences, because one alone is not enough:
+   *   1. invalidate on uid change, so the stale entry is dropped
+   *   2. refuse to RETURN data attributed to a different uid, which covers the
+   *      render that happens before the invalidation takes effect
+   */
+  const uidRef = useRef<string | null>(null);
+  const uidAtFetch = useRef<string | null>(null);
+
+  useEffect(() => {
+    const uid = user?.id ?? null;
+    if (uidRef.current === uid) return;
+    uidRef.current = uid;
+    // Drop the previous account's entry rather than racing it.
+    void utils.monetization.entitlement.invalidate();
+  }, [user?.id, utils]);
   const q = trpc.monetization.entitlement.useQuery(undefined, {
     enabled: !!user?.id,
     // Entitlement changes on purchase and on scan, both of which invalidate
@@ -71,23 +132,60 @@ export function useEntitlement(): EntitlementView {
   const refresh = useCallback(() => q.refetch(), [q]);
   const ent = (q.data as any)?.entitlement;
 
-  if (!ent) {
-    return { ...LOADING_VIEW, loading: q.isLoading, can: () => false, refresh };
+  // Record which account the current data belongs to.
+  if (ent && q.isSuccess) uidAtFetch.current = user?.id ?? null;
+
+  /**
+   * Data from a DIFFERENT account is treated as absent, not shown.
+   *
+   * The conservative loading view (free, zero scans, nothing unlocked) is the
+   * right thing to render during a switch: showing nothing is recoverable,
+   * showing the previous user's Pro status is not.
+   */
+  const stale = !!ent && uidAtFetch.current !== (user?.id ?? null);
+  if (stale && __DEV__) {
+    console.warn("[entitlement] data belongs to a previous account — not displaying");
+  }
+
+  /**
+   * A failed fetch is NOT free.
+   *
+   * Calling a paying subscriber Free because a request failed shows the wrong
+   * membership and, once gating is live, would lock them out of what they paid
+   * for. Given its own status so the UI can say "unavailable" instead.
+   */
+  if (!ent && q.isError) {
+    return { ...UNRESOLVED, status: "error", can: () => false, refresh };
+  }
+
+  /**
+   * Unresolved covers first load and data belonging to a different account.
+   *
+   * Note what is NOT here — a same-user background refetch. React Query keeps
+   * `data` populated while refetching, so `ent` stays truthy and the view stays
+   * "ready". Verified state for the current uid is retained rather than
+   * skeletoned on every refresh.
+   */
+  if (!ent || stale) {
+    return { ...UNRESOLVED, can: () => false, refresh };
   }
 
   const b = ent.balances ?? {};
   const features = ent.features ?? {};
 
   return {
+    status: "ready",
+    resolved: true,
     loading: false,
     plan: ent.plan ?? "free",
     isPro: Boolean(ent.isPro),
     totalUsableScans: b.totalUsableScans ?? 0,
     freeScansRemaining: b.freeScansRemaining ?? 0,
-    trialScansRemaining: b.trialScansRemaining ?? 0,
     subscriptionScansRemaining: b.subscriptionScansRemaining ?? 0,
     packScansRemaining: b.packScansRemaining ?? 0,
     maxPhotoSlots: ent.maxPhotoSlots === 3 ? 3 : 2,
+    deepAnalysisPreviewAvailable: Boolean(ent.deepAnalysisPreviewAvailable),
+    subscriptionPeriodEnd: ent.subscriptionPeriodEnd ?? null,
     outOfScans: (b.totalUsableScans ?? 0) <= 0,
     // Unknown feature -> false. A new gate is locked until deliberately opened.
     can: (f: GatedFeature) => Boolean(features[f]),

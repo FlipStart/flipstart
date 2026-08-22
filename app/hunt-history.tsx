@@ -29,6 +29,8 @@ import { FONTS }                        from '@/constants/typography';
 import { logEvent }                     from '@/lib/analytics';
 import { useEffect }                    from 'react';
 
+import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
+
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
 const BG     = '#F0E8D4';
@@ -71,6 +73,11 @@ function formatDate(ts: number): string {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function HuntHistoryScreen() {
+  /**
+   * Deep Analysis is Pro. This screen navigated straight to it with no check —
+   * one of three history surfaces where the gate did not exist.
+   */
+  const openDeepAnalysis = useDeepAnalysisGate();
   const router   = useRouter();
   const insets   = useSafeAreaInsets();
   const { bundleId } = useLocalSearchParams<{ bundleId: string }>();
@@ -176,14 +183,14 @@ export default function HuntHistoryScreen() {
       generatedAt:     null,
       listingData:     null,
     };
-    router.push({
+    openDeepAnalysis(() => router.push({
       pathname: '/analysis-details' as any,
       params: {
         scanId:   item.scanId,
         snapshot: JSON.stringify(flipLike),
         source:   'hunt_history',
       },
-    });
+    }));
   };
 
   return (

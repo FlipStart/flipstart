@@ -35,6 +35,10 @@ import { trpc } from '@/lib/trpc';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
+
+import { useEntitlement } from '@/lib/useEntitlement';
+import { useProGate } from '@/components/monetization/ProGate';
+import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
 import {
   getScanDeletionImpact, computeValidSets, type ImpactContext,
 } from '@/lib/scanDeletionImpact';
@@ -107,6 +111,13 @@ const iv = StyleSheet.create({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ScanDetailScreen() {
+  /**
+   * Deep Analysis is Pro. This screen reached it directly, with no check —
+   * one of four entry points where the gate simply did not exist.
+   */
+  const ent = useEntitlement();
+  const { openProGate } = useProGate();
+  const openDeepAnalysis = useDeepAnalysisGate();
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
   const params  = useLocalSearchParams<{ scanId?: string; bundleId?: string; huntItemId?: string }>();
@@ -321,6 +332,15 @@ export default function ScanDetailScreen() {
   };
 
   const handleGenerateListings = async () => {
+    /**
+     * Generate Listings is Pro, and this screen called it with no check.
+     * Gated at the handler rather than by disabling the button, so the user
+     * gets an explanation instead of a dead control.
+     */
+    if (ent.status !== 'ready' || !ent.can('generate_listings')) {
+      openProGate('generate_listings');
+      return;
+    }
     if (hasListings && currentListings) { setListingsOpen(true); return; }
     haptic(Haptics.ImpactFeedbackStyle.Medium);
     setListLoading(true);
@@ -443,7 +463,7 @@ export default function ScanDetailScreen() {
   const navigateToDeepAnalysis = () => {
     if (!navGuard()) return;
     haptic(Haptics.ImpactFeedbackStyle.Light);
-    router.push({ pathname: '/analysis-details' as any, params: { scanId: flip.id, source: 'history' } });
+    openDeepAnalysis(() => router.push({ pathname: '/analysis-details' as any, params: { scanId: flip.id, source: 'history' } }));
   };
 
   // Tapping the title/arrow (or the existing Deep Analysis card) opens Deep

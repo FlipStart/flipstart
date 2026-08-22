@@ -16,6 +16,7 @@ import { compsFounderAuthorised } from "./comps/auth.js";
 import { monetizationV1EnabledFor } from "./_core/env.js";
 import { resolveSupabaseUserId } from "./monetization/identity.js";
 import { reserveScan, commitScan, refundScan } from "./monetization/ledger.js";
+import { requireFeature, requirePhotoCount } from "./monetization/enforce.js";
 import { saveAnalysis, getLatestAnalysis, getAnalysis } from "./analysisStore.js";
 import { compsCacheStats } from "./comps/cache.js";
 import { budgetState, budgetSource } from "./comps/budget.js";
@@ -153,6 +154,59 @@ const appRouter_scan = router({
         // header. Null means unverified, and V1 then does not apply.
         const muid = await resolveSupabaseUserId(ctx?.req as never);
         const useV1 = Boolean(muid) && monetizationV1EnabledFor(muid);
+
+        /**
+         * ── PREMIUM ENFORCEMENT, BEFORE ANY AI SPEND ────────────────────────
+         *
+         * UI gates are presentation. A modified or stale client can post three
+         * images and a context string straight to this endpoint, so the limit
+         * has to hold here or it does not hold at all.
+         *
+         * Placed before the scan reservation and before the OpenAI call, so a
+         * rejected request costs neither a scan nor a cent.
+         *
+         * Pack ownership is deliberately irrelevant: requirePhotoCount and
+         * requireFeature both derive from the PLAN, and a Free user with 2,310
+         * pack scans is still Free.
+         */
+        {
+          // The analyze input carries flat base64 fields, not an images map:
+          // imageBase64 is required, tag/detail are optional.
+          const photoCount =
+            1 +
+            ((input.tagImageBase64 ?? "").length > 0 ? 1 : 0) +
+            ((input.detailImageBase64 ?? "").length > 0 ? 1 : 0);
+
+          const photoCheck = await requirePhotoCount(muid, photoCount);
+          if (!photoCheck.allowed && !photoCheck.bypassed) {
+            console.warn(`[analyze] REJECTED — ${photoCount} photos on plan ${photoCheck.plan}`);
+            throw Object.assign(
+              new Error("A third photo is available with FlipStart Pro."),
+              { code: "PHOTO_LIMIT_EXCEEDED" },
+            );
+          }
+
+          /**
+           * Camera context: REJECT rather than strip.
+           *
+           * Stripping would silently return an analysis that ignored what the
+           * user typed, and they would have no way to tell. Rejecting before
+           * the AI call is both honest and cheaper — and it means a Free client
+           * cannot spend our money probing whether the context was used.
+           */
+          const sentContext = typeof (input as { userContext?: unknown }).userContext === "string"
+            && ((input as { userContext?: string }).userContext ?? "").trim().length > 0;
+          if (sentContext) {
+            const ctxCheck = await requireFeature(muid, "camera_context");
+            if (!ctxCheck.allowed && !ctxCheck.bypassed) {
+              console.warn(`[analyze] REJECTED — camera context on plan ${ctxCheck.plan}`);
+              throw Object.assign(
+                new Error("AI Context is available with FlipStart Pro."),
+                { code: "PRO_REQUIRED" },
+              );
+            }
+          }
+        }
 
         // Non-null ONLY when this request created a NEW reservation. A replay
         // leaves it null, which is what stops a retry committing twice.
@@ -497,7 +551,30 @@ const appRouter_scan = router({
           analysisId:               z.string().optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        /**
+         * ── GENERATE LISTINGS IS PRO ────────────────────────────────────────
+         *
+         * This endpoint previously had NO entitlement check at all — a Free
+         * client calling it directly got a full gpt-4.1-mini generation on our
+         * account. Enforced here, before any model invocation.
+         *
+         * Identity is the server-verified Supabase uid, never a client claim.
+         * Pack ownership does not change the answer: packs buy scan quantity,
+         * not capability.
+         */
+        {
+          const muid = await resolveSupabaseUserId(ctx?.req as never);
+          const check = await requireFeature(muid, "generate_listings");
+          if (!check.allowed && !check.bypassed) {
+            console.warn(`[generateListings] REJECTED — plan ${check.plan ?? "unknown"}`);
+            throw Object.assign(
+              new Error("Generate Listings is available with FlipStart Pro."),
+              { code: "PRO_REQUIRED" },
+            );
+          }
+        }
+
         const start = Date.now();
 
         // ── Confirmed context, loaded server-side ──────────────────────────
@@ -679,6 +756,42 @@ const monetizationRouter = router({
         grantedCount: r.grantedCount,
         totalScansGranted: r.totalScansGranted,
         alreadyGranted: r.alreadyGranted,
+        entitlement: await getEntitlementReadModel(uid),
+      };
+    }),
+
+  /**
+   * Consume the one-time Deep Analysis preview.
+   *
+   * Server-authoritative and atomic: the RPC locks the row, so a double-tap or
+   * two devices cannot both be granted. Returns `granted` so the client can
+   * tell "opened for you now" from "you already used this".
+   *
+   * Takes NO parameters — the uid comes from the verified session, and there is
+   * nothing a client could send to grant itself a second preview.
+   */
+  useDeepAnalysisPreview: publicProcedure
+    .mutation(async ({ ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+
+      const { getSupabaseAdmin } = await import("./supabaseAdmin.js");
+      const { getEntitlementReadModel } = await import("./monetization/enforce.js");
+      const sb = getSupabaseAdmin();
+      if (!sb) return { ok: false as const, reason: "UNAVAILABLE" as const };
+
+      const { data, error } = await sb.rpc("consume_deep_analysis_preview", { p_user_id: uid });
+      if (error) {
+        console.error("[deep-preview] consume failed:", error.message);
+        return { ok: false as const, reason: "UNAVAILABLE" as const };
+      }
+      const row = Array.isArray(data) ? data[0] : data;
+      console.log(`[deep-preview] granted=${row?.granted} alreadyUsed=${row?.already_used}`);
+
+      return {
+        ok: true as const,
+        granted: Boolean(row?.granted),
+        alreadyUsed: Boolean(row?.already_used),
         entitlement: await getEntitlementReadModel(uid),
       };
     }),

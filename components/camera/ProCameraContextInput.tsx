@@ -164,8 +164,15 @@ export function ProCameraContextInput({
     return () => { alive = false; sub?.remove?.(); };
   }, []);
 
-  /** Animate only while the row is empty, closed, and enabled. */
-  const idle = value.length === 0 && !open && !disabled;
+  /**
+   * Animate while the row is empty and closed — regardless of entitlement.
+   *
+   * `!disabled` used to be part of this, which meant the row sat visibly inert
+   * on Free while animating for Pro. That is a second, subtler way of greying
+   * the feature out. It should look and behave identically until tapped; the
+   * gate is what communicates that Pro is required.
+   */
+  const idle = value.length === 0 && !open;
 
   useEffect(() => {
     clearTimers();
@@ -265,7 +272,12 @@ export function ProCameraContextInput({
       <View style={s.wrap}>
         <View style={s.row}>
           <Pressable
-            style={[s.field, disabled && s.dim, confirmed && s.fieldConfirmed]}
+            /* NOT dimmed on Free.
+               A greyed-out control reads as broken or unavailable. The feature
+               is available — it just needs Pro — and the gate explains that on
+               tap. Looking normal is what makes it a discoverable capability
+               rather than dead UI. */
+            style={[s.field, confirmed && s.fieldConfirmed]}
             onPress={openEditor}
             accessibilityRole="button"
             accessibilityLabel="Add additional information about this item"
@@ -286,7 +298,7 @@ export function ProCameraContextInput({
             style={({ pressed }) => [
               s.btn,
               confirmed ? s.btnConfirmed : s.btnDefault,
-              disabled && s.dim,
+
               pressed && { opacity: 0.85 },
             ]}
           >
@@ -368,7 +380,6 @@ const FIELD_H = 54;
 const s = StyleSheet.create({
   wrap: { width: '90%', alignSelf: 'center', gap: 7 },
   row:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dim:  { opacity: 0.45 },
 
   field: {
     flex: 1, height: FIELD_H, justifyContent: 'center',

@@ -194,9 +194,31 @@ export default function AuthScreen() {
     setGoogleLoading(true);
     setGoogleError(null);
     try {
+      /**
+       * `prompt: 'select_account'` is REQUIRED, not cosmetic.
+       *
+       * ── The bug it fixes ────────────────────────────────────────────────
+       * Without it, Google reuses whatever account already has an authenticated
+       * session in the web view. So:
+       *
+       *   attempt 1 → user picks the WRONG account → Google authenticates it
+       *   user cancels → app exchanges nothing, but GOOGLE's session persists
+       *   attempt 2 → Google silently issues a code for the SAME wrong account
+       *               without ever showing the picker
+       *
+       * The user believes they chose differently and lands in the wrong
+       * account. There was no way to correct a misclick.
+       *
+       * Forcing the picker every time makes the second attempt mean what the
+       * user thinks it means.
+       */
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: 'flipstart://auth/callback', skipBrowserRedirect: true },
+        options: {
+          redirectTo: 'flipstart://auth/callback',
+          skipBrowserRedirect: true,
+          queryParams: { prompt: 'select_account' },
+        },
       });
       if (oauthError || !data?.url) {
         setGoogleError(oauthError
@@ -204,8 +226,40 @@ export default function AuthScreen() {
           : 'Google sign-in couldn\u2019t be started. Please try again.');
         return;
       }
+      /**
+       * Cookies are deliberately SHARED with Safari here.
+       *
+       * An earlier version used `preferEphemeralSession: true`, which isolates
+       * the web view completely. That did stop a previous attempt influencing
+       * the next one — but it also meant Google had no signed-in accounts to
+       * show, so every sign-in required typing an email and password by hand.
+       *
+       * That is a bad trade. `prompt: 'select_account'` above already solves
+       * the real problem by forcing the account chooser to appear; the shared
+       * session is what puts the user's actual accounts IN that chooser.
+       */
       const result = await WebBrowser.openAuthSessionAsync(data.url, 'flipstart://');
-      if (result.type !== 'success') return; // user cancelled — no error
+
+      /**
+       * Cancelled or dismissed.
+       *
+       * A dismissal must leave NOTHING behind. Supabase wrote a PKCE verifier
+       * when the flow started, and callback.tsx could still be handed a late
+       * deep link — so an abandoned attempt is explicitly torn down rather than
+       * simply returned from. Without this, a session for an account the user
+       * walked away from can appear seconds later.
+       */
+      if (result.type !== 'success') {
+        if (__DEV__) console.log(`[auth] Google sign-in ${result.type} — discarding any partial session`);
+        try {
+          const { data: leftover } = await supabase.auth.getSession();
+          if (leftover?.session) {
+            if (__DEV__) console.warn('[auth] a session appeared from a CANCELLED attempt — signing out');
+            await supabase.auth.signOut().catch(() => {});
+          }
+        } catch { /* nothing to clean up */ }
+        return; // user cancelled — no error shown
+      }
 
       const parsed = Linking.parse(result.url);
       const code = parsed.queryParams?.code as string | undefined;
@@ -222,7 +276,13 @@ export default function AuthScreen() {
        * which the previous getSession() check could not prevent.
        */
       if (!claimAuthCode(code)) {
-        if (__DEV__) console.log('[auth] code already claimed elsewhere — not exchanging twice');
+        /**
+         * Previously a silent `return` — no error, no recovery, the user saw
+         * nothing happen at all. If a stale URL ever replays a spent code, a
+         * dead end is worse than a message.
+         */
+        if (__DEV__) console.log('[auth] code already claimed — refusing to exchange twice');
+        setGoogleError('Sign-in didn\u2019t complete. Please try again.');
         return;
       }
       const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);

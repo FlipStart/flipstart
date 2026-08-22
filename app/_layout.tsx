@@ -34,6 +34,8 @@ import {
 import { computeDiscoveredBrands, getUnseenBrandNames } from '@/lib/brandCompendium';
 import { subscribeToHunt, getActiveHunt } from '@/lib/hunt-context';
 import { type HuntBundle } from '@/types/flip';
+
+import { ProGateProvider } from '@/components/monetization/ProGate';
 import UpdateGate from '@/components/UpdateGate';
 
 import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
@@ -423,6 +425,9 @@ export default function RootLayout() {
     >
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
+        <ProGateProvider>
+        {/* Every premium gate routes through this one modal, so the real
+            paywall replaces it in one place next phase. */}
       <AchievementNotificationProvider>
       <AppProviders>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
@@ -482,6 +487,7 @@ export default function RootLayout() {
       </trpc.Provider>
       </AppProviders>
       </AchievementNotificationProvider>
+        </ProGateProvider>
       </AuthProvider>
     </GestureHandlerRootView>
     </Animated.View>

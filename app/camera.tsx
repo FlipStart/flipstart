@@ -35,7 +35,9 @@ import {
   type PhotoSlot,
   SLOT_ORDER, normalizeCameraCapture } from '@/lib/capture';
 import { ProCameraContextInput } from '@/components/camera/ProCameraContextInput';
-import { useEntitlement, PRO_REQUIRED_COPY } from '@/lib/useEntitlement';
+import { useEntitlement } from '@/lib/useEntitlement';
+import { useProGate, ProGateHost } from '@/components/monetization/ProGate';
+import { PremiumGlimmer } from '@/components/monetization/PremiumGlimmer';
 import { normalizeUserContext } from '@shared/userContext';
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
@@ -75,6 +77,16 @@ export default function CameraScreen() {
    * presentation, not authorization.
    */
   const ent = useEntitlement();
+  const { openProGate } = useProGate();
+
+  /**
+   * Third photo is Pro.
+   *
+   * Fails closed while entitlement is unresolved: a premium action must not be
+   * granted by a loading state, even though the SLOT stays visible.
+   */
+  const canThirdPhoto = ent.status === 'ready' && ent.maxPhotoSlots >= 3;
+  const canContext    = ent.status === 'ready' && ent.can('camera_context');
   const router = useRouter();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
@@ -172,8 +184,27 @@ export default function CameraScreen() {
   // prepared in parallel in the background, swapping in as it finishes.
   const handleGallery = async () => {
     haptic(Haptics.ImpactFeedbackStyle.Light);
-    const assets = await pickMultipleFromGallery(3);
-    if (!assets || assets.length === 0) return;
+    /**
+     * The picker still offers THREE, deliberately.
+     *
+     * Limiting it to two for Free would mean the user never discovers the
+     * third photo exists. Letting them select it and gating afterwards means
+     * they have already shown intent — a better explanation, and a far
+     * stronger place for the real paywall to land next phase.
+     */
+    const picked = await pickMultipleFromGallery(3);
+    if (!picked || picked.length === 0) return;
+
+    /**
+     * Trim the third for Free; keep the first two.
+     *
+     * The rejected image never enters slot state, so it cannot reach the scan
+     * payload. The server would reject it anyway, but the client should not be
+     * sending it in the first place.
+     */
+    const maxAllowed = canThirdPhoto ? 3 : 2;
+    const assets = picked.slice(0, maxAllowed);
+    const rejectedThird = picked.length > maxAllowed;
 
     // Phase 1 — INSTANT: show the raw picker uris in slots right away.
     // base64:'' marks a photo as still-preparing (handleDone guards on it).
@@ -186,6 +217,10 @@ export default function CameraScreen() {
     }
     setSlots(next);
     setActiveSlot(getNextEmptySlot(next));
+
+    // Gate AFTER the accepted photos land, so 1 and 2 are visibly kept
+    // while the gate explains what happened to the third.
+    if (rejectedThird) openProGate('third_photo');
     setUndoData(null); // clear undo on gallery import
 
     // Phase 2 — BACKGROUND: normalize all photos in parallel; swap each into
@@ -437,6 +472,23 @@ export default function CameraScreen() {
           const isActive  = slot === activeSlot;
           const isDragSrc = slot === dragSource;
           const isDragTgt = slot === dragTarget;
+            /**
+             * The third slot becomes the premium surface once the first two
+             * are filled — that is when it turns into the natural next action.
+             * Glimmering before then would just be decoration.
+             *
+             * Applied for Pro users too: it signals they are actively using a
+             * premium capability rather than marking the slot as locked.
+             */
+            /**
+             * Follows the NEXT EMPTY slot, not a fixed position.
+             *
+             * Previously hardcoded to SLOT_ORDER[2], so filling front + detail
+             * left the shine on an already-filled tile while the actual next
+             * action — tag — sat plain. Whichever slot the third photo would go
+             * into is the one that shines.
+             */
+            const glimmer = filledCount === 2 && !photo && slot === getNextEmptySlot(slots);
           return (
             <View
               key={slot}
@@ -482,17 +534,21 @@ export default function CameraScreen() {
                     <Text style={s.undoSlotText}>Undo</Text>
                   </Pressable>
                 ) : (
-                  <View style={[
-                    s.slotEmpty,
-                    isActive  && s.slotEmptyActive,
-                    isDragTgt && s.slotEmptyTarget,
-                  ]}>
-                    <MaterialIcons
-                      name="add"
-                      size={20}
-                      color={isDragTgt ? GOLD : isActive ? GOLD : 'rgba(200,180,100,0.35)'}
-                    />
-                  </View>
+                  /* Normal empty slot, unchanged — the shine is an overlay,
+                     not a different box. 58/10 match s.slotEmpty. */
+                  <PremiumGlimmer active={glimmer} size={58} radius={10}>
+                    <View style={[
+                      s.slotEmpty,
+                      isActive  && s.slotEmptyActive,
+                      isDragTgt && s.slotEmptyTarget,
+                    ]}>
+                      <MaterialIcons
+                        name="add"
+                        size={20}
+                        color={isDragTgt ? GOLD : isActive ? GOLD : 'rgba(200,180,100,0.35)'}
+                      />
+                    </View>
+                  </PremiumGlimmer>
                 )}
               </Pressable>
               {/* Label from current category */}
@@ -516,8 +572,20 @@ export default function CameraScreen() {
         </Pressable>
 
         <Pressable
-          onPress={handleCapture}
-          disabled={isTaking || filledCount >= ent.maxPhotoSlots}
+          /**
+           * Gate BEFORE capture, never after.
+           *
+           * The camera must not open for photo 3 on a Free plan — taking the
+           * shot and then rejecting it would waste the user's time and leave a
+           * discarded image in memory. Photos 1 and 2 are untouched either way.
+           */
+          onPress={() => {
+            if (filledCount >= 2 && !canThirdPhoto) { openProGate('third_photo'); return; }
+            handleCapture();
+          }}
+          // Deliberately NOT disabled at 2 photos: the button must stay
+          // pressable so the gate can fire and explain why.
+          disabled={isTaking || filledCount >= 3}
           style={({ pressed }) => [
             s.captureBtn,
             pressed && { transform: [{ scale: 0.93 }] },
@@ -558,7 +626,11 @@ export default function CameraScreen() {
         {/* Pro-only. Hidden rather than shown-and-disabled: a permanently
             greyed field on every scan is noise for a Free user, and the server
             strips unentitled context anyway. */}
-        {ent.can('camera_context') && <ProCameraContextInput
+        {/* ALWAYS visible, including on Free.
+            Hiding it meant a Free user never learned the feature existed. It
+            now presents as premium and gates at the moment of intent, which is
+            both more honest and a far better conversion surface. */}
+        <ProCameraContextInput
           value={contextText}
           onChangeText={(txt) => {
             setContextText(txt);
@@ -568,7 +640,12 @@ export default function CameraScreen() {
           }}
           confirmed={contextConfirmed}
           onConfirm={() => setContextConfirmed(true)}
-        />}
+          /* The component already supported these — they were never wired.
+             disabled keeps the input inert for Free, and onUpgradePress routes
+             the tap to the shared gate instead of silently doing nothing. */
+          disabled={!canContext}
+          onUpgradePress={() => openProGate('camera_context')}
+        />
       </Pressable>
 
       {/* ── Drag ghost (unchanged) ── */}
@@ -613,6 +690,13 @@ export default function CameraScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
+
+      {/* Gate host.
+          The camera is presented as a fullScreenModal, which lives in its own
+          native window ABOVE the root. A root-level gate modal therefore stayed
+          hidden underneath and only surfaced once the camera was dismissed.
+          Mounting a host here renders it in the window the user is looking at. */}
+      <ProGateHost />
     </KeyboardAvoidingView>
   );
 }

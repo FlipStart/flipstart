@@ -43,6 +43,14 @@ import { registerCaptureListener, unregisterCaptureListener } from '@/lib/captur
 import { needsOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { useEntitlement } from '@/lib/useEntitlement';
+
+import { ScanCircleLabel } from '@/components/home/ScanCircleLabel';
+import {
+  includedHeading, includedCount,
+  detailExplanation, showPackColumn, packLabel, fmt, modalCaption, scanUrgency,
+} from '@/lib/scanBalanceDisplay';
 import {
   loadXpProfile, getCurrentRank, getNextRank,
   getRankProgress, RANK_LADDER, type HuntXpProfile,
@@ -68,33 +76,17 @@ const { height: SH } = Dimensions.get('window');
 const IS_SMALL = SH < 700;
 
 // ─── Scan balance hook — honest (null until real data, never a fake 7) ───────
-function useScansRemaining(): { remaining: number | null; failed: boolean } {
-  const [remaining, setRemaining] = useState<number | null>(null);
-  const [failed,    setFailed]    = useState(false);
-  const apiBase = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
-
-  const load = useCallback(async () => {
-    try {
-      const { getScannerId } = await import('@/lib/analytics');
-      const scannerId = await getScannerId().catch(() => undefined);
-      const qs   = scannerId ? `?scannerId=${encodeURIComponent(scannerId)}` : '';
-      const res  = await fetch(`${apiBase}/api/scan-stats${qs}`);
-      const data = await res.json();
-      if (typeof data?.remainingToday === 'number') {
-        setRemaining(data.remainingToday); setFailed(false);
-      } else if (typeof data?.globalScansRemainingToday === 'number') {
-        setRemaining(data.globalScansRemainingToday); setFailed(false);
-      } else {
-        setFailed(true);
-      }
-    } catch {
-      setFailed(true);
-    }
-  }, [apiBase]);
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
-  return { remaining, failed };
-}
+/**
+ * REMOVED: the local useScansRemaining() hook.
+ *
+ * It fetched `GET /api/scan-stats` and displayed `remainingToday` — the BETA
+ * daily counter (7/day), keyed on the client-supplied scannerId. That is a
+ * different accounting system entirely from the monetization ledger, so the
+ * Home pill showed beta numbers while Settings showed real membership.
+ *
+ * Home now reads the same authoritative entitlement model as every other
+ * monetization surface, via useEntitlement().
+ */
 
 // ─── Articles & Guides (all route to real, fully-written articles) ───────────
 const CONTENT_CARDS = [
@@ -206,11 +198,40 @@ export default function HomeScreen() {
   }, [authLoading, profileChecked, profileError, user, profile]);
 
   // ── Scan balance (honest) ───────────────────────────────────────────────────
-  const { remaining, failed: scanFailed } = useScansRemaining();
-  const hasScanData = remaining !== null;
-  const isZero = hasScanData && remaining! <= 0;
-  const isLow  = hasScanData && remaining! > 0 && remaining! <= 2;
-  const scanCountText = hasScanData ? String(remaining) : (scanFailed ? '—' : '…');
+  /**
+   * Authoritative entitlement. Same source as Settings, Profile and every gate,
+   * so Home can no longer disagree with the rest of the app.
+   */
+  const ent = useEntitlement();
+  const balance = {
+    plan: ent.plan,
+    freeScansRemaining: ent.freeScansRemaining,
+    subscriptionScansRemaining: ent.subscriptionScansRemaining,
+    packScansRemaining: ent.packScansRemaining,
+    totalUsableScans: ent.totalUsableScans,
+    subscriptionPeriodEnd: ent.subscriptionPeriodEnd,
+  };
+
+  const scanResolved = ent.status === 'ready';
+  const scanFailed   = ent.status === 'error';
+  const remaining    = scanResolved ? ent.totalUsableScans : null;
+  const hasScanData  = scanResolved;
+
+  /**
+   * Colour tier. Free uses absolute milestones (8 / 4 of 15 lifetime);
+   * subscriptions use percentages, because 8 remaining of 4,000 would mean an
+   * Annual user sits green until the very last moment. See scanUrgency().
+   *
+   * Never inferred while loading — an unresolved balance is not "low".
+   */
+  const urgency = scanResolved ? scanUrgency(balance) : 'normal';
+  const isZero  = scanResolved && ent.totalUsableScans <= 0;
+
+  /**
+   * The pill shows the TOTAL usable count; the compact wording lives in
+   * scanBalanceDisplay so Home and the modal can never word it differently.
+   */
+  const scanCountText = scanResolved ? fmt(ent.totalUsableScans) : (scanFailed ? '—' : '…');
 
   // ── XP / avatar ─────────────────────────────────────────────────────────────
   const [xpProfile, setXpProfile] = useState<HuntXpProfile | null>(null);
@@ -332,25 +353,45 @@ export default function HomeScreen() {
             )}
           </Pressable>
 
-          {/* Scans remaining button — dark green rounded rect, bolt, stacked
-              number/label, chevron on the right (matches reference exactly) */}
-          <Pressable
-            onPress={() => setShowScanModal(true)}
-            style={({ pressed }) => [
-              s.scanPill,
-              (isZero || isLow) && s.scanPillLow,
-              pressed && { opacity: 0.85 },
-            ]}
-            hitSlop={8}
-          >
-            <MaterialIcons name="bolt" size={14} color={(isZero || isLow) ? CREAM : GOLD} />
-            <View style={s.scanPillTextWrap}>
-              <Text style={s.scanPillNum} numberOfLines={1}>
-                {hasScanData ? remaining : (scanFailed ? '—' : '…')}
+              {/* Scan balance — SCANS arced around the top, number centred.
+                  The plain caption was removed earlier: it explained the plan
+                  in a 7pt font, which is the modal's job, and made the pill
+                  wide enough to crowd the FlipStart header. */}
+            <Pressable
+              onPress={() => setShowScanModal(true)}
+              style={({ pressed }) => [
+                s.scanPill,
+                urgency === 'low'      && s.scanPillWarn,
+                urgency === 'critical' && s.scanPillCrit,
+                pressed && { opacity: 0.85 },
+              ]}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={
+                scanResolved
+                  ? `${fmt(ent.totalUsableScans)} scans remaining. Tap for details.`
+                  : 'Checking scan balance'
+              }
+            >
+              {/* SCANS curved around the OUTSIDE of the circle. Always gold —
+                  it sits on the page background, so it never competes with the
+                  amber or red urgency fill. */}
+              <ScanCircleLabel size={46} />
+              {/* Bolt above the number, both inside the circle. */}
+              <MaterialIcons name="bolt" size={13} color={urgency === 'normal' ? GOLD : CREAM} />
+              {/* adjustsFontSizeToFit keeps a 4-digit balance (6,420) inside the
+                  same rectangle as a single digit, so the header never shifts
+                  between plans or as the balance changes. */}
+              <Text
+                style={s.scanPillNum}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                // A 5-digit balance (6,420) shrinks to fit the circle rather
+                // than overflowing it.
+                minimumFontScale={0.55}
+              >
+                {scanResolved ? fmt(ent.totalUsableScans) : (scanFailed ? '\u2014' : '\u2026')}
               </Text>
-              <Text style={s.scanPillLabel} numberOfLines={1}>scans left</Text>
-            </View>
-            <MaterialIcons name="chevron-right" size={13} color={CREAM} />
           </Pressable>
         </View>
       </Animated.View>
@@ -552,25 +593,52 @@ export default function HomeScreen() {
               <Text style={sm.title}>Scans Remaining</Text>
             </View>
 
-            <Text style={sm.count}>{scanCountText}</Text>
-            <Text style={sm.subtitle}>Daily Scans{'\n'}Remaining Today</Text>
-
-            <View style={sm.divider} />
-
-            <Text style={sm.body}>
-              You get 7 scans per day. Each item you scan uses one. Your scans reset every day at midnight.
-            </Text>
-
-            {(isLow || isZero) && (
-              <View style={sm.warningRow}>
-                <MaterialIcons name="info-outline" size={14} color="#B85450" />
-                <Text style={sm.warningText}>
-                  {isZero
-                    ? "You've used all 7 free scans for today. Your scans reset tomorrow."
-                    : 'Running low on your free scans for today.'}
+              {/* Neutral until resolved — a breakdown of fabricated zeros
+                  would be worse than a placeholder. */}
+              {!scanResolved ? (
+                <Text style={sm.subtitle}>
+                  {scanFailed ? 'Scan balance unavailable' : 'Checking your scans\u2026'}
                 </Text>
-              </View>
-            )}
+              ) : (
+                <>
+                  <Text style={sm.count}>{fmt(ent.totalUsableScans)}</Text>
+                  <Text style={sm.subtitle}>{modalCaption(balance)}</Text>
+
+                  <View style={sm.divider} />
+
+                  {/* The breakdown appears ONLY when packs exist.
+                      With a single source the big number above already IS the
+                      answer, and repeating it in a card underneath said the
+                      same figure three times over. A breakdown that breaks
+                      nothing down is noise. */}
+                  {showPackColumn(balance) && (
+                    <View style={sm.breakdownRow}>
+                      <View style={sm.breakdownCol}>
+                        <Text style={sm.breakdownNum}>{fmt(includedCount(balance))}</Text>
+                        <Text style={sm.breakdownLabel}>{includedHeading(balance.plan)}</Text>
+                      </View>
+                      <View style={[sm.breakdownCol, sm.breakdownPack]}>
+                        <Text style={[sm.breakdownNum, { color: GOLD }]}>
+                          {packLabel(balance.packScansRemaining)}
+                        </Text>
+                        <Text style={sm.breakdownLabel}>Pack Scans</Text>
+                      </View>
+                    </View>
+                  )}
+
+                  <Text style={sm.body}>{detailExplanation(balance)}</Text>
+
+                  {isZero && (
+                    <View style={sm.warningRow}>
+                      <MaterialIcons name="info-outline" size={14} color="#B85450" />
+                      <Text style={sm.warningText}>
+                        You're out of scans. Buy a scan pack or subscribe to keep scanning.
+                      </Text>
+                    </View>
+                  )}
+                </>
+              )}
+
 
             <Pressable
               onPress={() => setShowScanModal(false)}
@@ -601,7 +669,16 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     minHeight: 68,
   },
-  headerTitleWrap: { position: 'absolute', left: -14, right: 14, alignItems: 'center' },
+  // Truly centred: equal insets on both sides.
+  //
+  // Was left:-14 / right:14 — a 14pt nudge that offset the title to compensate
+  // for the old wide pill. With a fixed 46pt circle on the right and a 42pt
+  // profile button on the left, the row is close enough to symmetric that the
+  // title belongs dead centre.
+  //
+  // pointerEvents="none" on the wrapper means this absolute layer never
+  // intercepts taps meant for the buttons underneath.
+  headerTitleWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   headerTitle:     { fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: GREEN },
   headerSub:       { fontSize: 10, fontWeight: '800', color: GOLD, letterSpacing: 2.4, marginTop: 3 },
   profileBtn: {
@@ -610,15 +687,38 @@ const s = StyleSheet.create({
     marginLeft: 14,
   },
   scanPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: HERO_DARK, borderRadius: 11,
-    paddingLeft: 8, paddingRight: 6, paddingVertical: 5, zIndex: 2,
+    // Circle. Fixed 46x46 with borderRadius at half the size, and column layout
+    // so the bolt sits directly above the number rather than beside it — a row
+    // inside a circle wastes the corners and forces the content narrow.
+    //
+    // Fixed dimensions mean the header never shifts between plans, same as the
+    // rectangle did, but without the empty side padding.
+    flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+    width: 46, height: 46, borderRadius: 23,
+    // 14, not 6: the arced SCANS label overhangs the circle by ~11pt per side,
+    // so a smaller margin would push it off the screen edge.
+    marginRight: 14,
+    backgroundColor: HERO_DARK, zIndex: 2,
     shadowColor: DARK, shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.12, shadowRadius: 3, elevation: 2,
   },
-  scanPillLow:     { backgroundColor: WARN },
-  scanPillTextWrap:{ alignItems: 'flex-start' },
-  scanPillNum:     { fontFamily: FONTS.serif, fontSize: 13, fontWeight: '800', color: CREAM, lineHeight: 15 },
-  scanPillLabel:   { fontSize: 7, fontWeight: '700', color: 'rgba(244,238,216,0.85)', marginTop: -1 },
+  // Amber at "low", red at "critical". Distinct enough to read at a glance
+  // without either looking like an error state at 8 scans.
+  scanPillWarn:    { backgroundColor: '#B8860B' },
+  scanPillCrit:    { backgroundColor: WARN },
+  // 52, down from 62. The longest caption is now "scans left" at 10 chars, so
+  // the pill no longer needs room for "Lifetime Scans".
+  // No caption any more, so no text wrapper is needed.
+  // Larger than before (13 -> 16) now that it is the only content, and
+  // flexShrink lets adjustsFontSizeToFit work within the fixed width.
+  // Lighter and smaller than the rectangle version: inside a 46pt circle a
+  // 16pt/800 numeral crowded the edges. 13pt/700 sits comfortably and still
+  // reads at a glance.
+  // Nudged down to clear the arced label above it, and slightly larger now
+  // that it is the only element competing for the centre.
+  // Back to sitting under the bolt; the arced label is now outside the circle
+  // so it no longer competes for vertical space inside it.
+  scanPillNum:     { fontFamily: FONTS.serif, fontSize: 13, fontWeight: '700',
+                     color: CREAM, lineHeight: 15, marginTop: -1 },
 
   // Welcome
   welcome: {
@@ -750,6 +850,14 @@ const s = StyleSheet.create({
 // ─── Scans modal styles ────────────────────────────────────────────────────────
 
 const sm = StyleSheet.create({
+  // Two-source breakdown inside the existing scan modal.
+  breakdownRow:    { flexDirection: 'row', gap: 8, marginTop: 4, marginBottom: 10 },
+  breakdownCol:    { flex: 1, backgroundColor: '#F4EED8', borderRadius: 10,
+                     borderWidth: 1, borderColor: 'rgba(190,156,44,0.35)',
+                     paddingVertical: 11, paddingHorizontal: 11 },
+  breakdownPack:   { backgroundColor: '#FBF4DC', borderColor: '#BE9C2C' },
+  breakdownNum:    { fontSize: 20, fontWeight: '800', color: '#2A4A2A' },
+  breakdownLabel:  { fontSize: 10.5, fontWeight: '700', color: '#5A3A1A', marginTop: 2, lineHeight: 14 },
   backdrop: {
     flex: 1, backgroundColor: 'rgba(20,14,8,0.5)',
     justifyContent: 'center', alignItems: 'center', paddingHorizontal: 36,

@@ -22,6 +22,7 @@ import { loadXpProfile, getCurrentRank, RANK_LADDER } from '@/lib/huntXp';
 import { isHuntBundle } from '@/types/flip';
 import { allScanFlips } from '@/utils/huntItemToFlip';
 import type { FlipResult } from '@/types/flip';
+import { MembershipStatus } from '@/components/monetization/MembershipStatus';
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const FOREST      = '#2A4A2A';
@@ -151,7 +152,7 @@ export default function ProfileScreen() {
 
         <Text style={s.displayName}>{displayName}</Text>
         {usernameText ? <Text style={s.username}>{usernameText}</Text> : null}
-        <Text style={s.planStatus}>FlipStart Free Member</Text>
+        <View style={{ marginBottom: 10 }}><MembershipStatus fontSize={13} /></View>
 
         <View style={s.rankPill}>
           <Text style={s.rankEmoji}>{'\uD83E\uDD8C'}</Text>

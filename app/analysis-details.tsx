@@ -29,6 +29,9 @@ import {
 } from '@/utils/deepAnalysis';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 
+import { useEntitlement } from '@/lib/useEntitlement';
+import { useProGate } from '@/components/monetization/ProGate';
+
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
 function hasGeneratedListings(ld: { ebay?: { title?: string } | null; depop?: { title?: string } | null } | null | undefined): boolean {
@@ -276,6 +279,8 @@ const im = StyleSheet.create({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function AnalysisDetailsScreen() {
+  const ent = useEntitlement();
+  const { openProGate } = useProGate();
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
   const { scanId, snapshot, source } = useLocalSearchParams<{ scanId: string; snapshot?: string; source?: string }>();
@@ -368,6 +373,15 @@ export default function AnalysisDetailsScreen() {
   };
 
   const handleGenerateListings = async () => {
+    /**
+     * Deep Analysis itself is already gated at every entry point, but this
+     * screen is also reachable via the one-time preview — so a Free user CAN
+     * legitimately be here. Generate Listings stays Pro-only regardless.
+     */
+    if (ent.status !== 'ready' || !ent.can('generate_listings')) {
+      openProGate('generate_listings');
+      return;
+    }
     if (hasListings && listingsToShow) { setListingsOpen(true); return; }
     haptic(Haptics.ImpactFeedbackStyle.Medium);
     setListLoading(true);

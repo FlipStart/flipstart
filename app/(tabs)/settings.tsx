@@ -24,6 +24,7 @@ import { useFlipStore } from '@/lib/useFlipStore';
 import { resetOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
 import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
+import { MembershipStatus } from '@/components/monetization/MembershipStatus';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { getClearHistoryImpact, type ClearHistoryImpact, type ImpactContext } from '@/lib/scanDeletionImpact';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
@@ -312,7 +313,7 @@ export default function SettingsScreen() {
             <View style={s.acMeta}>
               <Text style={s.acName} numberOfLines={1}>{displayName}</Text>
               {usernameText ? <Text style={s.acUsername}>{usernameText}</Text> : null}
-              <Text style={s.acPlan}>FlipStart Free Member</Text>
+              <MembershipStatus fontSize={11} />
             </View>
             <MaterialIcons name="chevron-right" size={18} color={MUTED} />
           </Pressable>

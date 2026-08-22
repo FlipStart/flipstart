@@ -40,6 +40,8 @@ import { useFlipStore } from '@/lib/useFlipStore';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
+
+import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
 import {
   DIAMONDS, CATEGORY_META, TOTAL_DIAMONDS,
   computeUnlockedDiamonds, markDiamondIdsSeen,
@@ -318,6 +320,11 @@ function MiniSlot({
 // Screen
 // ═══════════════════════════════════════════════════════════════════════════
 export default function DiamondsInTheRoughScreen() {
+  /**
+   * Deep Analysis is Pro. This screen navigated straight to it with no check —
+   * one of three history surfaces where the gate did not exist.
+   */
+  const openDeepAnalysis = useDeepAnalysisGate();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { flips, isLoaded } = useFlipStore();
@@ -440,7 +447,7 @@ export default function DiamondsInTheRoughScreen() {
     const sid = activeUnlocked?.sourceScanId;
     if (!sid) return;
     if (!navGuard()) return;
-    router.push({ pathname: '/analysis-details' as any, params: { scanId: sid, source: 'history' } });
+    openDeepAnalysis(() => router.push({ pathname: '/analysis-details' as any, params: { scanId: sid, source: 'history' } }));
   }, [activeUnlocked, router]);
 
   const viewHuntScan = useCallback(() => {

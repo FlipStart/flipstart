@@ -100,6 +100,8 @@ export interface AccountUsage {
   subscription_period_end: string | null;
   subscription_scans_used: number;
   pack_scan_balance: number;
+  /** Set once, the first time a Free user opens the Deep Analysis preview. */
+  deep_analysis_preview_used_at?: string | null;
 }
 
 export function emptyUsage(): AccountUsage {
@@ -109,6 +111,7 @@ export function emptyUsage(): AccountUsage {
     subscription_product_id: null, subscription_period_start: null,
     subscription_period_end: null, subscription_scans_used: 0,
     pack_scan_balance: 0,
+    deep_analysis_preview_used_at: null,
   };
 }
 
@@ -256,6 +259,13 @@ export interface EntitlementReadModel {
   isPro: boolean;
   subscriptionPeriodEnd: string | null;
   maxPhotoSlots: 2 | 3;
+  /**
+   * True when a Free user still has their one-time Deep Analysis preview.
+   *
+   * Always false for Pro — they have the real thing, so offering a "preview"
+   * would be nonsense.
+   */
+  deepAnalysisPreviewAvailable: boolean;
   features: Record<Feature, boolean>;
   balances: Balances;
 }
@@ -273,6 +283,8 @@ export function buildReadModel(u: AccountUsage, now = new Date()): EntitlementRe
     isPro: plan !== "free",
     subscriptionPeriodEnd: u.subscription_period_end,
     maxPhotoSlots: maxPhotoSlots(plan),
+    deepAnalysisPreviewAvailable:
+      plan === "free" && !u.deep_analysis_preview_used_at,
     features: Object.fromEntries(feats.map(f => [f, canUseFeature(plan, f)])) as Record<Feature, boolean>,
     balances: computeBalances(u, now),
   };

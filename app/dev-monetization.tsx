@@ -23,6 +23,7 @@ import { useAuth } from '@/lib/auth-context';
 import { trpc } from '@/lib/trpc';
 import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
 import { collectDiagnostics, type RcDiagnostics } from '@/lib/revenuecat';
+import { useRefreshEntitlement } from '@/lib/useEntitlement';
 import { purchase, restorePurchases, isPurchaseInProgress,
          purchaseScanPack, recoverPacksOnServer,
          SCAN_PACK_SKUS, type ScanPackSku } from '@/lib/purchases';
@@ -56,6 +57,16 @@ export default function DevMonetization() {
   const diagnose = trpc.monetization.diagnose.useMutation();
   const entitlement = trpc.monetization.entitlement.useQuery(undefined, { enabled: !!user?.id });
 
+  /**
+   * Global invalidation, not a local refetch.
+   *
+   * refetch() updates only THIS component's query instance. The Home scan pill
+   * is a separate consumer, and after a purchase it must show the new balance
+   * without the user reopening the screen. invalidate() propagates to every
+   * consumer of the entitlement read model at once.
+   */
+  const refreshEntitlement = useRefreshEntitlement();
+
   const [busy, setBusy] = useState<null | 'monthly' | 'annual' | 'restore' | 'recover' | ScanPackSku>(null);
   const [purchaseMsg, setPurchaseMsg] = useState<string | null>(null);
 
@@ -81,7 +92,7 @@ export default function DevMonetization() {
       :                               (r.message ?? 'Purchase failed.'),
       );
       // Re-read the authoritative server state after any terminal outcome.
-      entitlement.refetch();
+      await refreshEntitlement();
     } finally {
       setBusy(null);
     }
@@ -117,7 +128,7 @@ export default function DevMonetization() {
       : r.status === 'unavailable'     ? (r.message ?? 'Requires a development build.')
       :                                  (r.message ?? 'Purchase failed.'),
       );
-      entitlement.refetch();
+      await refreshEntitlement();
     } finally { setBusy(null); }
   };
 
@@ -128,7 +139,7 @@ export default function DevMonetization() {
       setPackMsg(r.ok
         ? `Recovery: ${r.grantedCount} granted (+${r.totalScansGranted} scans), ${r.alreadyGranted} already`
         : 'Recovery could not complete — try again.');
-      entitlement.refetch();
+      await refreshEntitlement();
     } finally { setBusy(null); }
   };
 
@@ -147,7 +158,7 @@ export default function DevMonetization() {
                                           ? (r.message ?? 'Held by another FlipStart account.')
       :                                     (r.message ?? 'Restore failed.'),
       );
-      entitlement.refetch();
+      await refreshEntitlement();
     } finally {
       setBusy(null);
     }
