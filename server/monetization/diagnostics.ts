@@ -87,7 +87,9 @@ function fixtures(now: Date): Check[] {
     ["no subscriber -> free",            null,                                        "free"],
     ["monthly",                          mk({ product: PRODUCT_MONTHLY }),            "monthly"],
     ["annual",                           mk({ product: PRODUCT_ANNUAL }),             "annual"],
-    ["TRIAL outranks annual product",    mk({ period: "trial" }),                     "trial"],
+    // FlipStart offers no trial. An unexpected RevenueCat trial must fail
+    // closed to "unknown" — never become a plan, never grant an allowance.
+    ["unexpected trial -> unknown",      mk({ period: "trial" }),                     "unknown"],
     ["intro is NOT trial",               mk({ period: "intro", product: PRODUCT_MONTHLY }), "monthly"],
     ["expired -> free",                  mk({ expires: iso(-1) }),                    "free"],
     ["cancelled but active -> still Pro",mk({ cancelled: true, expires: iso(200) }),  "annual"],
@@ -233,7 +235,7 @@ export async function runDiagnostics(
           const row = Array.isArray(data) ? data[0] : data;
           checks.push(ok("supabase: snapshot apply",
             `applied plan=${row?.applied_plan} reset=${row?.period_reset} ` +
-            `sub_used=${row?.subscription_scans_used} trial_used=${row?.trial_scans_used} ` +
+            `sub_used=${row?.subscription_scans_used} ` +
             `free_used=${row?.free_scans_used} packs=${row?.pack_scan_balance}`));
 
           // Idempotency: applying the same snapshot twice must not reset again.
@@ -255,7 +257,7 @@ export async function runDiagnostics(
 
   // ── Honest limits ─────────────────────────────────────────────────────────
   const cannot = [
-    "A real trial / monthly / annual snapshot — requires an actual sandbox purchase on a device.",
+    "A real monthly / annual snapshot — requires an actual sandbox purchase on a device.",
     "Real webhook delivery from RevenueCat — requires a purchase event to fire.",
     "SDK configure / logIn on device — requires a dev or TestFlight build.",
     "Offering and package loading — requires the SDK, so a build.",

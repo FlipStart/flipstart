@@ -16,8 +16,8 @@
  */
 import { getSupabaseAdmin, isSupabaseAdminConfigured } from "../supabaseAdmin.js";
 import {
-  emptyUsage, derivePlan, isTrialActive, consumptionOrder, subscriptionLimitFor,
-  FREE_LIFETIME_SCANS, TRIAL_SCANS,
+  emptyUsage, derivePlan, consumptionOrder, subscriptionLimitFor,
+  FREE_LIFETIME_SCANS,
   type AccountUsage, type ScanSource, type PlanState,
 } from "./policy.js";
 
@@ -67,9 +67,17 @@ export async function reserveScan(
     p_attempt_id: attemptId,
     p_sources: consumptionOrder(plan),
     p_free_limit: FREE_LIFETIME_SCANS,
-    p_trial_limit: TRIAL_SCANS,
+    /**
+     * Trial is dead. Zero limit and inactive, so reserve_scan's trial branch can
+     * never fire even if a stale `p_sources` array somehow contained it.
+     *
+     * The SQL parameters are kept rather than removed: changing the RPC
+     * signature would need a migration on a live financial function, and
+     * neutralising the inputs achieves the same guarantee with no schema risk.
+     */
+    p_trial_limit: 0,
     p_subscription_limit: subscriptionLimitFor(plan),
-    p_trial_active: isTrialActive(usage),
+    p_trial_active: false,
     p_ttl_seconds: RESERVATION_TTL_SECONDS,
   });
 

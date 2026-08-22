@@ -15,7 +15,7 @@
  * plan to the server — it sends "please reconcile me" and nothing else.
  */
 import {
-  PRODUCT_MONTHLY, PRODUCT_ANNUAL, planFromCustomerInfo, type RcPlanKind,
+  PRODUCT_MONTHLY, annualProductId, planFromCustomerInfo, type RcPlanKind,
 } from "@/lib/revenuecat";
 import { sanitizePurchaseError, type PurchaseErrorKind } from "@/lib/purchaseErrors";
 
@@ -125,7 +125,14 @@ async function loadSdk(): Promise<any | null> {
 export async function resolvePackage(
   sdk: any, target: PurchaseTarget,
 ): Promise<{ pkg: any | null; error?: string }> {
-  const wanted = target === "monthly" ? PRODUCT_MONTHLY : PRODUCT_ANNUAL;
+  /**
+   * Resolved at call time, not at import.
+   *
+   * annualProductId() reads the configured key, and a module-level constant
+   * would capture whatever it was when the module first loaded — before
+   * configuration in some startup orders.
+   */
+  const wanted = target === "monthly" ? PRODUCT_MONTHLY : annualProductId();
   let offerings: any;
   try {
     offerings = await sdk.getOfferings();

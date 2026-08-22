@@ -21,9 +21,27 @@
 export const PRO_ENTITLEMENT = "pro";
 
 export const PRODUCT_MONTHLY = "flipstart_pro_monthly";
-export const PRODUCT_ANNUAL  = "flipstart_pro_annual";
 
-export type SnapshotPlan = "free" | "trial" | "monthly" | "annual" | "unknown";
+/**
+ * Annual identifiers.
+ *
+ * Re-exported from policy.ts rather than redeclared, so the sandbox/production
+ * split lives in exactly one place. Three independent copies of a product id is
+ * how one gets missed during a rename.
+ */
+export {
+  PRODUCT_ANNUAL, PRODUCT_ANNUAL_SANDBOX, PRODUCT_ANNUAL_PRODUCTION,
+  ANNUAL_PRODUCT_IDS, isAnnualProduct,
+} from "./policy.js";
+import { isAnnualProduct } from "./policy.js";
+
+/**
+ * FlipStart does not offer a trial, so "trial" is not a snapshot plan.
+ *
+ * An unexpected RevenueCat trial resolves to "unknown", which grants no
+ * allowance and clears subscription state — see normalizeSubscriber().
+ */
+export type SnapshotPlan = "free" | "monthly" | "annual" | "unknown";
 
 export interface SubscriptionSnapshot {
   plan: SnapshotPlan;
@@ -144,21 +162,38 @@ export function normalizeSubscriber(
   const periodEnd   = ent.expires_date ?? rcSub?.expires_date ?? null;
 
   /**
-   * Trial outranks product.
+   * UNEXPECTED REVENUECAT TRIAL — fail closed.
    *
-   * An annual product in its trial period is NOT annual access: it carries the
-   * 50-scan trial allowance, not 4,000. Reading the product alone would hand a
-   * trial user a full year's scans on day one — the single most expensive
-   * mapping error available here.
+   * FlipStart no longer offers a free trial, so an active `period_type: trial`
+   * means something is wrong: stale sandbox state, a legacy configuration, or an
+   * introductory offer created in a dashboard by accident.
+   *
+   * It resolves to "unknown" deliberately:
+   *   - NO trial bucket is provisioned, and no 50-scan allowance exists to grant
+   *   - it is NOT silently reinterpreted as monthly or annual, even though the
+   *     product id is present — granting a full paid allowance to someone in an
+   *     unexpected introductory state is inventing entitlement
+   *   - "unknown" already grants zero scans and logs loudly, so this reuses a
+   *     proven fail-closed path rather than adding a new one
+   *
+   * apply_revenuecat_snapshot's else-branch then clears subscription state, so
+   * the account derives as free until the real state is understood.
    */
   const isTrial = periodType === "trial";
 
   let plan: SnapshotPlan;
   if (isTrial) {
-    plan = "trial";
+    console.error(
+      `[revenuecat] UNEXPECTED period_type=trial for product "${productId}". ` +
+      `FlipStart does not offer a free trial — failing closed, no allowance granted. ` +
+      `Check App Store Connect for an introductory offer and RevenueCat for stale sandbox state.`,
+    );
+    plan = "unknown";
   } else if (productId === PRODUCT_MONTHLY) {
     plan = "monthly";
-  } else if (productId === PRODUCT_ANNUAL) {
+  } else if (isAnnualProduct(productId)) {
+    // Both the deprecated and current annual ids resolve to annual, so an
+    // existing subscriber never falls through to "unknown".
     plan = "annual";
   } else {
     /**

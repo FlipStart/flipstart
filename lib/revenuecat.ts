@@ -24,11 +24,56 @@
  */
 
 export type RcStatus = "unconfigured" | "initializing" | "ready" | "error";
-export type RcPlanKind = "free" | "trial" | "monthly" | "annual" | "unknown";
+/** Mirrors the server. No trial: an unexpected RevenueCat trial is "unknown",
+ *  which grants nothing and is reported rather than interpreted. */
+export type RcPlanKind = "free" | "monthly" | "annual" | "unknown";
 
 export const PRO_ENTITLEMENT = "pro";
 export const PRODUCT_MONTHLY = "flipstart_pro_monthly";
-export const PRODUCT_ANNUAL  = "flipstart_pro_annual";
+
+/**
+ * Annual identifiers, mirroring server/monetization/policy.ts.
+ *
+ * ── Why the client cannot import the server constant ────────────────────────
+ * policy.ts reads REVENUECAT_PURCHASE_ENVIRONMENT, a Railway variable that is
+ * not in the app bundle. The client therefore resolves the same split from the
+ * key it is configured with, which is the only environment signal it has.
+ *
+ * ── Why keying on the API key is correct here ───────────────────────────────
+ * The Test Store key and the Apple key ARE the environment distinction on the
+ * client. A build using the Test Store key is talking to Test Store, so it must
+ * offer the Test Store product. Using build type instead would be wrong: a
+ * development build pointed at Apple Sandbox would offer the wrong id.
+ */
+export const PRODUCT_ANNUAL_SANDBOX    = "flipstart_pro_annual_v2";
+export const PRODUCT_ANNUAL_PRODUCTION = "flipstart_pro_annual";
+
+/** Every identifier that has meant "annual". Recognition only, never selling. */
+export const ANNUAL_PRODUCT_IDS: readonly string[] = Object.freeze([
+  PRODUCT_ANNUAL_SANDBOX,
+  PRODUCT_ANNUAL_PRODUCTION,
+]);
+
+export function isAnnualProduct(productId: string | null | undefined): boolean {
+  return !!productId && ANNUAL_PRODUCT_IDS.includes(productId);
+}
+
+/**
+ * The annual product to OFFER in this build.
+ *
+ * Apple key present -> production catalog. Otherwise Test Store, which is the
+ * only place the `_v2` workaround exists.
+ */
+export function annualProductId(): string {
+  const apple = (process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY ?? "").trim();
+  return apple ? PRODUCT_ANNUAL_PRODUCTION : PRODUCT_ANNUAL_SANDBOX;
+}
+
+/**
+ * @deprecated Use annualProductId() for selling, isAnnualProduct() for
+ * recognition. Kept so existing imports keep compiling.
+ */
+export const PRODUCT_ANNUAL = PRODUCT_ANNUAL_SANDBOX;
 
 export interface RcState {
   status: RcStatus;
@@ -97,12 +142,17 @@ export function planFromCustomerInfo(info: unknown): {
   const periodType = (ent.periodType ?? "").toUpperCase();
   const productId = ent.productIdentifier ?? null;
 
-  // Trial outranks product: an annual product in trial is a 50-scan trial, not
-  // 4,000 annual scans.
+  /**
+   * An unexpected TRIAL resolves to "unknown", matching the server normalizer.
+   *
+   * FlipStart offers no free trial, so this state means stale sandbox or a
+   * dashboard introductory offer. Never reinterpreted as a paid plan — and this
+   * is presentation only; the server decides entitlement independently.
+   */
   const planKind: RcPlanKind =
-    periodType === "TRIAL" ? "trial"
+    periodType === "TRIAL" ? "unknown"
     : productId === PRODUCT_MONTHLY ? "monthly"
-    : productId === PRODUCT_ANNUAL ? "annual"
+    : isAnnualProduct(productId) ? "annual"
     : "unknown";   // never guessed
 
   if (planKind === "unknown") {
