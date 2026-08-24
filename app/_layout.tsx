@@ -36,6 +36,7 @@ import { subscribeToHunt, getActiveHunt } from '@/lib/hunt-context';
 import { type HuntBundle } from '@/types/flip';
 
 import { ProGateProvider } from '@/components/monetization/ProGate';
+import { ProPaywallProvider } from '@/components/monetization/paywall/ProPaywallProvider';
 import UpdateGate from '@/components/UpdateGate';
 
 import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
@@ -433,6 +434,19 @@ export default function RootLayout() {
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
           <DiamondNotificationWatcher />
+          {/* Shared Pro paywall.
+
+              Mounted HERE, not beside ProGateProvider, and the depth is
+              deliberate: the paywall modal reads useEntitlement, which is a
+              tRPC query, so it must live inside trpc.Provider and
+              QueryClientProvider. ProGateProvider sits above both because it
+              reads nothing.
+
+              It wraps <Stack> so every screen can call openProPaywall(), and
+              it renders its own root <ProPaywallHost/>. Screens presented as
+              modal or fullScreenModal need their own host — see the comment
+              in ProPaywallProvider.tsx. */}
+          <ProPaywallProvider>
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="achievements" options={{ headerShown: false, animation: 'fade' }} />
             <Stack.Screen name="achievement-category" options={{ headerShown: false, animation: 'fade' }} />
@@ -484,6 +498,7 @@ export default function RootLayout() {
             <Stack.Screen name="username-setup" options={{ headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="edit-profile" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
           </Stack>
+          </ProPaywallProvider>
           <StatusBar style="light" />
           <UpdateGate />
         </QueryClientProvider>

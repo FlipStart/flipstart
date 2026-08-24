@@ -473,3 +473,80 @@ export async function refreshSubscriptionState(): Promise<{ ok: boolean; plan: R
 
 /** Test seam. */
 export function __resetPurchaseGuard(): void { inFlight = false; }
+
+/**
+ * A subscription plan as the paywall needs to DISPLAY it.
+ *
+ * Display only. `purchase()` re-resolves the package from a fresh getOfferings()
+ * at the moment of purchase, so a stale object cached here can never be the
+ * thing that gets charged.
+ */
+export interface SubscriptionProductView {
+  target: PurchaseTarget;
+  /** The store product identifier this build offers for that plan. */
+  productId: string;
+  /** Raw RevenueCat package. Read for localized pricing; never for identity. */
+  pkg: any;
+}
+
+export interface SubscriptionProductsResult {
+  /**
+   * ready       at least one plan resolved
+   * error       the offering loaded but neither plan is in it, or it failed
+   * unavailable no native purchase module (Expo Go)
+   */
+  status: "ready" | "error" | "unavailable";
+  monthly: SubscriptionProductView | null;
+  annual: SubscriptionProductView | null;
+  message?: string;
+}
+
+/**
+ * Load both subscription plans for display.
+ *
+ * ── Why this lives here and not in the paywall ──────────────────────────────
+ * It reuses `loadSdk` and `resolvePackage` rather than reimplementing them, so
+ * there is still exactly ONE place that knows how a plan maps to a store
+ * package. A paywall that resolved products by `offering.annual` or by index
+ * would eventually disagree with what `purchase()` actually buys, and the user
+ * would be shown one price and charged another.
+ *
+ * ── Partial results are reported, not thrown away ───────────────────────────
+ * If monthly resolves and annual does not, we return monthly. A missing plan
+ * disables only its own card; it must not take the working plan down with it.
+ */
+export async function loadSubscriptionProducts(): Promise<SubscriptionProductsResult> {
+  const sdk = await loadSdk();
+  if (!sdk || typeof sdk.getOfferings !== "function") {
+    return {
+      status: "unavailable",
+      monthly: null,
+      annual: null,
+      message: "Plans need a development build.",
+    };
+  }
+
+  const [m, a] = await Promise.all([
+    resolvePackage(sdk, "monthly"),
+    resolvePackage(sdk, "annual"),
+  ]);
+
+  const monthly: SubscriptionProductView | null = m.pkg
+    ? { target: "monthly", productId: PRODUCT_MONTHLY, pkg: m.pkg }
+    : null;
+  const annual: SubscriptionProductView | null = a.pkg
+    ? { target: "annual", productId: annualProductId(), pkg: a.pkg }
+    : null;
+
+  if (!monthly && !annual) {
+    return {
+      status: "error",
+      monthly: null,
+      annual: null,
+      // Prefer a real reason from resolvePackage over a generic one.
+      message: m.error ?? a.error ?? "Could not load subscription options.",
+    };
+  }
+
+  return { status: "ready", monthly, annual };
+}

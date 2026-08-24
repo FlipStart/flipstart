@@ -27,6 +27,9 @@ import { useRefreshEntitlement } from '@/lib/useEntitlement';
 import { purchase, restorePurchases, isPurchaseInProgress,
          purchaseScanPack, recoverPacksOnServer,
          SCAN_PACK_SKUS, type ScanPackSku } from '@/lib/purchases';
+import { useProPaywall, ProPaywallHost }
+  from '@/components/monetization/paywall/ProPaywallProvider';
+import { PAYWALL_SOURCES, type ProPaywallSource } from '@/lib/paywallConfig';
 
 const FOREST = '#2A4A2A';
 const BROWN  = '#5A3A1A';
@@ -69,6 +72,17 @@ export default function DevMonetization() {
 
   const [busy, setBusy] = useState<null | 'monthly' | 'annual' | 'restore' | 'recover' | ScanPackSku>(null);
   const [purchaseMsg, setPurchaseMsg] = useState<string | null>(null);
+
+  /**
+   * Phase 2 paywall preview.
+   *
+   * `openProPaywall` is the SAME call a real feature gate will make in a
+   * later phase. There is no preview-only code path inside the engine — this
+   * screen just picks a source and opens it.
+   */
+  const { openProPaywall } = useProPaywall();
+  const [previewSource, setPreviewSource] = useState<ProPaywallSource>('dev_preview');
+  const [paywallMsg, setPaywallMsg] = useState<string | null>(null);
 
   /**
    * Identity capture.
@@ -207,6 +221,62 @@ export default function DevMonetization() {
           Verifies everything that does not need a device purchase. Read-only, except
           for applying the real subscription state the store already reports.
         </Text>
+
+        {/* ── Pro Paywall foundation (Phase 2) ──────────────────────────────
+            Preview only, and deliberately NOT a simulation. Opening from here
+            uses the real engine: the real purchase service, the real
+            authoritative entitlement confirmation, and the real Test Store
+            safeguards. If you tap Unlock, RevenueCat is genuinely called.
+
+            No feature gate is connected to this. ProGate still owns all four
+            premium entry points — see Phase 3. */}
+        <Text style={s.section}>Pro Paywall (Phase 2)</Text>
+        <Text style={s.note}>
+          Opens the shared full-screen paywall. Purchases here are real Test Store
+          purchases through lib/purchases.ts — nothing is faked and Pro is never
+          granted locally.
+        </Text>
+
+        <Text style={s.label}>SOURCE</Text>
+        <View style={s.sourceRow}>
+          {PAYWALL_SOURCES.map(src => {
+            const on = src === previewSource;
+            return (
+              <Pressable
+                key={src}
+                onPress={() => setPreviewSource(src)}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: on }}
+                style={({ pressed }) => [s.sourceChip, on && s.sourceChipOn,
+                  pressed && { opacity: 0.75 }]}
+              >
+                <Text style={[s.sourceChipText, on && s.sourceChipTextOn]}>{src}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={s.note}>
+          Every source shows the same generic hero in Phase 2. Only
+          scan_limit differs — it is the one source that offers the Scan Store,
+          because packs buy quantity and never capability.
+        </Text>
+
+        <Pressable
+          onPress={() => {
+            setPaywallMsg(null);
+            openProPaywall(previewSource, {
+              // Stands in for the real continuations Phase 3+ will pass.
+              onUnlocked: () => setPaywallMsg(
+                `onUnlocked fired for "${previewSource}" — a real gate would resume here.`,
+              ),
+            });
+          }}
+          style={({ pressed }) => [s.runBtn, pressed && { opacity: 0.85 }]}
+        >
+          <Text style={s.runBtnText}>Preview Pro Paywall</Text>
+        </Pressable>
+
+        {!!paywallMsg && <Text style={s.purchaseMsg}>{paywallMsg}</Text>}
 
         {/* ── Purchase harness ──────────────────────────────────────────────
             Temporary engineering UI. Deliberately plain — the real paywall is a
@@ -418,6 +488,21 @@ export default function DevMonetization() {
           </>
         )}
       </ScrollView>
+
+      {/*
+       * Screen-level paywall host.
+       *
+       * REQUIRED here. This screen is registered with presentation: 'modal',
+       * and a React Native <Modal> rendered at the root cannot appear above a
+       * modally-presented screen — it renders underneath and only surfaces
+       * once this screen is dismissed. ProGateHost exists for the same reason
+       * on app/camera.tsx.
+       *
+       * A pleasant side effect: the preview exercises the host registry from
+       * day one, instead of leaving it unproven until a fullScreenModal gate
+       * needs it in Phase 5.
+       */}
+      <ProPaywallHost />
     </ScreenContainer>
   );
 }
@@ -458,6 +543,12 @@ const s = StyleSheet.create({
               alignItems: 'center' },
   smallBtnText: { color: CREAM, fontSize: 13, fontWeight: '800' },
   purchaseMsg: { fontSize: 12.5, color: BROWN, marginTop: 10, lineHeight: 18 },
+  sourceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  sourceChip: { borderWidth: 1, borderColor: GOLD + '66', borderRadius: 50,
+                paddingHorizontal: 10, paddingVertical: 6, backgroundColor: CARD },
+  sourceChipOn: { backgroundColor: FOREST, borderColor: FOREST },
+  sourceChipText: { fontSize: 11, fontWeight: '700', color: BROWN },
+  sourceChipTextOn: { color: CREAM },
   denied: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   deniedText: { fontSize: 14, color: MUTED },
 });
