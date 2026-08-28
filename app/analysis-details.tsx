@@ -11,7 +11,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useFlipStore } from '@/lib/useFlipStore';
@@ -29,8 +29,7 @@ import {
 } from '@/utils/deepAnalysis';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 
-import { useEntitlement } from '@/lib/useEntitlement';
-import { useProGate } from '@/components/monetization/ProGate';
+import { useGenerateListingsGate } from '@/lib/useGenerateListingsGate';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
@@ -279,8 +278,13 @@ const im = StyleSheet.create({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function AnalysisDetailsScreen() {
-  const ent = useEntitlement();
-  const { openProGate } = useProGate();
+  const openGenerateListings = useGenerateListingsGate();
+  /**
+   * Live identity of the item on screen. Declared HERE, above the "Analysis not
+   * found" early return below, because useRef is a hook and a hook after a
+   * conditional return changes the hook count between renders.
+   */
+  const listingsContextRef = useRef<string | null>(null);
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
   const { scanId, snapshot, source } = useLocalSearchParams<{ scanId: string; snapshot?: string; source?: string }>();
@@ -310,6 +314,10 @@ export default function AnalysisDetailsScreen() {
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(null), 1500);
   };
+
+  // Kept current every render so the gate compares against what is on screen
+  // now, not what was on screen when the paywall opened.
+  listingsContextRef.current = baseFlip?.id ?? null;
 
   if (!baseFlip) {
     return (
@@ -372,16 +380,7 @@ export default function AnalysisDetailsScreen() {
     setThriftEditing(false);
   };
 
-  const handleGenerateListings = async () => {
-    /**
-     * Deep Analysis itself is already gated at every entry point, but this
-     * screen is also reachable via the one-time preview — so a Free user CAN
-     * legitimately be here. Generate Listings stays Pro-only regardless.
-     */
-    if (ent.status !== 'ready' || !ent.can('generate_listings')) {
-      openProGate('generate_listings');
-      return;
-    }
+  const runGenerateListings = async () => {
     if (hasListings && listingsToShow) { setListingsOpen(true); return; }
     haptic(Haptics.ImpactFeedbackStyle.Medium);
     setListLoading(true);
@@ -432,6 +431,24 @@ export default function AnalysisDetailsScreen() {
     } finally {
       setListLoading(false);
     }
+  };
+
+  /**
+   * The gate.
+   *
+   * This screen is reachable by a Free user through the one-time Deep Analysis
+   * preview, so a Free visitor here is legitimate — and Generate Listings is
+   * still Pro. Pro runs straight through; Free gets the contextual paywall and
+   * the work resumes automatically after an authoritative unlock.
+   */
+  const handleGenerateListings = () => {
+    openGenerateListings({
+      contextRef: listingsContextRef,
+      // Already generated: a local read, no gate, no cost.
+      hasExisting: () => hasListings && !!listingsToShow,
+      viewExisting: () => setListingsOpen(true),
+      run: runGenerateListings,
+    });
   };
 
   const plat = platformName(calc.bestPlatform);

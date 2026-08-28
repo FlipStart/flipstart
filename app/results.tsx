@@ -25,8 +25,8 @@ import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
 import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview, openAppStoreReviewPage } from '@/lib/reviewPrompt';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
-import { useEntitlement, useRefreshEntitlement } from '@/lib/useEntitlement';
-import { useProGate } from '@/components/monetization/ProGate';
+import { useRefreshEntitlement } from '@/lib/useEntitlement';
+import { useGenerateListingsGate } from '@/lib/useGenerateListingsGate';
 import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
@@ -258,11 +258,23 @@ export default function ResultsScreen() {
   const { addFlip, updateFlip, removeFlip, flips, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
   const { addUnseenBrands } = useAchievementNotifications();
   const { user } = useAuth();
-  const ent = useEntitlement();
-  const { openProGate } = useProGate();
-  // Fail closed while unresolved: a premium action must never be granted by a
-  // loading state, though the buttons stay visible.
-  const canListings = ent.status === 'ready' && ent.can('generate_listings');
+  /**
+   * Generate Listings — Phase 3 contextual paywall.
+   *
+   * The entitlement rules, the unresolved-state handling and the
+   * continue-after-purchase behaviour all live in the hook, shared with
+   * scan-detail and analysis-details so the three cannot drift again.
+   */
+  const openGenerateListings = useGenerateListingsGate();
+  /**
+   * Live identity of the item on screen.
+   *
+   * The hook reads this when the paywall opens and again just before the
+   * automatic continuation, so a listing can never be generated for a different
+   * find than the one the user was looking at.
+   */
+  const itemContextRef = useRef<string | null>(null);
+  itemContextRef.current = currentScan?.id ?? null;
   // Deep Analysis routes through the shared hook so all four entry points
   // behave identically, including the one-time preview offer.
   const openDeepAnalysis = useDeepAnalysisGate();
@@ -993,7 +1005,12 @@ export default function ResultsScreen() {
     // returned, so hiding the route is the only control available today.
     // Making it server-enforceable means trimming the analyze payload, which is
     // a Phase 4 decision.
-    openDeepAnalysis(() => router.push({ pathname: '/analysis-details' as any, params: { scanId: currentScan.id, snapshot, source: 'results' } }));
+    openDeepAnalysis(
+      () => router.push({ pathname: '/analysis-details' as any, params: { scanId: currentScan.id, snapshot, source: 'results' } }),
+      // Same ref the listings gate uses: both continuations must belong to the
+      // scan that was on screen when the user tapped.
+      { contextRef: itemContextRef },
+    );
   };
 
   // Tapping the title opens Deep Analysis AND permanently dismisses the coach-mark.
@@ -1547,10 +1564,15 @@ export default function ResultsScreen() {
           <Pressable
             /* Visible AND pressable on Free. Disabling it meant the user got no
                explanation — the gate at the moment of intent is the whole point. */
-            onPress={() => {
-              if (!canListings) { openProGate('generate_listings'); return; }
-              handleGenerateListings();
-            }}
+            onPress={() =>
+              openGenerateListings({
+                contextRef: itemContextRef,
+                // Already generated: a local read, no gate, no cost.
+                hasExisting: () => hasGeneratedListings(currentScan.listings),
+                viewExisting: () => setListingsOpen(true),
+                run: handleGenerateListings,
+              })
+            }
             disabled={listingsLoading}
             style={({ pressed }) => [s.generateBtn, (pressed || listingsLoading) && { opacity: 0.85 }]}
           >

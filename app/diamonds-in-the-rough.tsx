@@ -325,6 +325,11 @@ export default function DiamondsInTheRoughScreen() {
    * one of three history surfaces where the gate did not exist.
    */
   const openDeepAnalysis = useDeepAnalysisGate();
+  /**
+   * Live identity of the scan behind the active card, read by the gate when the
+   * paywall opens and again before the continuation runs.
+   */
+  const itemContextRef = useRef<string | null>(null);
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { flips, isLoaded } = useFlipStore();
@@ -443,11 +448,16 @@ export default function DiamondsInTheRoughScreen() {
     }
   }, [displayOrder, unlockedMap]);
 
+  itemContextRef.current = activeUnlocked?.sourceScanId ?? null;
+
   const viewScan = useCallback(() => {
     const sid = activeUnlocked?.sourceScanId;
     if (!sid) return;
     if (!navGuard()) return;
-    openDeepAnalysis(() => router.push({ pathname: '/analysis-details' as any, params: { scanId: sid, source: 'history' } }));
+    openDeepAnalysis(
+      () => router.push({ pathname: '/analysis-details' as any, params: { scanId: sid, source: 'history' } }),
+      { contextRef: itemContextRef },
+    );
   }, [activeUnlocked, router]);
 
   const viewHuntScan = useCallback(() => {

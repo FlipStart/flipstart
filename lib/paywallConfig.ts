@@ -14,12 +14,13 @@
  * components/monetization/paywall/PaywallHero.tsx. The mapping lives there, not
  * here.
  *
- * ── Why every source currently reads the same ───────────────────────────────
- * Phase 2 is the shared foundation. Contextual headlines, subtitles and CTA
- * wording are designed one paywall at a time in later phases, and pre-filling
- * "Unlock Generate Listings" now would be exactly the unfinished generic UI the
- * spec forbids shipping into a production path. The FIELDS are per-source and
- * ready; the VALUES are deliberately identical until each phase lands.
+ * ── Two sources are real; three are still placeholders ──────────────────────
+ * generate_listings (Phase 3) and deep_analysis (Phase 4) carry their own copy.
+ * third_photo, camera_context and scan_limit keep the generic wording
+ * deliberately: their paywalls are designed one at a time, and writing
+ * "Unlock Third Photo" before that paywall exists would ship the unfinished
+ * generic UI the brief forbids. Their real entry points still use the temporary
+ * ProGate, so nothing user-facing depends on those values yet.
  */
 
 /**
@@ -59,6 +60,18 @@ export interface PaywallConfig {
    * this on.
    */
   showScanStoreAlternative: boolean;
+  /**
+   * One quiet line under the plans naming what else Pro includes.
+   *
+   * Exists so a contextual paywall can acknowledge the rest of the subscription
+   * WITHOUT turning into a feature checklist. It is a single sentence in small
+   * brown type below the plan cards, not a column of ticks — the brief is
+   * explicit that this screen sells the thing the user just reached for.
+   *
+   * Null on the generic paywall, which has no specific feature to be secondary
+   * to.
+   */
+  secondaryValueLine: string | null;
 }
 
 /**
@@ -75,14 +88,79 @@ const GENERIC = {
   ctaLabel: "Unlock FlipStart Pro",
 } as const;
 
+/**
+ * Generate Listings — the first contextual paywall (Phase 3).
+ *
+ * The user pressed a button because they want to sell an item, so the headline
+ * promises the LISTING, not the subscription. "Upgrade to Pro" would answer a
+ * question they did not ask.
+ *
+ * The subtitle names what they get and where it goes, and stops. No promise
+ * about sales, prices, buyers or speed — none of those are things FlipStart
+ * controls, and a paywall implying otherwise is a refund request with extra
+ * steps.
+ */
+const GENERATE_LISTINGS: PaywallConfig = {
+  source: "generate_listings",
+  eyebrow: "FLIPSTART PRO",
+  headline: "Turn Your Find Into a Listing",
+  subtitle:
+    "Generate ready-to-edit eBay and Depop titles and descriptions in seconds, built from your scan.",
+  ctaLabel: "Unlock Generate Listings",
+  /**
+   * FALSE, and this is the source where it matters most.
+   *
+   * Someone here wants a listing. Scan packs buy scan QUANTITY and would not
+   * unlock this feature no matter how many they bought, so offering them would
+   * be selling a thing that cannot solve the problem.
+   */
+  showScanStoreAlternative: false,
+  secondaryValueLine: "Pro also includes 3-photo scans, AI Context, Deep Analysis, and more.",
+};
+
+/** The four sources still awaiting their own phase. */
+const placeholder = (
+  source: ProPaywallSource,
+  showScanStoreAlternative = false,
+): PaywallConfig => ({ source, ...GENERIC, showScanStoreAlternative, secondaryValueLine: null });
+
+/**
+ * Deep Analysis — the second contextual paywall (Phase 4).
+ *
+ * The user pressed this because they want to know MORE about an item before
+ * deciding, so the headline promises understanding rather than a subscription.
+ * "Deep Analysis Locked" would describe our billing; "See the Full Picture"
+ * describes what they get.
+ *
+ * The subtitle names the four dimensions the real feature actually covers and
+ * stops there. No promise of accurate pricing, guaranteed profit or verified
+ * authenticity — Deep Analysis is reasoning over a scan, not an appraisal, and
+ * copy implying otherwise would be a claim we cannot stand behind.
+ */
+const DEEP_ANALYSIS: PaywallConfig = {
+  source: "deep_analysis",
+  eyebrow: "FLIPSTART PRO",
+  headline: "See the Full Picture",
+  subtitle:
+    "Go beyond the quick scan with deeper pricing, market, risk, and resale insights.",
+  ctaLabel: "Unlock Deep Analysis",
+  /**
+   * FALSE. Scan packs buy scan QUANTITY and cannot unlock this capability at
+   * any balance, so routing someone here to the Scan Store would sell them
+   * something that does not solve their problem.
+   */
+  showScanStoreAlternative: false,
+  secondaryValueLine: "Dig deeper before you buy or sell.",
+};
+
 const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
-  generate_listings: { source: "generate_listings", ...GENERIC, showScanStoreAlternative: false },
-  deep_analysis:     { source: "deep_analysis",     ...GENERIC, showScanStoreAlternative: false },
-  third_photo:       { source: "third_photo",       ...GENERIC, showScanStoreAlternative: false },
-  camera_context:    { source: "camera_context",    ...GENERIC, showScanStoreAlternative: false },
+  generate_listings: GENERATE_LISTINGS,
+  deep_analysis:     DEEP_ANALYSIS,
+  third_photo:       placeholder("third_photo"),
+  camera_context:    placeholder("camera_context"),
   /** The one source where extra scans are a real answer to the user's problem. */
-  scan_limit:        { source: "scan_limit",        ...GENERIC, showScanStoreAlternative: true },
-  dev_preview:       { source: "dev_preview",       ...GENERIC, showScanStoreAlternative: false },
+  scan_limit:        placeholder("scan_limit", true),
+  dev_preview:       placeholder("dev_preview"),
 };
 
 /**
@@ -94,7 +172,7 @@ const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
  * unlock the thing the user asked for.
  */
 export function resolvePaywallConfig(source: ProPaywallSource): PaywallConfig {
-  return CONFIGS[source] ?? { source, ...GENERIC, showScanStoreAlternative: false };
+  return CONFIGS[source] ?? placeholder(source);
 }
 
 /** Every source, for tests and the dev preview picker. */

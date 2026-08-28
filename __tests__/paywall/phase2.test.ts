@@ -131,9 +131,18 @@ describe("paywall configuration", () => {
     expect(ANNUAL_SCANS).toBe(4000);
   });
 
-  /** Phase 2 must not ship half-designed contextual copy into a real path. */
-  it("uses the generic CTA everywhere until later phases override it", () => {
+  /**
+   * Superseded in part by Phase 3.
+   *
+   * generate_listings (Phase 3) and deep_analysis (Phase 4) carry their own
+   * CTAs. The three sources whose paywalls
+   * have not been designed keep the generic wording, because shipping
+   * "Unlock Deep Analysis" before that paywall exists is exactly the
+   * half-finished generic UI the brief forbids.
+   */
+  it("uses the generic CTA for every source that has no paywall yet", () => {
     for (const s of PAYWALL_SOURCES) {
+      if (s === "generate_listings" || s === "deep_analysis") continue;
       expect(resolvePaywallConfig(s).ctaLabel).toBe("Unlock FlipStart Pro");
     }
   });

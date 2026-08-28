@@ -30,6 +30,8 @@ import { StyleSheet, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { FONTS } from "@/constants/typography";
 import type { PaywallConfig, ProPaywallSource } from "@/lib/paywallConfig";
+import { DeepAnalysisHero } from "./heroes/DeepAnalysisHero";
+import { GenerateListingsHero } from "./heroes/GenerateListingsHero";
 import { OrnamentRule } from "./Ornament";
 import { PW } from "./paywallTheme";
 
@@ -74,16 +76,18 @@ export function GenericHero({ config }: PaywallHeroProps) {
 /**
  * Source → hero.
  *
- * Every source currently resolves to the generic hero because contextual heroes
- * are later phases. The indirection exists now so Phase 3 is an addition rather
- * than a refactor of the modal.
+ * generate_listings (Phase 3) and deep_analysis (Phase 4) have real heroes. The
+ * remaining three still fall through to GenericHero, which is exactly what the
+ * indirection was for:
+ * adding a contextual paywall is one component plus one line here, with no
+ * change to the modal, the purchase engine or the plan selector.
  */
 const HEROES: Partial<Record<ProPaywallSource, React.ComponentType<PaywallHeroProps>>> = {
-  // generate_listings: GenerateListingsHero,   ← Phase 3
-  // deep_analysis:     DeepAnalysisHero,       ← Phase 4
-  // third_photo:       ThirdPhotoHero,         ← Phase 5
-  // camera_context:    AiContextHero,          ← Phase 6
-  // scan_limit:        ScanLimitHero,          ← Phase 7
+  generate_listings: GenerateListingsHero,
+  deep_analysis:     DeepAnalysisHero,
+  // third_photo:    ThirdPhotoHero,     ← Phase 5
+  // camera_context: AiContextHero,      ← Phase 6
+  // scan_limit:     ScanLimitHero,      ← Phase 7
 };
 
 export function PaywallHero({ config }: PaywallHeroProps) {

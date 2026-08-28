@@ -80,17 +80,41 @@ import { PW, PW_RADIUS } from "./paywallTheme";
 const ACTIVATION_ATTEMPTS = 4;
 const ACTIVATION_BACKOFF_MS = 650;
 
+/**
+ * How long "Pro unlocked" stays on screen before the paywall continues by
+ * itself.
+ *
+ * Long enough to register that the payment worked, short enough that it never
+ * feels like a step. Someone who just spent money deserves to SEE that it
+ * landed — dismissing instantly reads as though the app swallowed the purchase.
+ * Beyond about a second it stops being confirmation and becomes a wait.
+ */
+const AUTO_CONTINUE_MS = 900;
+
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 export interface ProPaywallModalProps {
   /** Null when closed. A new object identity means "reopen and reset". */
   request: { id: number; config: PaywallConfig; onUnlocked?: () => void } | null;
+  /**
+   * Claims the continuation, once. Returns null if it has already been claimed.
+   *
+   * The modal never reads `request.onUnlocked` directly — going through the
+   * provider is what makes a double-tapped Continue structurally incapable of
+   * running the continuation twice.
+   */
+  consumeUnlock: () => (() => void) | null;
   onDismiss: (resolved: boolean) => void;
   /** Called when the user chooses to continue from the Scan Store alternative. */
   onScanStore: () => void;
 }
 
-export function ProPaywallModal({ request, onDismiss, onScanStore }: ProPaywallModalProps) {
+export function ProPaywallModal({
+  request,
+  consumeUnlock,
+  onDismiss,
+  onScanStore,
+}: ProPaywallModalProps) {
   const open = request !== null;
   const config = request?.config ?? null;
   const source = config?.source ?? "dev_preview";
@@ -254,12 +278,44 @@ export function ProPaywallModal({ request, onDismiss, onScanStore }: ProPaywallM
     dismiss(false);
   }, [state.phase, dismiss]);
 
-  /** Continue = dismiss AND run the source's continuation. */
+  /**
+   * Continue = dismiss AND run the source's continuation, exactly once.
+   *
+   * The callback is CLAIMED before dismissing, so a second press during the
+   * dismissal animation gets null and does nothing. Reading
+   * `request.onUnlocked` directly here would leave that window open.
+   */
   const continueUnlocked = useCallback(() => {
-    const fn = request?.onUnlocked;
+    const fn = consumeUnlock();
     dismiss(true);
     fn?.();
-  }, [request, dismiss]);
+  }, [consumeUnlock, dismiss]);
+
+  /**
+   * ── Automatic continuation ──────────────────────────────────────────────
+   *
+   * The user pressed Generate Listings, not "subscribe". Making them tap
+   * Continue and then find the button again is the exact friction this whole
+   * phase exists to remove, so a confirmed unlock continues on its own.
+   *
+   * Only from "unlocked" — never from "pending_activation", where the server
+   * has NOT confirmed and continuing would start work the gate would refuse a
+   * second later.
+   *
+   * Only when there is something to continue to. Without a continuation there
+   * is nothing to rush toward, and auto-dismissing would make the dev preview
+   * flash open and shut for a Pro tester.
+   *
+   * The Continue button stays live throughout. Racing the timer is harmless:
+   * the callback is claimed from the provider, so whichever arrives first is
+   * the only one that runs.
+   */
+  const hasContinuation = !!request?.onUnlocked;
+  useEffect(() => {
+    if (state.phase !== "unlocked" || !hasContinuation) return;
+    const t = setTimeout(() => continueUnlocked(), AUTO_CONTINUE_MS);
+    return () => clearTimeout(t);
+  }, [state.phase, hasContinuation, continueUnlocked]);
 
   const goScanStore = useCallback(() => {
     // Dismiss FIRST, then navigate. Pushing while the sheet is mounted leaves
@@ -409,6 +465,19 @@ export function ProPaywallModal({ request, onDismiss, onScanStore }: ProPaywallM
                     <Text style={s.activating} accessibilityLiveRegion="polite">
                       Activating Pro…
                     </Text>
+                  )}
+
+                  {/*
+                   * What else the subscription includes — one sentence, and
+                   * only where the source defines one.
+                   *
+                   * Placed UNDER the CTA on purpose. A contextual paywall sells
+                   * the feature the user reached for; the rest of Pro is a
+                   * reason to feel good about the price, not the pitch. Above
+                   * the button it would compete with the headline.
+                   */}
+                  {!!config?.secondaryValueLine && (
+                    <Text style={s.secondaryValue}>{config.secondaryValueLine}</Text>
                   )}
                 </View>
 
@@ -565,6 +634,16 @@ const s = StyleSheet.create({
     textAlign: "center",
     fontWeight: "600",
     marginTop: -2,
+  },
+
+  /** Brown, not muted: still has to be readable, just not loud. */
+  secondaryValue: {
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: PW.brown,
+    textAlign: "center",
+    paddingHorizontal: 8,
+    marginTop: 2,
   },
 
   notice: {

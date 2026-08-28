@@ -27,7 +27,7 @@ import { isHuntBundle, HuntBundleItem } from '@/types/flip';
 import { calculateFees } from '@/utils/flipCalculations';
 import { FONTS }                        from '@/constants/typography';
 import { logEvent }                     from '@/lib/analytics';
-import { useEffect }                    from 'react';
+import { useEffect, useRef }            from 'react';
 
 import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
 
@@ -78,12 +78,19 @@ export default function HuntHistoryScreen() {
    * one of three history surfaces where the gate did not exist.
    */
   const openDeepAnalysis = useDeepAnalysisGate();
+  /**
+   * Live identity of the hunt bundle this screen is showing. Declared above the
+   * "Hunt not found" early return below — useRef is a hook, and a hook after a
+   * conditional return changes the hook count between renders.
+   */
+  const itemContextRef = useRef<string | null>(null);
   const router   = useRouter();
   const insets   = useSafeAreaInsets();
   const { bundleId } = useLocalSearchParams<{ bundleId: string }>();
   const { flips }    = useFlipStore();
 
   const bundle = flips.find(f => isHuntBundle(f) && f.id === bundleId);
+  itemContextRef.current = bundle?.id ?? null;
 
   useEffect(() => {
     if (bundle && isHuntBundle(bundle)) {
@@ -183,14 +190,17 @@ export default function HuntHistoryScreen() {
       generatedAt:     null,
       listingData:     null,
     };
-    openDeepAnalysis(() => router.push({
-      pathname: '/analysis-details' as any,
-      params: {
-        scanId:   item.scanId,
-        snapshot: JSON.stringify(flipLike),
-        source:   'hunt_history',
-      },
-    }));
+    openDeepAnalysis(
+      () => router.push({
+        pathname: '/analysis-details' as any,
+        params: {
+          scanId:   item.scanId,
+          snapshot: JSON.stringify(flipLike),
+          source:   'hunt_history',
+        },
+      }),
+      { contextRef: itemContextRef },
+    );
   };
 
   return (
