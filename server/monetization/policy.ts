@@ -230,13 +230,40 @@ export interface Balances {
   totalUsableScans: number;
 }
 
+/**
+ * A bucket can never be negative, and never exceed its own allowance.
+ *
+ * Packs are excluded deliberately — a pack balance has no ceiling, since a user
+ * may buy as many as they like.
+ */
+function clampBucket(remaining: number, limit: number): number {
+  if (!Number.isFinite(remaining)) return 0;
+  return Math.min(limit, Math.max(0, remaining));
+}
+
 export function computeBalances(u: AccountUsage, now = new Date()): Balances {
   const plan = derivePlan(u, now);
   const subLimit = subscriptionLimitFor(plan);
 
   // Dormant trial columns are never read. No trial bucket is computed.
-  const free  = Math.max(0, FREE_LIFETIME_SCANS - u.free_scans_used);
-  const sub   = Math.max(0, subLimit - u.subscription_scans_used);
+  //
+  // Clamped at BOTH ends, not just at zero.
+  //
+  // DEFENCE IN DEPTH, not a fix for a live bug — worth stating plainly, because
+  // an earlier version of this comment claimed otherwise and was wrong.
+  //
+  // The concern was that refund_scan DECREMENTS these counters, so repeated
+  // refunds could drive one negative and make `LIMIT - used` return MORE than
+  // the allowance. Reading the actual SQL shows that is unreachable: refund_scan
+  // matches `state = 'reserved'` and returns false otherwise, so a second refund
+  // of the same reservation touches nothing, and every decrement is already
+  // wrapped in greatest(0, ...) at the database.
+  //
+  // The clamp stays anyway. For every legitimate value it is a no-op, and it
+  // means a future SQL change or a manual row edit cannot turn a corrupt counter
+  // into free scans. It is cheap insurance, not a patch.
+  const free  = clampBucket(FREE_LIFETIME_SCANS - u.free_scans_used, FREE_LIFETIME_SCANS);
+  const sub   = clampBucket(subLimit - u.subscription_scans_used, subLimit);
   const pack  = Math.max(0, u.pack_scan_balance);
 
   // Sum only the spendable buckets for this plan, so the headline number the UI
