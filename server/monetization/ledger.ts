@@ -16,7 +16,7 @@
  */
 import { getSupabaseAdmin, isSupabaseAdminConfigured } from "../supabaseAdmin.js";
 import {
-  emptyUsage, derivePlan, consumptionOrder, subscriptionLimitFor,
+  emptyUsage, derivePlan, consumptionOrder, subscriptionLimitFor, computeBalances,
   FREE_LIFETIME_SCANS,
   type AccountUsage, type ScanSource, type PlanState,
 } from "./policy.js";
@@ -59,6 +59,34 @@ export async function reserveScan(
 
   const usage = await getUsage(userId);
   const plan = derivePlan(usage);
+
+  /**
+   * -- DIAGNOSTIC (temporary, QA only) --------------------------------------
+   *
+   * The authoritative state as the RESERVER sees it, immediately before the
+   * bucket decision.
+   *
+   * Pairs with [rc-verify]: that line reports what persisted right after a
+   * RevenueCat sync, this one reports what is read back on the next scan. Same
+   * uid prefix in both, so one reproduction shows whether the state survived
+   * between the two, and `end=` distinguishes a null period from a stale one.
+   *
+   * Observation only -- `plan` and the consumption order are already computed
+   * above and are not touched here.
+   */
+  try {
+    const bal = computeBalances(usage);
+    console.log(
+      `[reserve-pre] uid=${userId.slice(0, 8)}... plan=${plan} ` +
+      `product=${usage.subscription_product_id ?? "null"} ` +
+      `end=${usage.subscription_period_end ?? "null"} ` +
+      `order=${consumptionOrder(plan).join(",")} ` +
+      `free_rem=${bal.freeScansRemaining} ` +
+      `sub_rem=${bal.subscriptionScansRemaining} ` +
+      `pack_rem=${bal.packScansRemaining} ` +
+      `total=${bal.totalUsableScans}`,
+    );
+  } catch { /* never block a scan for a log line */ }
 
   // The order is computed HERE and passed in, so the SQL stays plan-agnostic and
   // the policy remains the single source of that decision.

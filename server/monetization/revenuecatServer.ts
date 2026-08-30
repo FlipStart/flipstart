@@ -264,5 +264,47 @@ export async function reconcileUser(
     `[revenuecat] sync result plan=${snapshot.plan}` +
     `${row?.period_reset ? " (NEW PERIOD — usage reset)" : ""}`,
   );
+
+  /**
+   * -- DIAGNOSTIC (temporary, QA only) --------------------------------------
+   *
+   * Re-READ the row and report what actually persisted.
+   *
+   * The line above reports `snapshot.plan` -- the normalized RevenueCat
+   * payload, not the database. And the RPC's `applied_plan` is no better: the
+   * SQL does `return query select p_plan, ...`, so it echoes the argument it
+   * was given. Until now NOTHING in this codebase confirmed the write landed.
+   *
+   * This closes that gap by asking the same question every READER asks:
+   * getUsage() + derivePlan() -- the exact pair used by reserveScan,
+   * requireFeature and the entitlement endpoint. If this prints
+   * persisted_plan=free straight after a monthly sync, the split is between
+   * write and read rather than anywhere upstream, and `end=` tells us which of
+   * the two known defects caused it.
+   *
+   * Observation only. Nothing here alters the result, and the reconciliation
+   * has already completed by this point.
+   */
+  try {
+    const { getUsage } = await import("./ledger.js");
+    const { derivePlan, computeBalances } = await import("./policy.js");
+    const usage = await getUsage(supabaseUserId);
+    const persisted = derivePlan(usage);
+    const bal = computeBalances(usage);
+    console.log(
+      `[rc-verify] uid=${supabaseUserId.slice(0, 8)}... ` +
+      `snapshot_plan=${snapshot.plan} persisted_plan=${persisted} ` +
+      `product=${usage.subscription_product_id ?? "null"} ` +
+      `start=${usage.subscription_period_start ?? "null"} ` +
+      `end=${usage.subscription_period_end ?? "null"} ` +
+      `sub_used=${usage.subscription_scans_used} ` +
+      `sub_remaining=${bal.subscriptionScansRemaining} ` +
+      `agree=${persisted === snapshot.plan ? "YES" : "*** NO ***"}`,
+    );
+  } catch (e) {
+    // Diagnostics must never break a reconciliation that already succeeded.
+    console.warn("[rc-verify] read-back failed:", (e as Error).message);
+  }
+
   return { ok: true, plan: snapshot.plan, periodReset: Boolean(row?.period_reset), snapshot };
 }
