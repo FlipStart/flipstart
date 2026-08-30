@@ -131,7 +131,7 @@ export const ACHIEVEMENT_CATEGORIES: AchievementCategory[] = [
     barColor:    '#3A7EBF',
     achievements: [
       { id: 'rare_50profit',  name: 'Grail Find',   flavor: '$50+ Profit Item',  requirement: 'Find an item with $50+ estimated profit'  },
-      { id: 'rare_100profit', name: 'Jackpot',      flavor: '$1,000+ Profit Item', requirement: 'Find an item with $1,000+ estimated profit', isMajor: true },
+      { id: 'rare_100profit', name: 'Jackpot',      flavor: '$250+ Profit Item', requirement: 'Find an item with $250+ estimated profit', isMajor: true },
       { id: 'rare_500roi',    name: 'Perfect Flip', flavor: '500%+ ROI',         requirement: 'Save an item with 500%+ ROI'              },
       { id: 'rare_risky',     name: 'Risk Taker',   flavor: 'Risky Buy Saved',   requirement: 'Save an item marked "Risky Buy"'           },
     ],
@@ -252,7 +252,7 @@ export function getUnlockedIds(
     }
     case 'rareFind': {
       if (data.maxSingleItemProfit >= 50)  unlocked.add('rare_50profit');
-      if (data.maxSingleItemProfit >= 1000) unlocked.add('rare_100profit');
+      if (data.maxSingleItemProfit >= 250) unlocked.add('rare_100profit');
       if (data.maxSingleItemROI >= 500)    unlocked.add('rare_500roi');
       if (data.hasRiskyBuy)                unlocked.add('rare_risky');
       break;

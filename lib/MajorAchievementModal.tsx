@@ -77,7 +77,7 @@ const CONFIGS: Record<MajorAchievementType, AchievementConfig> = {
     iconColor: '#FFD700',
     eyebrow:   '✦  Rare Find Achievement  ✦',
     title:     'JACKPOT',
-    body:      '$100+ profit on a single flip.',
+    body:      '$250+ profit on a single flip.',
     subtext:   'This is exactly why you hunt.',
     btnText:   'Bank It',
     btnBg:     '#2A5A20',

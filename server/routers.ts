@@ -152,7 +152,7 @@ const appRouter_scan = router({
         //
         // muid is the Supabase uid the SERVER verified from the x-supabase-auth
         // header. Null means unverified, and V1 then does not apply.
-        const muid = await resolveSupabaseUserId(ctx?.req as never);
+        const muid = await resolveSupabaseUserId(ctx?.req as never, "analyze");
         const useV1 = Boolean(muid) && monetizationV1EnabledFor(muid);
 
         /**
@@ -564,7 +564,7 @@ const appRouter_scan = router({
          * not capability.
          */
         {
-          const muid = await resolveSupabaseUserId(ctx?.req as never);
+          const muid = await resolveSupabaseUserId(ctx?.req as never, "generateListings");
           const check = await requireFeature(muid, "generate_listings");
           if (!check.allowed && !check.bypassed) {
             console.warn(`[generateListings] REJECTED — plan ${check.plan ?? "unknown"}`);
@@ -675,7 +675,7 @@ const monetizationRouter = router({
    */
   syncSubscription: publicProcedure
     .mutation(async ({ ctx }) => {
-      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "syncSubscription");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
 
       const { reconcileUser } = await import("./monetization/revenuecatServer.js");
@@ -736,7 +736,7 @@ const monetizationRouter = router({
    */
   recoverScanPacks: publicProcedure
     .mutation(async ({ ctx }) => {
-      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "recoverScanPacks");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
 
       const { recoverScanPacks } = await import("./monetization/scanPackGrant.js");
@@ -772,7 +772,7 @@ const monetizationRouter = router({
    */
   useDeepAnalysisPreview: publicProcedure
     .mutation(async ({ ctx }) => {
-      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "deepAnalysisPreview");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
 
       const { getSupabaseAdmin } = await import("./supabaseAdmin.js");
@@ -799,7 +799,7 @@ const monetizationRouter = router({
   /** Read-only entitlement state for the UI. No mutation, no sync. */
   entitlement: publicProcedure
     .query(async ({ ctx }) => {
-      const uid = await resolveSupabaseUserId(ctx?.req as never);
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "entitlement");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
       const { getEntitlementReadModel } = await import("./monetization/enforce.js");
       return { ok: true as const, entitlement: await getEntitlementReadModel(uid) };

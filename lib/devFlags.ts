@@ -29,5 +29,15 @@
  *
  * It would NOT be acceptable with REVENUECAT_PURCHASE_ENVIRONMENT=production,
  * because real money and real grants would be one tap from a settings screen.
+ *
+ * ── OFF as of the production launch build ───────────────────────────────────
+ * The harness was reaching TestFlight testers, which is exactly what the
+ * comment above warned about. It is now __DEV__-only again: the entry in
+ * Settings does not render, the route is not registered, and the screen itself
+ * refuses to mount.
+ *
+ * Turning it back on is a one-line edit — but do NOT do so while
+ * REVENUECAT_PURCHASE_ENVIRONMENT=production. The sandbox allowlist is what
+ * made this containable, and it does not apply to production purchases.
  */
-export const MONETIZATION_HARNESS_VISIBLE = true;
+export const MONETIZATION_HARNESS_VISIBLE = false;

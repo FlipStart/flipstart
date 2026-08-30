@@ -757,9 +757,9 @@ export default function ResultsScreen() {
           if (!await hasShownMajorAchievement('flipstart_legend')) triggered = 'flipstart_legend';
         }
 
-        // Jackpot — first $1,000+ profit item
-        const wasJackpot = scans.some(f => f.profit >= 1000);
-        if (!triggered && !wasJackpot && flip.profit >= 1000) {
+        // Jackpot — first $250+ profit item
+        const wasJackpot = scans.some(f => f.profit >= 250);
+        if (!triggered && !wasJackpot && flip.profit >= 250) {
           if (!await hasShownMajorAchievement('jackpot')) triggered = 'jackpot';
         }
 
