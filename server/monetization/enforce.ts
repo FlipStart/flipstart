@@ -9,7 +9,7 @@
  * there is no scramble to add checks to five endpoints under time pressure.
  */
 import { monetizationV1EnabledFor } from "../_core/env.js";
-import { getUsage } from "./ledger.js";
+import { readUsage } from "./ledger.js";
 import {
   derivePlan, canUseFeature, maxPhotoSlots, buildReadModel,
   type Feature, type PlanState, type EntitlementReadModel,
@@ -19,7 +19,12 @@ export interface EnforcementResult {
   allowed: boolean;
   /** Present when denied. Safe to send to a client — names the capability, never
    *  internal state. */
-  reason?: "NOT_ENTITLED" | "TOO_MANY_PHOTOS" | "NOT_AUTHENTICATED";
+  /**
+   * USAGE_UNAVAILABLE means the authoritative row could not be READ. It is not
+   * a denial of entitlement -- it is a refusal to guess. Callers must not
+   * present it as "you are Free".
+   */
+  reason?: "NOT_ENTITLED" | "TOO_MANY_PHOTOS" | "NOT_AUTHENTICATED" | "USAGE_UNAVAILABLE";
   plan?: PlanState;
   /** True when V1 is not authoritative for this user, so the caller should fall
    *  through to existing beta behaviour rather than treat this as a pass. */
@@ -38,7 +43,14 @@ export async function requireFeature(
   if (!monetizationV1EnabledFor(userId ?? null)) return bypass();
   if (!userId) return { allowed: false, reason: "NOT_AUTHENTICATED" };
 
-  const plan = derivePlan(await getUsage(userId));
+  /**
+   * FAIL CLOSED on an unreadable row. Deriving a plan from fabricated usage is
+   * exactly how a paying subscriber was refused their own features.
+   */
+  const read = await readUsage(userId);
+  if (!read.ok) return { allowed: false, reason: "USAGE_UNAVAILABLE" };
+
+  const plan = derivePlan(read.usage);
   return canUseFeature(plan, feature)
     ? { allowed: true, plan }
     : { allowed: false, reason: "NOT_ENTITLED", plan };
@@ -57,7 +69,10 @@ export async function requirePhotoCount(
   if (!monetizationV1EnabledFor(userId ?? null)) return bypass();
   if (!userId) return { allowed: false, reason: "NOT_AUTHENTICATED" };
 
-  const plan = derivePlan(await getUsage(userId));
+  const read = await readUsage(userId);
+  if (!read.ok) return { allowed: false, reason: "USAGE_UNAVAILABLE" };
+
+  const plan = derivePlan(read.usage);
   return photoCount <= maxPhotoSlots(plan)
     ? { allowed: true, plan }
     : { allowed: false, reason: "TOO_MANY_PHOTOS", plan };
@@ -75,6 +90,16 @@ export async function requireCameraContext(
  *  ids, or override state. */
 export async function getEntitlementReadModel(
   userId: string,
-): Promise<EntitlementReadModel> {
-  return buildReadModel(await getUsage(userId));
+): Promise<EntitlementReadModel | null> {
+  /**
+   * NULL when the row cannot be read.
+   *
+   * The route turns this into `{ ok: false }`, which the client already renders
+   * as UNRESOLVED -- not Free. Returning a Free read model here is precisely
+   * the bug that showed a Monthly subscriber 15 free scans, so the failure has
+   * to stay visible all the way to the UI.
+   */
+  const read = await readUsage(userId);
+  if (!read.ok) return null;
+  return buildReadModel(read.usage);
 }

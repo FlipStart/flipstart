@@ -41,13 +41,91 @@ export interface ReserveResult {
  *  A missing row means a brand-new monetization epoch for this account: every
  *  existing beta user starts with a full 15 free scans, because their historical
  *  daily counters were beta infrastructure under different rules. */
-export async function getUsage(userId: string): Promise<AccountUsage> {
+/**
+ * The outcome of an authoritative usage read.
+ *
+ * "no row" and "the read failed" are DIFFERENT ANSWERS and must never share a
+ * return value. A brand-new account genuinely has empty usage; a database error
+ * means we do not know, and the two demand opposite handling.
+ */
+export type UsageRead =
+  /** Row found, or genuinely absent for a new account. Safe to act on. */
+  | { ok: true; usage: AccountUsage; existed: boolean }
+  /** The read failed. Callers MUST fail closed. */
+  | { ok: false; reason: "NOT_CONFIGURED" | "DB_ERROR" };
+
+/**
+ * Read the authoritative usage row.
+ *
+ * ── Why this replaced a one-line fallback ─────────────────────────────────
+ * It used to be `if (error || !data) return emptyUsage()`. That collapsed a
+ * failed read into a fabricated Free account with 15 unused scans, and handed
+ * it to reserveScan, the feature gates and the entitlement endpoint AS
+ * AUTHORITATIVE.
+ *
+ * It shipped. With RLS enabled on account_usage, every write went through a
+ * SECURITY DEFINER RPC and succeeded, while this direct table read was filtered
+ * and returned zero rows. A paying Monthly subscriber was served
+ * `plan=free, 15 scans` — invented by this function — and the logs said
+ * `sync result plan=monthly` the whole time. Nothing reported an error, because
+ * there was nothing left to report it with.
+ *
+ * The lesson generalises past this one bug: a read failure in a money path must
+ * never be indistinguishable from a real answer. Granting scans off a database
+ * error is strictly worse than refusing to answer.
+ */
+export async function readUsage(userId: string): Promise<UsageRead> {
   const sb = getSupabaseAdmin();
-  if (!sb) return emptyUsage();
+  if (!sb) {
+    console.warn(`[getUsage] NOT_CONFIGURED uid=${userId.slice(0, 8)}...`);
+    return { ok: false, reason: "NOT_CONFIGURED" };
+  }
+
   const { data, error } = await sb
     .from("account_usage").select("*").eq("user_id", userId).maybeSingle();
-  if (error || !data) return emptyUsage();
-  return data as AccountUsage;
+
+  if (error) {
+    /**
+     * Sanitized fields only. PostgREST's code and message name the cause — an
+     * RLS refusal, a schema-cache miss, a transport failure — without carrying
+     * row contents or credentials.
+     */
+    const e = error as { code?: string; message?: string; details?: string; hint?: string };
+    console.error(
+      `[getUsage] ERROR uid=${userId.slice(0, 8)}... ` +
+      `code=${e.code ?? "?"} message="${String(e.message ?? "").slice(0, 160)}" ` +
+      `details="${String(e.details ?? "").slice(0, 160)}"` +
+      `${e.hint ? ` hint="${String(e.hint).slice(0, 120)}"` : ""}`,
+    );
+    return { ok: false, reason: "DB_ERROR" };
+  }
+
+  if (!data) {
+    /**
+     * Genuinely no row. This is NORMAL and legitimate: the first touch for an
+     * account, before any scan or purchase has created it. Empty usage is the
+     * correct answer, and derivePlan(empty) is free — which is true.
+     *
+     * Logged so it can be told apart from an RLS-filtered read, which is the
+     * distinction that took this bug three rounds to find.
+     */
+    console.log(`[getUsage] NO_ROW uid=${userId.slice(0, 8)}...`);
+    return { ok: true, usage: emptyUsage(), existed: false };
+  }
+
+  return { ok: true, usage: data as AccountUsage, existed: true };
+}
+
+/**
+ * Back-compatible reader for callers that cannot fail closed.
+ *
+ * Kept ONLY for the read-back diagnostic in revenuecatServer, which is
+ * observational. Every enforcement path uses readUsage() and refuses on
+ * `ok: false`. Do not add new callers.
+ */
+export async function getUsage(userId: string): Promise<AccountUsage> {
+  const r = await readUsage(userId);
+  return r.ok ? r.usage : emptyUsage();
 }
 
 export async function reserveScan(
@@ -57,7 +135,19 @@ export async function reserveScan(
   const sb = getSupabaseAdmin();
   if (!sb) return { ok: false, reason: "NOT_CONFIGURED" };
 
-  const usage = await getUsage(userId);
+  /**
+   * FAIL CLOSED. A read failure is not a Free account.
+   *
+   * Reserving here on fabricated usage is how a paying subscriber's scan got
+   * taken from the free bucket, and how a database error could hand out 15
+   * scans to anyone.
+   */
+  const read = await readUsage(userId);
+  if (!read.ok) {
+    console.error(`[monetization] reserve refused — usage unreadable (${read.reason})`);
+    return { ok: false, reason: read.reason };
+  }
+  const usage = read.usage;
   const plan = derivePlan(usage);
 
   /**

@@ -688,7 +688,9 @@ const monetizationRouter = router({
       return {
         ok: r.ok,
         reason: r.ok ? undefined : r.reason,
-        entitlement: await getEntitlementReadModel(uid),
+        // undefined when the row is UNREADABLE. The client treats a missing
+        // model as unresolved rather than as Free.
+        entitlement: (await getEntitlementReadModel(uid)) ?? undefined,
       };
     }),
 
@@ -756,7 +758,9 @@ const monetizationRouter = router({
         grantedCount: r.grantedCount,
         totalScansGranted: r.totalScansGranted,
         alreadyGranted: r.alreadyGranted,
-        entitlement: await getEntitlementReadModel(uid),
+        // undefined when the row is UNREADABLE. The client treats a missing
+        // model as unresolved rather than as Free.
+        entitlement: (await getEntitlementReadModel(uid)) ?? undefined,
       };
     }),
 
@@ -792,7 +796,9 @@ const monetizationRouter = router({
         ok: true as const,
         granted: Boolean(row?.granted),
         alreadyUsed: Boolean(row?.already_used),
-        entitlement: await getEntitlementReadModel(uid),
+        // undefined when the row is UNREADABLE. The client treats a missing
+        // model as unresolved rather than as Free.
+        entitlement: (await getEntitlementReadModel(uid)) ?? undefined,
       };
     }),
 
@@ -802,7 +808,16 @@ const monetizationRouter = router({
       const uid = await resolveSupabaseUserId(ctx?.req as never, "entitlement");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
       const { getEntitlementReadModel } = await import("./monetization/enforce.js");
-      return { ok: true as const, entitlement: await getEntitlementReadModel(uid) };
+      const entitlement = await getEntitlementReadModel(uid);
+      /**
+       * A null read model means the authoritative row was UNREADABLE, not that
+       * the user is Free. Reporting ok:false keeps the client in its UNRESOLVED
+       * state -- no plan shown, nothing unlocked -- which is the correct answer
+       * to "we do not know". Returning a Free model here is the exact bug that
+       * showed a Monthly subscriber 15 free scans.
+       */
+      if (!entitlement) return { ok: false as const, reason: "USAGE_UNAVAILABLE" as const };
+      return { ok: true as const, entitlement };
     }),
 });
 
