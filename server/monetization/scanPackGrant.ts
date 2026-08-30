@@ -24,10 +24,54 @@ import {
  *
  * PRODUCTION PURCHASES DO NOT CONSULT THIS LIST. A real paying customer must
  * never be blocked by a testing control.
+ *
+ * ── The "*" wildcard ────────────────────────────────────────────────────────
+ * Broad TestFlight QA needs every tester able to buy packs, and collecting a
+ * UUID from each of them before the build ships is not workable. So a literal
+ * "*" opens sandbox grants to any AUTHENTICATED user.
+ *
+ * It is deliberately narrow:
+ *
+ *   • It is re-checked against REVENUECAT_PURCHASE_ENVIRONMENT INSIDE this
+ *     function, not only at the call site. The caller already guards on
+ *     `env === "sandbox"`, so this is redundant today — and that is the point.
+ *     A "*" left in a production environment by mistake is the single most
+ *     expensive misconfiguration available here, because pack_scan_balance
+ *     never expires, so a stray grant is permanent and indistinguishable from
+ *     a paid one. One guard is a policy; two is a guarantee.
+ *
+ *   • It still requires an authenticated user. "All authenticated users" is not
+ *     "anyone", so an empty or missing uid is refused even under "*".
+ *
+ * Explicit UUID behaviour is untouched, and empty/unset still means nobody.
  */
+export const SANDBOX_GRANT_WILDCARD = "*";
+
 export function isSandboxGrantAllowed(userId: string): boolean {
   const ids = (process.env.REVENUECAT_SANDBOX_PACK_USER_IDS ?? "")
     .split(",").map(s => s.trim()).filter(Boolean);
+
+  /**
+   * Authentication first, for both paths. An absent uid can never match an
+   * explicit entry, and must not ride in on the wildcard either.
+   */
+  if (!userId) return false;
+
+  if (ids.includes(SANDBOX_GRANT_WILDCARD)) {
+    /**
+     * Second environment check. `purchaseEnvironment()` returns null on an
+     * absent or malformed value, so an unreadable environment fails closed
+     * rather than honouring the wildcard.
+     */
+    if (purchaseEnvironment() === "sandbox") return true;
+    console.warn(
+      '[scan-pack] REVENUECAT_SANDBOX_PACK_USER_IDS contains "*" but ' +
+      "REVENUECAT_PURCHASE_ENVIRONMENT is not \"sandbox\" — ignoring the wildcard. " +
+      "Remove it before public launch.",
+    );
+    // Fall through: an explicit uuid alongside "*" still works normally.
+  }
+
   return ids.includes(userId);
 }
 
