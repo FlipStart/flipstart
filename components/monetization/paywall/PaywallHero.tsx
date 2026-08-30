@@ -32,6 +32,9 @@ import { FONTS } from "@/constants/typography";
 import type { PaywallConfig, ProPaywallSource } from "@/lib/paywallConfig";
 import { DeepAnalysisHero } from "./heroes/DeepAnalysisHero";
 import { GenerateListingsHero } from "./heroes/GenerateListingsHero";
+import { AiContextHero } from "./heroes/AiContextHero";
+import { ScanLimitHero } from "./heroes/ScanLimitHero";
+import { ThirdPhotoHero } from "./heroes/ThirdPhotoHero";
 import { OrnamentRule } from "./Ornament";
 import { PW } from "./paywallTheme";
 
@@ -76,18 +79,18 @@ export function GenericHero({ config }: PaywallHeroProps) {
 /**
  * Source → hero.
  *
- * generate_listings (Phase 3) and deep_analysis (Phase 4) have real heroes. The
- * remaining three still fall through to GenericHero, which is exactly what the
- * indirection was for:
+ * ALL FIVE sources have real heroes as of Phase 7. GenericHero survives only
+ * as the fail-closed fallback for an unrecognised source. The indirection did
+ * its job:
  * adding a contextual paywall is one component plus one line here, with no
  * change to the modal, the purchase engine or the plan selector.
  */
 const HEROES: Partial<Record<ProPaywallSource, React.ComponentType<PaywallHeroProps>>> = {
   generate_listings: GenerateListingsHero,
   deep_analysis:     DeepAnalysisHero,
-  // third_photo:    ThirdPhotoHero,     ← Phase 5
-  // camera_context: AiContextHero,      ← Phase 6
-  // scan_limit:     ScanLimitHero,      ← Phase 7
+  third_photo:       ThirdPhotoHero,
+  camera_context:    AiContextHero,
+  scan_limit:        ScanLimitHero,
 };
 
 export function PaywallHero({ config }: PaywallHeroProps) {

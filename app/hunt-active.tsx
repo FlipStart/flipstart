@@ -36,6 +36,7 @@ import { applyHuntXp, setLastCompletionResult } from '@/lib/huntXp';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { isHuntBundle, type HuntBundle, type HuntBundleItem } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
+import { useScanGate } from '@/lib/useScanGate';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
@@ -358,6 +359,15 @@ function HuntBottomZone({ onPress }: { onPress: () => void }) {
 export default function HuntActiveScreen() {
   const router     = useRouter();
   const navigation = useNavigation();
+
+  /**
+   * Shared scan preflight — see lib/useScanGate.ts.
+   *
+   * Declared HERE, above the "No Active Hunt" early return further down:
+   * useScanGate is a hook, and a hook after a conditional return changes the
+   * hook count between renders.
+   */
+  const startScan = useScanGate();
   const insets     = useSafeAreaInsets();
 
   // Re-render whenever hunt state changes
@@ -528,10 +538,26 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
   const removedItems = session.items.filter(i => !i.kept);
   const recentKept   = keptItems.slice(0, 4);
 
+  /**
+   * Hunt scan.
+   *
+   * The continuation is the HUNT scan, not a generic one: it keeps the hunt
+   * analytics call attached, so resuming after a purchase lands the user back
+   * in their session rather than dropping them into a plain Home scan.
+   *
+   * logHuntScanStarted moved inside `run` deliberately — a scan that never
+   * starts because the user is exhausted must not be logged as started.
+   */
   const handleScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
-    logHuntScanStarted(stats.scanned);
-    router.push('/camera' as any);
+    startScan({
+      origin: 'hunt',
+      run: () => {
+        logHuntScanStarted(stats.scanned);
+        router.push('/camera' as any);
+      },
+      goToScanStore: () => router.push('/scan-store' as any),
+    });
   };
 
   return (

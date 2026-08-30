@@ -14,13 +14,11 @@
  * components/monetization/paywall/PaywallHero.tsx. The mapping lives there, not
  * here.
  *
- * ── Two sources are real; three are still placeholders ──────────────────────
- * generate_listings (Phase 3) and deep_analysis (Phase 4) carry their own copy.
- * third_photo, camera_context and scan_limit keep the generic wording
- * deliberately: their paywalls are designed one at a time, and writing
- * "Unlock Third Photo" before that paywall exists would ship the unfinished
- * generic UI the brief forbids. Their real entry points still use the temporary
- * ProGate, so nothing user-facing depends on those values yet.
+ * ── Every source is real as of Phase 7 ──────────────────────────────────────
+ * generate_listings (3), deep_analysis (4), third_photo (5), camera_context (6)
+ * and scan_limit (7) each carry their own copy. GENERIC and `placeholder()`
+ * survive only as the fail-closed fallback for an unrecognised source — nothing
+ * user-facing routes through them any more.
  */
 
 /**
@@ -153,13 +151,105 @@ const DEEP_ANALYSIS: PaywallConfig = {
   secondaryValueLine: "Dig deeper before you buy or sell.",
 };
 
+/**
+ * Third Photo — the third contextual paywall (Phase 5).
+ *
+ * The user has already given FlipStart two photos and is reaching for another.
+ * That is the highest-intent moment in the app, so the headline frames it as
+ * giving the scanner MORE to work with — not as hitting a limit. "Photo Limit
+ * Reached" would describe our billing rules; "Give FlipStart Another Angle"
+ * describes what they were trying to do.
+ *
+ * The subtitle says the AI receives more visual evidence and stops there. No
+ * promise of better identification or a higher confidence score — more input
+ * is not a guarantee of a better answer, and implying otherwise is a claim we
+ * cannot stand behind.
+ */
+const THIRD_PHOTO: PaywallConfig = {
+  source: "third_photo",
+  eyebrow: "FLIPSTART PRO",
+  headline: "Give FlipStart Another Angle",
+  subtitle:
+    "Pro unlocks a third photo so FlipStart can see another angle, detail, or tag before analyzing your find.",
+  ctaLabel: "Unlock Third Photo",
+  /**
+   * FALSE, and this is the clearest case of the rule.
+   *
+   * Scan packs buy scan QUANTITY. No balance has ever unlocked a third photo
+   * slot — server/monetization/policy.ts derives maxPhotoSlots from PLAN alone.
+   * Offering packs here would sell something that cannot possibly help.
+   */
+  showScanStoreAlternative: false,
+  secondaryValueLine: "More visual evidence for your scan.",
+};
+
+/**
+ * AI Context — the fourth contextual paywall (Phase 6).
+ *
+ * The user noticed something the photos cannot show and wants FlipStart to know
+ * it. So the headline sells that act — telling us what they see — rather than
+ * the fact that a text box is locked. "Unlock Premium Context" describes our
+ * billing; "Tell FlipStart What You See" describes what they were doing.
+ *
+ * The subtitle is deliberately precise about the mechanism: notes are added
+ * BEFORE scanning and they direct attention. It does not claim the model
+ * understands them perfectly or that results improve — neither is something we
+ * can guarantee, and the real feature is one short note, not a conversation.
+ */
+const CAMERA_CONTEXT: PaywallConfig = {
+  source: "camera_context",
+  eyebrow: "FLIPSTART PRO",
+  headline: "Tell FlipStart What You See",
+  subtitle:
+    "Add your own observations before scanning so FlipStart knows what details deserve extra attention.",
+  ctaLabel: "Unlock AI Context",
+  /** Packs buy scan quantity; no balance has ever unlocked a capability. */
+  showScanStoreAlternative: false,
+  secondaryValueLine: "Your photos show the item. Your notes add the context.",
+};
+
+/**
+ * Scan Limit — the final contextual paywall (Phase 7).
+ *
+ * ── The eyebrow is FLIPSTART, not FLIPSTART PRO ─────────────────────────────
+ * Every other source has exactly one answer, so branding the whole screen Pro
+ * is honest. This one has TWO valid answers — subscribe, or buy scans without
+ * subscribing — and heading it FLIPSTART PRO would frame the Scan Store as an
+ * afterthought when it is a legitimate choice.
+ *
+ * ── The headline states the fact ────────────────────────────────────────────
+ * "You've Used Your 15 Lifetime Scans" rather than "You're Out of Scans!". The
+ * user has scanned fifteen times; this is the moment they have shown the most
+ * intent, not a moment to scold them. And the number is verifiable — they can
+ * count it.
+ *
+ * ── The subtitle names both options ─────────────────────────────────────────
+ * Non-negotiable. A screen that offers a subscription while quietly hiding the
+ * cheaper path is a dark pattern, whatever the conversion numbers say.
+ */
+const SCAN_LIMIT: PaywallConfig = {
+  source: "scan_limit",
+  eyebrow: "FLIPSTART",
+  headline: "You've Used Your 15 Lifetime Scans",
+  subtitle: "Keep scanning with FlipStart Pro, or add more scans without subscribing.",
+  ctaLabel: "Keep Scanning with Pro",
+  /**
+   * TRUE — the only source where it is.
+   *
+   * Packs cannot unlock a capability, which is why every other paywall hides
+   * this. Here the user's problem IS quantity, so packs genuinely solve it.
+   */
+  showScanStoreAlternative: true,
+  secondaryValueLine: "Your finds don't have to stop here.",
+};
+
 const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
   generate_listings: GENERATE_LISTINGS,
   deep_analysis:     DEEP_ANALYSIS,
-  third_photo:       placeholder("third_photo"),
-  camera_context:    placeholder("camera_context"),
+  third_photo:       THIRD_PHOTO,
+  camera_context:    CAMERA_CONTEXT,
   /** The one source where extra scans are a real answer to the user's problem. */
-  scan_limit:        placeholder("scan_limit", true),
+  scan_limit:        SCAN_LIMIT,
   dev_preview:       placeholder("dev_preview"),
 };
 
@@ -190,5 +280,7 @@ export const PAYWALL_SOURCES = Object.keys(CONFIGS) as ProPaywallSource[];
  * the authority on what something costs, and we are the authority on what it
  * includes.
  */
+/** Free lifetime allowance, mirrored from server/monetization/policy.ts. */
+export const FREE_LIFETIME_SCANS = 15;
 export const MONTHLY_SCANS = 300;
 export const ANNUAL_SCANS = 4000;

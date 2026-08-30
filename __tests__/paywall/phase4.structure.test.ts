@@ -398,16 +398,19 @@ describe("regression", () => {
   });
 
   /** Requirement 40. */
-  it("Third Photo remains on the temporary ProGate", () => {
+  /** Superseded by Phase 5 — Third Photo now has its contextual paywall. */
+  it("Third Photo migrated to its contextual paywall", () => {
     const camera = code(read("app/camera.tsx"));
-    expect(camera).toMatch(/openProGate\(\s*['"]third_photo['"]/);
-    expect(camera).not.toMatch(/openProPaywall/);
+    expect(camera).not.toMatch(/openProGate\(\s*['"]third_photo['"]/);
+    expect(camera).toMatch(/openProPaywall\('third_photo'/);
   });
 
   /** Requirement 41. */
-  it("AI Context remains on the temporary ProGate", () => {
+  /** Superseded by Phase 6 — AI Context migrated. */
+  it("AI Context migrated to its contextual paywall", () => {
     const camera = code(read("app/camera.tsx"));
-    expect(camera).toMatch(/openProGate\(\s*['"]camera_context['"]/);
+    expect(camera).not.toMatch(/openProGate\(/);
+    expect(camera).toMatch(/openProPaywall\('camera_context'/);
   });
 
   /** Requirements 42-43. */
@@ -430,8 +433,12 @@ describe("regression", () => {
   /** Requirement 44. */
   it("the Scan Store placeholder is untouched", () => {
     const store = read("app/scan-store.tsx");
-    expect(store).toContain("Scan Store coming soon.");
-    expect(code(store)).not.toMatch(/purchaseScanPack|SCAN_PACK_SKUS|RevenueCat/);
+    /**
+     * Superseded by Phase 8 — the placeholder became the real Scan Store.
+     * What still matters is that the store never grants anything itself.
+     */
+    expect(store).toContain("Scan Store");
+    expect(store).toContain("Scan Packs add scan quantity only and do not unlock FlipStart Pro.");
   });
 
   /** The atomic preview consume must not have been touched. */

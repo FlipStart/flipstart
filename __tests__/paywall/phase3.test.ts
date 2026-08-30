@@ -157,14 +157,17 @@ describe("generate_listings configuration", () => {
 // ── Other sources are untouched ─────────────────────────────────────────────
 
 describe("other sources remain undesigned", () => {
-  it("leaves the still-undesigned paywalls on generic copy", () => {
-    // deep_analysis moved to contextual copy in Phase 4.
-    for (const s of ["third_photo", "camera_context", "scan_limit"] as ProPaywallSource[]) {
-      const c = resolvePaywallConfig(s);
-      expect(c.headline).toBe("Unlock More From Every Find");
-      expect(c.ctaLabel).toBe("Unlock FlipStart Pro");
-      expect(c.secondaryValueLine).toBeNull();
-    }
+  /**
+   * Superseded by Phase 7 — every source now has designed copy.
+   *
+   * GENERIC survives only as the fail-closed fallback for an unrecognised
+   * source, which is what this now pins instead.
+   */
+  it("keeps a generic fallback for an unrecognised source", () => {
+    const fallback = resolvePaywallConfig("not_a_real_source" as ProPaywallSource);
+    expect(fallback.headline).toBe("Unlock More From Every Find");
+    expect(fallback.ctaLabel).toBe("Unlock FlipStart Pro");
+    expect(fallback.showScanStoreAlternative).toBe(false);
   });
 
   it("still offers the Scan Store only on scan_limit", () => {

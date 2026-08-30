@@ -322,9 +322,11 @@ describe("contextual hero", () => {
   it("is registered for generate_listings and nothing else", () => {
     expect(HERO_MAP).toMatch(/generate_listings: GenerateListingsHero,/);
     // deep_analysis gained its own hero in Phase 4; the rest stay commented out.
-    for (const s of ["third_photo", "camera_context", "scan_limit"]) {
-      expect(HERO_MAP).toMatch(new RegExp(`//\\s*${s}:`));
-    }
+    // third_photo gained its hero in Phase 5.
+    // Phase 7 completed the set — every source has a real hero, so there is
+    // no commented-out placeholder left to assert.
+    expect(HERO_MAP).toMatch(/scan_limit:\s+ScanLimitHero,/);
+    expect(HERO_MAP).toMatch(/const Hero = HEROES\[config\.source\] \?\? GenericHero;/);
   });
 
   it("tells the find → listings story with both marketplaces", () => {
@@ -407,11 +409,12 @@ describe("regression", () => {
     expect(hook).toMatch(/label: "View Preview"/);
   });
 
-  it("Third Photo and AI Context still use the temporary ProGate", () => {
-    const camera = read("app/camera.tsx");
-    expect(camera).toMatch(/openProGate\(\s*['"]third_photo['"]/);
-    expect(camera).toMatch(/openProGate\(\s*['"]camera_context['"]/);
-    expect(code(camera)).not.toMatch(/openProPaywall/);
+  /** Superseded by Phase 5: Third Photo migrated. AI Context is Phase 6. */
+  /** Superseded by Phase 6 — AI Context migrated to its contextual paywall. */
+  it("AI Context migrated to its contextual paywall", () => {
+    const camera = code(read("app/camera.tsx"));
+    expect(camera).not.toMatch(/openProGate\(/);
+    expect(camera).toMatch(/openProPaywall\('camera_context'/);
   });
 
   it("ProGate itself is untouched and still mounted", () => {
@@ -447,8 +450,12 @@ describe("regression", () => {
   /** Requirement 17. */
   it("the Scan Store placeholder is untouched", () => {
     const store = read("app/scan-store.tsx");
-    expect(store).toContain("Scan Store coming soon.");
-    expect(code(store)).not.toMatch(/purchaseScanPack|SCAN_PACK_SKUS|RevenueCat|Restore/);
+    /**
+     * Superseded by Phase 8 — the placeholder became the real Scan Store.
+     * What still matters is that the store never grants anything itself.
+     */
+    expect(store).toContain("Scan Store");
+    expect(store).toContain("Scan Packs add scan quantity only and do not unlock FlipStart Pro.");
   });
 
   it("no scan-pack commerce entered the paywall", () => {

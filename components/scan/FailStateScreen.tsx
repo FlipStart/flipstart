@@ -104,13 +104,24 @@ const FAIL_CONFIG: Record<FailType, FailConfig> = {
     body:       "The photo may be too blurry, too dark, or showing multiple items. A clearer shot usually works.",
     retryLabel: "Retake Photo",
   },
+  /**
+   * Reached only when the client balance was stale and the SERVER refused the
+   * reservation. The Phase 7 preflight catches the ordinary case before the
+   * camera opens, so this is now a race, not the main path.
+   *
+   * The previous copy described a model that no longer exists: it claimed 7
+   * free scans per DAY resetting at midnight. The allowance is 15 LIFETIME
+   * scans and it never resets, so that text promised a refill that was never
+   * coming — worse than showing nothing.
+   */
   scan_limit: {
     icon:       "hourglass-bottom",
-    iconColor:  "#A04020",
-    title:      "You've used all 7 free scans",
-    body:       "You've hit your 7 free scans for today. FlipStart is in beta, so daily scans are limited to keep AI costs sustainable. Your scans reset tomorrow.",
+    /* Brown, not the old #A04020 red. Running out of scans is not a fault. */
+    iconColor:  "#8A5A2A",
+    title:      "You've used your 15 lifetime scans",
+    body:       "That's every free scan on this account. You can keep scanning with FlipStart Pro, or add more scans from the Scan Store without subscribing.",
     retryLabel: "",
-    hint:       "Scans reset at midnight",
+    hint:       "Free scans don't reset",
   },
 };
 

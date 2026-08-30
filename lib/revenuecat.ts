@@ -61,12 +61,24 @@ export function isAnnualProduct(productId: string | null | undefined): boolean {
 /**
  * The annual product to OFFER in this build.
  *
- * Apple key present -> production catalog. Otherwise Test Store, which is the
- * only place the `_v2` workaround exists.
+ * A VALID Apple key means the production catalog. Anything else means the Test
+ * Store, which is the only place the `_v2` workaround exists.
+ *
+ * ── Why validity and not presence ─────────────────────────────────────────
+ * This used to check only that the variable was non-empty. That made it
+ * disagree with resolveApiKey(), which validates the `appl_` prefix: a `test_`
+ * or `sk_` key pasted into EXPO_PUBLIC_REVENUECAT_IOS_API_KEY left RevenueCat
+ * correctly unconfigured while this function still reported the PRODUCTION
+ * annual id.
+ *
+ * Not exploitable on its own — nothing can be purchased when the SDK is
+ * unconfigured — but two functions answering "is this a real Apple build?"
+ * differently is precisely the drift that becomes a real bug later. Sharing
+ * isAppleApiKey() means there is now one definition and it cannot diverge.
  */
 export function annualProductId(): string {
   const apple = (process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY ?? "").trim();
-  return apple ? PRODUCT_ANNUAL_PRODUCTION : PRODUCT_ANNUAL_SANDBOX;
+  return isAppleApiKey(apple) ? PRODUCT_ANNUAL_PRODUCTION : PRODUCT_ANNUAL_SANDBOX;
 }
 
 /**
@@ -106,9 +118,64 @@ export const initialRcState: RcState = {
  * silent. In production without a real Apple key we return null and RevenueCat
  * stays unconfigured, which is a visible, safe failure rather than a fake one.
  */
+/**
+ * The documented prefix of a RevenueCat Apple/iOS PUBLIC SDK key.
+ *
+ * Every other RevenueCat credential has its own prefix — `test_` for the Test
+ * Store, `sk_` for the SECRET server key — so the prefix alone is enough to
+ * tell them apart without ever inspecting the rest of the value.
+ */
+const APPLE_KEY_PREFIX = "appl_";
+
+/** True only for a well-formed Apple/iOS public SDK key. */
+export function isAppleApiKey(key: string): boolean {
+  return key.startsWith(APPLE_KEY_PREFIX) && key.length > APPLE_KEY_PREFIX.length;
+}
+
+/**
+ * Which SDK key to use.
+ *
+ * ── Two separate refusals ─────────────────────────────────────────────────
+ *
+ * 1. The Test Store key is never selected in a release build. It would point a
+ *    shipped app at a store that cannot take real money, and the failure would
+ *    be silent.
+ *
+ * 2. The iOS variable must actually CONTAIN an Apple key. This is the newer of
+ *    the two checks and closes a real gap: the previous version trusted the
+ *    variable's NAME rather than its VALUE, so a `test_` key pasted into
+ *    EXPO_PUBLIC_REVENUECAT_IOS_API_KEY sailed past the release guard and was
+ *    handed to configure(). An `sk_` secret key pasted there would have been
+ *    worse still — shipped inside the bundle AND used as an SDK key.
+ *
+ * Both failures return null, so RevenueCat stays unconfigured. That is a
+ * visible, safe failure rather than a fake store, and it applies in development
+ * too: a misconfigured key should be caught on the simulator, not in review.
+ *
+ * ── There is deliberately no fallback ─────────────────────────────────────
+ * A bad Apple key does NOT fall through to the Test Store key, in any build.
+ * Falling back would mean a production release quietly running against a store
+ * that cannot charge anyone — the exact outcome rule 1 exists to prevent.
+ */
 export function resolveApiKey(): { key: string | null; kind: "test" | "apple" | "none" } {
   const apple = (process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY ?? "").trim();
-  if (apple) return { key: apple, kind: "apple" };
+
+  if (apple) {
+    if (isAppleApiKey(apple)) return { key: apple, kind: "apple" };
+
+    /**
+     * Present but malformed. Only the prefix is logged — enough to diagnose
+     * ("you pasted the secret key"), far too little to authenticate with.
+     */
+    console.error(
+      `[revenuecat] EXPO_PUBLIC_REVENUECAT_IOS_API_KEY does not look like an Apple SDK key ` +
+      `(expected "${APPLE_KEY_PREFIX}…", got "${describeKeyPrefix(apple)}"). ` +
+      `Refusing to configure. Check the RevenueCat iOS PUBLIC key — the Test Store key ` +
+      `("test_…") and the secret server key ("sk_…") are different credentials.`,
+    );
+    // No fallback: see the note above.
+    return { key: null, kind: "none" };
+  }
 
   const test = (process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY ?? "").trim();
   if (test && __DEV__) return { key: test, kind: "test" };
@@ -120,6 +187,17 @@ export function resolveApiKey(): { key: string | null; kind: "test" | "apple" | 
     );
   }
   return { key: null, kind: "none" };
+}
+
+/**
+ * A key's leading characters, for diagnostics.
+ *
+ * Caps at the prefix rather than a fixed slice: a short or malformed value must
+ * not leak proportionally more of itself just because it is short.
+ */
+export function describeKeyPrefix(key: string): string {
+  const cut = key.slice(0, 5);
+  return key.length > 5 ? `${cut}…` : cut;
 }
 
 /** Map CustomerInfo to a FlipStart plan. Mirrors the server normalizer so both
@@ -325,8 +403,11 @@ export async function collectDiagnostics(): Promise<RcDiagnostics> {
   const testRaw  = (process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY ?? "").trim();
   const rawKey   = appleRaw || testRaw;
 
+  // Classified from the VALUE, not the variable name. A test_ or sk_ key pasted
+  // into the iOS variable must show up here as what it is, or the harness would
+  // report "IOS" for the exact misconfiguration this screen exists to surface.
   const keyKind: KeyKind =
-    appleRaw ? "IOS" : testRaw ? classifyKey(testRaw) : "MISSING";
+    appleRaw ? classifyKey(appleRaw) : testRaw ? classifyKey(testRaw) : "MISSING";
   // 8 characters is enough to distinguish appl_ from test_ and to tell two keys
   // apart, and far too little to authenticate with.
   const keyPrefix = rawKey ? `${rawKey.slice(0, 8)}…` : null;
@@ -334,6 +415,12 @@ export async function collectDiagnostics(): Promise<RcDiagnostics> {
   const refused = Boolean(testRaw && !appleRaw && !isDev);
   if (keyKind === "MISSING") {
     errors.push("No RevenueCat key in this build. Add EXPO_PUBLIC_REVENUECAT_TEST_API_KEY to the EAS development environment.");
+  }
+  if (appleRaw && !isAppleApiKey(appleRaw)) {
+    errors.push(
+      `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY is set but does not begin with "${APPLE_KEY_PREFIX}" ` +
+      `(got "${describeKeyPrefix(appleRaw)}"). RevenueCat is unconfigured until this is fixed.`,
+    );
   }
   if (refused) {
     errors.push("Test Store key present but this is a RELEASE build — refused by design. Use a development build.");

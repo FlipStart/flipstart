@@ -22,7 +22,7 @@ import React from "react";
 import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { FONTS } from "@/constants/typography";
-import { PW } from "./paywallTheme";
+import { PW, PW_RADIUS } from "./paywallTheme";
 
 /** Verbatim from app/(tabs)/settings.tsx. Do not invent alternatives. */
 const PRIVACY_URL = "https://flipstartapp.com/privacy";
@@ -70,20 +70,39 @@ export function PaywallFooter({
 
       {/*
        * ── Scan Store alternative ──────────────────────────────────────────
-       * Source-controlled and OFF for every capability paywall, because packs
-       * buy quantity and never capability. Offering packs to somebody who
-       * wanted Generate Listings sells them something that cannot unlock it.
+       *
+       * Source-controlled, and TRUE for scan_limit only. Packs buy quantity and
+       * never capability, so offering them to someone who wanted Generate
+       * Listings would sell a thing that cannot unlock it. On scan_limit the
+       * user's problem IS quantity, so packs genuinely solve it — and hiding
+       * the cheaper option while selling a subscription would be a dark
+       * pattern.
+       *
+       * Rendered as a real secondary button rather than a text link: it is a
+       * legitimate second answer, not a footnote. Cream on parchment with a
+       * forest outline keeps it clearly below the solid-green Pro CTA in the
+       * visual hierarchy without looking disabled.
        */}
       {showScanStore && (
-        <Pressable
-          onPress={onScanStore}
-          accessibilityRole="button"
-          accessibilityLabel="Just need more scans? Go to the Scan Store"
-          hitSlop={8}
-          style={({ pressed }) => [s.altBtn, pressed && { opacity: 0.7 }]}
-        >
-          <Text style={s.altText}>Just need more scans? Visit the Scan Store</Text>
-        </Pressable>
+        <View style={s.altBlock}>
+          <View style={s.orRow}>
+            <View style={s.orRule} />
+            <Text style={s.orText}>or</Text>
+            <View style={s.orRule} />
+          </View>
+
+          <Text style={s.altPrompt}>Just need more scans?</Text>
+
+          <Pressable
+            onPress={onScanStore}
+            accessibilityRole="button"
+            accessibilityLabel="Go to Scan Store"
+            hitSlop={6}
+            style={({ pressed }) => [s.altBtn, pressed && { opacity: 0.78 }]}
+          >
+            <Text style={s.altText}>Go to Scan Store</Text>
+          </Pressable>
+        </View>
       )}
 
       {/* ── Restore ──────────────────────────────────────────────────────── */}
@@ -130,14 +149,48 @@ const s = StyleSheet.create({
   trustText: { fontSize: 11.5, color: PW.brown, fontWeight: "600" },
   trustDot: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: PW.border },
 
-  altBtn: { paddingVertical: 4 },
+  altBlock: { width: "100%", alignItems: "center", gap: 9, marginTop: 2 },
+
+  /** A ruled "or", the way a printed form separates two options. */
+  orRow: { flexDirection: "row", alignItems: "center", gap: 10, width: "100%" },
+  orRule: { flex: 1, height: 1, backgroundColor: PW.border },
+  orText: {
+    fontFamily: FONTS.serif,
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: PW.brown,
+    letterSpacing: 0.5,
+  },
+
+  altPrompt: {
+    fontFamily: FONTS.serif,
+    fontSize: 13.5,
+    fontWeight: "700",
+    color: PW.ink,
+  },
+
+  /**
+   * Outlined, not filled. The Pro CTA above is solid forest green; matching
+   * that here would make two equally loud primary actions and leave the user
+   * with no sense of which is the main path.
+   */
+  altBtn: {
+    alignSelf: "stretch",
+    backgroundColor: PW.card,
+    borderRadius: PW_RADIUS.pill,
+    borderWidth: 1.4,
+    borderColor: PW.forest,
+    minHeight: 46,
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   altText: {
     fontFamily: FONTS.serif,
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 15,
+    fontWeight: "800",
     color: PW.forest,
-    textDecorationLine: "underline",
-    textDecorationColor: "rgba(33,77,45,0.35)",
   },
 
   restoreBtn: { paddingVertical: 6, paddingHorizontal: 12 },

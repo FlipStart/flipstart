@@ -550,3 +550,71 @@ export async function loadSubscriptionProducts(): Promise<SubscriptionProductsRe
 
   return { status: "ready", monthly, annual };
 }
+
+
+/** A scan pack as the store needs to DISPLAY it. Display only. */
+export interface ScanPackProductView {
+  sku: ScanPackSku;
+  /** Raw RevenueCat package. Read for localized pricing; never for identity. */
+  pkg: any;
+}
+
+export interface ScanPackProductsResult {
+  /**
+   * ready       at least one pack resolved
+   * error       the offering failed or contained none of them
+   * unavailable no native purchase module (Expo Go)
+   */
+  status: "ready" | "error" | "unavailable";
+  products: ScanPackProductView[];
+  /** SKUs the offering did not contain. Their cards show as unavailable. */
+  missing: ScanPackSku[];
+  message?: string;
+}
+
+/**
+ * Load every scan pack for display.
+ *
+ * Reuses `resolvePackPackage`, so there remains exactly ONE place that knows
+ * how a SKU maps to a package. A store that resolved products by index or by
+ * `offering.availablePackages[0]` would eventually show one price and charge
+ * another.
+ *
+ * Partial results are reported rather than discarded: if FlipLegend is missing
+ * from the offering, the other four stay purchasable and only its card is
+ * marked unavailable. One misconfigured product must not take down the store.
+ */
+export async function loadScanPackProducts(): Promise<ScanPackProductsResult> {
+  const sdk = await loadSdk();
+  if (!sdk || typeof sdk.getOfferings !== "function") {
+    return {
+      status: "unavailable", products: [], missing: [...SCAN_PACK_SKUS],
+      message: "The Scan Store needs a development build.",
+    };
+  }
+
+  const resolved = await Promise.all(
+    SCAN_PACK_SKUS.map(async sku => ({ sku, ...(await resolvePackPackage(sdk, sku)) })),
+  );
+
+  const products: ScanPackProductView[] = [];
+  const missing: ScanPackSku[] = [];
+  let firstError: string | undefined;
+
+  for (const r of resolved) {
+    if (r.pkg) products.push({ sku: r.sku, pkg: r.pkg });
+    else {
+      missing.push(r.sku);
+      firstError = firstError ?? r.error;
+    }
+  }
+
+  if (products.length === 0) {
+    return {
+      status: "error", products: [], missing,
+      message: firstError ?? "Scan Store is temporarily unavailable.",
+    };
+  }
+
+  return { status: "ready", products, missing };
+}

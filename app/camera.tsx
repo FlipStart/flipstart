@@ -18,6 +18,7 @@ import {
   Modal, Animated, PanResponder, TouchableWithoutFeedback, Linking,
   KeyboardAvoidingView, Keyboard,
 } from 'react-native';
+import { InteractionManager } from 'react-native';
 import { Image } from 'expo-image';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useRouter } from 'expo-router';
@@ -34,9 +35,17 @@ import {
   type CapturedPhoto,
   type PhotoSlot,
   SLOT_ORDER, normalizeCameraCapture } from '@/lib/capture';
-import { ProCameraContextInput } from '@/components/camera/ProCameraContextInput';
+import { ProCameraContextInput,
+         type ProCameraContextInputHandle } from '@/components/camera/ProCameraContextInput';
 import { useEntitlement } from '@/lib/useEntitlement';
-import { useProGate, ProGateHost } from '@/components/monetization/ProGate';
+// ProGateHost stays mounted: harmless, and the camera is the one screen where
+// a fullScreenModal host is genuinely needed if any gate returns here.
+import { ProGateHost } from '@/components/monetization/ProGate';
+import { useProPaywall, ProPaywallHost }
+  from '@/components/monetization/paywall/ProPaywallProvider';
+import { planSelection, decideCameraTap, decidePromotion, MAX_SLOTS }
+  from '@/lib/thirdPhotoDecision';
+import { useAuth } from '@/lib/auth-context';
 import { PremiumGlimmer } from '@/components/monetization/PremiumGlimmer';
 import { normalizeUserContext } from '@shared/userContext';
 
@@ -65,6 +74,17 @@ const SLOT_LABELS: Record<PhotoSlot, string> = {
   detail: 'Graphic',
 };
 
+/**
+ * Exactly what the gallery picker hands back.
+ *
+ * DERIVED, never re-declared. The first attempt spelled this out by hand as
+ * `{ uri: string; base64?: string; mimeType?: string }` and it did not compile:
+ * ImagePickerAsset.base64 is `string | null | undefined`, so `null` had nowhere
+ * to go. Deriving it from the function's own return type means the shape cannot
+ * drift from the library again, whatever expo changes.
+ */
+type PickedAsset = NonNullable<Awaited<ReturnType<typeof pickMultipleFromGallery>>>[number];
+
 const SLOT_BADGE = (s: PhotoSlot): string =>
   s === 'front' ? 'Front (required)'
   : s === 'tag' ? 'Tag (optional)'
@@ -77,15 +97,83 @@ export default function CameraScreen() {
    * presentation, not authorization.
    */
   const ent = useEntitlement();
-  const { openProGate } = useProGate();
+
+
+  const { openProPaywall } = useProPaywall();
+  const { user } = useAuth();
 
   /**
-   * Third photo is Pro.
+   * ── Pending third photo (library origin) ───────────────────────────────
    *
-   * Fails closed while entitlement is unresolved: a premium action must not be
-   * granted by a loading state, even though the SLOT stays visible.
+   * A library image the user picked for the third slot while still Free.
+   *
+   * A REF, not state, and deliberately NOT part of `slots`. Anything in `slots`
+   * is an attached photo: it renders as filled, it is read by handleDone, and
+   * it goes into the analyze payload. This image must do none of those things
+   * until the server confirms Pro, so it is held completely outside that
+   * structure and only ever moves in via promotePendingThird().
+   *
+   * A ref also means no re-render, which matters: a pending image is not a
+   * visual state, it is an intent waiting on a purchase.
    */
-  const canThirdPhoto = ent.status === 'ready' && ent.maxPhotoSlots >= 3;
+  const pendingThirdRef = useRef<{
+    asset: PickedAsset;
+    /** Who was signed in when the intent was created. */
+    uid: string | null;
+    /** Which camera session — an old intent must never reach a new scan. */
+    session: number;
+  } | null>(null);
+
+  /**
+   * Camera session identity.
+   *
+   * Bumped whenever the photo set is cleared for a new scan. Cheap, local, and
+   * enough to satisfy the "old third-photo intent must never attach to a new
+   * scan" requirement without inventing persistence.
+   */
+  const sessionRef = useRef(0);
+
+  /**
+   * Stable handle on handleCapture.
+   *
+   * Declared HERE, with the other refs and above every consumer: the camera
+   * continuation is built before handleCapture exists, and it must call
+   * whatever the CURRENT render's capture is rather than a closure captured
+   * before the purchase started.
+   */
+  const handleCaptureRef = useRef<(() => Promise<void>) | null>(null);
+
+  /**
+   * Imperative handle on the context editor.
+   *
+   * Only used to RESUME the action after an unlock. Every ordinary tap still
+   * goes through the component's own Pressable.
+   */
+  const contextInputRef = useRef<ProCameraContextInputHandle | null>(null);
+
+  const uidRef = useRef<string | null>(user?.id ?? null);
+  uidRef.current = user?.id ?? null;
+
+  /** Drops the pending intent. Called on dismissal, account switch and unmount. */
+  const clearPendingThird = useCallback(() => { pendingThirdRef.current = null; }, []);
+
+  /**
+   * Account switch invalidates any pending third photo immediately.
+   *
+   * Attaching account A's image to account B is a data-integrity failure, not a
+   * minor inconvenience — and B has not paid for it either.
+   */
+  const lastUidRef = useRef<string | null>(user?.id ?? null);
+  useEffect(() => {
+    const uid = user?.id ?? null;
+    if (lastUidRef.current === uid) return;
+    lastUidRef.current = uid;
+    sessionRef.current += 1;   // invalidate any in-flight continuation too
+    clearPendingThird();
+  }, [user?.id, clearPendingThird]);
+
+  /** Leaving the camera abandons the intent — it can have no meaning elsewhere. */
+  useEffect(() => clearPendingThird, [clearPendingThird]);
   const canContext    = ent.status === 'ready' && ent.can('camera_context');
   const router = useRouter();
   const [permission, requestPermission] = useCameraPermissions();
@@ -182,56 +270,188 @@ export default function CameraScreen() {
   // slots. Now: the picker returns raw asset uris immediately, thumbnails
   // render from those at once, and each photo's AI-ready base64 JPEG is
   // prepared in parallel in the background, swapping in as it finishes.
+  /**
+   * Promote the pending library image into the third slot.
+   *
+   * Every precondition is re-checked HERE, immediately before attaching —
+   * never at the moment the paywall opened. A purchase takes seconds, and any
+   * of these can change in that window.
+   */
+  const promotePendingThird = useCallback(() => {
+    const pending = pendingThirdRef.current;
+    if (!pending) return;
+
+    const slotsNow = slotsRef.current;
+    const thirdSlot = SLOT_ORDER[2];
+
+    const result = decidePromotion({
+      // The gate only fires onUnlocked after the server confirms the plan, so
+      // reaching this line already means authoritative Pro.
+      isAuthoritativelyPro: true,
+      sameUid: (uidRef.current ?? null) === pending.uid,
+      sameSession: sessionRef.current === pending.session,
+      assetUsable: Boolean(pending.asset?.uri),
+      slotStillEmpty: !slotsNow[thirdSlot],
+    });
+
+    // Consumed either way: an intent that has been acted on must not linger and
+    // fire again on a later unlock.
+    clearPendingThird();
+
+    if (result !== 'promote') {
+      /**
+       * "unlocked_without_asset" is NOT a purchase failure and must never be
+       * surfaced as one. The subscription is real; only the image is gone. The
+       * user keeps Pro and an empty third slot they can fill normally.
+       */
+      return;
+    }
+
+    setSlots(prev => {
+      if (prev[thirdSlot]) return prev; // filled in the meantime — leave it
+      return { ...prev, [thirdSlot]: {
+        uri: pending.asset.uri,
+        base64: pending.asset.base64 ?? '',
+        mimeType: pending.asset.mimeType ?? 'image/jpeg',
+      } };
+    });
+
+    // Normalize in the background, exactly as the gallery path does.
+    normalizeGalleryAsset(pending.asset, 'gallery-detail')
+      .then(photo => {
+        if (!photo) return;
+        setSlots(prev => {
+          const current = prev[thirdSlot];
+          if (!current || current.uri !== pending.asset.uri) return prev;
+          return { ...prev, [thirdSlot]: photo };
+        });
+      })
+      .catch(() => { /* keeps its preview; handleDone guards on base64 */ });
+  }, [clearPendingThird]);
+
+  /** Camera origin: reopen the capture flow, nothing more. Never auto-shoot. */
+  const openThirdPhotoPaywallForCamera = useCallback(() => {
+    clearPendingThird(); // a camera intent supersedes any stale library one
+    openProPaywall('third_photo', { onUnlocked: () => { void handleCaptureRef.current?.(); } });
+  }, [openProPaywall, clearPendingThird]);
+
+  /**
+   * AI Context: open the paywall, and resume the editor once Pro is real.
+   *
+   * ── Why the continuation is deferred ─────────────────────────────────
+   * The editor is itself a React Native <Modal> with an autoFocus TextInput.
+   * Opening it while the paywall modal is still dismissing means two modals
+   * transitioning at once, which on iOS produces a lost focus or a keyboard
+   * that never appears. InteractionManager waits for the dismissal animation
+   * to finish, then opens — a UI-frame deferral, not an arbitrary timeout.
+   *
+   * ── Why there is no .focus() call ────────────────────────────────────
+   * The TextInput already carries autoFocus, so focus follows the editor
+   * mounting. An imperative focus on top of that would be a second focus
+   * request for the same field and is exactly the keyboard flicker the brief
+   * warns about.
+   */
+  const openAiContextPaywall = useCallback(() => {
+    const openedUid = uidRef.current ?? null;
+    const openedSession = sessionRef.current;
+    let fired = false;
+
+    openProPaywall('camera_context', {
+      onUnlocked: () => {
+        // Local exactly-once guard, on top of the provider's one-shot claim.
+        if (fired) return;
+        fired = true;
+
+        /**
+         * Identity and session re-checked at RESUME time, not at open time.
+         * A purchase takes seconds: the account can change, or the user can
+         * start a new scan. Neither may inherit this intent.
+         */
+        if ((uidRef.current ?? null) !== openedUid) return;
+        if (sessionRef.current !== openedSession) return;
+
+        InteractionManager.runAfterInteractions(() => {
+          // Re-checked again after the wait — the screen may have unmounted.
+          if ((uidRef.current ?? null) !== openedUid) return;
+          if (sessionRef.current !== openedSession) return;
+          contextInputRef.current?.openEditor();
+        });
+      },
+    });
+  }, [openProPaywall]);
+
+  /** Library origin: promote the exact image they already chose. */
+  const openThirdPhotoPaywallForLibrary = useCallback(() => {
+    openProPaywall('third_photo', { onUnlocked: promotePendingThird });
+  }, [openProPaywall, promotePendingThird]);
+
+  // Kept current every render so a continuation created before this
+  // declaration still calls the live capture, not a stale closure.
+  handleCaptureRef.current = handleCapture;
+
   const handleGallery = async () => {
     haptic(Haptics.ImpactFeedbackStyle.Light);
     /**
      * The picker still offers THREE, deliberately.
      *
-     * Limiting it to two for Free would mean the user never discovers the
-     * third photo exists. Letting them select it and gating afterwards means
-     * they have already shown intent — a better explanation, and a far
-     * stronger place for the real paywall to land next phase.
+     * Limiting it to two for Free would mean the user never discovers the third
+     * photo exists. Letting them select it and gating afterwards means they
+     * have already shown intent — a far stronger place for the paywall to land.
      */
-    const picked = await pickMultipleFromGallery(3);
+    const picked = await pickMultipleFromGallery(MAX_SLOTS);
     if (!picked || picked.length === 0) return;
 
     /**
-     * Trim the third for Free; keep the first two.
+     * ── Fill EMPTY slots, never overwrite ────────────────────────────────
      *
-     * The rejected image never enters slot state, so it cannot reach the scan
-     * payload. The server would reject it anyway, but the client should not be
-     * sending it in the first place.
+     * The previous version did `picked.slice(0, maxAllowed)` and assigned
+     * `SLOT_ORDER[i]` from index 0, which silently destroyed photos the user
+     * had already taken:
+     *
+     *   existing front = A, picker returns B, C
+     *   → B overwrote A, C became the tag, and nothing gated at all
+     *
+     * planSelection() assigns into the empty slots in order and computes the
+     * premium threshold from the resulting ACTIVE COUNT rather than the picker
+     * index, which is what makes the partially-filled case behave.
      */
-    const maxAllowed = canThirdPhoto ? 3 : 2;
-    const assets = picked.slice(0, maxAllowed);
-    const rejectedThird = picked.length > maxAllowed;
+    const plan = planSelection(picked, slotsRef.current, ent.status, ent.maxPhotoSlots);
 
-    // Phase 1 — INSTANT: show the raw picker uris in slots right away.
-    // base64:'' marks a photo as still-preparing (handleDone guards on it).
-    const next = { ...slots };
-    const slotForAsset: Record<number, PhotoSlot> = {};
-    for (let i = 0; i < assets.length; i++) {
-      const slot = SLOT_ORDER[i];
-      slotForAsset[i] = slot;
-      next[slot] = { uri: assets[i].uri, base64: '', mimeType: 'image/jpeg' };
+    if (plan.assignments.length > 0) {
+      const next = { ...slotsRef.current };
+      for (const { slot, asset } of plan.assignments) {
+        next[slot] = { uri: asset.uri, base64: '', mimeType: 'image/jpeg' };
+      }
+      setSlots(next);
+      setActiveSlot(getNextEmptySlot(next));
+      setUndoData(null); // clear undo on gallery import
     }
-    setSlots(next);
-    setActiveSlot(getNextEmptySlot(next));
 
-    // Gate AFTER the accepted photos land, so 1 and 2 are visibly kept
-    // while the gate explains what happened to the third.
-    if (rejectedThird) openProGate('third_photo');
-    setUndoData(null); // clear undo on gallery import
+    /**
+     * The would-be third photo is held as INTENT ONLY.
+     *
+     * It never enters `slots`, so it cannot render as attached, cannot be read
+     * by handleDone, and cannot reach the analyze payload or the model. It
+     * exists solely so the purchase can resume without making the user hunt
+     * for the same image again.
+     */
+    if (plan.pendingThird) {
+      pendingThirdRef.current = {
+        asset: plan.pendingThird,
+        uid: uidRef.current ?? null,
+        session: sessionRef.current,
+      };
+      openThirdPhotoPaywallForLibrary();
+    }
 
-    // Phase 2 — BACKGROUND: normalize all photos in parallel; swap each into
-    // its slot when ready. Guarded so we never clobber a slot the user has
-    // since removed or replaced (uri must still match the placeholder).
-    assets.forEach((asset, i) => {
-      const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][i] ?? `gallery-${i}`;
+    // Normalize the ACCEPTED photos in the background; swap each in when ready.
+    // Guarded so we never clobber a slot the user has since changed.
+    plan.assignments.forEach(({ slot, asset }, i) => {
+      const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][SLOT_ORDER.indexOf(slot)]
+        ?? `gallery-${i}`;
       normalizeGalleryAsset(asset, label)
         .then(photo => {
           if (!photo) return;
-          const slot = slotForAsset[i];
           setSlots(prev => {
             const current = prev[slot];
             if (!current || current.uri !== asset.uri) return prev; // user changed it
@@ -580,7 +800,17 @@ export default function CameraScreen() {
            * discarded image in memory. Photos 1 and 2 are untouched either way.
            */
           onPress={() => {
-            if (filledCount >= 2 && !canThirdPhoto) { openProGate('third_photo'); return; }
+            /**
+             * Gate BEFORE capture, never after.
+             *
+             * decideCameraTap fails closed while entitlement is unresolved, so
+             * a loading state can never open the third capture — and no camera
+             * permission prompt fires merely because a Free user touched a
+             * locked slot.
+             */
+            const action = decideCameraTap(filledCount, ent.status, ent.maxPhotoSlots);
+            if (action === 'at_capacity') return;
+            if (action === 'paywall') { openThirdPhotoPaywallForCamera(); return; }
             handleCapture();
           }}
           // Deliberately NOT disabled at 2 photos: the button must stay
@@ -631,6 +861,7 @@ export default function CameraScreen() {
             now presents as premium and gates at the moment of intent, which is
             both more honest and a far better conversion surface. */}
         <ProCameraContextInput
+          ref={contextInputRef}
           value={contextText}
           onChangeText={(txt) => {
             setContextText(txt);
@@ -644,7 +875,11 @@ export default function CameraScreen() {
              disabled keeps the input inert for Free, and onUpgradePress routes
              the tap to the shared gate instead of silently doing nothing. */
           disabled={!canContext}
-          onUpgradePress={() => openProGate('camera_context')}
+          /* Phase 6: the contextual paywall replaces the temporary gate.
+             disabled fails closed while entitlement is unresolved, and the
+             component checks it BEFORE setOpen — so no TextInput is mounted,
+             no keyboard appears and no draft state is created for a Free tap. */
+          onUpgradePress={openAiContextPaywall}
         />
       </Pressable>
 
@@ -697,6 +932,21 @@ export default function CameraScreen() {
           hidden underneath and only surfaced once the camera was dismissed.
           Mounting a host here renders it in the window the user is looking at. */}
       <ProGateHost />
+
+      {/*
+       * Local paywall host — REQUIRED here.
+       *
+       * This screen is registered with presentation: 'fullScreenModal', and a
+       * React Native <Modal> rendered at the root cannot appear above a
+       * modally-presented screen: it renders underneath and only surfaces once
+       * this screen is dismissed. ProGateHost sits here for the same reason.
+       *
+       * This is a HOST, not a provider. The single ProPaywallProvider in
+       * app/_layout.tsx still owns all state and the one purchase engine; the
+       * host registry simply renders the modal in the window the user is
+       * actually looking at.
+       */}
+      <ProPaywallHost />
     </KeyboardAvoidingView>
   );
 }

@@ -1,0 +1,116 @@
+# .easignore — what EAS does NOT upload as build context.
+#
+# ── READ THIS BEFORE EDITING ────────────────────────────────────────────────
+# EAS uses .gitignore by default. The moment this file exists, it is used
+# INSTEAD of .gitignore — not in addition to it.
+#
+# So every rule that protects you in .gitignore has to be repeated here, or it
+# silently stops applying. That includes the signing credentials and .env
+# files. An .easignore containing only "__tests__/" would start uploading
+# node_modules, .env and your .p8 key.
+#
+# Rule: this file must always be a SUPERSET of .gitignore.
+#
+# ── What must NOT be added ──────────────────────────────────────────────────
+# server/ stays. lib/trpc.ts line 4 does:
+#     import type { AppRouter } from "@/server/routers";
+# so excluding server/ breaks the client typecheck even though none of that
+# code runs on the device.
+#
+# shared/, constants/, types/ and utils/ are all imported by the app. Leave them.
+
+# ─── Mirrored from .gitignore ────────────────────────────────────────────────
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# env — secrets never belong in build context. EAS injects its own variables.
+.env
+.env.*
+!.env.example
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+app-example
+
+# generated native folders
+/ios
+/android
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs
+*.log
+
+# OS
+Thumbs.db
+
+# Build files
+*.tgz
+*.tar.gz
+.cache/
+
+# Webdev artifacts
+.webdev/
+
+# ─── Additional: not needed to build the app ─────────────────────────────────
+#
+# These are all real files that stay in git. They are simply not part of
+# producing an IPA, so uploading them only slows the build context.
+
+# Automated tests and their runner config.
+#
+# Nothing in the app graph imports __tests__, so Metro never bundles it and
+# these contribute zero bytes to the IPA either way. Excluding them is purely
+# about upload size. They remain in the repo and in CI, which is where they do
+# their job.
+__tests__/
+vitest.config.ts
+
+# Database migrations. Applied to Postgres by drizzle-kit, never by the app.
+drizzle/
+drizzle.config.ts
+
+# One-off maintenance and setup scripts.
+scripts/
+
+# Documentation and scratch notes.
+design.md
+bg-urls.txt
+*.md
+!README.md

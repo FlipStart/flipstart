@@ -32,7 +32,12 @@ export interface ReconcileResult {
     /** Authoritatively established: no FlipStart account with this id. */
     | "UNKNOWN_USER"
     /** Could not determine existence. Retryable — never treated as absent. */
-    | "USER_LOOKUP_FAILED";
+    | "USER_LOOKUP_FAILED"
+    /**
+     * RevenueCat reports an ACTIVE entitlement on a product we cannot map to
+     * a plan. Existing state is preserved untouched — see the guard below.
+     */
+    | "UNKNOWN_PRODUCT";
   snapshot?: SubscriptionSnapshot;
 }
 
@@ -199,11 +204,42 @@ export async function reconcileUser(
     `${snapshot.periodType ? ` period=${snapshot.periodType}` : ""}`,
   );
 
+  /**
+   * ── UNKNOWN ACTIVE PRODUCT — preserve, never downgrade ────────────────────
+   *
+   * `unknown` does NOT mean "no subscription". It means RevenueCat says the
+   * `pro` entitlement IS ACTIVE on a product this server cannot map to a plan —
+   * a SKU added in App Store Connect without updating subscriptionNormalizer,
+   * or an unexpected introductory offer.
+   *
+   * This used to fall through to the RPC, whose else-branch treats anything
+   * that is not trial/monthly/annual as "free or unknown" and clears
+   * subscription_product_id, subscription_period_start, subscription_period_end
+   * and subscription_scans_used. The effect was a legitimately paying
+   * subscriber being downgraded to Free — and their period window destroyed —
+   * on their very next sync. The old comment said "no allowance granted", which
+   * understated it: it revoked one.
+   *
+   * Returning early leaves account_usage exactly as it was. That is consistent
+   * with every other uncertainty in this function: an unreachable RevenueCat,
+   * an unresolvable user and an absent user all preserve state rather than
+   * guessing. An unrecognised product is the same kind of unknown.
+   *
+   * Preserving cannot over-grant. derivePlan() reads the stored period window,
+   * so an expired subscription still derives to free on its own; and a user who
+   * never had a subscription has nothing to preserve, so they stay free. The
+   * blast radius is bounded by the period end in every case.
+   *
+   * `free` is deliberately NOT routed here. A confirmed inactive entitlement is
+   * a real answer, and clearing state for it is correct.
+   */
   if (snapshot.plan === "unknown") {
     console.error(
-      `[revenuecat] UNKNOWN active product "${snapshot.productId}" — no allowance granted. ` +
-      `Add it to subscriptionNormalizer.ts if this is a real FlipStart product.`,
+      `[revenuecat] UNKNOWN active product "${snapshot.productId}" — PRESERVING existing ` +
+      `subscription state and applying nothing. Add this product to ` +
+      `subscriptionNormalizer.ts if it is a real FlipStart product.`,
     );
+    return { ok: false, reason: "UNKNOWN_PRODUCT", snapshot };
   }
 
   const sb = getSupabaseAdmin();

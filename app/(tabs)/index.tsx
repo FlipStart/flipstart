@@ -48,6 +48,8 @@ import { useEntitlement } from '@/lib/useEntitlement';
 
 import { ScanCircleLabel } from '@/components/home/ScanCircleLabel';
 import { useScanPillAffordance } from '@/components/home/ScanPillAffordance';
+import { useScanGate } from '@/lib/useScanGate';
+import { clearScanStoreIntent } from '@/lib/scanStoreIntent';
 import {
   includedHeading, includedCount,
   detailExplanation, showPackColumn, packLabel, fmt, modalCaption, scanUrgency,
@@ -314,9 +316,23 @@ export default function HomeScreen() {
     router.push({ pathname: '/loading' as any, params: { imageUri, mimeType } });
   }, [photoSet]);
 
+  /**
+   * Home scan.
+   *
+   * Preflighted: an exhausted user is routed BEFORE the camera opens, so they
+   * never frame an item they cannot scan. The server reservation is unchanged
+   * and still decides whether a scan actually happens.
+   */
+  /** Shared scan preflight — see lib/useScanGate.ts. */
+  const startScan = useScanGate();
+
   const handleScanItem = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    router.push('/camera' as any);
+    startScan({
+      origin: 'home',
+      run: () => router.push('/camera' as any),
+      goToScanStore: () => router.push('/scan-store' as any),
+    });
   };
 
   const go = (route: any) => {
@@ -658,7 +674,14 @@ export default function HomeScreen() {
                 mounted leaves the sheet floating over the new screen on iOS, and it
                 would still be there on Back. */}
             <Pressable
-              onPress={() => { setShowScanModal(false); router.push('/scan-store' as any); }}
+              onPress={() => {
+                setShowScanModal(false);
+                // Voluntary entry = BROWSE. Clearing any stale intent is what
+                // stops an old exhausted-scan attempt resuming after a purchase
+                // the user made just to stock up.
+                clearScanStoreIntent();
+                router.push('/scan-store' as any);
+              }}
               style={({ pressed }) => [sm.storeBtn, pressed && { opacity: 0.75 }]}
               accessibilityRole="button"
               accessibilityLabel="Go to Scan Store"

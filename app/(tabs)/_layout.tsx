@@ -19,6 +19,7 @@ import { V } from '@/constants/vintage';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { useAuth } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
+import { useScanGate } from '@/lib/useScanGate';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const ROAR_SOUND = require('@/assets/images/lion-roar.m4a');
@@ -99,9 +100,17 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
     outputRange: ['-28deg', '0deg', '28deg'],
   });
 
+  /** Tab-bar scan. Same preflight as Home — one gate, two buttons. */
+  /** Shared scan preflight — see lib/useScanGate.ts. */
+  const startScan = useScanGate();
+
   const handleCenterScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    router.push('/camera' as any);
+    startScan({
+      origin: 'tab',
+      run: () => router.push('/camera' as any),
+      goToScanStore: () => router.push('/scan-store' as any),
+    });
   };
 
   const renderTab = (item: LeftTab | RightTab) => {

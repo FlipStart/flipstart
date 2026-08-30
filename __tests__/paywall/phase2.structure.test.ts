@@ -19,7 +19,7 @@
  * 375pt — is covered by the manual acceptance pass in the dev preview.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 const root = path.resolve(__dirname, "../..");
@@ -374,31 +374,64 @@ describe("visual identity", () => {
 
 describe("regression", () => {
   /** Requirement 31. ProGate stays wired at all four gates. */
-  it("leaves the temporary feature gates connected", () => {
-    const camera = read("app/camera.tsx");
-    const results = read("app/results.tsx");
-    expect(camera).toMatch(/openProGate/);
-    expect(results).toMatch(/openProGate|useDeepAnalysisGate/);
+  /**
+   * Superseded by Phases 3-6: every gate has migrated.
+   *
+   * ProGate itself remains mounted and is still the Deep Analysis lifetime
+   * preview OFFER, so the provider must stay — that is what this now pins.
+   */
+  it("keeps ProGate mounted for the Deep Analysis preview offer", () => {
     expect(LAYOUT).toMatch(/<ProGateProvider>/);
+    expect(read("lib/useDeepAnalysisGate.ts")).toMatch(/openProGate\("deep_analysis", \{/);
+    expect(read("app/results.tsx")).toMatch(/useDeepAnalysisGate/);
   });
 
-  it("does not open the new paywall from any feature gate yet", () => {
-    for (const rel of [
-      "app/camera.tsx",
-      "app/results.tsx",
-      "app/scan-detail.tsx",
-      "app/analysis-details.tsx",
-      "app/diamonds-in-the-rough.tsx",
-      "app/hunt-history.tsx",
-    ]) {
-      expect(code(read(rel))).not.toMatch(/openProPaywall/);
+  /**
+   * Superseded by Phases 3-5, and replaced with the stronger claim.
+   *
+   * When this was written, no gate had migrated. All of them now have, so
+   * asserting absence is meaningless. What IS worth pinning is the inverse:
+   * the only ProGate calls left anywhere are the two that legitimately remain —
+   * the Deep Analysis lifetime-preview OFFER, and AI Context, which is Phase 6.
+   */
+  it("leaves ProGate only where it legitimately belongs", () => {
+    const allowed = new Map<string, string[]>([
+      // The Deep Analysis lifetime-preview OFFER. Every other gate has migrated
+      // to its contextual paywall as of Phase 6.
+      ["lib/useDeepAnalysisGate.ts", ["deep_analysis"]],
+    ]);
+
+    const found = new Map<string, string[]>();
+    const walk = (dir: string) => {
+      for (const e of readdirSync(path.join(root, dir), { withFileTypes: true })) {
+        if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+        const rel = `${dir}/${e.name}`;
+        if (e.isDirectory()) { walk(rel); continue; }
+        if (!/\.tsx?$/.test(e.name)) continue;
+        if (rel === "components/monetization/ProGate.tsx") continue; // the component
+        const hits = [...code(read(rel)).matchAll(/openProGate\(\s*['"]([a-z_]+)['"]/g)].map(m => m[1]);
+        if (hits.length) found.set(rel, hits.sort());
+      }
+    };
+    for (const d of ["app", "components", "lib", "hooks"]) walk(d);
+
+    expect([...found.keys()].sort()).toEqual([...allowed.keys()].sort());
+    for (const [file, features] of found) {
+      expect(features).toEqual(allowed.get(file));
     }
   });
 
   /** Requirement 32. */
-  it("leaves the Scan Store placeholder free of commerce", () => {
-    expect(SCAN_STORE).toContain("Scan Store coming soon.");
-    expect(code(SCAN_STORE)).not.toMatch(/purchaseScanPack|SCAN_PACK_SKUS|RevenueCat|Restore/);
+  /**
+   * Superseded by Phase 8 — the placeholder became the real Scan Store.
+   *
+   * What still matters is that the store never grants anything itself: the
+   * server resolves quantity from the canonical RevenueCat V2 purchase.
+   */
+  it("keeps the Scan Store free of client-side granting", () => {
+    const store = read("app/scan-store.tsx");
+    expect(store).toContain("Scan Store");
+    expect(code(store)).not.toMatch(/purchase_ledger|rc_purchase_id|setPackBalance|balance\s*\+=/);
   });
 
   /** Requirement 33. */

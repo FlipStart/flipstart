@@ -140,11 +140,17 @@ describe("paywall configuration", () => {
    * "Unlock Deep Analysis" before that paywall exists is exactly the
    * half-finished generic UI the brief forbids.
    */
-  it("uses the generic CTA for every source that has no paywall yet", () => {
-    for (const s of PAYWALL_SOURCES) {
-      if (s === "generate_listings" || s === "deep_analysis") continue;
-      expect(resolvePaywallConfig(s).ctaLabel).toBe("Unlock FlipStart Pro");
-    }
+  /**
+   * Superseded by Phase 7 — every source now has designed copy.
+   *
+   * GENERIC survives only as the fail-closed fallback for an unrecognised
+   * source, which is what this now pins instead.
+   */
+  it("keeps a generic fallback for an unrecognised source", () => {
+    const fallback = resolvePaywallConfig("not_a_real_source" as ProPaywallSource);
+    expect(fallback.headline).toBe("Unlock More From Every Find");
+    expect(fallback.ctaLabel).toBe("Unlock FlipStart Pro");
+    expect(fallback.showScanStoreAlternative).toBe(false);
   });
 });
 
