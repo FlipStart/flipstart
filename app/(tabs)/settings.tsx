@@ -25,6 +25,10 @@ import { resetOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
 import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
 import { MembershipStatus } from '@/components/monetization/MembershipStatus';
+import { useEntitlement } from '@/lib/useEntitlement';
+import { useProPaywall } from '@/components/monetization/paywall/ProPaywallProvider';
+import { restorePurchases, recoverPacksOnServer } from '@/lib/purchases';
+import { clearScanStoreIntent } from '@/lib/scanStoreIntent';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { getClearHistoryImpact, type ClearHistoryImpact, type ImpactContext } from '@/lib/scanDeletionImpact';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
@@ -64,8 +68,92 @@ function statusColor(s: PermStatus) {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const ent = useEntitlement();
+  const { openProPaywall } = useProPaywall();
+  const [restoring, setRestoring] = useState(false);
+
+
+
+  const restoreSubscription = useCallback(async () => {
+    setRestoring(true);
+    try {
+      /**
+       * Both arguments are the ACCOUNT-SAFETY guard and are not optional: the
+       * uid captured when the restore began, and a getter read again after it
+       * completes. If the signed-in account changed mid-restore, the service
+       * refuses rather than attributing A's purchase to B.
+       */
+      const r = await restorePurchases(uidRef.current, () => uidRef.current);
+      if (r.status === 'restored') {
+        Alert.alert('Subscription restored', 'Your FlipStart Pro access is active on this device.');
+      } else if (r.status === 'nothing_to_restore') {
+        Alert.alert('Nothing to restore', 'No previous FlipStart Pro subscription was found for this Apple ID.');
+      } else {
+        Alert.alert('Restore', r.message ?? "We couldn't restore your subscription just now. Please try again.");
+      }
+    } catch {
+      Alert.alert('Restore', "We couldn't restore your subscription just now. Please try again.");
+    } finally {
+      setRestoring(false);
+    }
+  }, []);
+
+  const restorePacks = useCallback(async () => {
+    setRestoring(true);
+    try {
+      // Server-authoritative. The count is the server's; repeats add zero.
+      const r = await recoverPacksOnServer();
+      if (!r.ok) {
+        Alert.alert('Restore', "We couldn't check your Scan Pack purchases just now. Please try again.");
+      } else if (r.totalScansGranted > 0) {
+        Alert.alert('Scan Packs restored', `Recovered ${r.totalScansGranted.toLocaleString()} Pack Scans.`);
+      } else {
+        Alert.alert('Scan Packs', 'Your Scan Packs are already up to date.');
+      }
+    } catch {
+      Alert.alert('Restore', "We couldn't check your Scan Pack purchases just now. Please try again.");
+    } finally {
+      setRestoring(false);
+    }
+  }, []);
+
+  /**
+   * Restore Purchases — a chooser, then the matching EXISTING flow.
+   *
+   * There are two different things a user might mean by "restore", and they
+   * are recovered by different systems:
+   *
+   *   subscription  → restorePurchases()      RevenueCat restore + server sync
+   *   scan packs    → recoverPacksOnServer()  canonical V2 purchase replay
+   *
+   * One button that only did the first left pack users at "nothing to
+   * restore" with no idea the other path existed.
+   *
+   * Deliberately NO second "are you sure?" step. Both operations are
+   * idempotent and non-destructive — a repeated pack recovery is guarded by
+   * purchase_ledger's uniqueness and grants exactly zero — so a mis-tap costs a
+   * spinner, not money. The chooser IS the confirmation: nothing runs until an
+   * option is picked, and Cancel is right there.
+   */
+  const handleRestore = useCallback(() => {
+    if (restoring) return;
+    Alert.alert(
+      'Restore Purchases',
+      'What would you like to restore?',
+      [
+        { text: 'Pro Subscription', onPress: () => void restoreSubscription() },
+        { text: 'Scan Packs',       onPress: () => void restorePacks() },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
+  }, [restoring, restoreSubscription, restorePacks]);
+
   const { clearAllFlips, flips } = useFlipStore();
   const { user, profile, signOut } = useAuth();
+  // Kept current every render so the restore guard compares live values,
+  // not whatever the uid was when the callback was created.
+  const uidRef = useRef<string | null>(user?.id ?? null);
+  uidRef.current = user?.id ?? null;
   const { pruneUnseen } = useAchievementNotifications();
   const [clearImpact, setClearImpact] = useState<ClearHistoryImpact | null>(null);
   const finalValidRef = useRef<{ achievements: string[]; brands: string[]; diamonds: string[] }>({ achievements: [], brands: [], diamonds: [] });
@@ -356,6 +444,77 @@ export default function SettingsScreen() {
             sub="Used for Hunt Mode sessions and location tracking."
             status={locationStatus}
             onPress={() => handlePermissionTap(locationStatus, 'location')}
+          />
+        </View>
+
+        {/* ══════════ SUBSCRIPTION & PURCHASES ═════════════════════════ */}
+        {/*
+          Entry points only. Every action here calls an EXISTING function --
+          the shared paywall, the existing /scan-store route, the existing
+          restore flow. No monetization logic is defined in Settings, and
+          nothing here grants entitlement optimistically.
+
+          Free and Pro differ only in the first row, decided from the
+          authoritative read model. While entitlement is unresolved
+          (`status !== 'ready'`) the row is omitted rather than guessed --
+          showing "Upgrade to Pro" to a paying subscriber is worse than
+          showing nothing for a moment.
+        */}
+        <Text style={s.sectionLabel}>SUBSCRIPTION & PURCHASES</Text>
+        <View style={s.card}>
+          {ent.status === 'ready' && (ent.isPro ? (
+            <>
+              <Row
+                icon="workspace-premium"
+                label="Manage Pro"
+                sub={ent.plan === 'annual'
+                  ? 'Annual Pro. Manage or cancel in the App Store.'
+                  : 'Monthly Pro. Manage or cancel in the App Store.'}
+                /*
+                 * Apple's own subscription management page. FlipStart cannot
+                 * cancel or change an Apple subscription itself -- App Store
+                 * rules require it happen in Settings -- so linking there is
+                 * the correct action rather than inventing a management UI.
+                 */
+                onPress={() => {
+                  Linking.openURL('https://apps.apple.com/account/subscriptions')
+                    .catch(() => Alert.alert(
+                      'Manage subscription',
+                      'Open the App Store app, tap your profile, then Subscriptions.',
+                    ));
+                }}
+              />
+              <View style={s.cardDivider} />
+            </>
+          ) : (
+            <>
+              <Row
+                icon="rocket-launch"
+                label="Upgrade to Pro"
+                sub="3-photo scans, AI Context, Deep Analysis and more."
+                onPress={() => openProPaywall('settings_upgrade')}
+              />
+              <View style={s.cardDivider} />
+            </>
+          ))}
+
+          <Row
+            icon="add-shopping-cart"
+            label="Scan Store"
+            sub="Buy extra scans. They never expire."
+            onPress={() => {
+              // Voluntary entry = browse mode. Clearing any stale intent stops
+              // an old blocked-scan attempt resuming after a top-up purchase.
+              clearScanStoreIntent();
+              router.push('/scan-store' as any);
+            }}
+          />
+          <View style={s.cardDivider} />
+          <Row
+            icon="restore"
+            label={restoring ? 'Restoring\u2026' : 'Restore Purchases'}
+            sub="Restore a Pro subscription or previously bought Scan Packs."
+            onPress={handleRestore}
           />
         </View>
 

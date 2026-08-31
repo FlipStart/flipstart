@@ -34,6 +34,7 @@ import { DeepAnalysisHero } from "./heroes/DeepAnalysisHero";
 import { GenerateListingsHero } from "./heroes/GenerateListingsHero";
 import { AiContextHero } from "./heroes/AiContextHero";
 import { ScanLimitHero } from "./heroes/ScanLimitHero";
+import { SettingsUpgradeHero } from "./heroes/SettingsUpgradeHero";
 import { ThirdPhotoHero } from "./heroes/ThirdPhotoHero";
 import { OrnamentRule } from "./Ornament";
 import { PW } from "./paywallTheme";
@@ -91,6 +92,7 @@ const HEROES: Partial<Record<ProPaywallSource, React.ComponentType<PaywallHeroPr
   third_photo:       ThirdPhotoHero,
   camera_context:    AiContextHero,
   scan_limit:        ScanLimitHero,
+  settings_upgrade:  SettingsUpgradeHero,
 };
 
 export function PaywallHero({ config }: PaywallHeroProps) {

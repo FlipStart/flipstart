@@ -30,66 +30,76 @@
  */
 
 export const PW = {
-    // ── Parchment surfaces ────────────────────────────────────────────────────
-    /** Page. The workhorse warm parchment used across the app. */
-    parchment: "#F4EED8",
-    /** Panels and plan cards. Near-white, very slightly warm. */
-    card: "#FFFEFA",
-    /** Selected plan interior. Already means "the warmer one" in the scan sheet. */
-    cardSelected: "#FBF4DC",
-    /** Pale gold wash, for the seal interior. */
-    goldTint: "#F5EBCB",
-  
-    // ── Ink ───────────────────────────────────────────────────────────────────
-    /** Deepest warm espresso. Headline. */
-    ink: "#2B2118",
-    /** Primary dark green. Buttons, plan prices, eyebrow, brand type. */
-    forest: "#214D2D",
-    /** Deepest green, for the emblem fill. */
-    forestDeep: "#122E1B",
-    /** Body copy on parchment. The app's established secondary ink. */
-    brown: "#6F5A3E",
-    /** Non-essential text only — too light for anything that must be read. */
-    muted: "#8A7658",
-  
-    // ── Metal ─────────────────────────────────────────────────────────────────
-    gold: "#C4A334",
-    /** Brighter core for a sheen highlight, matching PremiumGlimmer. */
-    goldHot: "#F0DC96",
-    /** Soft warm divider. */
-    border: "#DDD2AC",
-  
-    /** Muted vintage red, from constants/vintage.ts. Errors only. */
-    error: "#9E3A2A",
-    errorTint: "#F7E9E4",
-    errorBorder: "#E3B8B4",
-  
-    /** Light text on dark green fills. */
-    cream: "#F4EED8",
-  } as const;
-  
+  // ── Parchment surfaces ────────────────────────────────────────────────────
   /**
-   * Radii, following the conventions already in the codebase:
-   * 50 for pills, 18–22 for sheets, 10–14 for cards and tiles.
-   */
-  export const PW_RADIUS = {
-    pill: 50,
-    card: 14,
-    seal: 4,
-    emblem: 999,
-  } as const;
-  
-  /**
-   * Warm shadow, matching constants/vintage.ts `shadowSm`.
+   * Page canvas. White, matching the rest of the app.
    *
-   * Deliberately gentle. A paper card sitting on paper casts almost nothing —
-   * a strong drop shadow is the single fastest way to make this look like a
-   * floating glass panel instead.
+   * ONLY the full-screen background changed. `card`, `goldTint`, `border`,
+   * `gold` and every vintage accent below are untouched, so the parchment plan
+   * cards, seals, ornaments and hero illustrations still read as FlipStart —
+   * they now sit on a cleaner canvas instead of cream-on-cream.
+   *
+   * The name is kept so no component import changes. Renaming it would touch
+   * every paywall file for zero behavioural gain.
    */
-  export const PW_SHADOW = {
-    shadowColor: "#3D2A12",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07,
-    shadowRadius: 5,
-    elevation: 2,
-  } as const;
+  parchment: "#FFFFFF",
+  /** Panels and plan cards. Near-white, very slightly warm. */
+  card: "#FFFEFA",
+  /** Selected plan interior. Already means "the warmer one" in the scan sheet. */
+  cardSelected: "#FBF4DC",
+  /** Pale gold wash, for the seal interior. */
+  goldTint: "#F5EBCB",
+
+  // ── Ink ───────────────────────────────────────────────────────────────────
+  /** Deepest warm espresso. Headline. */
+  ink: "#2B2118",
+  /** Primary dark green. Buttons, plan prices, eyebrow, brand type. */
+  forest: "#214D2D",
+  /** Deepest green, for the emblem fill. */
+  forestDeep: "#122E1B",
+  /** Body copy on parchment. The app's established secondary ink. */
+  brown: "#6F5A3E",
+  /** Non-essential text only — too light for anything that must be read. */
+  muted: "#8A7658",
+
+  // ── Metal ─────────────────────────────────────────────────────────────────
+  gold: "#C4A334",
+  /** Brighter core for a sheen highlight, matching PremiumGlimmer. */
+  goldHot: "#F0DC96",
+  /** Soft warm divider. */
+  border: "#DDD2AC",
+
+  /** Muted vintage red, from constants/vintage.ts. Errors only. */
+  error: "#9E3A2A",
+  errorTint: "#F7E9E4",
+  errorBorder: "#E3B8B4",
+
+  /** Light text on dark green fills. */
+  cream: "#F4EED8",
+} as const;
+
+/**
+ * Radii, following the conventions already in the codebase:
+ * 50 for pills, 18–22 for sheets, 10–14 for cards and tiles.
+ */
+export const PW_RADIUS = {
+  pill: 50,
+  card: 14,
+  seal: 4,
+  emblem: 999,
+} as const;
+
+/**
+ * Warm shadow, matching constants/vintage.ts `shadowSm`.
+ *
+ * Deliberately gentle. A paper card sitting on paper casts almost nothing —
+ * a strong drop shadow is the single fastest way to make this look like a
+ * floating glass panel instead.
+ */
+export const PW_SHADOW = {
+  shadowColor: "#3D2A12",
+  shadowOffset: { width: 0, height: 1 },
+  shadowOpacity: 0.07,
+  shadowRadius: 5,
+  elevation: 2,
+} as const;

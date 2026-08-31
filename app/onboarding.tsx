@@ -34,7 +34,11 @@ WebBrowser.maybeCompleteAuthSession();
 
 const FOREST    = '#2A4A2A';
 const SCAN_DARK = '#152815';
-const PARCHMENT = '#F0E8D4';
+// Page canvas only.
+// Was '#F0E8D4' -- the Hunt Mode background colour. Onboarding is not a
+// Hunt surface, so it now uses the app's white canvas. Cards, chips, the
+// gold hero treatment and the notice box below are all unchanged.
+const PARCHMENT = '#FFFFFF';
 const CREAM     = '#F4EED8';
 const CARD_B    = '#DDD0B0';
 const CARD_BG   = '#EDE0C4';

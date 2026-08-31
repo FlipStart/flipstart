@@ -54,7 +54,9 @@ import { clearScanStoreIntent, consumeScanStoreIntent, scanStoreEntryMode } from
 import { trackAnalyticsEvent } from '@/lib/analytics';
 
 // ─── Palette — the shipped monetization values ────────────────────────────────
-const PARCHMENT = '#F4EED8';
+// Page canvas only. CARD / GOLD_TINT / BORDER / GOLD are unchanged, so the
+// pack cards and balance card keep their warm treatment against white.
+const PARCHMENT = '#FFFFFF';
 const CARD      = '#FFFEFA';
 const GOLD_TINT = '#F5EBCB';
 const FOREST    = '#214D2D';

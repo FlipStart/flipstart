@@ -78,6 +78,16 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
    */
   const entRef = useRef(ent);
   entRef.current = ent;
+  /**
+   * Session-local correction for a refused preview.
+   *
+   * Set ONLY when the server answers `already_used`. It suppresses an offer the
+   * server has already refused; it can never grant one. Deliberately a ref, not
+   * state -- this is a cache correction, not rendered UI -- and deliberately not
+   * persisted, so the server stays the single durable source of truth.
+   */
+  const previewRefusedRef = useRef(false);
+
   const uidRef = useRef<string | null>(user?.id ?? null);
   uidRef.current = user?.id ?? null;
 
@@ -134,19 +144,51 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
        * dismissal already returns the user to the screen they were on, which is
        * why there is no onDismiss here.
        */
+      const openPaywall = () => {
+        openProPaywall("deep_analysis", { onUnlocked: openOnce });
+      };
+
       const offerPreview = () => {
         openProGate("deep_analysis", {
-          label: "View Preview",
+          /**
+           * "Try Deep Analysis", not "View Preview".
+           *
+           * Nothing is stored to re-view: this action CONSUMES the lifetime
+           * grant and generates Deep Analysis live. The old label promised a
+           * saved artifact that has never existed.
+           */
+          label: "Try Deep Analysis",
           onAccept: async () => {
             try {
               const res: any = await consume.mutateAsync();
               await refresh();
+
               /**
-               * Opens ONLY on an explicit `granted: true`. If the server says
-               * the preview was already used — another device, a race —
-               * nothing opens, and the next attempt reaches the paywall.
+               * Opens ONLY on an explicit `granted: true`.
                */
-              if (previewConsumeOpens(res)) openOnce();
+              if (previewConsumeOpens(res)) { openOnce(); return; }
+
+              /**
+               * ── already_used ─────────────────────────────────────────────
+               *
+               * The server has authoritatively said this account's lifetime
+               * preview is spent. Previously this branch returned silently, so
+               * the user tapped and NOTHING happened — and because the client
+               * entitlement cache still read `previewAvailable: true`, the same
+               * offer reappeared on the next attempt.
+               *
+               * The server response is the truth. It is treated as such:
+               * suppress the offer for the rest of this session and send this
+               * attempt to the paywall it should have reached.
+               *
+               * The guard is a SESSION-LOCAL cache correction, not a second
+               * source of truth. It only ever suppresses an offer the server has
+               * already refused, never grants one — a fresh launch re-reads the
+               * server and, if the server ever said the preview were available
+               * again, the offer would return.
+               */
+              previewRefusedRef.current = true;
+              openPaywall();
             } catch {
               // Network failure. Do NOT open: an unverified grant for a
               // paid-tier feature is worse than making them tap again. The
@@ -156,16 +198,18 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
         });
       };
 
-      const openPaywall = () => {
-        openProPaywall("deep_analysis", { onUnlocked: openOnce });
-      };
 
       const current = entRef.current;
 
       const action = decideDeepAnalysisAction({
         entitlementStatus: current.status,
         canDeepAnalysis: current.status === "ready" && current.can("deep_analysis"),
-        previewAvailable: current.status === "ready" && current.deepAnalysisPreviewAvailable,
+        // `previewRefusedRef` closes the cache-propagation window: once the
+        // server has said already_used, the offer is not shown again even if
+        // the entitlement cache has not caught up yet.
+        previewAvailable: current.status === "ready"
+          && current.deepAnalysisPreviewAvailable
+          && !previewRefusedRef.current,
       });
 
       /**

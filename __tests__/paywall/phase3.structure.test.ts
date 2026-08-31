@@ -406,7 +406,7 @@ describe("regression", () => {
   it("Deep Analysis keeps ProGate only for the lifetime preview offer", () => {
     const hook = read("lib/useDeepAnalysisGate.ts");
     expect(hook).toMatch(/openProPaywall\("deep_analysis"/);
-    expect(hook).toMatch(/label: "View Preview"/);
+    expect(hook).toMatch(/label: "Try Deep Analysis"/);
   });
 
   /** Superseded by Phase 5: Third Photo migrated. AI Context is Phase 6. */

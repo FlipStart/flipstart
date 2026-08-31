@@ -36,6 +36,8 @@ export type ProPaywallSource =
   | "third_photo"
   | "camera_context"
   | "scan_limit"
+  /** Voluntary entry from Settings. Not a gate — the user came looking. */
+  | "settings_upgrade"
   | "dev_preview";
 
 export interface PaywallConfig {
@@ -243,6 +245,27 @@ const SCAN_LIMIT: PaywallConfig = {
   secondaryValueLine: "Your finds don't have to stop here.",
 };
 
+/**
+ * Settings → Upgrade to Pro.
+ *
+ * The one paywall nobody is pushed into. Every other source appears at the
+ * instant a user reaches for something locked, so its copy explains that one
+ * thing. Here the user chose to look, so the copy states the membership plainly
+ * and lets the plaque do the selling.
+ *
+ * No Scan Store alternative: Settings already has its own Scan Store row one
+ * line below the Upgrade row.
+ */
+const SETTINGS_UPGRADE: PaywallConfig = {
+  source: "settings_upgrade",
+  eyebrow: "FLIPSTART PRO",
+  headline: "Go Pro. Hunt Smarter.",
+  subtitle: "Everything FlipStart can do, on every scan — plus 300 scans a month or 4,000 a year to do it with.",
+  ctaLabel: "Upgrade to Pro",
+  showScanStoreAlternative: false,
+  secondaryValueLine: null,
+};
+
 const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
   generate_listings: GENERATE_LISTINGS,
   deep_analysis:     DEEP_ANALYSIS,
@@ -250,6 +273,7 @@ const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
   camera_context:    CAMERA_CONTEXT,
   /** The one source where extra scans are a real answer to the user's problem. */
   scan_limit:        SCAN_LIMIT,
+  settings_upgrade:  SETTINGS_UPGRADE,
   dev_preview:       placeholder("dev_preview"),
 };
 

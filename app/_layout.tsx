@@ -476,7 +476,23 @@ export default function RootLayout() {
             <Stack.Protected guard={__DEV__ || MONETIZATION_HARNESS_VISIBLE}>
               <Stack.Screen name="dev-monetization" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
             </Stack.Protected>
-            <Stack.Screen name="(tabs)" />
+            {/*
+              gestureEnabled: false — the onboarding back-swipe fix.
+
+              onboarding pushes to /auth, and completion calls
+              router.replace('/(tabs)'). `replace` swaps the TOP stack entry, it
+              does not reset the stack, so onboarding stays underneath and the
+              root tabs screen keeps a back gesture into it. A cold start
+              rebuilds the stack with (tabs) as root, which is why the bug
+              disappears after a restart.
+
+              This disables only the NATIVE STACK back gesture for the tabs
+              screen. Gesture handlers INSIDE tab screens are unaffected —
+              components/history/SwipeRow.tsx owns its own recognizer and does
+              not go through the navigator. There is also nothing legitimate to
+              swipe back TO: (tabs) is the app root.
+            */}
+            <Stack.Screen name="(tabs)" options={{ gestureEnabled: false }} />
             <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
             <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />
             <Stack.Screen name="results" options={{ animation: "fade", gestureEnabled: false }} />

@@ -487,7 +487,7 @@ describe("regression", () => {
 
   it("Deep Analysis keeps its preview funnel and paywall", () => {
     const da = read("lib/useDeepAnalysisGate.ts");
-    expect(da).toMatch(/label: "View Preview"/);
+    expect(da).toMatch(/label: "Try Deep Analysis"/);
     expect(da).toMatch(/openProPaywall\("deep_analysis", \{ onUnlocked: openOnce \}\)/);
   });
 

@@ -198,7 +198,7 @@ describe("gate behaviour", () => {
     const c = code(GATE);
     const calls = c.match(/openProGate\(/g) ?? [];
     expect(calls.length).toBe(1);
-    expect(c).toMatch(/openProGate\("deep_analysis", \{\s*label: "View Preview"/);
+    expect(c).toMatch(/openProGate\("deep_analysis", \{[\s\S]*?label: "Try Deep Analysis"/);
     // The old unconditional fallback gate must be gone.
     expect(c).not.toMatch(/openProGate\(\s*['"]deep_analysis['"]\s*\)\s*;/);
   });
@@ -233,7 +233,37 @@ describe("gate behaviour", () => {
    * identity check — is what the consume callback calls.
    */
   it("routes the preview grant through the same identity guard", () => {
-    expect(GATE).toMatch(/if \(previewConsumeOpens\(res\)\) openOnce\(\);/);
+    // Shape changed when the already_used branch was added; the guard did not.
+    expect(GATE).toMatch(/if \(previewConsumeOpens\(res\)\) \{ openOnce\(\); return; \}/);
+  });
+
+  /**
+   * The already_used branch must never return silently.
+   *
+   * It used to: the user tapped, the server said the lifetime preview was
+   * spent, and nothing happened. The server response is authoritative, so it
+   * now suppresses the stale offer and routes the attempt to the paywall.
+   */
+  it("never leaves already_used as a silent no-op", () => {
+    const c = code(GATE);
+    const accept = c.slice(c.indexOf("onAccept:"), c.indexOf("const openThird") + 1 || undefined);
+    expect(GATE).toMatch(/previewRefusedRef\.current = true;/);
+    expect(GATE).toMatch(/previewRefusedRef\.current = true;[\s\S]{0,80}openPaywall\(\);/);
+    expect(accept).toBeTruthy();
+  });
+
+  /** The session guard only ever SUPPRESSES an offer — it can never grant one. */
+  it("uses the refusal guard to narrow availability, never to widen it", () => {
+    expect(GATE).toMatch(/&& !previewRefusedRef\.current,/);
+    // Declared as a ref, not persisted — the server stays the durable truth.
+    expect(GATE).toMatch(/const previewRefusedRef = useRef\(false\);/);
+    expect(code(GATE)).not.toMatch(/AsyncStorage|SecureStore/);
+  });
+
+  /** openPaywall must be declared before offerPreview references it. */
+  it("declares openPaywall before the accept handler uses it", () => {
+    const c = code(GATE);
+    expect(c.indexOf("const openPaywall")).toBeLessThan(c.indexOf("const offerPreview"));
   });
 
   /** Requirement: dismissing the offer consumes nothing. */
