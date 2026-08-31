@@ -303,7 +303,13 @@ describe("source must match the transferred subscription", () => {
   it("the RPC requires product and period_start to match", () => {
     expect(SQL).toMatch(/subscription_product_id\s+= p_product_id/);
     expect(SQL).toMatch(/subscription_period_start = p_period_start/);
-    expect(SQL).toMatch(/order by subscription_scans_used desc, user_id/);
+    /**
+     * Table-qualified. The OUT parameters in RETURNS TABLE shadow these column
+     * names, so a bare reference raises "column reference is ambiguous" at CALL
+     * time — it created fine and then failed every sync in production.
+     */
+    expect(SQL).toMatch(/order by au\.subscription_scans_used desc, au\.user_id/);
+    expect(SQL).toMatch(/select max\(au\.subscription_scans_used\)/);
     expect(SQL).not.toMatch(/order by subscription_period_end desc nulls last/);
     // The separate transfer RPC is gone -- one primitive, no duplicated logic.
     expect(SQL).toMatch(/drop function if exists public\.transfer_subscription_ownership/);
