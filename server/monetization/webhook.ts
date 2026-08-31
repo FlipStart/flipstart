@@ -208,6 +208,39 @@ export async function handleRevenueCatWebhook(
     return { status: 200, body: { ok: true, reason: g.outcome } };
   }
 
+  /**
+   * ── TRANSFER ─────────────────────────────────────────────────────────────
+   *
+   * The Apple receipt moved to a different App User ID. Handled BEFORE the
+   * generic reconcile, because reconciling only `app_user_id` is exactly the
+   * bug: the destination became Pro with a fresh allowance while the previous
+   * owner kept its own subscription row, leaving two Pro accounts and a
+   * farmable allowance from one subscription.
+   *
+   * handleTransferEvent moves the period AND its consumed usage atomically,
+   * then confirms against live RevenueCat state.
+   */
+  if (eventType === "TRANSFER") {
+    const { handleTransferEvent } = await import("./transfer.js");
+    const t = await handleTransferEvent(ev as never);
+
+    if (t.retryable) {
+      // Left FAILED so RevenueCat redelivers. Never acknowledged on an
+      // unresolved transfer -- dropping it would strand the duplication.
+      console.warn(`[revenuecat-webhook] transfer unresolved (${t.outcome}) - retryable`);
+      await sb.rpc("finish_revenuecat_event", {
+        p_event_id: eventId, p_ok: false, p_detail: `transfer_${t.outcome}`,
+      });
+      return { status: 503, body: { ok: false, reason: t.outcome } };
+    }
+
+    await sb.rpc("finish_revenuecat_event", {
+      p_event_id: eventId, p_ok: true, p_detail: `transfer_${t.outcome}`,
+    });
+    console.log(`[revenuecat-webhook] transfer ${t.outcome}`);
+    return { status: 200, body: { ok: true, reason: t.outcome } };
+  }
+
   const result = await reconcileUser(appUserId as string);
 
   /**
