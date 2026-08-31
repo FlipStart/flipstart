@@ -37,7 +37,7 @@ import { candidateUserIds } from "@/server/monetization/transfer";
 const root = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(root, rel), "utf8");
 
-const SQL = read("drizzle/sql/transfer_subscription_ownership.sql");
+const SQL = read("drizzle/sql/apply_revenuecat_snapshot_ownership.sql");
 const TRANSFER = read("server/monetization/transfer.ts");
 const WEBHOOK = read("server/monetization/webhook.ts");
 
@@ -66,63 +66,76 @@ const sub = (over: Partial<AccountUsage> = {}): AccountUsage => ({
  * every source is cleared; free and pack buckets are never touched on either
  * side.
  */
+/**
+ * A transfer, expressed through the ONE primitive.
+ *
+ * There is no separate transfer path any more: reconciling the destination IS
+ * the transfer, because apply_revenuecat_snapshot resolves ownership itself.
+ * Kept as a helper so the existing cases read naturally.
+ */
 function transferOwnership(
   rows: Record<string, AccountUsage>, fromIds: string[], toId: string,
-  /** The period RevenueCat confirmed the destination owns. */
-  productId = "flipstart_pro_monthly", periodStart = P,
+  productId = "flipstart_pro_monthly", periodStart = P, periodEnd = P_END,
 ): { transferred: boolean; source?: string } {
-  const dest = rows[toId] ?? (rows[toId] = emptyUsage());
+  const priorOwners = fromIds.filter(id =>
+    id !== toId
+    && rows[id]?.subscription_product_id === productId
+    && rows[id]?.subscription_period_start === periodStart);
 
-  /**
-   * Eligible ONLY if the row already represents THIS subscription period.
-   * "Latest period_end" is not enough — a different subscriber named in the
-   * array could win that comparison and have their quota stolen.
-   */
-  const candidates = fromIds
-    .filter(id => id !== toId
-      && rows[id]?.subscription_product_id === productId
-      && rows[id]?.subscription_period_start === periodStart)
-    // Duplicate stale owners: highest usage wins. Never summed, never lowest.
+  const source = priorOwners
     .sort((a, b) => rows[b].subscription_scans_used - rows[a].subscription_scans_used
-                    || a.localeCompare(b));
+                    || a.localeCompare(b))[0];
 
-  // FAIL CLOSED: destination is left exactly as it was, no allowance minted.
-  if (candidates.length === 0) return { transferred: false };
-  const src = rows[candidates[0]];
+  applySnapshot(rows, toId, productId, periodStart, periodEnd);
+  return { transferred: priorOwners.length > 0, source };
+}
 
-  // Period AND usage move together. This one line is the anti-farming rule.
-  dest.subscription_product_id   = src.subscription_product_id;
-  dest.subscription_period_start = src.subscription_period_start;
-  dest.subscription_period_end   = src.subscription_period_end;
-  dest.subscription_scans_used   = src.subscription_scans_used;
-  // free_scans_used / pack_scan_balance deliberately absent.
+/**
+ * Models the OWNERSHIP-AWARE apply_revenuecat_snapshot.
+ *
+ * The whole race fix lives in one clause: a period is only NEW when no other
+ * account already holds it. Operates on the full row set, because that is
+ * exactly what the SQL locks and scans.
+ */
+function applySnapshot(
+  rows: Record<string, AccountUsage>, uid: string,
+  productId: string, periodStart: string, periodEnd: string,
+): void {
+  const self = rows[uid] ?? (rows[uid] = emptyUsage());
 
-  for (const id of fromIds) {
-    if (id === toId || !rows[id]) continue;
-    // Only stale owners OF THIS subscription. An unrelated subscription on a
-    // named account is left alone.
-    if (rows[id].subscription_product_id !== productId
-        || rows[id].subscription_period_start !== periodStart) continue;
+  // Any OTHER account already representing this exact subscription period.
+  const priorOwners = Object.keys(rows).filter(id =>
+    id !== uid
+    && rows[id].subscription_product_id === productId
+    && rows[id].subscription_period_start === periodStart);
+
+  // Highest consumed count — never summed, never lowest.
+  const carried = priorOwners.length
+    ? Math.max(...priorOwners.map(id => rows[id].subscription_scans_used))
+    : null;
+
+  for (const id of priorOwners) {
     rows[id].subscription_product_id   = null;
     rows[id].subscription_period_start = null;
     rows[id].subscription_period_end   = null;
     rows[id].subscription_scans_used   = 0;
+    // free_scans_used / pack_scan_balance deliberately untouched.
   }
-  return { transferred: true, source: candidates[0] };
-}
 
-/** Models apply_revenuecat_snapshot's reset rule: only a NEW period resets. */
-function applySnapshot(
-  row: AccountUsage, productId: string, periodStart: string, periodEnd: string,
-): AccountUsage {
-  const isNewPeriod = row.subscription_period_start !== periodStart;
-  return {
-    ...row,
-    subscription_product_id: productId,
-    subscription_period_start: periodStart,
-    subscription_period_end: periodEnd,
-    subscription_scans_used: isNewPeriod ? 0 : row.subscription_scans_used,
-  };
+  /**
+   * `carried` takes precedence below, so this clause is belt-and-braces --
+   * it keeps the REPORTED period_reset flag truthful (the SQL returns it, and
+   * the log prints "NEW PERIOD - usage reset"). The counter itself is protected
+   * by the precedence, which is what the tests pin.
+   */
+  const isNewPeriod = carried === null && self.subscription_period_start !== periodStart;
+
+  self.subscription_product_id   = productId;
+  self.subscription_period_start = periodStart;
+  self.subscription_period_end   = periodEnd;
+  self.subscription_scans_used   = carried !== null ? carried
+                                 : isNewPeriod ? 0
+                                 : self.subscription_scans_used;
 }
 
 // ── A-D, P. The core invariant ──────────────────────────────────────────────
@@ -232,19 +245,26 @@ describe("source must match the transferred subscription", () => {
     expect(rows[C_UID].subscription_scans_used).toBe(200);
   });
 
-  /** Requirement 3. No match -> fail closed, and NO fresh allowance. */
-  it("fails closed when no source represents the period", () => {
+  /**
+   * Requirement 3, reframed by the consolidation.
+   *
+   * With ownership resolved inside the snapshot, "no prior owner holds P" means
+   * this is a genuinely NEW subscription — which correctly starts at a full
+   * allowance. What must never happen is taking usage from a row holding a
+   * DIFFERENT period, which is what the identity match prevents.
+   */
+  it("does not take usage from an unrelated period", () => {
     const rows: Record<string, AccountUsage> = {
       [C_UID]: sub({ subscription_period_start: OTHER_P, subscription_period_end: OTHER_END }),
       [B_UID]: emptyUsage(),
     };
     const r = transferOwnership(rows, [C_UID], B_UID);
     expect(r.transferred).toBe(false);
-    // The destination is untouched: no product, no minted 300.
-    expect(derivePlan(rows[B_UID], NOW)).toBe("free");
-    expect(rows[B_UID].subscription_product_id).toBeNull();
-    expect(computeBalances(rows[B_UID], NOW).subscriptionScansRemaining).toBe(0);
-    expect(computeBalances(rows[B_UID], NOW).subscriptionScansRemaining).not.toBe(MONTHLY_SCANS);
+    // C's unrelated subscription is NOT raided.
+    expect(derivePlan(rows[C_UID], NOW)).toBe("monthly");
+    expect(rows[C_UID].subscription_scans_used).toBe(1);
+    // B starts a genuinely new period at a full allowance — correct.
+    expect(computeBalances(rows[B_UID], NOW).subscriptionScansRemaining).toBe(MONTHLY_SCANS);
   });
 
   /** Requirement 4. Duplicate owners of the SAME period. */
@@ -281,11 +301,12 @@ describe("source must match the transferred subscription", () => {
 
   /** The SQL enforces the same rule, and drops the permissive overload. */
   it("the RPC requires product and period_start to match", () => {
-    expect(SQL).toMatch(/and subscription_product_id\s+= p_product_id/);
-    expect(SQL).toMatch(/and subscription_period_start = p_period_start/);
+    expect(SQL).toMatch(/subscription_product_id\s+= p_product_id/);
+    expect(SQL).toMatch(/subscription_period_start = p_period_start/);
     expect(SQL).toMatch(/order by subscription_scans_used desc, user_id/);
     expect(SQL).not.toMatch(/order by subscription_period_end desc nulls last/);
-    expect(SQL).toMatch(/drop function if exists public\.transfer_subscription_ownership\(uuid\[\], uuid\);/);
+    // The separate transfer RPC is gone -- one primitive, no duplicated logic.
+    expect(SQL).toMatch(/drop function if exists public\.transfer_subscription_ownership/);
 
     /**
      * The CLEARING statement must be scoped too, not just the SELECT.
@@ -294,22 +315,24 @@ describe("source must match the transferred subscription", () => {
      * transferred_from — the mirror image of the duplication bug, revoking a
      * different subscriber. The mutation run caught this gap.
      */
-    const clearStmt = SQL.slice(SQL.indexOf("with cleared as ("), SQL.indexOf("returning 1"));
-    expect(clearStmt).toMatch(/and subscription_product_id\s+= p_product_id/);
-    expect(clearStmt).toMatch(/and subscription_period_start = p_period_start/);
+    /**
+     * Sliced FORWARD from the comment. My first attempt used indexOf for the
+     * end marker, which found an EARLIER occurrence and produced an empty
+     * slice that trivially failed — caught on the first run.
+     */
+    const clearFrom = SQL.indexOf("Clear EVERY prior owner");
+    const clearStmt = SQL.slice(clearFrom, SQL.indexOf("and user_id <> p_user_id;", clearFrom));
+    expect(clearStmt).toMatch(/subscription_product_id\s+= p_product_id/);
+    expect(clearStmt).toMatch(/subscription_period_start = p_period_start/);
   });
 
   /** Verification must not WRITE, or a fail-closed RPC leaves a minted allowance. */
   it("verifies the destination with a read-only fetch, not reconcileUser", () => {
-    const t = TRANSFER;
-    const fetchAt = t.indexOf("const sub = await fetchSubscriber(destination)");
-    const rpcAt = t.indexOf('sb.rpc("transfer_subscription_ownership"');
-    expect(fetchAt).toBeGreaterThan(-1);
-    expect(fetchAt).toBeLessThan(rpcAt);
-    // No write before the RPC.
-    expect(t.slice(0, rpcAt)).not.toMatch(/reconcileUser\(/);
-    expect(t).toMatch(/p_product_id: snapshot\.productId/);
-    expect(t).toMatch(/p_period_start: snapshot\.periodStart/);
+    // The handler no longer implements ownership logic at all -- it resolves
+    // WHICH account to reconcile and delegates to the one primitive.
+    expect(TRANSFER).toMatch(/const result = await reconcileUser\(destination\);/);
+    expect(TRANSFER).not.toMatch(/transfer_subscription_ownership/);
+    expect(TRANSFER).not.toMatch(/p_period_start/);
   });
 });
 
@@ -335,7 +358,7 @@ describe("replays and stale events", () => {
 
     // Every subsequent reconcile carries the SAME period_start.
     for (let i = 0; i < 3; i++) {
-      rows[B_UID] = applySnapshot(rows[B_UID], "flipstart_pro_monthly", P, P_END);
+      applySnapshot(rows, B_UID, "flipstart_pro_monthly", P, P_END);
       expect(computeBalances(rows[B_UID], NOW).subscriptionScansRemaining).toBe(299);
     }
   });
@@ -360,8 +383,24 @@ describe("replays and stale events", () => {
     // The live-state rule, asserted in code.
     // Verification is now a READ-ONLY fetch — reconcileUser would write and
     // could mint an allowance if the transfer then failed closed.
-    expect(TRANSFER).toMatch(/const sub = await fetchSubscriber\(destination\);/);
-    expect(TRANSFER).toMatch(/snapshot\.plan !== "monthly" && snapshot\.plan !== "annual"/);
+    expect(TRANSFER).toMatch(/const result = await reconcileUser\(destination\);/);
+    expect(TRANSFER).toMatch(/result\.plan !== "monthly" && result\.plan !== "annual"/);
+  });
+
+  /**
+   * DEFECT 1, pinned.
+   *
+   * On a real TRANSFER the top-level app_user_id is often an alias or
+   * $RCAnonymousID. The isFlipStartUserId guard fired first and acknowledged
+   * the event as "identity is not a FlipStart user id", so transferred_from[]
+   * and transferred_to[] were never read. Observed live.
+   */
+  it("handles TRANSFER before the FlipStart-identity guard", () => {
+    const transferAt = WEBHOOK.indexOf('eventType === "TRANSFER"');
+    const guardAt = WEBHOOK.indexOf("if (!isFlipStartUserId(appUserId))");
+    expect(transferAt).toBeGreaterThan(-1);
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(transferAt).toBeLessThan(guardAt);
   });
 
   /** Replay protection remains the first line of defence. */
@@ -397,10 +436,11 @@ describe("free and pack buckets never transfer", () => {
 
   /** The SQL must not name those columns in either statement. */
   it("the RPC never writes free or pack columns", () => {
-    const moves = SQL.slice(SQL.indexOf("update public.account_usage set"));
-    expect(moves).not.toMatch(/free_scans_used\s*=/);
-    expect(moves).not.toMatch(/pack_scan_balance\s*=/);
-    expect(SQL).toMatch(/subscription_scans_used\s*=\s*v_src\.subscription_scans_used/);
+    const body = SQL.slice(SQL.indexOf("begin"), SQL.indexOf("end\n$function$"));
+    expect(body).not.toMatch(/free_scans_used\s*=/);
+    expect(body).not.toMatch(/pack_scan_balance\s*=/);
+    // The carried-over counter is the anti-farming rule, in one line.
+    expect(SQL).toMatch(/when v_prev_used is not null then v_prev_used/);
   });
 });
 
@@ -409,32 +449,34 @@ describe("free and pack buckets never transfer", () => {
 describe("normal subscription behaviour is unchanged", () => {
   /** Requirement J. */
   it("a fresh Monthly purchase still starts at 300", () => {
-    const fresh = applySnapshot(emptyUsage(), "flipstart_pro_monthly", P, P_END);
-    expect(computeBalances(fresh, NOW).subscriptionScansRemaining).toBe(MONTHLY_SCANS);
+    const rows: Record<string, AccountUsage> = { [B_UID]: emptyUsage() };
+    applySnapshot(rows, B_UID, "flipstart_pro_monthly", P, P_END);
+    expect(computeBalances(rows[B_UID], NOW).subscriptionScansRemaining).toBe(MONTHLY_SCANS);
   });
 
   /** Requirement K. A genuine renewal DOES reset — that is the distinction. */
   it("a real renewal resets Monthly to 300", () => {
-    const used = sub({ subscription_scans_used: 250 });
-    const renewed = applySnapshot(used, "flipstart_pro_monthly",
+    const rows: Record<string, AccountUsage> = { [A_UID]: sub({ subscription_scans_used: 250 }) };
+    applySnapshot(rows, A_UID, "flipstart_pro_monthly",
       "2026-09-01T00:00:00+00:00", "2026-10-01T00:00:00+00:00");
-    expect(renewed.subscription_scans_used).toBe(0);
-    expect(computeBalances(renewed, NOW).subscriptionScansRemaining).toBe(MONTHLY_SCANS);
+    expect(rows[A_UID].subscription_scans_used).toBe(0);
+    expect(computeBalances(rows[A_UID], NOW).subscriptionScansRemaining).toBe(MONTHLY_SCANS);
   });
 
   /** Requirement L. */
   it("a fresh Annual purchase still starts at 4000", () => {
-    const fresh = applySnapshot(emptyUsage(), "flipstart_pro_annual", P, P_END);
-    expect(computeBalances(fresh, NOW).subscriptionScansRemaining).toBe(ANNUAL_SCANS);
+    const rows: Record<string, AccountUsage> = { [B_UID]: emptyUsage() };
+    applySnapshot(rows, B_UID, "flipstart_pro_annual", P, P_END);
+    expect(computeBalances(rows[B_UID], NOW).subscriptionScansRemaining).toBe(ANNUAL_SCANS);
   });
 
   /** Requirement N. A product change is a new period and resets, correctly. */
   it("Monthly to Annual still works", () => {
-    const monthly = sub({ subscription_scans_used: 50 });
-    const upgraded = applySnapshot(monthly, "flipstart_pro_annual",
+    const rows: Record<string, AccountUsage> = { [A_UID]: sub({ subscription_scans_used: 50 }) };
+    applySnapshot(rows, A_UID, "flipstart_pro_annual",
       "2026-08-20T00:00:00+00:00", "2027-08-20T00:00:00+00:00");
-    expect(derivePlan(upgraded, NOW)).toBe("annual");
-    expect(computeBalances(upgraded, NOW).subscriptionScansRemaining).toBe(ANNUAL_SCANS);
+    expect(derivePlan(rows[A_UID], NOW)).toBe("annual");
+    expect(computeBalances(rows[A_UID], NOW).subscriptionScansRemaining).toBe(ANNUAL_SCANS);
   });
 });
 
@@ -468,8 +510,8 @@ describe("RevenueCat id arrays", () => {
     expect(rows[B_UID].subscription_scans_used).toBe(7);
     // The SQL selects by subscription IDENTITY, never by array index and never
     // by "latest period_end" — that ordering is what the hardening removed.
-    expect(SQL).toMatch(/and subscription_product_id\s+= p_product_id/);
-    expect(SQL).toMatch(/and subscription_period_start = p_period_start/);
+    expect(SQL).toMatch(/subscription_product_id\s+= p_product_id/);
+    expect(SQL).toMatch(/subscription_period_start = p_period_start/);
     expect(SQL).not.toMatch(/order by subscription_period_end desc nulls last/);
   });
 });
@@ -482,10 +524,10 @@ describe("orchestration", () => {
    * counter before there was anything to preserve.
    */
   it("moves ownership before applying the final snapshot", () => {
-    const rpc = TRANSFER.indexOf('sb.rpc("transfer_subscription_ownership"');
-    const confirm = TRANSFER.indexOf("const confirm = await reconcileUser(destination)");
-    expect(rpc).toBeGreaterThan(-1);
-    expect(confirm).toBeGreaterThan(rpc);
+    // Ownership is resolved INSIDE the snapshot, so there is no ordering left
+    // to get wrong -- that is what makes the webhook/sync race safe.
+    expect(SQL).toMatch(/if v_prev_used is not null then\s*\n\s*v_reset := false;/);
+    expect(TRANSFER).toMatch(/const result = await reconcileUser\(destination\);/);
   });
 
   it("fails closed on every ambiguity, never minting quota", () => {
@@ -509,7 +551,7 @@ describe("orchestration", () => {
   it("locks rows deterministically and is SECURITY DEFINER", () => {
     expect(SQL).toMatch(/security definer/);
     expect(SQL).toMatch(/order by user_id\s*\n\s*for update/);
-    expect(SQL).toMatch(/grant execute on function public\.transfer_subscription_ownership/);
-    expect(SQL).toMatch(/revoke all on function public\.transfer_subscription_ownership/);
+    expect(SQL).toMatch(/grant execute on function public\.apply_revenuecat_snapshot/);
+    expect(SQL).toMatch(/revoke all on function public\.apply_revenuecat_snapshot/);
   });
 });
