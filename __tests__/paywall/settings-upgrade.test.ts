@@ -41,6 +41,12 @@ describe("settings_upgrade source", () => {
     expect(PAYWALL_SOURCES).toContain("settings_upgrade");
     expect(SU().eyebrow).toBe("FLIPSTART PRO");
     expect(SU().ctaLabel).toBe("Upgrade to Pro");
+    /**
+     * Pinned exactly. The generic-fallback check below is not enough on its own:
+     * it would still pass if the headline drifted to any other wording.
+     */
+    expect(SU().headline).toBe("Unlock FlipStart Pro");
+    // ...and still must not be the unrecognised-source fallback.
     expect(SU().headline).not.toBe("Unlock More From Every Find");
   });
 
@@ -107,6 +113,20 @@ describe("the plaque hero", () => {
     }
     expect(HERO).toContain("300 scans monthly");
     expect(HERO).toContain("4,000 annually");
+  });
+
+  /** The seal carries an FS monogram, drawn as paths — not a typeset letter. */
+  it("stamps an FS monogram, joined by a diagonal ligature", () => {
+    const c = code(HERO);
+    // Both letters present as path geometry.
+    expect(c).toMatch(/const F =/);
+    expect(c).toMatch(/const FS =/);
+    // The ligature: F stem base runs straight into the S's entry point.
+    expect(c).toMatch(/M \$\{P\(-0\.31, -0\.14\)\} L \$\{S\(0\.75, 0\.20\)\}/);
+    // A proper two-bowl S, from a scaled unit template, not freehand curls.
+    expect((c.match(/C \$\{S\(/g) ?? []).length).toBe(3);
+    // No leftover P monogram, and no <Text> glyph standing in for the mark.
+    expect(c).not.toMatch(/Monogram P|>P<\/Text>/);
   });
 
   it("is described for screen readers as one object", () => {

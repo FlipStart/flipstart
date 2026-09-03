@@ -69,41 +69,12 @@ export function PaywallFooter({
       </View>
 
       {/*
-       * ── Scan Store alternative ──────────────────────────────────────────
-       *
-       * Source-controlled, and TRUE for scan_limit only. Packs buy quantity and
-       * never capability, so offering them to someone who wanted Generate
-       * Listings would sell a thing that cannot unlock it. On scan_limit the
-       * user's problem IS quantity, so packs genuinely solve it — and hiding
-       * the cheaper option while selling a subscription would be a dark
-       * pattern.
-       *
-       * Rendered as a real secondary button rather than a text link: it is a
-       * legitimate second answer, not a footnote. Cream on parchment with a
-       * forest outline keeps it clearly below the solid-green Pro CTA in the
-       * visual hierarchy without looking disabled.
+       * The Scan Store alternative no longer lives here. It renders as its own
+       * block ABOVE this footer (components/monetization/paywall/
+       * ScanStoreAlternative.tsx) so it sits within the first viewport on the
+       * scan-limit paywall. `showScanStore`/`onScanStore` are kept on the props
+       * so no call site changes.
        */}
-      {showScanStore && (
-        <View style={s.altBlock}>
-          <View style={s.orRow}>
-            <View style={s.orRule} />
-            <Text style={s.orText}>or</Text>
-            <View style={s.orRule} />
-          </View>
-
-          <Text style={s.altPrompt}>Just need more scans?</Text>
-
-          <Pressable
-            onPress={onScanStore}
-            accessibilityRole="button"
-            accessibilityLabel="Go to Scan Store"
-            hitSlop={6}
-            style={({ pressed }) => [s.altBtn, pressed && { opacity: 0.78 }]}
-          >
-            <Text style={s.altText}>Go to Scan Store</Text>
-          </Pressable>
-        </View>
-      )}
 
       {/* ── Restore ──────────────────────────────────────────────────────── */}
       <Pressable

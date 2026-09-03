@@ -19,7 +19,7 @@ import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { FONTS } from "@/constants/typography";
 import { ANNUAL_SCANS, MONTHLY_SCANS } from "@/lib/paywallConfig";
-import { annualSavingsLabel, planPriceLabel, type ProductPricing } from "@/lib/paywallPricing";
+import { annualMonthlyEquivalent, annualSavingsLabel, planPriceLabel, type ProductPricing } from "@/lib/paywallPricing";
 import { fmt } from "@/lib/scanBalanceDisplay";
 import type { PurchaseTarget } from "@/lib/purchases";
 import { PlanCard } from "./PlanCard";
@@ -51,9 +51,14 @@ export function PlanSelector({
       accessibilityLabel="Choose your plan"
       style={s.group}
     >
-      <Text style={s.sectionLabel} accessibilityRole="header">
-        CHOOSE YOUR PLAN
-      </Text>
+      {/* Gold rules with sparks — the catalogue-heading treatment. */}
+      <View style={s.headerRow}>
+        <Text style={s.headerSpark}>✦</Text>
+        <View style={s.headerRule} />
+        <Text style={s.sectionLabel} accessibilityRole="header">CHOOSE YOUR PLAN</Text>
+        <View style={s.headerRule} />
+        <Text style={s.headerSpark}>✦</Text>
+      </View>
 
       {/* ANNUAL FIRST. */}
       <PlanCard
@@ -63,6 +68,9 @@ export function PlanSelector({
         // Falls back to wording with no percentage when the two prices cannot
         // be compared honestly — see lib/paywallPricing.ts.
         footnote={annualSavingsLabel(monthlyPricing, annualPricing)}
+        // "$3.33" — derived from the live annual amount, suppressed when the
+        // data is not there. See lib/paywallPricing.ts.
+        equivalent={annualMonthlyEquivalent(annualPricing)}
         selected={selected === "annual"}
         preferred
         unavailable={!annualAvailable}
@@ -73,7 +81,7 @@ export function PlanSelector({
       <PlanCard
         name="MONTHLY PRO"
         priceLabel={planPriceLabel(monthlyPricing, "month")}
-        allowance={`${fmt(MONTHLY_SCANS)} scans every month`}
+        allowance={`${fmt(MONTHLY_SCANS)} scans per month`}
         footnote="Renews monthly"
         selected={selected === "monthly"}
         unavailable={!monthlyAvailable}
@@ -86,6 +94,9 @@ export function PlanSelector({
 
 const s = StyleSheet.create({
   group: { gap: 10 },
+  headerRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 2 },
+  headerRule: { flex: 1, height: 1, backgroundColor: "rgba(196,163,52,0.55)" },
+  headerSpark: { color: "#C4A334", fontSize: 11 },
   /**
    * Brown, not the muted tone.
    *

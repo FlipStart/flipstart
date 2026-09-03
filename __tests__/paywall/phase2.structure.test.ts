@@ -181,14 +181,16 @@ describe("plan selection", () => {
     expect(annualBlock).toMatch(/\bpreferred\b/);
     const monthlyBlock = SELECTOR.slice(SELECTOR.indexOf('name="MONTHLY PRO"'));
     expect(monthlyBlock).not.toMatch(/\bpreferred\b/);
-    expect(CARD).toMatch(/preferred && <BestValueSeal \/>/);
+    // The badge is inline now, still gated on `preferred` — Annual only.
+    expect(CARD).toMatch(/\{preferred && \(\s*<View style=\{s\.badge\}>/);
+    expect(CARD).toContain('BEST VALUE');
   });
 
   /** Requirement 29. Selectable controls, not coloured rectangles. */
   it("exposes plan cards as accessible radios inside a radiogroup", () => {
     expect(CARD).toMatch(/accessibilityRole="radio"/);
     expect(CARD).toMatch(/accessibilityState=\{\{ selected/);
-    expect(CARD).toMatch(/accessibilityLabel=\{a11yLabel\}/);
+    expect(CARD).toMatch(/accessibilityLabel=\{a11y\}/);
     expect(SELECTOR).toMatch(/accessibilityRole="radiogroup"/);
   });
 
@@ -327,7 +329,8 @@ describe("accessibility", () => {
     expect(FOOTER).toMatch(/accessibilityLabel="Restore purchases"/);
     expect(FOOTER).toMatch(/hitSlop=\{12\}/);
     // 44pt-class targets on the primary action.
-    expect(BUTTON).toMatch(/minHeight: 54/);
+    // Raised to 56 in the redesign — still well above the 44pt minimum.
+    expect(BUTTON).toMatch(/minHeight: 56/);
   });
 
   it("announces state changes rather than silently swapping copy", () => {

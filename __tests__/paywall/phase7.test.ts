@@ -302,10 +302,10 @@ describe("scan_limit configuration", () => {
 
 describe("hero", () => {
   it("shows the allowance in text, not visuals alone", () => {
-    expect(HERO).toMatch(/\{FREE_LIFETIME_SCANS\} \/ \{FREE_LIFETIME_SCANS\} USED/);
-    expect(HERO).toMatch(/accessibilityLabel="All 15 of your 15 lifetime scans have been used\."/);
-    // The decorative tally is hidden from assistive tech.
-    expect(HERO).toMatch(/accessibilityElementsHidden/);
+    // The count is a compact pill now — still text, still from the constant.
+    expect(HERO).toMatch(/\{FREE_LIFETIME_SCANS\} FREE SCANS USED/);
+    // The pill carries its own label; there is no decorative tally to hide any more.
+    expect(HERO).toMatch(/accessibilityLabel=\{`All \$\{FREE_LIFETIME_SCANS\} free scans have been used\.`\}/);
   });
 
   /** Requirement: no red error treatment. */
@@ -317,7 +317,9 @@ describe("hero", () => {
   });
 
   it("draws the marks from the real constant, not a literal 15", () => {
-    expect(HERO).toMatch(/length: FREE_LIFETIME_SCANS/);
+    // The 15-mark grid is gone by design. The number is still never a literal.
+    expect(HERO).toMatch(/All \$\{FREE_LIFETIME_SCANS\} free scans have been used/);
+    expect(code(HERO)).not.toMatch(/\b15 FREE SCANS/);
     expect(HERO).toMatch(/from "@\/lib\/paywallConfig"/);
   });
 
@@ -340,9 +342,14 @@ describe("hero", () => {
 describe("scan store alternative", () => {
   /** Requirement 43. Rendered only when the source turns it on. */
   it("renders only behind the source-controlled flag", () => {
-    expect(FOOTER).toMatch(/\{showScanStore && \(/);
-    expect(FOOTER).toContain("Just need more scans?");
-    expect(FOOTER).toContain("Go to Scan Store");
+    // Moved to its own component; still gated on the source flag, at the modal.
+    const modal = read("components/monetization/paywall/ProPaywallModal.tsx");
+    expect(modal).toMatch(/\{!!config\?\.showScanStoreAlternative && \(\s*<ScanStoreAlternative/);
+    const alt = read("components/monetization/paywall/ScanStoreAlternative.tsx");
+    expect(alt).toContain("Just need more scans?");
+    expect(alt).toContain("Go to Scan Store");
+    // And it left the footer, which is what puts it above the fold.
+    expect(code(FOOTER)).not.toContain("Go to Scan Store");
   });
 
   /** Not "Buy Tokens" / "Credits" / "Usage". The product has a name. */
@@ -357,7 +364,9 @@ describe("scan store alternative", () => {
     const idx = c.indexOf("Go to Scan Store");
     const block = c.slice(Math.max(0, idx - 600), idx + 200);
     expect(block).not.toMatch(/purchase\(|onPress=\{onRestore\}|mutateAsync/);
-    expect(block).toMatch(/onPress=\{onScanStore\}/);
+    const alt = code(read("components/monetization/paywall/ScanStoreAlternative.tsx"));
+    expect(alt).toMatch(/onPress=\{onPress\}/);
+    expect(alt).not.toMatch(/purchase\(|mutateAsync|restorePurchases/);
   });
 
   /** Requirement 45. Dismiss first, then navigate — iOS stacks otherwise. */

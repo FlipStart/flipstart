@@ -63,6 +63,17 @@ import {
 } from "@/lib/paywallMachine";
 import type { PaywallConfig } from "@/lib/paywallConfig";
 import { PaywallFooter } from "./PaywallFooter";
+import { ProBenefits, type BenefitKey } from "./ProBenefits";
+
+/** Which benefit each contextual paywall should quietly emphasize. */
+const BENEFIT_FOR_SOURCE: Partial<Record<string, BenefitKey>> = {
+  third_photo: "photos",
+  deep_analysis: "deep",
+  generate_listings: "listings",
+  camera_context: "context",
+};
+import { ScanStoreAlternative } from "./ScanStoreAlternative";
+import { planCtaLabel } from "@/lib/paywallPricing";
 import { PaywallHero } from "./PaywallHero";
 import { PaywallPurchaseButton } from "./PaywallPurchaseButton";
 import { PlanSelector } from "./PlanSelector";
@@ -454,7 +465,12 @@ export function ProPaywallModal({
                   {state.notice && <Notice tone={state.notice.tone} text={state.notice.text} />}
 
                   <PaywallPurchaseButton
-                    label={config?.ctaLabel ?? "Unlock FlipStart Pro"}
+                    /*
+                     * "Start Annual Pro — $39.99/year". Names the plan AND the
+                     * live price, so what is about to be charged is never
+                     * ambiguous. Updates as the selection changes.
+                     */
+                    label={planCtaLabel(selected, selected === "annual" ? products.annual.pricing : products.monthly.pricing)}
                     onPress={runPurchase}
                     busy={state.phase === "purchasing" || state.phase === "activating"}
                     disabled={!purchaseEnabled}
@@ -478,6 +494,25 @@ export function ProPaywallModal({
                    */}
                   {!!config?.secondaryValueLine && (
                     <Text style={s.secondaryValue}>{config.secondaryValueLine}</Text>
+                  )}
+
+                  {/*
+                   * The standardized Pro set — identical on every trigger.
+                   *
+                   * Skipped for settings_upgrade only: its plaque hero already
+                   * engraves the same four lines, and showing them twice on one
+                   * screen would look like a mistake.
+                   */}
+                  {config?.source !== "settings_upgrade" && (
+                    <ProBenefits emphasize={BENEFIT_FOR_SOURCE[config?.source ?? "dev_preview"] ?? null} />
+                  )}
+
+                  {/*
+                   * The one paywall where packs solve the problem. Rendered here,
+                   * above the footer, so it lands inside the first viewport.
+                   */}
+                  {!!config?.showScanStoreAlternative && (
+                    <ScanStoreAlternative onPress={goScanStore} disabled={busy} />
                   )}
                 </View>
 

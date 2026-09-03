@@ -243,12 +243,22 @@ function Frame({ w, h }: { w: number; h: number }) {
 }
 
 /**
- * A hand-drawn wax seal: crimson disc, scalloped edge, brass "P" monogram.
+ * A hand-drawn wax seal: crimson disc, scalloped edge, brass FS monogram.
  *
- * Drawn rather than iconified so it reads as an object, not a glyph.
+ * ── The monogram ────────────────────────────────────────────────────────────
+ * F upper-left, S lower-right, joined: the F's stem runs diagonally down-right
+ * and becomes the S's entry stroke, so the two letters are one physical mark
+ * rather than two glyphs sharing a circle.
+ *
+ * The S is built from a unit-box template scaled into place, which is what
+ * keeps its two bowls open and legible at 58px. An earlier freehand version
+ * knotted into a blob at that size — this one was rendered and checked at the
+ * shipped dimensions before it went in.
+ *
+ * Drawn rather than typeset so it engraves rather than prints.
  */
 function WaxSeal({ size }: { size: number }) {
-  const c = size / 2, r = size / 2 - 2;
+  const c = size / 2, r = size / 2 - 2, sw = size * 0.055;
   const scallops = 14;
   const pts: string[] = [];
   for (let i = 0; i < scallops * 2; i++) {
@@ -256,6 +266,23 @@ function WaxSeal({ size }: { size: number }) {
     const rr = i % 2 === 0 ? r : r * 0.9;
     pts.push(`${(c + rr * Math.cos(a)).toFixed(2)} ${(c + rr * Math.sin(a)).toFixed(2)}`);
   }
+
+  // Unit-relative coordinates, so the mark scales with the seal.
+  const P = (x: number, y: number) => `${(c + x * r).toFixed(2)} ${(c + y * r).toFixed(2)}`;
+  const F =
+    `M ${P(-0.31, -0.44)} L ${P(-0.31, -0.14)} ` +
+    `M ${P(-0.31, -0.44)} L ${P(0.05, -0.44)} ` +
+    `M ${P(-0.31, -0.29)} L ${P(-0.07, -0.29)}`;
+  // The S, in a box below-right of the F.
+  const sx = -0.02, sy = 0.00, w = 0.44, h = 0.48;
+  const S = (u: number, v: number) => P(sx + u * w, sy + v * h);
+  // One continuous stroke: F stem base → diagonal ligature → S.
+  const FS =
+    `M ${P(-0.31, -0.14)} L ${S(0.75, 0.20)} ` +
+    `C ${S(0.75, -0.10)} ${S(0.20, -0.10)} ${S(0.20, 0.25)} ` +
+    `C ${S(0.20, 0.50)} ${S(0.80, 0.50)} ${S(0.80, 0.75)} ` +
+    `C ${S(0.80, 1.10)} ${S(0.25, 1.10)} ${S(0.25, 0.80)}`;
+
   return (
     <Svg width={size} height={size}>
       <Defs>
@@ -267,13 +294,8 @@ function WaxSeal({ size }: { size: number }) {
       <Path d={`M ${pts.join(" L ")} Z`} fill="url(#wax)" />
       <Circle cx={c} cy={c} r={r * 0.72} fill="none" stroke={BRASS} strokeWidth={1.1} opacity={0.7} />
       <Circle cx={c} cy={c} r={r * 0.62} fill={WAX} />
-      {/* Monogram P, as a stroked path so it engraves rather than prints. */}
-      <Path
-        d={`M ${c - r * 0.16} ${c + r * 0.3} L ${c - r * 0.16} ${c - r * 0.3}
-            L ${c + r * 0.08} ${c - r * 0.3} A ${r * 0.16} ${r * 0.16} 0 0 1 ${c + r * 0.08} ${c + r * 0.02}
-            L ${c - r * 0.16} ${c + r * 0.02}`}
-        stroke={BRASS} strokeWidth={size * 0.055} fill="none" strokeLinecap="round" strokeLinejoin="round"
-      />
+      <Path d={F} stroke={BRASS} strokeWidth={sw} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <Path d={FS} stroke={BRASS} strokeWidth={sw} fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </Svg>
   );
 }

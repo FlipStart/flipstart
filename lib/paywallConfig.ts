@@ -259,7 +259,7 @@ const SCAN_LIMIT: PaywallConfig = {
 const SETTINGS_UPGRADE: PaywallConfig = {
   source: "settings_upgrade",
   eyebrow: "FLIPSTART PRO",
-  headline: "Go Pro. Hunt Smarter.",
+  headline: "Unlock FlipStart Pro",
   subtitle: "Everything FlipStart can do, on every scan — plus 300 scans a month or 4,000 a year to do it with.",
   ctaLabel: "Upgrade to Pro",
   showScanStoreAlternative: false,

@@ -308,59 +308,52 @@ describe("contextual hero", () => {
    * The dossier rows must name sections the REAL feature ships. Inventing
    * plausible metrics would promise a feature that does not exist.
    */
-  it("uses row labels that exist in the real Deep Analysis screen", () => {
-    for (const label of ["PRICE LOGIC", "RISK FLAGS", "WHERE TO SELL", "CONFIDENCE BREAKDOWN"]) {
-      expect(HERO).toContain(label);
-      // Title-cased equivalent is a real DeepHead title on the screen.
-      const title = label.split(" ").map(w => w[0] + w.slice(1).toLowerCase()).join(" ");
-      expect(ANALYSIS_SCREEN.toLowerCase()).toContain(title.toLowerCase());
+  /**
+   * Superseded by the Deep Analysis redesign. The dossier now opens three
+   * insights (Why Strong Buy?, Price Logic, Risk Flags) and seals the rest
+   * behind a gold lock. Every section it names is still cross-checked against
+   * the real screen; the detailed contract lives in
+   * __tests__/paywall/deep-analysis-redesign.test.ts.
+   */
+  it("names only sections the real Deep Analysis screen has", () => {
+    for (const t of ["Price Logic", "Risk Flags", "Confidence Breakdown", "Where to Sell",
+                     "Listing Strategy", "Item Evidence"]) {
+      expect(HERO).toContain(t);
+      expect(ANALYSIS_SCREEN).toContain(`title="${t}"`);
     }
   });
 
   /**
-   * The values are illustrative and must be labelled as such — the paywall can
-   * appear over any scan, and convincing numbers would be a fabricated
-   * analysis of the user's actual item.
+   * The redesign brief explicitly asked for sample price figures. The
+   * protection against them reading as real data is the SAMPLE tag and a
+   * generic item — not the absence of numbers.
    */
-  it("marks the dossier as a sample and shows no fabricated valuations", () => {
+  it("marks the dossier as a sample on a generic item", () => {
     expect(HERO).toContain("SAMPLE");
-    /**
-     * Asserted on the DISPLAYED value strings only.
-     *
-     * Two earlier attempts were wrong in an instructive way: a whole-file regex
-     * matched `width: "100%"`, and a ROWS-block regex matched the opacity
-     * `reveal: 0.42`. Neither is a valuation. What actually matters is that no
-     * row shows money or a percentage, because those would read as a real
-     * appraisal of the user's own item.
-     */
-    const rows = HERO.slice(HERO.indexOf("const ROWS"), HERO.indexOf("export function DeepAnalysisHero"));
-    const values = [...rows.matchAll(/value: "([^"]+)"/g)].map(m => m[1]);
-    expect(values.length).toBeGreaterThanOrEqual(4);
-    for (const v of values) {
-      expect(v).not.toMatch(/[$£€]/);
-      expect(v).not.toMatch(/%/);
-      expect(v).not.toMatch(/\d+\.\d/);
-    }
+    expect(HERO).toMatch(/item: "Vintage Leather Jacket"/);
+    expect(code(HERO)).not.toMatch(/flip\.|scan\.|props\.item|route\.params/);
   });
 
-  it("fades rather than blurs, with no new dependency", () => {
-    expect(HERO).toMatch(/reveal: 0\./);
-    expect(code(HERO)).not.toMatch(/BlurView|blurRadius|backdropFilter|expo-blur/);
-    expect(code(HERO)).not.toMatch(/expo-linear-gradient|lottie/);
+  it("fades the sealed remainder rather than blurring it, with no new dependency", () => {
+    expect(HERO).toMatch(/id="da-fade"/);
+    expect(code(HERO)).not.toMatch(/expo-blur|BlurView|react-native-blur/);
   });
 
-  it("uses a small vintage seal, not a modern padlock", () => {
-    expect(HERO).toMatch(/function WaxSeal/);
-    expect(code(HERO)).not.toMatch(/name="lock"|name="lock-outline"|padlock/i);
+  /** A gold lock was an explicitly approved technique in the redesign brief. */
+  it("seals the remainder with a small gold lock", () => {
+    expect(HERO).toMatch(/name="lock"/);
+    expect(HERO).toMatch(/lock: \{[^}]*borderColor: PW\.gold/);
   });
 
-  it("is decorative and hidden from screen readers", () => {
-    expect(HERO).toMatch(/accessibilityElementsHidden/);
-    expect(HERO).toMatch(/importantForAccessibility="no-hide-descendants"/);
+  /** Described for screen readers as one object rather than hidden. */
+  it("describes the sample dossier to screen readers", () => {
+    expect(HERO).toMatch(/accessibilityLabel="Sample Deep Analysis:/);
   });
 
-  it("adds no animation", () => {
-    expect(code(HERO)).not.toMatch(/Animated\.|useSharedValue|withTiming|withRepeat/);
+  /** Motion was requested in the redesign. It runs once, then stays still. */
+  it("animates once on open and honours Reduce Motion", () => {
+    expect(HERO).toMatch(/AccessibilityInfo\.isReduceMotionEnabled/);
+    expect(HERO).toMatch(/if \(reduceMotion\) \{ stamp\.value = 1;/);
   });
 
   it("compresses on short screens instead of crushing the plans", () => {
