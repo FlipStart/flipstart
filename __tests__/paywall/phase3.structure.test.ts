@@ -338,7 +338,9 @@ describe("contextual hero", () => {
 
   it("uses no image, logo or new package", () => {
     expect(code(HERO)).not.toMatch(/require\(|\.png|\.jpg|\.svg['"]|Image\b/);
-    expect(code(HERO)).not.toMatch(/expo-linear-gradient|lottie|react-native-reanimated/);
+    // Reanimated is not new: it is the animation infrastructure every other
+    // paywall component already uses.
+    expect(code(HERO)).not.toMatch(/expo-linear-gradient|lottie|expo-blur/);
   });
 
   it("stays inside the FlipStart palette", () => {
@@ -351,9 +353,15 @@ describe("contextual hero", () => {
     expect(HERO).toMatch(/importantForAccessibility="no-hide-descendants"/);
   });
 
-  /** No motion at all, so nothing needs a Reduce Motion branch. */
-  it("adds no animation", () => {
-    expect(code(HERO)).not.toMatch(/Animated\.|useSharedValue|withTiming|withRepeat|LayoutAnimation/);
+  /**
+   * Entrance once, then still — through the SHARED reveal, so the three
+   * redesigned siblings arrive with one rhythm and one Reduce Motion path.
+   * The hero never drives a shared value itself and never repeats.
+   */
+  it("animates once on entrance through the shared reveal, and never repeats", () => {
+    expect(HERO).toMatch(/import \{ Reveal, useHeroReveal \} from "\.\.\/HeroReveal"/);
+    expect(HERO).toMatch(/const \{ progress \} = useHeroReveal\(\);/);
+    expect(code(HERO)).not.toMatch(/useSharedValue|withTiming|withRepeat|LayoutAnimation/);
   });
 
   /** Hero compresses rather than pushing the purchase section off screen. */

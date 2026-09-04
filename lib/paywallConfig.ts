@@ -115,7 +115,13 @@ const GENERATE_LISTINGS: PaywallConfig = {
    * be selling a thing that cannot solve the problem.
    */
   showScanStoreAlternative: false,
-  secondaryValueLine: "Pro also includes 3-photo scans, AI Context, Deep Analysis, and more.",
+  /**
+   * NULL — removed in the three-paywall redesign. The line sat between the
+   * CTA and the MORE WITH PRO strip and was the 30pt that kept the strip
+   * below the first screen on a 6.1" phone. The hero sells the feature and
+   * the strip names the rest; the line had nothing left to say.
+   */
+  secondaryValueLine: null,
 };
 
 /** The four sources still awaiting their own phase. */
@@ -172,7 +178,7 @@ const THIRD_PHOTO: PaywallConfig = {
   eyebrow: "FLIPSTART PRO",
   headline: "Give FlipStart Another Angle",
   subtitle:
-    "Pro unlocks a third photo so FlipStart can see another angle, detail, or tag before analyzing your find.",
+    "A third photo lets FlipStart see another angle, detail, or tag before analyzing your find.",
   ctaLabel: "Unlock Third Photo",
   /**
    * FALSE, and this is the clearest case of the rule.
@@ -182,7 +188,8 @@ const THIRD_PHOTO: PaywallConfig = {
    * Offering packs here would sell something that cannot possibly help.
    */
   showScanStoreAlternative: false,
-  secondaryValueLine: "More visual evidence for your scan.",
+  /** NULL — removed for the fold; see GENERATE_LISTINGS. */
+  secondaryValueLine: null,
 };
 
 /**
@@ -203,11 +210,12 @@ const CAMERA_CONTEXT: PaywallConfig = {
   eyebrow: "FLIPSTART PRO",
   headline: "Tell FlipStart What You See",
   subtitle:
-    "Add your own observations before scanning so FlipStart knows what details deserve extra attention.",
+    "Add your observations before scanning so FlipStart knows which details deserve attention.",
   ctaLabel: "Unlock AI Context",
   /** Packs buy scan quantity; no balance has ever unlocked a capability. */
   showScanStoreAlternative: false,
-  secondaryValueLine: "Your photos show the item. Your notes add the context.",
+  /** NULL — removed for the fold; see GENERATE_LISTINGS. */
+  secondaryValueLine: null,
 };
 
 /**

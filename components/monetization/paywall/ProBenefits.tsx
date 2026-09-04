@@ -10,6 +10,13 @@
  * headline. Below it, it answers "what else do I get?" at exactly the moment
  * that question forms.
  *
+ * ── MORE WITH PRO, not INCLUDED WITH PRO ──────────────────────────────────
+ * A contextual paywall opens because the user reached for ONE feature. The
+ * kicker answers the question that forms right after the price: "and what
+ * else?" — so it is phrased as an addition, not an inventory. Every icon now
+ * sits in a hairline forest ring so the four read as small seals rather
+ * than loose glyphs; the one they came for keeps its gold ring.
+ *
  * ── Why names only ──────────────────────────────────────────────────────────
  * This paywall has to fit eleven things above the fold on a normal phone. Four
  * full descriptions would push the Scan Store alternative off-screen — and for
@@ -63,9 +70,9 @@ export function ProBenefits({ emphasize = null }: { emphasize?: BenefitKey | nul
     <View
       style={s.strip}
       accessibilityRole="summary"
-      accessibilityLabel={`Included with Pro: ${PRO_BENEFITS.map(b => b.a11y).join(", ")}.`}
+      accessibilityLabel={`More with Pro: ${PRO_BENEFITS.map(b => b.a11y).join(", ")}.`}
     >
-      <Text style={s.kicker} accessibilityElementsHidden>INCLUDED WITH PRO</Text>
+      <Text style={s.kicker} accessibilityElementsHidden>MORE WITH PRO</Text>
       <View style={s.row}>
         {PRO_BENEFITS.map((b, i) => (
           <React.Fragment key={b.a11y}>
@@ -114,7 +121,10 @@ const s = StyleSheet.create({
   },
   row: { flexDirection: "row", alignItems: "stretch" },
   cell: { flex: 1, alignItems: "center", gap: 5, paddingHorizontal: 2 },
-  iconWrap: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  iconWrap: {
+    width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center",
+    borderWidth: 1, borderColor: "rgba(33,77,45,0.22)", backgroundColor: PW.card,
+  },
   /** The one they came for: a gold ring and a warm fill. Quiet, but unmistakable. */
   iconWrapEmphasized: { borderWidth: 1.4, borderColor: PW.gold, backgroundColor: PW.goldTint },
   labelEmphasized: { color: PW.forest },

@@ -253,13 +253,19 @@ describe("third-slot premium treatment is untouched", () => {
 // ── Hero ────────────────────────────────────────────────────────────────────
 
 describe("contextual hero", () => {
-  /** Real shipped slot names, not the brief's sketch. */
-  it("uses the app's real slot labels", () => {
-    for (const label of ["FRONT", "TAG", "GRAPHIC"]) {
+  /**
+   * FRONT, TAG, EXTRA PHOTO. The camera currently captions its third slot
+   * "Graphic" — right for a printed tee, wrong for a lamp — so the paywall
+   * neither repeats it nor invents a different specific word that would
+   * mismatch the camera. It says what the feature is. The camera's caption
+   * is a separate decision and is unchanged here.
+   */
+  it("labels the frames FRONT, TAG and EXTRA PHOTO", () => {
+    for (const label of ["FRONT", "TAG", "EXTRA PHOTO"]) {
       expect(HERO).toContain(`"${label}"`);
     }
-    expect(code(HERO)).not.toMatch(/EXTRA ANGLE/);
-    // And those labels match SLOT_LABELS in the camera.
+    expect(code(HERO)).not.toMatch(/"GRAPHIC"|"DETAIL"|EXTRA ANGLE/);
+    // The camera's own captions are untouched by the paywall redesign.
     expect(CAMERA).toMatch(/front:\s+'Front'/);
     expect(CAMERA).toMatch(/tag:\s+'Tag'/);
     expect(CAMERA).toMatch(/detail: 'Graphic'/);

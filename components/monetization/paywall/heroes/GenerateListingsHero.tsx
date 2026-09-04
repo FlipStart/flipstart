@@ -1,110 +1,112 @@
 /**
  * components/monetization/paywall/heroes/GenerateListingsHero.tsx
  *
- * The Generate Listings hero: a thrift find becoming two listing slips.
+ * The Generate Listings hero: one find branching into two listing drafts.
  *
- * ── The story, not the feature ──────────────────────────────────────────────
- * The user pressed a button because they want to SELL something. So the visual
- * is a find on a merchant's desk turning into two paper listing slips — not a
- * dashboard, not a phone mockup, not an AI graphic. A reseller's desk in 1962
- * would have looked like this: a tagged item, and two slips written out ready
- * to go in the post.
+ * ── The redesign ────────────────────────────────────────────────────────────
+ * The previous version stacked the story vertically — a find, an arrow down,
+ * two slips side by side — and spent ~185pt saying it. It also read as a
+ * wireframe: ruled lines where a title should be, cards square to the world.
  *
- * ── Everything is drawn ─────────────────────────────────────────────────────
- * No image assets, no logo files, no new packages. The slips are Views with
- * borders, the connector is react-native-svg (already installed, already used
- * by PremiumGlimmer). "eBay" and "Depop" are plain text, deliberately — using
- * real marketplace logos would be both a trademark problem and an asset
- * dependency, and the brief rules both out.
+ * This version turns the story sideways. The find sits at the left; a gold
+ * thread, drawn with a ruler, forks once into two stacked drafts on the right.
+ * "One thing becomes two" is now the literal shape of the illustration, and it
+ * costs ~100pt instead of ~185pt, which is what lets the plan cards and the
+ * CTA stay on the first screen.
  *
- * ── Decorative, and honest about it ─────────────────────────────────────────
- * The whole illustration is hidden from screen readers. The headline and
- * subtitle already say "eBay and Depop titles and descriptions", so a VoiceOver
- * user who also had to hear "YOUR FIND, eBay, blank line, blank line, READY TO
- * EDIT, Depop…" would be worse off, not better. Decoration that repeats the
- * text is noise.
+ * ── The drafts look like drafts ─────────────────────────────────────────────
+ * Each slip carries the marketplace name, one plausible title line, and a
+ * READY TO EDIT stamp. The title is fixed illustrative text for a generic item
+ * (the same sample item the Deep Analysis hero uses), and the block is stamped
+ * SAMPLE: this paywall opens over a REAL scan, and a draft that looked like
+ * the user's item would be a claim about their find that FlipStart has not
+ * made. No price, size or condition appears — those would be fabricated data
+ * on a purchase screen.
  *
- * ── No motion ───────────────────────────────────────────────────────────────
- * Nothing animates. The brief permits restrained motion and explicitly prefers
- * a good static hero, and on a screen asking for money, movement competes with
- * the decision. Nothing to gate behind Reduce Motion because there is nothing
- * moving.
+ * "eBay" and "Depop" are plain text, deliberately: real marketplace logos are
+ * a trademark problem and an asset dependency.
+ *
+ * ── Motion ──────────────────────────────────────────────────────────────────
+ * One entrance, via the shared useHeroReveal: the find settles, the thread
+ * appears, then the two drafts slide in from the fork in sequence — the eye
+ * reads the illustration in the order the story happens. ~0.9s, then still.
+ * No ambient loop here; the masthead glint is the only slow repeat on this
+ * hero. Reduce Motion renders the finished illustration.
  */
 import React from "react";
 import { StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import Svg, { Circle, Line, Path } from "react-native-svg";
+import Svg, { Circle, Path } from "react-native-svg";
 import { FONTS } from "@/constants/typography";
 import type { PaywallHeroProps } from "../PaywallHero";
+import { PaywallMasthead } from "../PaywallMasthead";
+import { Reveal, useHeroReveal } from "../HeroReveal";
 import { PW, PW_RADIUS, PW_SHADOW } from "../paywallTheme";
 
 /**
- * Below this height the hero compresses rather than pushing the plan cards off
- * screen.
- *
- * 700pt is just above the iPhone SE's 667. The brief is explicit that the
- * purchase section must not be crushed, so the illustration is what gives way.
+ * Below this height the illustration compresses rather than pushing the plan
+ * cards off screen. 740 matches the Deep Analysis hero, so the two siblings
+ * switch modes on the same devices.
  */
-const COMPACT_BELOW = 700;
+const COMPACT_BELOW = 740;
+
+/** Illustrative. The same generic item the Deep Analysis sample uses. */
+const SAMPLE_TITLES = {
+  eBay:  "Vintage Leather Jacket Brown",
+  Depop: "Vintage brown leather jacket",
+} as const;
 
 export function GenerateListingsHero({ config }: PaywallHeroProps) {
   const { height } = useWindowDimensions();
   const compact = height < COMPACT_BELOW;
+  const { progress } = useHeroReveal();
 
-  const slipHeight = compact ? 78 : 92;
-  const findSize = compact ? 46 : 54;
-  const connectorH = compact ? 14 : 20;
-  const ruleCount = compact ? 2 : 3;
+  const slipH = compact ? 42 : 46;
+  const slipGap = 8;
+  const forkH = slipH * 2 + slipGap;
 
   return (
     <View style={s.hero}>
-      {/* ── Copy ──────────────────────────────────────────────────────────── */}
-      <Text style={s.eyebrow} accessibilityRole="header">
-        {config.eyebrow}
-      </Text>
+      <PaywallMasthead feature="GENERATE LISTINGS" accessibilityLabel="FlipStart, Generate Listings" />
 
       <Text style={[s.headline, compact && s.headlineCompact]}>{config.headline}</Text>
-
       <Text style={[s.subtitle, compact && s.subtitleCompact]}>{config.subtitle}</Text>
 
-      {/* ── Illustration ──────────────────────────────────────────────────── */}
+      {/*
+       * The illustration is hidden from screen readers. The headline and
+       * subtitle already say "eBay and Depop titles and descriptions", so a
+       * VoiceOver user hearing "YOUR FIND, eBay, Vintage Leather Jacket…"
+       * would get repetition, not information.
+       */}
       <View
-        style={[s.illustration, compact && s.illustrationCompact]}
+        style={[s.teaser, compact && s.teaserCompact]}
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
       >
-        <Text style={s.caption}>YOUR FIND</Text>
+        <Text style={s.sampleTag} allowFontScaling={false}>SAMPLE</Text>
 
-        {/*
-         * The find itself.
-         *
-         * A tag rather than a photo or a garment: it is the one symbol that
-         * means "thrifted item with a price on it" without committing to a
-         * category. FlipStart scans clothing, but it also scans lamps.
-         */}
-        <View style={[s.findCard, { width: findSize, height: findSize }]}>
-          <MaterialIcons name="local-offer" size={compact ? 21 : 25} color={PW.forest} />
-          {/* Gold corner tick — the same "antique detail" language as the seal. */}
-          <View style={s.findCorner} />
-        </View>
+        {/* The find. */}
+        <Reveal progress={progress} at={0} span={0.4} dy={6} style={s.findCol}>
+          <View style={s.findCard}>
+            <MaterialIcons name="local-offer" size={26} color={PW.forest} />
+            <View style={s.findCorner} />
+          </View>
+          <Text style={s.caption} allowFontScaling={false}>YOUR FIND</Text>
+        </Reveal>
 
-        <Connector height={connectorH} />
+        {/* The thread, forking once. */}
+        <Reveal progress={progress} at={0.2} span={0.35} dy={0}>
+          <Fork height={forkH} slipH={slipH} gap={slipGap} />
+        </Reveal>
 
-        <View style={s.slips}>
-          <ListingSlip
-            platform="eBay"
-            height={slipHeight}
-            ruleCount={ruleCount}
-            tilt={-1.4}
-            compact={compact}
-          />
-          <ListingSlip
-            platform="Depop"
-            height={slipHeight}
-            ruleCount={ruleCount}
-            tilt={1.4}
-            compact={compact}
-          />
+        {/* Two drafts, arriving in order. */}
+        <View style={[s.slips, { gap: slipGap }]}>
+          <Reveal progress={progress} at={0.38} span={0.45} dx={-10} dy={0}>
+            <ListingSlip platform="eBay" title={SAMPLE_TITLES.eBay} height={slipH} compact={compact} />
+          </Reveal>
+          <Reveal progress={progress} at={0.52} span={0.45} dx={-10} dy={0}>
+            <ListingSlip platform="Depop" title={SAMPLE_TITLES.Depop} height={slipH} compact={compact} />
+          </Reveal>
         </View>
       </View>
     </View>
@@ -112,232 +114,133 @@ export function GenerateListingsHero({ config }: PaywallHeroProps) {
 }
 
 /**
- * The gold thread from the find down to the slips.
+ * The gold thread from the find to the two drafts.
  *
- * A dashed line with a small arrowhead and two flanking dots — the restrained
- * antique connector the brief asks for. Explicitly not a beam, a glow or a
- * gradient: it should read as ink on paper, drawn with a ruler.
+ * Dashed, with a dot where it leaves the find and an arrowhead where it
+ * reaches each draft. Drawn as two cubic curves from one origin so the fork is
+ * a single decision, not two separate arrows. Ink on paper, with a ruler — not
+ * a beam, a glow or a gradient.
  */
-function Connector({ height }: { height: number }) {
-  const w = 44;
-  const mid = w / 2;
+function Fork({ height, slipH, gap }: { height: number; slipH: number; gap: number }) {
+  const w = 34;
+  const mid = height / 2;
+  const topY = slipH / 2;
+  const botY = slipH + gap + slipH / 2;
+  const end = w - 4;
 
   return (
-    <Svg width={w} height={height + 8}>
-      {/* Dashed stem. */}
-      <Line
-        x1={mid}
-        y1={0}
-        x2={mid}
-        y2={height - 2}
-        stroke={PW.gold}
-        strokeWidth={1.2}
-        strokeDasharray="3,2.5"
-        opacity={0.8}
-      />
-      {/* Arrowhead. */}
+    <Svg width={w} height={height}>
+      <Circle cx={2} cy={mid} r={1.8} fill={PW.gold} />
       <Path
-        d={`M ${mid - 4} ${height - 3} L ${mid} ${height + 2} L ${mid + 4} ${height - 3}`}
-        stroke={PW.gold}
-        strokeWidth={1.3}
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+        d={`M 2 ${mid} C 16 ${mid}, 14 ${topY}, ${end} ${topY}`}
+        stroke={PW.gold} strokeWidth={1.2} strokeDasharray="3,2.5" fill="none" opacity={0.85}
       />
-      {/* Two ticks, the same detail that flanks the lozenge in OrnamentRule. */}
-      <Circle cx={mid - 11} cy={height / 2} r={1.3} fill={PW.gold} opacity={0.55} />
-      <Circle cx={mid + 11} cy={height / 2} r={1.3} fill={PW.gold} opacity={0.55} />
+      <Path
+        d={`M 2 ${mid} C 16 ${mid}, 14 ${botY}, ${end} ${botY}`}
+        stroke={PW.gold} strokeWidth={1.2} strokeDasharray="3,2.5" fill="none" opacity={0.85}
+      />
+      <Path d={`M ${end - 4} ${topY - 4} L ${end} ${topY} L ${end - 4} ${topY + 4}`}
+        stroke={PW.gold} strokeWidth={1.3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <Path d={`M ${end - 4} ${botY - 4} L ${end} ${botY} L ${end - 4} ${botY + 4}`}
+        stroke={PW.gold} strokeWidth={1.3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </Svg>
   );
 }
 
 /**
- * One paper listing slip.
+ * One listing draft.
  *
- * Warm cream, thin forest rule, a gold hairline along the top edge, and a soft
- * warm shadow. The slight rotation is what stops the pair reading as two UI
- * cards in a grid — real slips on a desk are never square to the world.
+ * Marketplace name in forest serif, a READY TO EDIT stamp on the same line,
+ * one title in ink, and — when there is room — a single ruled line standing
+ * in for the description. A gold hairline across the head is the same
+ * letterhead detail the plan cards and the note card use.
  */
-function ListingSlip({
-  platform,
-  height,
-  ruleCount,
-  tilt,
-  compact,
-}: {
-  platform: string;
-  height: number;
-  ruleCount: number;
-  tilt: number;
-  compact: boolean;
+function ListingSlip({ platform, title, height, compact }: {
+  platform: string; title: string; height: number; compact: boolean;
 }) {
   return (
-    <View style={[s.slip, { height, transform: [{ rotate: `${tilt}deg` }] }]}>
-      {/* Gold rule across the head of the slip, like a printed letterhead. */}
+    <View style={[s.slip, { height }]}>
       <View style={s.slipHead} />
-
-      <Text style={[s.slipPlatform, compact && { fontSize: 11.5 }]} numberOfLines={1}>
-        {platform}
-      </Text>
-
-      {/*
-       * Placeholder copy lines.
-       *
-       * Rules of varying width rather than lorem ipsum: real words would either
-       * be a fake listing (misleading) or gibberish (cheap). Ruled lines read
-       * as "text goes here" in any language.
-       */}
-      <View style={s.rules}>
-        {Array.from({ length: ruleCount }).map((_, i) => (
-          <View
-            key={i}
-            style={[
-              s.rule,
-              // Tapering the last line is what makes it read as a paragraph
-              // ending rather than a progress bar.
-              i === ruleCount - 1 && { width: "58%" },
-            ]}
-          />
-        ))}
+      <View style={s.slipRow}>
+        <Text style={s.slipPlatform} numberOfLines={1}>{platform}</Text>
+        <View style={s.stamp}>
+          <Text style={s.stampText} allowFontScaling={false} numberOfLines={1}>READY TO EDIT</Text>
+        </View>
       </View>
-
-      {/* Tiny stamp. The brief's "READY TO EDIT", set like an ink mark. */}
-      <View style={s.stamp}>
-        <Text style={s.stampText} allowFontScaling={false} numberOfLines={1}>
-          READY TO EDIT
-        </Text>
-      </View>
+      <Text style={s.slipTitle} numberOfLines={1}>{title}</Text>
+      {!compact && <View style={s.rule} />}
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  hero: { alignItems: "center", gap: 8, paddingHorizontal: 4 },
-
-  /**
-   * Green, not gold — the same contrast decision as the Phase 2 hero.
-   * #C4A334 on parchment is roughly 2:1 and unreadable at this size.
-   */
-  eyebrow: {
-    fontFamily: FONTS.serif,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 2.6,
-    color: PW.forest,
-  },
+  hero: { alignItems: "center", gap: 4, paddingHorizontal: 4 },
 
   headline: {
-    fontFamily: FONTS.serif,
-    fontSize: 27,
-    fontWeight: "800",
-    color: PW.ink,
-    textAlign: "center",
-    lineHeight: 33,
-    paddingHorizontal: 4,
+    fontFamily: FONTS.serif, fontSize: 28, fontWeight: "800",
+    color: PW.ink, textAlign: "center", lineHeight: 32, marginTop: 2,
   },
-  headlineCompact: { fontSize: 24, lineHeight: 29 },
-
+  headlineCompact: { fontSize: 25, lineHeight: 29 },
   subtitle: {
-    fontSize: 14,
-    color: PW.brown,
-    textAlign: "center",
-    lineHeight: 20,
-    paddingHorizontal: 8,
-    maxWidth: 336,
+    fontSize: 14.5, color: PW.brown, textAlign: "center", lineHeight: 19,
+    paddingHorizontal: 12, maxWidth: 360, fontWeight: "500",
   },
-  subtitleCompact: { fontSize: 13, lineHeight: 18.5 },
+  subtitleCompact: { fontSize: 13.5, lineHeight: 18 },
 
-  illustration: { alignItems: "center", marginTop: 10, gap: 4 },
-  illustrationCompact: { marginTop: 4 },
+  teaser: {
+    width: "100%", maxWidth: 380, marginTop: 4,
+    flexDirection: "row", alignItems: "center", gap: 6,
+  },
+  teaserCompact: { marginTop: 6 },
 
-  caption: {
-    fontFamily: FONTS.serif,
-    fontSize: 9.5,
-    fontWeight: "800",
-    letterSpacing: 1.8,
-    color: PW.brown,
-    marginBottom: 4,
+  sampleTag: {
+    position: "absolute", top: -12, right: 2,
+    fontFamily: FONTS.serif, fontSize: 8, fontWeight: "800",
+    letterSpacing: 1.6, color: PW.brown, opacity: 0.8,
   },
 
+  findCol: { alignItems: "center", gap: 4, width: 62 },
   findCard: {
-    backgroundColor: PW.card,
-    borderRadius: 10,
-    borderWidth: 1.25,
-    borderColor: PW.border,
-    alignItems: "center",
-    justifyContent: "center",
+    width: 58, height: 58,
+    backgroundColor: PW.card, borderRadius: 10,
+    borderWidth: 1.25, borderColor: "rgba(33,77,45,0.30)",
+    alignItems: "center", justifyContent: "center",
     ...PW_SHADOW,
   },
   findCorner: {
-    position: "absolute",
-    top: 4,
-    right: 4,
-    width: 7,
-    height: 7,
-    borderTopWidth: 1.1,
-    borderRightWidth: 1.1,
-    borderColor: PW.gold,
+    position: "absolute", top: 4, right: 4, width: 7, height: 7,
+    borderTopWidth: 1.1, borderRightWidth: 1.1, borderColor: PW.gold,
+  },
+  caption: {
+    fontFamily: FONTS.serif, fontSize: 8.5, fontWeight: "800",
+    letterSpacing: 1.5, color: PW.brown,
   },
 
-  slips: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
-
+  slips: { flex: 1 },
   slip: {
-    width: 128,
     backgroundColor: PW.card,
-    borderRadius: PW_RADIUS.card - 4,
-    borderWidth: 1.1,
-    borderColor: PW.border,
-    paddingHorizontal: 10,
-    paddingTop: 9,
-    paddingBottom: 8,
-    justifyContent: "flex-start",
+    borderRadius: PW_RADIUS.card - 5,
+    borderWidth: 1.1, borderColor: PW.border,
+    paddingHorizontal: 10, paddingTop: 5, paddingBottom: 4,
+    overflow: "hidden",
     ...PW_SHADOW,
   },
   slipHead: {
-    position: "absolute",
-    top: 4,
-    left: 8,
-    right: 8,
-    height: 1,
-    backgroundColor: PW.gold,
-    opacity: 0.5,
+    position: "absolute", top: 2.5, left: 8, right: 8, height: 1,
+    backgroundColor: PW.gold, opacity: 0.5,
   },
-  slipPlatform: {
-    fontFamily: FONTS.serif,
-    fontSize: 13,
-    fontWeight: "800",
-    color: PW.forest,
-    marginBottom: 6,
-  },
-
-  rules: { gap: 5, flex: 1 },
-  rule: {
-    height: 2,
-    width: "100%",
-    borderRadius: 1,
-    backgroundColor: PW.border,
-  },
+  slipRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 6 },
+  slipPlatform: { fontFamily: FONTS.serif, fontSize: 12.5, fontWeight: "800", color: PW.forest },
+  slipTitle: { marginTop: 2, fontSize: 11.5, lineHeight: 14, color: PW.ink, fontWeight: "600" },
+  rule: { marginTop: 3, height: 1.5, width: "62%", borderRadius: 1, backgroundColor: PW.border },
 
   stamp: {
-    alignSelf: "flex-start",
-    marginTop: 6,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 2.5,
-    borderWidth: 0.9,
-    borderColor: PW.gold,
-    backgroundColor: PW.goldTint,
+    paddingHorizontal: 5, paddingVertical: 1.5, borderRadius: 2.5,
+    borderWidth: 0.9, borderColor: PW.gold, backgroundColor: PW.goldTint,
   },
-  /**
-   * Brown ink on the gold wash, ~5.6:1. Gold on gold would be about 1.3:1.
-   * allowFontScaling is off because the stamp is fixed geometry and the whole
-   * illustration is hidden from screen readers, so nothing is lost.
-   */
+  /** Brown ink on the gold wash, ~5.6:1. Gold on gold would be ~1.3:1. */
   stampText: {
-    fontFamily: FONTS.serif,
-    fontSize: 7,
-    fontWeight: "800",
-    letterSpacing: 0.7,
-    color: PW.brown,
+    fontFamily: FONTS.serif, fontSize: 6.5, fontWeight: "800",
+    letterSpacing: 0.7, color: PW.brown,
   },
 });

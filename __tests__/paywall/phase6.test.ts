@@ -158,7 +158,8 @@ describe("camera_context configuration", () => {
     expect(CC().eyebrow).toBe("FLIPSTART PRO");
     expect(CC().headline).toBe("Tell FlipStart What You See");
     expect(CC().ctaLabel).toBe("Unlock AI Context");
-    expect(CC().secondaryValueLine).toBe("Your photos show the item. Your notes add the context.");
+    // Removed in the three-paywall redesign so the benefits strip clears the fold.
+    expect(CC().secondaryValueLine).toBeNull();
   });
 
   it("rejects the lock-flavoured headlines the brief rules out", () => {
@@ -233,8 +234,11 @@ describe("hero", () => {
     expect(code(HERO)).not.toMatch(/bubble|avatar|send|chat|message/i);
   });
 
-  it("adds no animation and no new dependency", () => {
-    expect(code(HERO)).not.toMatch(/Animated\.|useSharedValue|withRepeat|withTiming/);
+  /** Entrance once through the shared reveal; never a loop, never a typing effect. */
+  it("animates once on entrance through the shared reveal, with no new dependency", () => {
+    expect(HERO).toMatch(/import \{ Reveal, useHeroReveal \} from "\.\.\/HeroReveal"/);
+    expect(HERO).toMatch(/const \{ progress \} = useHeroReveal\(\);/);
+    expect(code(HERO)).not.toMatch(/useSharedValue|withTiming|withRepeat|LayoutAnimation/);
     expect(code(HERO)).not.toMatch(/expo-linear-gradient|lottie|expo-blur/);
   });
 
