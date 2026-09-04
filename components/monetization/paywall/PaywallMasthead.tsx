@@ -141,7 +141,7 @@ function Diamond() {
 }
 
 const s = StyleSheet.create({
-  masthead: { alignItems: "center", gap: 5 },
+  masthead: { alignItems: "center", gap: 3 },
 
   brandRow: { flexDirection: "row", alignItems: "center", gap: 9 },
   /** Forest, heavy, wide-tracked: a wordmark, not a label. */
