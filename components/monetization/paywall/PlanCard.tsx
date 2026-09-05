@@ -10,10 +10,20 @@
  * a filled check, real depth — over a near-white interior. Expensive, not tinted.
  *
  * ── The one number that matters ─────────────────────────────────────────────
- * Annual's `equivalent` line ("$3.33 /month") is set in the same serif weight
- * as the headline price and in forest green. It is the reason someone picks
- * Annual over Monthly and it must not read as a footnote. Everything else on
- * the card is quieter than it.
+ * Annual leads with the monthly-equivalent figure ("$3.33 / month"), set at
+ * headline size, in ink — the same treatment the headline price always had, so
+ * the two cards still read as the same kind of object at a glance. The actual
+ * annual charge moves to a smaller "Billed $39.99/year" line directly beneath
+ * it, set in forest green: the accent color now marks the SUPPORTING fact
+ * ("here is what that actually bills as"), not the headline number, which
+ * needs no extra color to be the biggest thing on the card. Both numbers are
+ * still on the card; only which is loud, and which is green, changed.
+ *
+ * Monthly has no equivalent to lead with, so its card is untouched: the
+ * storefront price ("$7.99 / month") stays the headline, exactly as before.
+ * The two cards intentionally look different at the top for that reason — a
+ * true per-period price on one, a per-month equivalent on the other — and both
+ * say plainly, right below, what will actually be billed.
  *
  * ── Motion ──────────────────────────────────────────────────────────────────
  * The check scales in and the border settles when a card becomes selected —
@@ -87,10 +97,17 @@ export function PlanCard({
   // Split "$39.99 / year" so the period can be set lighter than the amount.
   const [amount, period] = priceLabel ? splitPrice(priceLabel) : [null, null];
 
+  // Both amount and equivalent must be ready before the equivalent leads —
+  // a lone "$3.33/month" with no "billed" figure yet resolved would be a
+  // headline price the card cannot back up. See the render below.
+  const showEquivDominant = Boolean(equivalent && amount);
+  const billed = priceLabel ? priceLabel.replace(/\s+/g, "") : null;
+
   const a11y = [
     name,
-    priceLabel ?? "price loading",
-    equivalent ? `${equivalent} per month` : "",
+    showEquivDominant
+      ? `${equivalent} per month, billed ${billed}`
+      : (priceLabel ?? "price loading"),
     allowance,
     footnote,
     preferred ? BEST_VALUE_A11Y : "",
@@ -137,20 +154,22 @@ export function PlanCard({
         </View>
       </View>
 
-      {amount ? (
+      {showEquivDominant ? (
+        <>
+          <View style={s.priceRow}>
+            <Text style={s.amount}>{equivalent}</Text>
+            <Text style={s.period}> / month</Text>
+          </View>
+          {/* The actual charge, right under the number that sold it. */}
+          <Text style={s.billedLine}>Billed {billed}</Text>
+        </>
+      ) : amount ? (
         <View style={s.priceRow}>
           <Text style={s.amount}>{amount}</Text>
           <Text style={s.period}> {period}</Text>
         </View>
       ) : (
         <View style={s.priceSkeleton}><Skeleton width={128} height={30} radius={6} /></View>
-      )}
-
-      {equivalent && (
-        <View style={s.equivRow}>
-          <Text style={s.equivAmount}>{equivalent}</Text>
-          <Text style={s.equivPeriod}>/month</Text>
-        </View>
       )}
 
       <Text style={s.allowance}>{allowance}</Text>
@@ -254,10 +273,13 @@ const s = StyleSheet.create({
   period: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: "700", color: PW.ink, lineHeight: 36 },
   priceSkeleton: { height: 36, marginTop: 6, justifyContent: "center" },
 
-  /** The persuasive number. As heavy as the headline price, in forest. */
-  equivRow: { flexDirection: "row", alignItems: "baseline", marginTop: 1 },
-  equivAmount: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: "800", color: PW.forest },
-  equivPeriod: { fontFamily: FONTS.serif, fontSize: 15, fontWeight: "700", color: PW.forest },
+  /**
+   * "Billed $39.99/year" — forest green, not ink. The headline number ($3.33)
+   * is already the biggest thing on the card and needs no color to draw the
+   * eye; the accent instead marks this line, the one someone glancing past the
+   * headline should still catch.
+   */
+  billedLine: { marginTop: 2, fontFamily: FONTS.serif, fontSize: 14, fontWeight: "700", color: PW.forest },
 
   allowance: { marginTop: 5, fontSize: 15, color: PW.ink, fontWeight: "500" },
 

@@ -50,7 +50,13 @@ describe("pricing on the card and the button", () => {
   it("suppresses the equivalent rather than inventing it", () => {
     expect(annualMonthlyEquivalent({ priceString: "$39.99", priceAmount: null, currencyCode: "USD" })).toBeNull();
     expect(annualMonthlyEquivalent({ priceString: null, priceAmount: 39.99, currencyCode: null })).toBeNull();
-    expect(CARD).toMatch(/\{equivalent && \(/);
+    // The polish pass made the equivalent the HEADLINE price rather than a
+    // second line, so this is now the branch that leads with it — gated on
+    // both the equivalent AND the amount being ready, never one without the
+    // other (a "$3.33/month" headline with no "Billed …" line under it would
+    // be a number the card cannot back up).
+    expect(CARD).toMatch(/const showEquivDominant = Boolean\(equivalent && amount\);/);
+    expect(CARD).toMatch(/\{showEquivDominant \? \(/);
   });
 
   it("formats the equivalent in the product currency", () => {
@@ -58,9 +64,11 @@ describe("pricing on the card and the button", () => {
     expect(y).not.toContain("$");
   });
 
-  it("names the plan and the live price on the CTA", () => {
-    expect(planCtaLabel("annual", USD(39.99, "$39.99"))).toBe("Start Annual Pro — $39.99/year");
-    expect(planCtaLabel("monthly", USD(7.99, "$7.99"))).toBe("Start Monthly Pro — $7.99/month");
+  it("names the plan and the live price on the CTA, with a centered dot", () => {
+    // The polish pass swapped the em dash for a centered dot to save the
+    // horizontal room the two gold sparks and the longer Monthly label need.
+    expect(planCtaLabel("annual", USD(39.99, "$39.99"))).toBe("Start Annual Pro \u00B7 $39.99/year");
+    expect(planCtaLabel("monthly", USD(7.99, "$7.99"))).toBe("Start Monthly Pro \u00B7 $7.99/month");
     expect(MODAL).toMatch(/label=\{planCtaLabel\(selected,/);
   });
 
@@ -106,8 +114,13 @@ describe("plan cards", () => {
     expect(sel).toMatch(/borderColor: PW\.forest/);
   });
 
-  it("gives the monthly equivalent headline weight, in forest green", () => {
-    expect(CARD).toMatch(/equivAmount: \{[^}]*fontSize: 20[^}]*color: PW\.forest/);
+  it("gives the monthly equivalent the actual headline size, in forest green — and bills the real charge underneath", () => {
+    // Same size as the plain price it replaced as headline (32/36), not the
+    // smaller secondary size it used to carry.
+    expect(CARD).toMatch(/amount: \{ fontFamily: FONTS\.serif, fontSize: 32, fontWeight: "800", color: PW\.ink, lineHeight: 36 \}/);
+    expect(CARD).toMatch(/amountGreen: \{ color: PW\.forest \}/);
+    expect(CARD).toMatch(/billedLine: \{[^}]*fontSize: 14/);
+    expect(CARD).toContain("Billed {billed}");
   });
 
   it("animates the check once per selection and honours Reduce Motion", () => {
@@ -170,8 +183,15 @@ describe("scan store alternative", () => {
     expect(fn.indexOf("dismiss(false)")).toBeLessThan(fn.indexOf("onScanStore()"));
   });
 
-  it("is gold-forward but outlined, so it stays second to the Pro CTA", () => {
-    expect(STORE).toMatch(/btn: \{[\s\S]*?borderColor: PW\.forest[\s\S]*?backgroundColor: PW\.goldTint/);
+  it("is a richer antique gold now, forest-bordered, and still outlined so it stays second to the Pro CTA", () => {
+    // The polish pass replaced the pale goldTint wash with a saturated brass
+    // fill (goldStore) and moved the text and spark to forestDeep so they stay
+    // legible and visible against it — see paywallTheme.ts and the component's
+    // own header comment for why goldTint specifically stopped working here.
+    expect(STORE).toMatch(/btn: \{[\s\S]*?borderColor: PW\.forest[\s\S]*?backgroundColor: PW\.goldStore/);
+    expect(code(STORE)).not.toMatch(/backgroundColor: PW\.goldTint/);
+    expect(STORE).toMatch(/label: \{[^}]*color: PW\.forestDeep/);
+    expect(STORE).toMatch(/fill=\{PW\.forestDeep\}/);
   });
 
   it("gleams on a different cadence from the CTA so they never pulse together", () => {

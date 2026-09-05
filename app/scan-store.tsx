@@ -30,16 +30,49 @@
  * This screen sells quantity. Free users reach it through the Scan Limit
  * paywall, which has already offered them Pro; repeating the pitch would be
  * badgering someone who just declined it.
+ *
+ * ── The redesign ────────────────────────────────────────────────────────────
+ * Presentation only. Every hook, effect and callback above the JSX is the
+ * live-validated Phase 3 code, byte for byte. What changed is what the user
+ * sees: the paywalls' masthead brand row over a large serif title; a balance
+ * card with real presence (seal, ruled figure, "fuel your next find"); the
+ * catalogue heading in the paywalls' ✦-rule language; five compact cards each
+ * with a tier seal — sprout, rocket, star, crown, diamond — a serif name, a
+ * tracked scan count, the live price and a gold-trimmed forest Buy pill; the
+ * best-value card lit in gold; and the two sentences that keep this honest
+ * (never expire / does not unlock Pro) each given an icon and a clear seat.
+ *
+ * ── Gold means "best pack value", and only that ─────────────────────────────
+ * The tier progression is carried entirely by the icon. Gold — border, seal,
+ * inner rule, badge — is applied by `bestValue`, which is computed from live
+ * prices (lib/scanPackCatalog.ts), never by pack name. If pricing changed so
+ * FlipPro won, FlipPro would go gold and FlipGod would not. One signal, one
+ * meaning.
+ *
+ * ── Motion ──────────────────────────────────────────────────────────────────
+ * One entrance through the paywalls' shared reveal: balance card, heading,
+ * then the five cards in order. Then still, except a slow glint across the
+ * best-value seal on the masthead's 11s cadence. Reduce Motion renders the
+ * finished screen.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator, InteractionManager,
+  AccessibilityInfo,
 } from 'react-native';
+import Animated, {
+  useSharedValue, useAnimatedStyle, withTiming, withDelay, withSequence, withRepeat,
+  Easing, interpolate,
+} from 'react-native-reanimated';
+import Svg, { Defs, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { FONTS } from '@/constants/typography';
 import { Skeleton } from '@/components/monetization/Skeleton';
+import { Spark } from '@/components/monetization/paywall/PaywallMasthead';
+import { Reveal, useHeroReveal } from '@/components/monetization/paywall/HeroReveal';
+import { PW, PW_RADIUS, PW_SHADOW } from '@/components/monetization/paywall/paywallTheme';
 import { useAuth } from '@/lib/auth-context';
 import { useEntitlement, useRefreshEntitlement } from '@/lib/useEntitlement';
 import {
@@ -53,20 +86,20 @@ import { readProductPricing, type ProductPricing } from '@/lib/paywallPricing';
 import { clearScanStoreIntent, consumeScanStoreIntent, scanStoreEntryMode } from '@/lib/scanStoreIntent';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 
-// ─── Palette — the shipped monetization values ────────────────────────────────
-// Page canvas only. CARD / GOLD_TINT / BORDER / GOLD are unchanged, so the
-// pack cards and balance card keep their warm treatment against white.
-const PARCHMENT = '#FFFFFF';
-const CARD      = '#FFFEFA';
-const GOLD_TINT = '#F5EBCB';
-const FOREST    = '#214D2D';
-const INK       = '#2B2118';
-const BROWN     = '#6F5A3E';
-const BORDER    = '#DDD2AC';
-const GOLD      = '#C4A334';
-const CREAM     = '#F4EED8';
-
 type Phase = 'idle' | 'purchasing' | 'granting' | 'recovering';
+
+/**
+ * Tier identity, smallest to largest: sprout, rocket, star, crown, diamond.
+ * Keyed by SKU so a reorder of the catalogue cannot shuffle the icons.
+ */
+type TierGlyph = 'eco' | 'rocket-launch' | 'star' | 'crown' | 'diamond';
+const TIER_GLYPH: Record<PackSku, TierGlyph> = {
+  flipstart_scan_pack_40:   'eco',
+  flipstart_scan_pack_110:  'rocket-launch',
+  flipstart_scan_pack_300:  'star',
+  flipstart_scan_pack_700:  'crown',
+  flipstart_scan_pack_1200: 'diamond',
+};
 
 export default function ScanStoreScreen() {
   const router = useRouter();
@@ -144,9 +177,9 @@ export default function ScanStoreScreen() {
    * Computed, never hardcoded to FlipGod.
    *
    * Pricing is App Store configuration and can change without anyone editing
-   * this app. A badge claiming BEST VALUE when it is no longer true is a false
-   * claim about money, so the helper refuses on any incomplete or mixed-currency
-   * set rather than guessing.
+   * this app. A badge claiming BEST PACK VALUE when it is no longer true is a
+   * false claim about money, so the helper refuses on any incomplete or
+   * mixed-currency set rather than guessing.
    */
   const bestValue = useMemo<PackSku | null>(() => {
     if (products?.status !== 'ready') return null;
@@ -278,8 +311,12 @@ export default function ScanStoreScreen() {
     router.back();
   }, [router]);
 
+  // ── Entrance ──────────────────────────────────────────────────────────────
+  const { progress } = useHeroReveal();
+
   return (
     <View style={s.root}>
+      {/* ── Masthead row: back, brand, spacer ─────────────────────────── */}
       <View style={[s.header, { paddingTop: Math.max(insets.top, 20) + 6 }]}>
         <Pressable
           onPress={goBack}
@@ -288,9 +325,16 @@ export default function ScanStoreScreen() {
           accessibilityLabel="Back"
           style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.6 }]}
         >
-          <MaterialIcons name="arrow-back" size={22} color={FOREST} />
+          <MaterialIcons name="arrow-back" size={20} color={PW.forest} />
         </Pressable>
-        <Text style={s.headerTitle}>Scan Store</Text>
+
+        {/* The paywalls' brand row, exactly: two sparks and the wordmark. */}
+        <View style={s.brandRow} accessibilityRole="header" accessibilityLabel="FlipStart">
+          <Spark size={13} />
+          <Text style={s.brand} allowFontScaling={false}>FLIPSTART</Text>
+          <Spark size={13} />
+        </View>
+
         <View style={s.backBtn} />
       </View>
 
@@ -298,29 +342,51 @@ export default function ScanStoreScreen() {
         contentContainerStyle={[s.scroll, { paddingBottom: Math.max(insets.bottom, 16) + 28 }]}
         showsVerticalScrollIndicator={false}
       >
+        <Text style={s.headerTitle}>Scan Store</Text>
         <Text style={s.subtitle}>Stock up on extra scans whenever you need them.</Text>
 
         {/* ── Balance ──────────────────────────────────────────────────── */}
-        <View style={s.balanceCard}>
-          <Text style={s.balanceLabel}>YOUR PACK BALANCE</Text>
-          {balanceReady ? (
-            <Text
-              style={s.balanceValue}
-              accessibilityLabel={`${formatScans(packBalance)} pack scans remaining`}
-            >
-              {formatScans(packBalance)}
-            </Text>
-          ) : (
-            // Neutral while unresolved. Showing "0" would tell an existing buyer
-            // their scans were gone.
-            <View style={s.balanceSkeleton}><Skeleton width={104} height={30} radius={6} /></View>
-          )}
-          <Text style={s.balanceUnit}>PACK SCANS</Text>
-        </View>
+        <Reveal progress={progress} at={0} span={0.4} dy={8}>
+          <View style={s.balanceCard}>
+            <View pointerEvents="none" style={s.balanceInnerRule} />
 
-        <Text style={s.rule}>
-          Pack Scans never expire and are used after your included scans.
-        </Text>
+            <View style={s.balanceSeal}>
+              <MaterialIcons name="style" size={26} color={PW.forest} />
+            </View>
+
+            <View style={s.balanceCenter}>
+              <Text style={s.balanceLabel} allowFontScaling={false}>YOUR PACK BALANCE</Text>
+              <View style={s.balanceRuleRow}>
+                <View style={s.balanceRule} />
+                <Spark size={8} />
+                <View style={s.balanceRule} />
+              </View>
+              {balanceReady ? (
+                <Text
+                  style={s.balanceValue}
+                  accessibilityLabel={`${formatScans(packBalance)} pack scans remaining`}
+                >
+                  {formatScans(packBalance)}
+                </Text>
+              ) : (
+                // Neutral while unresolved. Showing "0" would tell an existing buyer
+                // their scans were gone.
+                <View style={s.balanceSkeleton}><Skeleton width={104} height={30} radius={6} /></View>
+              )}
+              <Text style={s.balanceUnit} allowFontScaling={false}>PACK SCANS</Text>
+            </View>
+
+            <View style={s.balanceDivider} />
+            <Text style={s.balanceMotto} allowFontScaling={false}>FUEL{'\n'}YOUR{'\n'}NEXT{'\n'}FIND</Text>
+          </View>
+        </Reveal>
+
+        <View style={s.ruleRow}>
+          <MaterialIcons name="all-inclusive" size={13} color={PW.gold} />
+          <Text style={s.rule}>
+            Pack Scans never expire and are used after your included scans.
+          </Text>
+        </View>
 
         {!!notice && (
           <View
@@ -333,13 +399,22 @@ export default function ScanStoreScreen() {
             <MaterialIcons
               name={notice.tone === 'error' ? 'error-outline' : notice.tone === 'success' ? 'check-circle-outline' : 'info-outline'}
               size={14}
-              color={notice.tone === 'error' ? '#9E3A2A' : FOREST}
+              color={notice.tone === 'error' ? PW.error : PW.forest}
             />
             <Text style={s.noticeText}>{notice.text}</Text>
           </View>
         )}
 
-        <Text style={s.sectionLabel}>CHOOSE A SCAN PACK</Text>
+        {/* ── Catalogue heading: the paywalls' ✦-rule language ─────────── */}
+        <Reveal progress={progress} at={0.15} span={0.4} dy={4}>
+          <View style={s.sectionRow}>
+            <Text style={s.sectionSpark}>✦</Text>
+            <View style={s.sectionRule} />
+            <Text style={s.sectionLabel} accessibilityRole="header">CHOOSE A SCAN PACK</Text>
+            <View style={s.sectionRule} />
+            <Text style={s.sectionSpark}>✦</Text>
+          </View>
+        </Reveal>
 
         {/* ── Catalog ──────────────────────────────────────────────────── */}
         {products?.status === 'error' && !loadingProducts ? (
@@ -355,60 +430,74 @@ export default function ScanStoreScreen() {
             </Pressable>
           </View>
         ) : (
-          SCAN_PACKS.map(pack => {
+          SCAN_PACKS.map((pack, i) => {
             const pricing = pricingBySku.get(pack.sku) ?? null;
             const available = !loadingProducts && !!pricing?.priceString;
             return (
-              <PackCard
-                key={pack.sku}
-                name={pack.name}
-                scans={pack.scans}
-                priceString={pricing?.priceString ?? null}
-                loading={loadingProducts}
-                available={available}
-                bestValue={bestValue === pack.sku}
-                busy={busy}
-                active={activeSku === pack.sku}
-                phase={phase}
-                onBuy={() => void buy(pack.sku)}
-              />
+              <Reveal key={pack.sku} progress={progress} at={0.25 + i * 0.08} span={0.4} dy={10}>
+                <PackCard
+                  name={pack.name}
+                  scans={pack.scans}
+                  glyph={TIER_GLYPH[pack.sku]}
+                  priceString={pricing?.priceString ?? null}
+                  loading={loadingProducts}
+                  available={available}
+                  bestValue={bestValue === pack.sku}
+                  busy={busy}
+                  active={activeSku === pack.sku}
+                  phase={phase}
+                  onBuy={() => void buy(pack.sku)}
+                />
+              </Reveal>
             );
           })
         )}
 
-        {/* ── Recovery + footer ────────────────────────────────────────── */}
-        <Pressable
-          onPress={() => void recover()}
-          disabled={busy}
-          accessibilityRole="button"
-          accessibilityLabel="Recover Scan Purchases"
-          accessibilityState={{ disabled: busy, busy: phase === 'recovering' }}
-          hitSlop={12}
-          style={({ pressed }) => [s.recoverBtn, busy && { opacity: 0.45 }, pressed && !busy && { opacity: 0.65 }]}
-        >
-          <Text style={s.recoverText}>
-            {phase === 'recovering' ? 'Checking…' : 'Recover Scan Purchases'}
+        {/* ── The sentence that prevents the expensive misunderstanding ─── */}
+        <View style={s.footerRow}>
+          <MaterialIcons name="info-outline" size={13} color={PW.brown} />
+          <Text style={s.footer}>
+            Scan Packs add scan quantity only and do not unlock FlipStart Pro.
           </Text>
-        </Pressable>
+        </View>
 
-        <Text style={s.footer}>
-          Scan Packs add scan quantity only and do not unlock FlipStart Pro.
-        </Text>
+        {/* ── Recovery: consumables are recovered, not restored ──────────── */}
+        <View style={s.recoverRow}>
+          <View style={s.recoverRule} />
+          <Pressable
+            onPress={() => void recover()}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="Recover Scan Purchases"
+            accessibilityState={{ disabled: busy, busy: phase === 'recovering' }}
+            hitSlop={12}
+            style={({ pressed }) => [s.recoverBtn, busy && { opacity: 0.45 }, pressed && !busy && { opacity: 0.65 }]}
+          >
+            <Text style={s.recoverText}>
+              {phase === 'recovering' ? 'Checking…' : 'Recover Scan Purchases'}
+            </Text>
+          </Pressable>
+          <View style={s.recoverRule} />
+        </View>
       </ScrollView>
     </View>
   );
 }
 
 /**
- * One catalog card.
+ * One catalogue card.
  *
- * Quantity is the largest thing on it. The names are a joke and the price is
- * the cost, but what the user is buying is SCANS — so that is what leads.
+ * Seal, name over a tracked scan count, the live price, and a Buy pill. The
+ * name is the serif headline and the count is the strong line under it — the
+ * reference's hierarchy — with the price the largest figure on the row, since
+ * it is the one thing a buyer compares across cards.
+ *
+ * Gold on this card is `bestValue` and nothing else — see the file header.
  */
 function PackCard({
-  name, scans, priceString, loading, available, bestValue, busy, active, phase, onBuy,
+  name, scans, glyph, priceString, loading, available, bestValue, busy, active, phase, onBuy,
 }: {
-  name: string; scans: number; priceString: string | null;
+  name: string; scans: number; glyph: TierGlyph; priceString: string | null;
   loading: boolean; available: boolean; bestValue: boolean;
   busy: boolean; active: boolean; phase: Phase; onBuy: () => void;
 }) {
@@ -417,22 +506,34 @@ function PackCard({
 
   return (
     <View style={[s.card, bestValue && s.cardBest]}>
-      <View style={s.cardLeft}>
-        <View style={s.nameRow}>
-          <Text style={s.packName}>{name}</Text>
-          {bestValue && (
-            <View style={s.badge}>
-              <Text style={s.badgeText} allowFontScaling={false}>BEST VALUE</Text>
-            </View>
-          )}
-        </View>
-        <Text style={s.packScans}>{formatScans(scans)} SCANS</Text>
-        {loading ? (
-          <View style={s.priceSkeleton}><Skeleton width={62} height={15} radius={4} /></View>
-        ) : (
-          <Text style={s.packPrice}>{priceString ?? 'Currently unavailable'}</Text>
+      {bestValue && <View pointerEvents="none" style={s.cardInnerRule} />}
+
+      <TierSeal glyph={glyph} gold={bestValue} />
+
+      <View style={s.cardText}>
+        <Text style={s.packName} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+          {name}
+        </Text>
+        {bestValue && (
+          <View style={s.badge}>
+            <Text style={s.badgeText} allowFontScaling={false}>BEST PACK VALUE</Text>
+          </View>
         )}
+        <Text style={s.packScans} allowFontScaling={false}>{formatScans(scans)} SCANS</Text>
       </View>
+
+      {loading ? (
+        <View style={s.priceSkeleton}><Skeleton width={56} height={22} radius={5} /></View>
+      ) : (
+        <Text
+          style={[s.packPrice, !priceString && s.packPriceUnavailable]}
+          numberOfLines={priceString ? 1 : 2}
+          adjustsFontSizeToFit={!!priceString}
+          minimumFontScale={0.8}
+        >
+          {priceString ?? 'Currently unavailable'}
+        </Text>
+      )}
 
       <Pressable
         onPress={onBuy}
@@ -442,114 +543,265 @@ function PackCard({
         accessibilityState={{ disabled: !available || busy, busy: working }}
         style={({ pressed }) => [
           s.buyBtn,
-          (!available || busy) && { opacity: 0.4 },
+          (!available || busy) && s.buyBtnInert,
           pressed && available && !busy && { opacity: 0.85 },
         ]}
       >
+        <View pointerEvents="none" style={s.buyTrim} />
         {working ? (
           <>
-            <ActivityIndicator size="small" color={CREAM} />
+            <ActivityIndicator size="small" color={PW.cream} />
             <Text style={s.buyBusyText}>Adding scans…</Text>
           </>
         ) : (
-          <Text style={s.buyText}>Buy</Text>
+          <>
+            <Text style={s.buyText}>Buy</Text>
+            <MaterialIcons name="chevron-right" size={17} color={PW.cream} style={s.buyChevron} />
+          </>
         )}
       </Pressable>
     </View>
   );
 }
 
-const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: PARCHMENT },
+/**
+ * The tier seal: a forest glyph in a faint ring, the same ring the benefits
+ * strip uses. Gold when — and only when — the card is the best pack value,
+ * with a slow glint on the masthead's cadence.
+ */
+function TierSeal({ glyph, gold }: { glyph: TierGlyph; gold: boolean }) {
+  const color = gold ? PW.gold : PW.forest;
+  return (
+    <View style={[s.seal, gold && s.sealGold]}>
+      {glyph === 'crown' ? (
+        <Crown size={20} color={color} />
+      ) : (
+        <MaterialIcons name={glyph} size={20} color={color} />
+      )}
+      {gold && <SealGlint />}
+    </View>
+  );
+}
 
+/** MaterialIcons has no crown. A five-point one, drawn to match the icon weight. */
+function Crown({ size, color }: { size: number; color: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path d="M3 17.5 L4.4 6.8 L9 11.8 L12 4.2 L15 11.8 L19.6 6.8 L21 17.5 Z" fill={color} />
+      <Rect x="3" y="18.8" width="18" height="2.4" rx="1.2" fill={color} />
+    </Svg>
+  );
+}
+
+/** Slow gold pass across the best-value seal. 11s, like the masthead; off under Reduce Motion. */
+const GLINT_PERIOD_MS = 11000;
+const GLINT_PASS_MS = 1200;
+function SealGlint() {
+  const uid = useId().replace(/:/g, '');
+  const id = `sealGlint-${uid}`;
+  const [reduceMotion, setReduceMotion] = useState(false);
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion).catch(() => {});
+  }, []);
+  const pass = useSharedValue(0);
+  useEffect(() => {
+    if (reduceMotion) { pass.value = 0; return; }
+    pass.value = 0;
+    pass.value = withDelay(3000, withRepeat(
+      withSequence(
+        withTiming(1, { duration: GLINT_PASS_MS, easing: Easing.inOut(Easing.sin) }),
+        withTiming(0, { duration: 0 }),
+        withDelay(GLINT_PERIOD_MS - GLINT_PASS_MS, withTiming(0, { duration: 0 })),
+      ), -1, false,
+    ));
+  }, [reduceMotion, pass]);
+  const style = useAnimatedStyle(() => ({
+    opacity: interpolate(pass.value, [0, 0.15, 0.85, 1], [0, 0.85, 0.85, 0]),
+    transform: [{ translateX: interpolate(pass.value, [0, 1], [-30, 50]) }],
+  }));
+  if (reduceMotion) return null;
+  return (
+    <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, style]}>
+      <Svg width={20} height="100%">
+        <Defs>
+          <LinearGradient id={id} x1="0" y1="0" x2="1" y2="0">
+            <Stop offset="0"   stopColor={PW.gold} stopOpacity="0" />
+            <Stop offset="0.5" stopColor="#FFF4C8" stopOpacity="0.8" />
+            <Stop offset="1"   stopColor={PW.gold} stopOpacity="0" />
+          </LinearGradient>
+        </Defs>
+        <Rect width="100%" height="100%" fill={`url(#${id})`} />
+      </Svg>
+    </Animated.View>
+  );
+}
+
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: PW.parchment },
+
+  // ── Masthead row ─────────────────────────────────────────────────────────
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 10,
+    paddingHorizontal: 16, paddingBottom: 6,
   },
-  backBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: INK },
+  backBtn: {
+    width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: 'rgba(33,77,45,0.35)',
+  },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  /** The masthead's wordmark: 19/800, tracked 5, forest. */
+  brand: { fontFamily: FONTS.serif, fontSize: 19, fontWeight: '800', letterSpacing: 5, color: PW.forest },
 
   scroll: { paddingHorizontal: 18, gap: 12 },
 
-  subtitle: { fontSize: 14, lineHeight: 20, color: BROWN, textAlign: 'center', paddingHorizontal: 8 },
-
-  balanceCard: {
-    alignItems: 'center', gap: 2, marginTop: 4,
-    backgroundColor: CARD, borderRadius: 14, borderWidth: 1.25, borderColor: BORDER,
-    paddingVertical: 14,
+  /** The screen title, set like a paywall headline. */
+  headerTitle: {
+    fontFamily: FONTS.serif, fontSize: 32, fontWeight: '800', color: PW.ink,
+    textAlign: 'center', lineHeight: 36, marginTop: -2,
   },
+  subtitle: {
+    fontSize: 14, lineHeight: 19, color: PW.brown, textAlign: 'center',
+    paddingHorizontal: 8, marginTop: -6, fontWeight: '500',
+  },
+
+  // ── Balance card ─────────────────────────────────────────────────────────
+  balanceCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: PW.card, borderRadius: PW_RADIUS.card,
+    borderWidth: 1.25, borderColor: PW.border,
+    paddingVertical: 13, paddingHorizontal: 14,
+    overflow: 'hidden',
+    shadowColor: PW.forest, shadowOpacity: 0.09, shadowRadius: 12, shadowOffset: { width: 0, height: 5 },
+    elevation: 3,
+  },
+  /** The hairline just inside the edge — the selected plan card's detail. */
+  balanceInnerRule: {
+    position: 'absolute', top: 3, left: 3, right: 3, bottom: 3,
+    borderRadius: PW_RADIUS.card - 3, borderWidth: 1, borderColor: 'rgba(196,163,52,0.40)',
+  },
+  balanceSeal: {
+    width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(33,77,45,0.07)', borderWidth: 1, borderColor: 'rgba(33,77,45,0.22)',
+  },
+  balanceCenter: { flex: 1, alignItems: 'center', gap: 2 },
   balanceLabel: {
     fontFamily: FONTS.serif, fontSize: 9.5, fontWeight: '800',
-    letterSpacing: 1.8, color: BROWN,
+    letterSpacing: 1.8, color: PW.brown,
   },
-  balanceValue: { fontFamily: FONTS.serif, fontSize: 34, fontWeight: '800', color: FOREST, lineHeight: 40 },
+  balanceRuleRow: { flexDirection: 'row', alignItems: 'center', gap: 5, width: 96, marginTop: 1 },
+  balanceRule: { flex: 1, height: 1, backgroundColor: 'rgba(196,163,52,0.55)' },
+  balanceValue: { fontFamily: FONTS.serif, fontSize: 36, fontWeight: '800', color: PW.forest, lineHeight: 40 },
   balanceSkeleton: { height: 40, justifyContent: 'center' },
-  balanceUnit: { fontFamily: FONTS.serif, fontSize: 10, fontWeight: '800', letterSpacing: 1.6, color: BROWN },
+  balanceUnit: { fontFamily: FONTS.serif, fontSize: 10, fontWeight: '800', letterSpacing: 1.6, color: PW.brown },
+  balanceDivider: { width: 1, alignSelf: 'stretch', marginVertical: 4, backgroundColor: 'rgba(196,163,52,0.45)' },
+  balanceMotto: {
+    width: 44, fontFamily: FONTS.serif, fontSize: 8.5, lineHeight: 12.5, fontWeight: '800',
+    letterSpacing: 1.4, color: PW.brown, opacity: 0.85,
+  },
 
-  rule: { fontSize: 11.5, lineHeight: 16, color: BROWN, textAlign: 'center', paddingHorizontal: 10 },
+  ruleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 6, marginTop: -2 },
+  rule: { fontSize: 11.5, lineHeight: 16, color: PW.brown, textAlign: 'center', flexShrink: 1 },
 
+  // ── Notice ───────────────────────────────────────────────────────────────
   notice: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 9,
   },
-  noticeInfo:    { backgroundColor: GOLD_TINT, borderColor: 'rgba(196,163,52,0.45)' },
+  noticeInfo:    { backgroundColor: PW.goldTint, borderColor: 'rgba(196,163,52,0.45)' },
   noticeSuccess: { backgroundColor: '#EDF3EC', borderColor: 'rgba(33,77,45,0.30)' },
-  noticeError:   { backgroundColor: '#F7E9E4', borderColor: '#E3B8B4' },
-  noticeText:    { flex: 1, fontSize: 12, lineHeight: 17, color: BROWN, fontWeight: '600' },
+  noticeError:   { backgroundColor: PW.errorTint, borderColor: PW.errorBorder },
+  noticeText:    { flex: 1, fontSize: 12, lineHeight: 17, color: PW.brown, fontWeight: '600' },
 
+  // ── Section heading (the PlanSelector's) ─────────────────────────────────
+  sectionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 2, marginTop: 2 },
+  sectionRule: { flex: 1, height: 1, backgroundColor: 'rgba(196,163,52,0.55)' },
+  sectionSpark: { color: PW.gold, fontSize: 11 },
   sectionLabel: {
     fontFamily: FONTS.serif, fontSize: 11, fontWeight: '800',
-    letterSpacing: 2, color: BROWN, textAlign: 'center', marginTop: 4,
+    letterSpacing: 2, color: PW.brown, textAlign: 'center', marginBottom: 2,
   },
 
+  // ── Pack cards ───────────────────────────────────────────────────────────
   card: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-    backgroundColor: CARD, borderRadius: 14, borderWidth: 1.25, borderColor: BORDER,
-    paddingVertical: 12, paddingHorizontal: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: PW.card, borderRadius: PW_RADIUS.card,
+    borderWidth: 1.25, borderColor: PW.border,
+    paddingVertical: 11, paddingHorizontal: 12,
+    overflow: 'hidden',
+    ...PW_SHADOW,
   },
-  /** Gold outline only. The badge already says it — tinting too would shout. */
-  cardBest: { borderColor: GOLD, borderWidth: 1.8 },
+  /** Gold outline, warm glow, white interior — the selected-plan grammar. */
+  cardBest: {
+    borderColor: PW.gold, borderWidth: 1.8,
+    shadowColor: PW.gold, shadowOpacity: 0.20, shadowRadius: 12, shadowOffset: { width: 0, height: 5 },
+    elevation: 4,
+  },
+  cardInnerRule: {
+    position: 'absolute', top: 3, left: 3, right: 3, bottom: 3,
+    borderRadius: PW_RADIUS.card - 3, borderWidth: 1, borderColor: 'rgba(196,163,52,0.45)',
+  },
 
-  cardLeft: { flex: 1, gap: 1 },
-  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  packName: { fontFamily: FONTS.serif, fontSize: 13, fontWeight: '800', color: FOREST, letterSpacing: 0.3 },
-  /** The largest thing on the card: it is what they are actually buying. */
-  packScans: { fontFamily: FONTS.serif, fontSize: 19, fontWeight: '800', color: INK, lineHeight: 24 },
-  packPrice: { fontSize: 13, fontWeight: '700', color: BROWN },
-  priceSkeleton: { height: 18, justifyContent: 'center' },
+  seal: {
+    width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(33,77,45,0.07)', borderWidth: 1, borderColor: 'rgba(33,77,45,0.22)',
+    overflow: 'hidden',
+  },
+  sealGold: { backgroundColor: PW.goldTint, borderColor: PW.gold },
+
+  cardText: { flex: 1, minWidth: 0, gap: 2 },
+  /** The serif headline of the card. */
+  packName: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: PW.ink, lineHeight: 21 },
+  /** Strong and tracked, not a footnote: it is what they are buying. */
+  packScans: { fontFamily: FONTS.serif, fontSize: 12, fontWeight: '800', letterSpacing: 1.6, color: PW.ink, opacity: 0.85 },
+  /** The largest figure on the row — the thing a buyer compares. */
+  packPrice: { fontFamily: FONTS.serif, fontSize: 19, fontWeight: '800', color: PW.ink, textAlign: 'right', maxWidth: 88 },
+  packPriceUnavailable: { fontFamily: undefined, fontSize: 10.5, lineHeight: 13, fontWeight: '600', color: PW.brown, maxWidth: 72 },
+  priceSkeleton: { height: 22, justifyContent: 'center' },
 
   badge: {
-    paddingHorizontal: 6, paddingVertical: 1.5, borderRadius: 3,
-    borderWidth: 0.9, borderColor: GOLD, backgroundColor: GOLD_TINT,
+    alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 1.5, borderRadius: 3,
+    borderWidth: 0.9, borderColor: PW.gold, backgroundColor: PW.goldTint,
   },
   /** Brown on the gold wash — gold on gold would be about 1.3:1. */
-  badgeText: { fontFamily: FONTS.serif, fontSize: 7.5, fontWeight: '800', letterSpacing: 1, color: BROWN },
+  badgeText: { fontFamily: FONTS.serif, fontSize: 7.5, fontWeight: '800', letterSpacing: 1, color: PW.brown },
 
   buyBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 7,
-    backgroundColor: FOREST, borderRadius: 50,
-    minHeight: 44, minWidth: 84, paddingHorizontal: 18, justifyContent: 'center',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2,
+    backgroundColor: PW.forest, borderRadius: PW_RADIUS.pill,
+    minHeight: 44, minWidth: 80, paddingLeft: 16, paddingRight: 11,
+    overflow: 'hidden',
+    shadowColor: PW.forestDeep, shadowOpacity: 0.22, shadowRadius: 8, shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
-  buyText: { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: CREAM },
-  buyBusyText: { fontSize: 11.5, fontWeight: '700', color: CREAM },
+  buyBtnInert: { opacity: 0.4, shadowOpacity: 0, elevation: 0 },
+  /** Gold hairline just inside the pill — the purchase CTA's trim, at pill scale. */
+  buyTrim: {
+    position: 'absolute', top: 2.5, left: 2.5, right: 2.5, bottom: 2.5,
+    borderRadius: PW_RADIUS.pill - 2.5, borderWidth: 1, borderColor: 'rgba(212,180,84,0.55)',
+  },
+  buyText: { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: PW.cream },
+  buyChevron: { marginTop: 1, opacity: 0.9 },
+  buyBusyText: { fontSize: 11.5, fontWeight: '700', color: PW.cream, marginLeft: 6 },
 
+  // ── Error ────────────────────────────────────────────────────────────────
   errorCard: {
     alignItems: 'center', gap: 12,
-    backgroundColor: CARD, borderRadius: 14, borderWidth: 1.25, borderColor: BORDER,
+    backgroundColor: PW.card, borderRadius: PW_RADIUS.card, borderWidth: 1.25, borderColor: PW.border,
     paddingVertical: 22, paddingHorizontal: 16,
   },
-  errorText: { fontSize: 13.5, color: BROWN, textAlign: 'center' },
+  errorText: { fontSize: 13.5, color: PW.brown, textAlign: 'center' },
   retryBtn: {
-    borderRadius: 50, borderWidth: 1.4, borderColor: FOREST,
-    paddingVertical: 9, paddingHorizontal: 26, backgroundColor: CARD,
+    borderRadius: PW_RADIUS.pill, borderWidth: 1.4, borderColor: PW.forest,
+    paddingVertical: 9, paddingHorizontal: 26, backgroundColor: PW.card,
   },
-  retryText: { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '800', color: FOREST },
+  retryText: { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '800', color: PW.forest },
 
-  recoverBtn: { alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 14, marginTop: 6 },
-  recoverText: { fontFamily: FONTS.serif, fontSize: 13.5, fontWeight: '700', color: BROWN },
+  // ── Footer + recovery ────────────────────────────────────────────────────
+  footerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 8, marginTop: 2 },
+  footer: { fontSize: 11, lineHeight: 15, color: PW.brown, textAlign: 'center', flexShrink: 1, fontWeight: '500' },
 
-  footer: {
-    fontSize: 10.5, lineHeight: 15, color: BROWN,
-    textAlign: 'center', paddingHorizontal: 12, opacity: 0.92,
-  },
+  recoverRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 30, marginTop: 2 },
+  recoverRule: { flex: 1, height: 1, backgroundColor: 'rgba(196,163,52,0.55)' },
+  recoverBtn: { paddingVertical: 8, paddingHorizontal: 4 },
+  recoverText: { fontFamily: FONTS.serif, fontSize: 13.5, fontWeight: '700', color: PW.forest },
 });

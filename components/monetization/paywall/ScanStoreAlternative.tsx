@@ -14,6 +14,15 @@
  * but outlined rather than filled so it stays clearly second to the solid
  * forest Pro CTA above it. Filled gold would compete; a thin link would hide.
  *
+ * The fill is `PW.goldStore` — a richer, more saturated brass than the pale
+ * `PW.goldTint` wash the rest of the paywall uses for gold accents. `goldTint`
+ * is meant to sit under gold text and thin borders; filled edge-to-edge on a
+ * button it read as cream, not gold. Text and the spark both move from
+ * `PW.forest` to `PW.forestDeep` to match: forest-on-goldTint had 8:1 contrast
+ * to spare, but the gold spark specifically drops to ~1.2:1 on the richer fill
+ * — functionally invisible — so it is recolored along with the text rather
+ * than left to disappear.
+ *
  * ── Motion ──────────────────────────────────────────────────────────────────
  * A faint gleam crosses the button once on appear, then every ~9 seconds —
  * offset from the CTA's 7-second sheen so the two never pulse in step. Reduce
@@ -111,7 +120,8 @@ export function ScanStoreAlternative({ onPress, disabled = false }: {
 function Spark() {
   return (
     <Svg width={11} height={11}>
-      <Path d="M5.5 0 L6.6 4.4 L11 5.5 L6.6 6.6 L5.5 11 L4.4 6.6 L0 5.5 L4.4 4.4 Z" fill={PW.gold} />
+      {/* PW.forestDeep, not PW.gold: gold-on-goldStore is ~1.2:1, invisible. */}
+      <Path d="M5.5 0 L6.6 4.4 L11 5.5 L6.6 6.6 L5.5 11 L4.4 6.6 L0 5.5 L4.4 4.4 Z" fill={PW.forestDeep} />
     </Svg>
   );
 }
@@ -131,7 +141,8 @@ const s = StyleSheet.create({
     borderRadius: PW_RADIUS.pill,
     borderWidth: 1.6,
     borderColor: PW.forest,
-    backgroundColor: PW.goldTint,
+    // PW.goldTint was the pale cream this pass replaces. See header comment.
+    backgroundColor: PW.goldStore,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
@@ -146,5 +157,6 @@ const s = StyleSheet.create({
   gleam: { position: "absolute", top: 0, bottom: 0, left: 0, width: 64 },
 
   row: { flexDirection: "row", alignItems: "center", gap: 10 },
-  label: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: "800", color: PW.forest },
+  /** forestDeep, not forest — see header comment. */
+  label: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: "800", color: PW.forestDeep },
 });

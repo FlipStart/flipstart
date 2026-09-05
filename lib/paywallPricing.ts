@@ -176,11 +176,16 @@ export function annualMonthlyEquivalent(annual: ProductPricing): string | null {
 }
 
 /**
- * The plan-specific CTA: "Start Annual Pro — $39.99/year".
+ * The plan-specific CTA: "Start Annual Pro \u00B7 $39.99/year".
  *
  * Naming the plan AND the live price on the button removes any ambiguity about
  * what is about to be charged. Falls back to the plain plan name while pricing
  * is still loading, never to an invented price.
+ *
+ * A centered dot, not an em dash: the dot is a narrower glyph, and the CTA has
+ * to fit two gold sparks and the longer Monthly label into one line without
+ * shrinking the text into illegibility. See PaywallPurchaseButton for the rest
+ * of that fix.
  */
 export function planCtaLabel(
   target: "monthly" | "annual",
@@ -189,5 +194,5 @@ export function planCtaLabel(
   const plan = target === "annual" ? "Annual" : "Monthly";
   if (!pricing.priceString) return `Start ${plan} Pro`;
   const period = target === "annual" ? "year" : "month";
-  return `Start ${plan} Pro \u2014 ${pricing.priceString}/${period}`;
+  return `Start ${plan} Pro \u00B7 ${pricing.priceString}/${period}`;
 }

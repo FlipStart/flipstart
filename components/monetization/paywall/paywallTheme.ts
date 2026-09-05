@@ -66,6 +66,14 @@ export const PW = {
   gold: "#C4A334",
   /** Brighter core for a sheen highlight, matching PremiumGlimmer. */
   goldHot: "#F0DC96",
+  /**
+   * Richer, more saturated brass — ONLY for the Scan Store alternative button.
+   * `goldTint` (below) is a pale wash meant to sit quietly under gold text and
+   * borders; on a solid button interior it read as cream, not gold, which was
+   * the complaint. Forest text/detail on this needs to be forestDeep, not
+   * forest — see ScanStoreAlternative.tsx.
+   */
+  goldStore: "#D4AF37",
   /** Soft warm divider. */
   border: "#DDD2AC",
 

@@ -18,6 +18,16 @@
  * and then about every seven seconds — slow, faint, and never while busy or
  * disabled, so it cannot suggest a charge is pending. Reduce Motion removes the
  * sheen entirely and leaves the static button.
+ *
+ * ── Why the label could clip the sparks ──────────────────────────────────────
+ * `numberOfLines`/`adjustsFontSizeToFit` only shrink text that has a BOUNDED
+ * box to shrink against. The label had neither `flex` nor `minWidth: 0`, so its
+ * layout box was its own natural (unbounded) content width — on the longer
+ * Monthly label that width exceeded the button's interior, and `overflow:
+ * "hidden"` on `btn` cropped whatever stuck out, which read as the sparks being
+ * clipped. `row` now stretches to the button's full interior width and `label`
+ * is `flex: 1, minWidth: 0`, so the Text finally has a real box to shrink
+ * against and the auto-fit sizing that was already here can do its job.
  */
 import React, { useEffect, useState } from "react";
 import {
@@ -46,6 +56,9 @@ export interface PaywallPurchaseButtonProps {
 /** How often the sheen passes. Long enough to be noticed, not watched. */
 const SHEEN_PERIOD_MS = 7000;
 const SHEEN_PASS_MS = 1400;
+
+/** The longest label ("Start Monthly Pro \u00B7 $7.99/month") sets the floor. */
+const LABEL_MIN_FONT_SCALE = 0.82;
 
 export function PaywallPurchaseButton({
   label, onPress, busy = false, disabled = false, blockedLabel = null,
@@ -119,7 +132,12 @@ export function PaywallPurchaseButton({
         ) : (
           <>
             {!inert && <Spark />}
-            <Text style={[s.label, inert && s.labelInert]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+            <Text
+              style={[s.label, inert && s.labelInert]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={LABEL_MIN_FONT_SCALE}
+            >
               {shown}
             </Text>
             {!inert && <Spark />}
@@ -144,7 +162,8 @@ const s = StyleSheet.create({
     backgroundColor: PW.forestDeep,
     borderRadius: PW_RADIUS.pill,
     minHeight: 56,
-    paddingHorizontal: 18,
+    // 18 → 20: a hair more room from the edges, so the sparks are never crowded.
+    paddingHorizontal: 20,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
@@ -165,10 +184,16 @@ const s = StyleSheet.create({
   },
   sheen: { position: "absolute", top: 0, bottom: 0, left: 0, width: 72 },
 
-  row: { flexDirection: "row", alignItems: "center", gap: 12 },
+  // `width: "100%"` is what gives `label`'s `flex: 1` a real box to shrink
+  // against — see the header comment.
+  row: { flexDirection: "row", alignItems: "center", gap: 10, width: "100%" },
   spark: { opacity: 0.9 },
   label: {
-    fontFamily: FONTS.serif, fontSize: 18, fontWeight: "800",
+    flex: 1,
+    minWidth: 0,
+    // 18 → 17: leaves less for adjustsFontSizeToFit to have to claw back on a
+    // narrow phone, so the Monthly label rarely needs to shrink at all.
+    fontFamily: FONTS.serif, fontSize: 17, fontWeight: "800",
     color: PW.cream, letterSpacing: 0.2, textAlign: "center",
   },
   labelInert: { opacity: 0.85 },

@@ -431,10 +431,17 @@ describe("store content", () => {
     expect(code(STORE)).not.toMatch(/expires|valid for|30 days|renew/i);
   });
 
-  /** Quantity leads — it is what the user is buying. */
-  it("makes the scan count the most prominent thing on a card", () => {
-    expect(STORE).toMatch(/packScans: \{[^}]*fontSize: 19/);
-    expect(STORE).toMatch(/packName: \{[^}]*fontSize: 13/);
+  /**
+   * The redesign's hierarchy: the name is the serif headline, the scan count
+   * is a strong tracked line directly under it (never a footnote — it is what
+   * they are buying), and the price is the largest figure on the row, since
+   * it is the one thing a buyer compares across cards.
+   */
+  it("leads with the name, keeps the scan count strong, and makes the price the largest figure", () => {
+    expect(STORE).toMatch(/packName: \{[^}]*fontSize: 17/);
+    expect(STORE).toMatch(/packScans: \{[^}]*fontSize: 12[^}]*letterSpacing: 1\.6/);
+    expect(STORE).toMatch(/packPrice: \{[^}]*fontSize: 19/);
+    expect(STORE).toMatch(/\{formatScans\(scans\)\} SCANS/);
   });
 
   it("labels every purchase action accessibly", () => {
