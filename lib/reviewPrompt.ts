@@ -1,155 +1,191 @@
 /**
  * lib/reviewPrompt.ts
  *
- * App Store review prompt logic for FlipStart.
+ * App Store review requests for FlipStart.
  *
- * Rules:
- *  - Show after first successful scan (count = 1)
- *  - "Maybe Later" → show again after 10 more scans
- *  - "Don't Ask Again" → never show again
- *  - "Rate FlipStart" → request official review → never auto-show again
- *  - Settings button always available, never touches auto-prompt state
+ * ── Two separate flows, deliberately ────────────────────────────────────────
+ * AUTOMATIC — after three successful completed scans, ask iOS to consider
+ *   showing its own rating sheet. There is no FlipStart-made prompt in front
+ *   of it. Apple's guidelines require the system API and disallow a custom
+ *   pre-prompt, and a pre-prompt that filters who gets asked is review gating
+ *   regardless of how politely it is worded.
+ *
+ * SETTINGS — an explicit "Review FlipStart" tap opens the App Store product
+ *   page with ?action=write-review. It must NOT call requestReview(): Apple
+ *   documents that API as a hint, not a command, and it may legitimately show
+ *   nothing — which makes a deliberate button tap look broken.
+ *
+ * ── Completed, not saved ────────────────────────────────────────────────────
+ * The counter advances when an analysis completes, not when the user saves it.
+ * FlipStart is useful in the aisle without saving anything, so saving is a
+ * weaker signal of having experienced the product.
+ *
+ * ── Once per app version ────────────────────────────────────────────────────
+ * The automatic request fires at most once per public version. StoreKit
+ * applies its own limits on top; ours exists so the app never nags even if
+ * Apple would allow it.
+ *
+ * ── A request is not a review ───────────────────────────────────────────────
+ * requestReview() resolving proves only that the call was made. It does not
+ * mean a sheet appeared, and never means anyone rated. Nothing is unlocked,
+ * awarded, or thanked on the strength of it.
  */
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 
 const KEY = 'flipstart_review_prompt_state';
 
+/** Completed scans before the automatic request becomes eligible. */
+export const SCANS_BEFORE_REVIEW = 3;
+
 export interface ReviewState {
-  successfulScanCount:   number;
-  lastShownAtScanCount:  number;  // 0 = never shown
-  dontAskAgain:          boolean;
-  hasRequestedReview:    boolean; // tapped "Rate" at least once
+  /** Successful COMPLETED analyses, all-time. */
+  completedScanCount: number;
+  /** App version whose automatic request already fired. '' = none yet. */
+  lastRequestedVersion: string;
 }
 
-const DEFAULT: ReviewState = {
-  successfulScanCount:  0,
-  lastShownAtScanCount: 0,
-  dontAskAgain:         false,
-  hasRequestedReview:   false,
-};
+const DEFAULT: ReviewState = { completedScanCount: 0, lastRequestedVersion: '' };
 
+/**
+ * Older builds persisted `successfulScanCount`, `lastShownAtScanCount`,
+ * `dontAskAgain` and `hasRequestedReview` under this same key for the custom
+ * modal. Those fields are simply no longer read. The spread below tolerates
+ * them, so an upgrading user neither crashes nor needs a migration — and
+ * `successfulScanCount` is carried across as the starting count so someone who
+ * has already scanned twenty times is not made to start again.
+ */
 async function load(): Promise<ReviewState> {
   try {
     const raw = await AsyncStorage.getItem(KEY);
-    return raw ? { ...DEFAULT, ...JSON.parse(raw) } : { ...DEFAULT };
-  } catch { return { ...DEFAULT }; }
+    if (!raw) return { ...DEFAULT };
+    const parsed = JSON.parse(raw) as Partial<ReviewState> & { successfulScanCount?: number };
+    const carried = typeof parsed.completedScanCount === 'number'
+      ? parsed.completedScanCount
+      : typeof parsed.successfulScanCount === 'number' ? parsed.successfulScanCount : 0;
+    return {
+      completedScanCount: Number.isFinite(carried) && carried >= 0 ? carried : 0,
+      lastRequestedVersion: typeof parsed.lastRequestedVersion === 'string' ? parsed.lastRequestedVersion : '',
+    };
+  } catch {
+    return { ...DEFAULT };
+  }
 }
 
 async function save(state: ReviewState): Promise<void> {
   try { await AsyncStorage.setItem(KEY, JSON.stringify(state)); } catch { /* ok */ }
 }
 
-// ─── Called after every successful scan save ─────────────────────────────────
-// Returns true if the review prompt should be shown to the user.
-export async function recordSuccessfulScan(): Promise<boolean> {
-  const state = await load();
-  state.successfulScanCount += 1;
-  await save(state);
-
-  if (state.dontAskAgain || state.hasRequestedReview) return false;
-
-  const { successfulScanCount: count, lastShownAtScanCount: last } = state;
-
-  // First scan
-  if (count === 1 && last === 0) return true;
-
-  // Every 10 scans after dismissal
-  if (last > 0 && count >= last + 10) return true;
-
-  return false;
+/** The public version from app.config.ts, e.g. "2.1". */
+export function currentAppVersion(): string {
+  return Constants.expoConfig?.version ?? '';
 }
 
-// ─── Called when user taps "Maybe Later" ─────────────────────────────────────
-export async function onMaybeLater(): Promise<void> {
+/**
+ * Record one successful COMPLETED scan.
+ *
+ * Returns true when this completion makes the app ELIGIBLE to request a
+ * review. Eligible is not the same as "ask now" — the caller must wait for a
+ * stable screen; see markReviewRequested / requestAppStoreReview.
+ */
+export async function recordCompletedScan(): Promise<boolean> {
   const state = await load();
-  state.lastShownAtScanCount = state.successfulScanCount;
+  state.completedScanCount += 1;
+  await save(state);
+
+  const version = currentAppVersion();
+  if (!version) return false;                              // unknown version: never ask
+  if (state.lastRequestedVersion === version) return false; // already asked this version
+  return state.completedScanCount >= SCANS_BEFORE_REVIEW;
+}
+
+/** True if an automatic request is still allowed for this version. */
+export async function isReviewRequestAllowed(): Promise<boolean> {
+  const version = currentAppVersion();
+  if (!version) return false;
+  const state = await load();
+  return state.lastRequestedVersion !== version
+    && state.completedScanCount >= SCANS_BEFORE_REVIEW;
+}
+
+/**
+ * Burn this version's single automatic request.
+ *
+ * Recorded BEFORE the API call, not after: if requestReview() throws or the
+ * app is killed mid-call, the correct outcome is still "we already asked".
+ * Retrying would be nagging, which is the behaviour this replaces.
+ */
+export async function markReviewRequested(): Promise<void> {
+  const state = await load();
+  state.lastRequestedVersion = currentAppVersion();
   await save(state);
 }
 
-// ─── Called when user taps "Don't Ask Again" ─────────────────────────────────
-export async function onDontAskAgain(): Promise<void> {
-  const state = await load();
-  state.dontAskAgain = true;
-  state.lastShownAtScanCount = state.successfulScanCount;
-  await save(state);
-}
-
-// ─── Called after user taps "Rate FlipStart" ─────────────────────────────────
-export async function onRequestedReview(): Promise<void> {
-  const state = await load();
-  state.hasRequestedReview   = true;
-  state.lastShownAtScanCount = state.successfulScanCount;
-  await save(state);
-}
-
-// ─── Request the official App Store review (used by both prompt + Settings) ──
-// Returns true if the native review flow was successfully requested.
-//
-// Notes on iOS behavior (important — this is Apple's design, not a bug):
-//   • iOS rate-limits the native sheet to ~3 times/year per device. Even a
-//     correct call may not render a visible sheet — the OS decides.
-//   • The sheet will NOT reliably appear in debug or Xcode-run builds. Test on
-//     a real TestFlight/App Store build.
-//   • requestReview() must be called while the app is active and NOT mid screen
-//     transition, or iOS silently drops it.
+/**
+ * Ask iOS to consider showing its rating sheet.
+ *
+ * Returns whether the CALL succeeded — never whether a sheet appeared, and
+ * never whether anyone rated. Apple decides presentation; in TestFlight it
+ * does nothing at all, which is expected and not a bug.
+ */
 export async function requestAppStoreReview(): Promise<boolean> {
   try {
     const mod: any = await import('expo-store-review');
-    // The module's functions may sit on the namespace or on .default depending
-    // on bundler interop — resolve whichever has the API.
     const StoreReview = (mod && typeof mod.requestReview === 'function') ? mod : (mod?.default ?? mod);
+    if (typeof StoreReview?.requestReview !== 'function') return false;
 
-    if (typeof StoreReview?.requestReview !== 'function') {
-      if (__DEV__) console.warn('[reviewPrompt] expo-store-review API not found on module');
-      return false;
-    }
-
-    // hasAction() is the more reliable gate than isAvailableAsync() — it returns
-    // true only when the device can actually act on a review request.
     let canRequest = true;
     try {
-      if (typeof StoreReview.hasAction === 'function') {
-        canRequest = await StoreReview.hasAction();
-      } else if (typeof StoreReview.isAvailableAsync === 'function') {
-        canRequest = await StoreReview.isAvailableAsync();
-      }
-    } catch { canRequest = true; /* if the check throws, still try */ }
-
-    if (!canRequest) {
-      if (__DEV__) console.warn('[reviewPrompt] StoreReview has no action available on this device');
-      return false;
-    }
+      if (typeof StoreReview.hasAction === 'function') canRequest = await StoreReview.hasAction();
+      else if (typeof StoreReview.isAvailableAsync === 'function') canRequest = await StoreReview.isAvailableAsync();
+    } catch { canRequest = true; }
+    if (!canRequest) return false;
 
     await StoreReview.requestReview();
     return true;
-  } catch (err) {
-    if (__DEV__) console.warn('[reviewPrompt] requestReview threw:', err);
+  } catch {
     return false;
   }
 }
 
-// ─── Fallback: open the App Store review page directly ───────────────────────
-// If the native in-app sheet can't show (iOS rate limit, unavailable), this
-// deep-links to the store's write-review page so the user can still rate.
-// Provide your real App Store ID via APP_STORE_ID below.
-export async function openAppStoreReviewPage(): Promise<void> {
-  try {
-    const { Linking, Platform } = await import('react-native');
-    if (Platform.OS === 'ios') {
-      const url = `https://apps.apple.com/app/id${APP_STORE_ID}?action=write-review`;
-      await Linking.openURL(url);
-    } else {
-      const url = `market://details?id=${ANDROID_PACKAGE}&showAllReviews=true`;
-      await Linking.openURL(url).catch(() =>
-        Linking.openURL(`https://play.google.com/store/apps/details?id=${ANDROID_PACKAGE}`),
-      );
-    }
-  } catch (err) {
-    if (__DEV__) console.warn('[reviewPrompt] openAppStoreReviewPage threw:', err);
-  }
-}
+// ── Settings: the explicit, deliberate path ────────────────────────────────
 
-// TODO: set these to your real IDs.
-const APP_STORE_ID   = '6770193673';          // your numeric App Store ID
-const ANDROID_PACKAGE = 'com.flipstart.app';  // your Android package name
+/** The real listing. Also used by components/UpdateGate.tsx. */
+const APP_STORE_ID = '6770193673';
+const ANDROID_PACKAGE = 'com.dylan.flipstart';
+
+export const APP_STORE_WRITE_REVIEW_URL =
+  `https://apps.apple.com/app/id${APP_STORE_ID}?action=write-review`;
+export const APP_STORE_PRODUCT_URL =
+  `https://apps.apple.com/app/id${APP_STORE_ID}`;
+
+/**
+ * Open the store's write-review page.
+ *
+ * Tries the deep write-review link first, then the plain product page. Both
+ * are attempted because the first can fail on a device with no App Store (a
+ * simulator) or before a listing is live, and a dead tap with a console
+ * warning is what QA saw. Returns false only if BOTH fail, so the caller can
+ * say something rather than appear broken.
+ */
+export async function openAppStoreReviewPage(): Promise<boolean> {
+  const { Linking, Platform } = await import('react-native');
+
+  const targets = Platform.OS === 'ios'
+    ? [APP_STORE_WRITE_REVIEW_URL, APP_STORE_PRODUCT_URL]
+    : [
+        `market://details?id=${ANDROID_PACKAGE}&showAllReviews=true`,
+        `https://play.google.com/store/apps/details?id=${ANDROID_PACKAGE}`,
+      ];
+
+  for (const url of targets) {
+    try {
+      await Linking.openURL(url);
+      return true;
+    } catch {
+      // Try the next one. No dev warning here: the previous version's
+      // console.warn surfaced in LogBox and read as a crash during QA.
+    }
+  }
+  return false;
+}

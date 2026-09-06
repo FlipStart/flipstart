@@ -131,6 +131,9 @@ const STEPS = [
 
 // ─── Home Screen ──────────────────────────────────────────────────────────────
 
+/** Let the navigation transition finish — iOS drops a request made mid-transition. */
+const REVIEW_SETTLE_MS = 1200;
+
 export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -242,6 +245,36 @@ export default function HomeScreen() {
   // ── XP / avatar ─────────────────────────────────────────────────────────────
   const [xpProfile, setXpProfile] = useState<HuntXpProfile | null>(null);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  /**
+   * The automatic review request.
+   *
+   * Home, on focus — the stable screen a user lands on after a scan, and never
+   * during loading, an active scan, the camera, a paywall or an error state.
+   * A short delay lets the navigation transition settle: iOS silently drops a
+   * review request made mid-transition.
+   *
+   * Nothing is shown by FlipStart. This only tells iOS that now is a
+   * reasonable moment; Apple decides whether any sheet appears, and in
+   * TestFlight it deliberately does nothing.
+   */
+  useFocusEffect(useCallback(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const m = await import('@/lib/reviewPrompt');
+          if (cancelled || !(await m.isReviewRequestAllowed())) return;
+          // Burned BEFORE the call: if requestReview throws or the app dies
+          // mid-call, "already asked" is still the correct outcome. Retrying
+          // would be nagging, which is what this replaced.
+          await m.markReviewRequested();
+          await m.requestAppStoreReview();
+        } catch { /* a review request must never affect the app */ }
+      })();
+    }, REVIEW_SETTLE_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []));
+
   useFocusEffect(useCallback(() => {
     // Use user?.id (not user) as dep so token-refresh events that update the
     // user object reference without changing the ID don't trigger a spurious

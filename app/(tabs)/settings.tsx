@@ -342,11 +342,26 @@ export default function SettingsScreen() {
   };
 
   const handleReview = async () => {
-    // Settings "Rate" is a deliberate action — always send the user to the
-    // App Store review page rather than the native in-app sheet, which iOS
-    // rate-limits and may silently suppress (leaving the tap doing nothing).
+    /**
+     * A deliberate tap, so it opens the store's write-review page rather than
+     * calling requestReview(). Apple documents that API as a hint the system
+     * may ignore, which makes it wrong for a button: the user taps and nothing
+     * happens.
+     *
+     * openAppStoreReviewPage now tries the write-review deep link, then the
+     * plain product page, and reports whether either opened. Previously a
+     * failure was swallowed with a dev-only console.warn — which is what
+     * surfaced in LogBox during QA and read as an error. Only if BOTH fail do
+     * we say anything, and then in plain words rather than a raw error.
+     */
     const { openAppStoreReviewPage } = await import('@/lib/reviewPrompt');
-    await openAppStoreReviewPage();
+    const opened = await openAppStoreReviewPage();
+    if (!opened) {
+      Alert.alert(
+        'Couldn\u2019t open the App Store',
+        'Search for FlipStart in the App Store to leave a review.',
+      );
+    }
   };
 
   // Identity — same fallback logic as profile.tsx

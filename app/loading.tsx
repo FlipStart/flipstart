@@ -309,6 +309,20 @@ export default function LoadingScreen() {
         console.log("[loading] analysis response received");
         if (hasNavigated.current) return;
 
+        /**
+         * A scan has genuinely COMPLETED here: the mutation resolved with an
+         * analysis, before any save decision. This is the authoritative point
+         * for review eligibility — the previous trigger sat in the results
+         * SAVE handler, so a user who scanned in a shop and never tapped save
+         * was never counted, and one save counted as the whole experience.
+         *
+         * Fire-and-forget: the counter must never delay or fail navigation.
+         * Nothing is shown here; eligibility is consumed later from Home.
+         */
+        void import("@/lib/reviewPrompt")
+          .then(m => m.recordCompletedScan())
+          .catch(() => {});
+
         const scanId = `scan_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
         const safeIdentification = {

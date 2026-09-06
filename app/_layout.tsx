@@ -24,6 +24,7 @@ import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
 import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@/lib/analytics";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { ForceUpdateGate } from "@/components/ForceUpdateGate";
 import { AchievementNotificationProvider, useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { getUnlockedDiamondIds, getUnseenDiamondIds, computeUnlockedDiamonds } from '@/lib/diamonds';
@@ -425,6 +426,16 @@ export default function RootLayout() {
       onLayout={onRootLayout}
     >
     <GestureHandlerRootView style={{ flex: 1 }}>
+      {/*
+        Force-update gate.
+
+        Outermost, above AuthProvider: if this build is too old, nothing else
+        should mount — not auth, not tRPC, not the navigator. It renders its
+        children unchanged until the check comes back positive, and the check
+        fails OPEN on every error, so this can never delay or block launch on
+        its own. See lib/forceUpdate.ts.
+      */}
+      <ForceUpdateGate>
       <AuthProvider>
         <ProGateProvider>
         {/* Every premium gate routes through this one modal, so the real
@@ -454,9 +465,37 @@ export default function RootLayout() {
             <Stack.Screen name="brand-rarity" options={{ headerShown: false, animation: 'fade' }} />
             <Stack.Screen name="brand-detail" options={{ headerShown: false, animation: 'fade' }} />
             <Stack.Screen name="diamonds-in-the-rough" options={{ headerShown: false, animation: 'fade' }} />
-            {__DEV__ && <Stack.Screen name="dev-achievements" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
-            {__DEV__ && <Stack.Screen name="dev-brand-compendium" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
-            {__DEV__ && <Stack.Screen name="dev-diamonds" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />}
+            {/*
+              EVERY dev route below is wrapped in Stack.Protected, not in
+              `{__DEV__ && <Stack.Screen …>}`.
+
+              The difference matters. Expo Router is FILE-BASED: the route
+              exists because the file exists. A Stack.Screen declaration
+              configures a route; omitting it only drops the options, leaving
+              the route itself navigable — so `{__DEV__ && …}` looked like a
+              gate and was not one. Stack.Protected is the primitive that
+              actually refuses navigation.
+
+              Each screen also denies itself with its own __DEV__ check, so a
+              route reached some other way still renders nothing. Both are
+              client-side controls; where a dev screen can reach a privileged
+              server capability, the SERVER secret is the real boundary — see
+              app/dev-scans.tsx and app/dev-monetization.tsx.
+            */}
+            <Stack.Protected guard={__DEV__}>
+              <Stack.Screen name="dev-achievements" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+              <Stack.Screen name="dev-brand-compendium" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+              <Stack.Screen name="dev-diamonds" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+              {/* Raises this device's daily scan limit. The button was gated but
+                  the ROUTE was neither registered nor protected, so it was
+                  reachable by deep link in a release build. It could still grant
+                  nothing without DEV_SCAN_GRANT_SECRET, which lives in Railway
+                  and is never bundled — but "nobody knows the URL" is not a
+                  control, so it is protected like the rest. */}
+              <Stack.Screen name="dev-scans" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+              {/* Design playground. No network, no state, no privilege. */}
+              <Stack.Screen name="dev/theme-lab" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+            </Stack.Protected>
             {/* Sold Comps visual preview.
                 Stack.Protected blocks NAVIGATION to the route. The route file
                 still exists in the production bundle — Expo Router is
@@ -528,6 +567,7 @@ export default function RootLayout() {
       </AchievementNotificationProvider>
         </ProGateProvider>
       </AuthProvider>
+      </ForceUpdateGate>
     </GestureHandlerRootView>
     </Animated.View>
   );

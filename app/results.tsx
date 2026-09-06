@@ -22,7 +22,6 @@ import { ScreenContainer } from '@/components/screen-container';
 import { useScanContext } from '@/lib/scan-context';
 import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt, updateHuntItemImage } from '@/lib/hunt-context';
 import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
-import { recordSuccessfulScan, onMaybeLater, onDontAskAgain, onRequestedReview, requestAppStoreReview, openAppStoreReviewPage } from '@/lib/reviewPrompt';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
 import { useRefreshEntitlement } from '@/lib/useEntitlement';
@@ -326,7 +325,6 @@ export default function ResultsScreen() {
   const advanceQueue = useCallback(() => {
     setRewardQueue(prev => prev.slice(1));
   }, []);
-  const [showReview,      setShowReview]      = useState(false);
 
   const generateListingsMutation = trpc.scan.generateListings.useMutation();
 
@@ -468,21 +466,14 @@ export default function ResultsScreen() {
   // appeared. Now: detect rewards synchronously, stay on the screen while any
   // reward/review is showing, and navigate home only once the queue drains.
   const navPendingRef    = useRef(false);
-  const reviewPendingRef = useRef(false);
   useEffect(() => {
     if (!navPendingRef.current) return;
     if (currentReward) return;             // a reward modal is still showing
-    if (reviewPendingRef.current) {        // rewards done → show review now
-      reviewPendingRef.current = false;
-      setShowReview(true);
-      return;
-    }
-    if (showReview) return;                // review modal showing → wait for button
-    navPendingRef.current = false;         // nothing left → go home
+    navPendingRef.current = false;         // rewards done → go home
     setCurrentScan(null);
     router.replace('/(tabs)' as any);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentReward, showReview]);
+  }, [currentReward]);
 
   // Early return AFTER all hooks — safe now
   if (!currentScan) {
@@ -826,23 +817,16 @@ export default function ResultsScreen() {
       } catch { /* never block navigation */ }
     }
 
-    // Check review prompt — awaited so the result is known before deciding to navigate.
-    const shouldShowReview = await recordSuccessfulScan().catch(() => false);
+    // Review eligibility is no longer counted here. Saving is a weaker signal
+    // than completing: FlipStart is useful in the aisle without saving. The
+    // counter now advances where the analysis COMPLETES, in app/loading.tsx.
 
     // If any reward modals are queued, stay on the screen and let them play.
-    // The deferred-navigation effect shows the review prompt (if any) after the
-    // reward queue drains, then navigates home. This is what makes brand reveals
-    // and major-achievement celebrations actually appear after a save.
+    // The deferred-navigation effect navigates home once the queue drains.
+    // This is what makes brand reveals and major-achievement celebrations
+    // actually appear after a save.
     if (rewards.length > 0) {
-      navPendingRef.current    = true;
-      reviewPendingRef.current = shouldShowReview;
-      return;
-    }
-
-    // No rewards — original behavior: show review if due (its buttons navigate),
-    // otherwise navigate home immediately.
-    if (shouldShowReview) {
-      setShowReview(true);
+      navPendingRef.current = true;
       return;
     }
 
@@ -853,7 +837,6 @@ export default function ResultsScreen() {
   // Called by every review modal button to clear scan context and go home
   const navigateHome = () => {
     navPendingRef.current    = false;
-    reviewPendingRef.current = false;
     setCurrentScan(null);
     router.replace('/(tabs)' as any);
   };
@@ -1028,59 +1011,15 @@ export default function ResultsScreen() {
 
   return (
     <ScreenContainer edges={['left', 'right', 'bottom']} style={{ backgroundColor: BG }}>
-      {/* Review prompt — appears after first successful scan */}
-      {showReview && (
-        <Modal transparent animationType="fade" visible statusBarTranslucent>
-          <View style={{ flex: 1, backgroundColor: '#000000AA', justifyContent: 'center', alignItems: 'center', padding: 28 }}>
-            <View style={{ backgroundColor: '#FFFFFF', borderRadius: 24, padding: 28, width: '100%', maxWidth: 360, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 20, shadowOffset: { width: 0, height: 8 }, elevation: 12 }}>
-              {/* Stars decoration */}
-              <Text style={{ textAlign: 'center', fontSize: 26, marginBottom: 12, letterSpacing: 4 }}>★★★★★</Text>
-              {/* Title */}
-              <Text style={{ fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: '#152815', textAlign: 'center', marginBottom: 10 }}>
-                Help FlipStart grow
-              </Text>
-              {/* Body */}
-              <Text style={{ fontSize: 14, color: '#5A3A1A', textAlign: 'center', lineHeight: 21, marginBottom: 24 }}>
-                If FlipStart helped you scan your first find, a quick App Store rating would seriously help the mission. Early reviews help us keep improving the AI for thrifters and resellers.
-              </Text>
-              {/* Rate button */}
-              <Pressable
-                onPress={async () => {
-                  await onRequestedReview();
-                  // Request the native sheet WHILE this screen is still mounted
-                  // and active — calling it after navigation makes iOS drop it.
-                  const shown = await requestAppStoreReview();
-                  // If iOS couldn't present the in-app sheet (rate-limited or
-                  // unavailable), deep-link to the store review page so the
-                  // user can still leave a rating.
-                  if (!shown) await openAppStoreReviewPage();
-                  setShowReview(false);
-                  navigateHome();
-                }}
-                style={({ pressed }) => ({ backgroundColor: '#152815', borderRadius: 50, paddingVertical: 15, alignItems: 'center', marginBottom: 10, opacity: pressed ? 0.85 : 1 })}
-              >
-                <Text style={{ fontFamily: FONTS.serif, fontSize: 16, fontWeight: '800', color: '#F4EED8' }}>
-                  Rate FlipStart ★
-                </Text>
-              </Pressable>
-              {/* Maybe Later */}
-              <Pressable
-                onPress={async () => { setShowReview(false); await onMaybeLater(); navigateHome(); }}
-                style={({ pressed }) => ({ borderRadius: 50, paddingVertical: 13, alignItems: 'center', marginBottom: 8, borderWidth: 1.5, borderColor: '#2A4A2A', opacity: pressed ? 0.6 : 1 })}
-              >
-                <Text style={{ fontSize: 15, fontWeight: '600', color: '#2A4A2A' }}>Maybe Later</Text>
-              </Pressable>
-              {/* Don't ask again */}
-              <Pressable
-                onPress={async () => { setShowReview(false); await onDontAskAgain(); navigateHome(); }}
-                style={({ pressed }) => ({ alignItems: 'center', paddingVertical: 8, opacity: pressed ? 0.5 : 1 })}
-              >
-                <Text style={{ fontSize: 13, color: '#8A7050', textDecorationLine: 'underline' }}>Don't Ask Again</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Modal>
-      )}
+      {/*
+        The custom "Help FlipStart grow" modal was removed.
+
+        It was a FlipStart-made pre-prompt in front of Apple's sheet, which
+        the App Review guidelines disallow, and its Maybe Later / Don't Ask
+        Again buttons made it a filter on who ever reached the real prompt.
+        The system sheet is now requested directly, from Home, after three
+        completed scans. See lib/reviewPrompt.ts.
+      */}
       {/* Modals */}
       {currentScan.imageUri && (
         <ImageViewerModal
