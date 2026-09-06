@@ -468,6 +468,11 @@ export default function RootLayout() {
             <Stack.Protected guard={__DEV__}>
               <Stack.Screen name="dev-sold-comps" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
             </Stack.Protected>
+            {/* Preview of the post-purchase panels. Renders the real components;
+                buys, grants and confirms nothing. See the file header. */}
+            <Stack.Protected guard={__DEV__}>
+              <Stack.Screen name="dev-purchase-complete" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+            </Stack.Protected>
 
             {/* TEMPORARY: monetization harness, reachable in TestFlight.
                 Guarded by MONETIZATION_HARNESS_VISIBLE rather than __DEV__ so it

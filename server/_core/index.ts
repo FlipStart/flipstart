@@ -4,6 +4,7 @@ import { createServer } from "http";
 import net from "net";
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
@@ -94,6 +95,38 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
+  /**
+   * Constant-time secret check for the dashboard routes.
+   *
+   * These are the only admin surfaces that were still using `!==` on a raw
+   * string, while every tRPC founder gate (compsFounderAuthorised,
+   * grantDevScans, verifyWebhookAuth) already hashes and compares in constant
+   * time. The founder dashboard reads through the SUPABASE SERVICE ROLE and
+   * renders aggregate user data, so it deserves at least the same discipline
+   * as the endpoints that grant a handful of scans.
+   *
+   * Behaviour is otherwise unchanged: an unset secret still rejects, a correct
+   * secret still passes, and no minimum length is enforced — imposing one here
+   * could lock a live dashboard out on deploy. A short secret is warned about
+   * at startup instead, where it can be fixed deliberately.
+   */
+  const secretOk = (supplied: unknown, expected: string | undefined): boolean => {
+    if (!expected) return false;                       // unset = the route does not exist
+    const s = typeof supplied === "string" ? supplied : "";
+    const a = crypto.createHash("sha256").update(s).digest();
+    const b = crypto.createHash("sha256").update(expected).digest();
+    return crypto.timingSafeEqual(a, b);
+  };
+
+  for (const [name, value] of [
+    ["DEV_SECRET", process.env.DEV_SECRET],
+    ["FOUNDER_DASHBOARD_SECRET", process.env.FOUNDER_DASHBOARD_SECRET],
+  ] as const) {
+    if (value && value.length < 24) {
+      console.warn(`[security] ${name} is only ${value.length} chars — these routes are reachable from the public internet and are not rate limited. Use 32+ random characters.`);
+    }
+  }
+
   // Enable CORS for all routes - reflect the request origin to support credentials
   app.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -143,8 +176,7 @@ async function startServer() {
 
   // ── Founder Analytics Dashboard ──────────────────────────────────────────────
   app.get("/api/dev/dashboard", (req, res) => {
-    const secret = process.env.DEV_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.DEV_SECRET)) {
       return res.status(401).send("<h1>401 Unauthorized</h1>");
     }
     try {
@@ -165,8 +197,7 @@ async function startServer() {
   });
 
   app.get("/api/dev/feedback", (req, res) => {
-    const secret = process.env.DEV_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.DEV_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
@@ -178,8 +209,7 @@ async function startServer() {
   });
 
   app.get("/api/dev/feedback.csv", (req, res) => {
-    const secret = process.env.DEV_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.DEV_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
@@ -209,8 +239,7 @@ async function startServer() {
   });
 
   app.get("/api/dev/analytics-dashboard", (req, res) => {
-    const secret = process.env.DEV_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.DEV_SECRET)) {
       return res.status(401).send("<h1>401 Unauthorized</h1>");
     }
     try {
@@ -234,8 +263,7 @@ async function startServer() {
   // Separate from the legacy file-based dashboards above (which stay alive).
   // Protected by FOUNDER_DASHBOARD_SECRET (distinct from DEV_SECRET).
   app.get("/api/dev/founder-dashboard-v3", async (req, res) => {
-    const secret = process.env.FOUNDER_DASHBOARD_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.FOUNDER_DASHBOARD_SECRET)) {
       return res.status(401).send("<h1>401 Unauthorized</h1>");
     }
     try {
@@ -252,8 +280,7 @@ async function startServer() {
 
   // JSON variant for programmatic access / debugging.
   app.get("/api/dev/founder-dashboard-v3.json", async (req, res) => {
-    const secret = process.env.FOUNDER_DASHBOARD_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.FOUNDER_DASHBOARD_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
@@ -266,8 +293,7 @@ async function startServer() {
   });
 
   app.get("/api/dev/analytics", (req, res) => {
-    const secret = process.env.DEV_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.DEV_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
@@ -284,8 +310,7 @@ async function startServer() {
   });
 
   app.get("/api/dev/analytics.csv", (req, res) => {
-    const secret = process.env.DEV_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.DEV_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
@@ -430,8 +455,7 @@ async function startServer() {
   // Body: { passcode: "FLIPSTARTDESTRUCTION" }
   // Clears feedback[], events[], sessions[], scanRecords[]. Preserves scanCounter.
   app.post("/api/dev/reset-analytics", (req, res) => {
-    const secret = process.env.DEV_SECRET;
-    if (!secret || req.query.secret !== secret) {
+    if (!secretOk(req.query.secret, process.env.DEV_SECRET)) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
     const { passcode } = req.body ?? {};

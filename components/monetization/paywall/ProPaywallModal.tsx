@@ -35,8 +35,10 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { offerNeedsCompactHeight } from "@/lib/paywallLayout";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { FONTS } from "@/constants/typography";
 import { ParchmentOverlay } from "@/lib/ParchmentOverlay";
@@ -106,7 +108,7 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 export interface ProPaywallModalProps {
   /** Null when closed. A new object identity means "reopen and reset". */
-  request: { id: number; config: PaywallConfig; onUnlocked?: () => void } | null;
+  request: { id: number; config: PaywallConfig; onUnlocked?: () => void; onDeclined?: () => void; onPendingActivation?: () => void } | null;
   /**
    * Claims the continuation, once. Returns null if it has already been claimed.
    *
@@ -135,6 +137,7 @@ export function ProPaywallModal({
   const invalidateEntitlement = useRefreshEntitlement();
   const products = usePaywallProducts(open);
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
 
   const [selected, setSelected] = useState<PurchaseTarget>("annual");
   const [state, setState] = useState<PaywallState>(INITIAL_STATE);
@@ -284,10 +287,17 @@ export function ProPaywallModal({
    * button has said "not now", and silently starting Generate Listings because
    * they happen to have paid would be startling.
    */
+  /**
+   * Not dismissible (the onboarding offer): the X is not rendered and hardware
+   * back does nothing. The explicit Free button is the way out, so the user is
+   * never trapped — they are asked to decide.
+   */
+  const dismissible = config?.dismissible !== false;
   const requestClose = useCallback(() => {
+    if (!dismissible) return;
     if (isBusy(state.phase)) return; // Never abandon a live transaction.
     dismiss(false);
-  }, [state.phase, dismiss]);
+  }, [dismissible, state.phase, dismiss]);
 
   /**
    * Continue = dismiss AND run the source's continuation, exactly once.
@@ -301,6 +311,36 @@ export function ProPaywallModal({
     dismiss(true);
     fn?.();
   }, [consumeUnlock, dismiss]);
+
+  /**
+   * The explicit Free path. Resolves the paywall without any store call, any
+   * grant, or any balance change — the account simply stays on the Free plan
+   * it already has. Never fires while a transaction is live.
+   */
+  const continueFree = useCallback(() => {
+    if (isBusy(state.phase)) return;
+    dismiss(false);
+    request?.onDeclined?.();
+  }, [state.phase, dismiss, request]);
+
+  /**
+   * The button on the paid-but-unconfirmed panel.
+   *
+   * Dismissible sources just close — the contextual paywalls have a screen
+   * behind them to return to.
+   *
+   * The onboarding offer has nothing behind it, so it must resolve. It
+   * resolves through onPendingActivation, NEVER onDeclined: this user has
+   * already paid, and recording them as having chosen the Free plan would be
+   * false. Nothing here grants Pro, cancels the purchase, or touches the
+   * server — the existing reconciliation continues and surfaces Pro on its own.
+   */
+  const closeResolution = useCallback(() => {
+    dismiss(false);
+    if (dismissible) return;
+    if (state.phase === "pending_activation") request?.onPendingActivation?.();
+    else request?.onDeclined?.();
+  }, [dismiss, dismissible, state.phase, request]);
 
   /**
    * ── Automatic continuation ──────────────────────────────────────────────
@@ -365,6 +405,23 @@ export function ProPaywallModal({
   );
 
   const topPad = Math.max(insets.top, 24);
+
+  /**
+   * Short-screen mode — opt-in per source, decided by height, not by device.
+   *
+   * On an SE-class phone the approved spacing puts the Free button ~65pt under
+   * the fold, which for the onboarding offer means the second of its two
+   * choices is invisible until the user scrolls. When the source asks for it
+   * AND the normal stack genuinely will not fit, the column tightens: smaller
+   * emblem, closer gaps, less card padding. Nothing is removed and no text
+   * shrinks; the MORE WITH PRO strip and the legal footer are what move below.
+   *
+   * The bar is deliberately low — see lib/paywallLayout.ts. Only phones that
+   * cannot fit the stack compact; everything from the 12/13 mini upward keeps
+   * the approved spacing.
+   */
+  const compact = !!config?.compactAboveFoldActions
+    && offerNeedsCompactHeight(windowHeight, insets.top, insets.bottom);
   const bottomPad = Math.max(insets.bottom, 14);
 
   const onSelectPlan = useCallback(
@@ -392,7 +449,9 @@ export function ProPaywallModal({
         <ParchmentOverlay opacity={0.05} />
         <ParchmentAging />
 
-        {/* Outside the ScrollView: dismissal must never require scrolling. */}
+        {/* Outside the ScrollView: dismissal must never require scrolling.
+            Absent entirely on a non-dismissible source — see requestClose. */}
+        {dismissible && (
         <Pressable
           onPress={requestClose}
           disabled={busy}
@@ -409,31 +468,38 @@ export function ProPaywallModal({
         >
           <MaterialIcons name="close" size={20} color={PW.brown} />
         </Pressable>
+        )}
 
         <ScrollView
           contentContainerStyle={[
             s.scroll,
-            { paddingTop: topPad + 46, paddingBottom: bottomPad + 22 },
+            // The 46pt above the hero exists for the close X. Without an X
+            // (the onboarding offer) it is dead space that pushes the free
+            // option toward the fold, so it collapses to a margin.
+            { paddingTop: topPad + (dismissible ? 46 : compact ? 6 : 14), paddingBottom: bottomPad + 22 },
           ]}
           showsVerticalScrollIndicator={false}
           // One scroll container only — no nested scrollables anywhere below.
           keyboardShouldPersistTaps="handled"
         >
-          <View style={s.column}>
+          <View style={[s.column, compact && s.columnCompact]}>
             {isTerminal(state.phase) ? (
               <ResolutionPanel
                 phase={state.phase}
                 message={state.notice?.text ?? null}
                 onContinue={continueUnlocked}
-                onClose={() => dismiss(false)}
+                onClose={closeResolution}
+                /* A source that cannot be dismissed has nowhere to close TO, so
+                   its paid-but-unconfirmed button carries on into the app. */
+                mustResolve={!dismissible}
               />
             ) : alreadyPro ? (
               <AlreadyProPanel onContinue={continueUnlocked} />
             ) : (
               <>
-                {config && <PaywallHero config={config} />}
+                {config && <PaywallHero config={config} compact={compact} />}
 
-                <View style={s.plansBlock}>
+                <View style={[s.plansBlock, compact && s.plansBlockCompact]}>
                   <PlanSelector
                     selected={selected}
                     onSelect={onSelectPlan}
@@ -442,6 +508,7 @@ export function ProPaywallModal({
                     monthlyAvailable={products.monthly.available}
                     annualAvailable={products.annual.available}
                     locked={busy}
+                    compact={compact}
                   />
 
                   {/* Product failure: stable layout, concise retry, no crash. */}
@@ -492,6 +559,26 @@ export function ProPaywallModal({
                    * reason to feel good about the price, not the pitch. Above
                    * the button it would compete with the headline.
                    */}
+                  {/* The explicit Free option — the onboarding offer's way out.
+                      Directly under the purchase CTA so it is on the first
+                      screen, never something to scroll for. Secondary by
+                      design: outlined card white, forest text, hairline gold
+                      detail — visible and tappable, but not competing with the
+                      forest CTA above it. */}
+                  {!!config?.freeContinueLabel && (
+                    <Pressable
+                      onPress={continueFree}
+                      disabled={busy}
+                      accessibilityRole="button"
+                      accessibilityLabel={config.freeContinueLabel}
+                      accessibilityState={{ disabled: busy }}
+                      style={({ pressed }) => [s.freeBtn, busy && { opacity: 0.45 }, pressed && !busy && { opacity: 0.85 }]}
+                    >
+                      <View pointerEvents="none" style={s.freeTrim} />
+                      <Text style={s.freeText} allowFontScaling={false}>{config.freeContinueLabel}</Text>
+                    </Pressable>
+                  )}
+
                   {!!config?.secondaryValueLine && (
                     <Text style={s.secondaryValue}>{config.secondaryValueLine}</Text>
                   )}
@@ -559,7 +646,11 @@ function Notice({ tone, text }: { tone: "info" | "error"; text: string }) {
  * somebody already owns is the clearest possible way to lose their trust, and
  * Apple would refuse the transaction anyway.
  */
-function AlreadyProPanel({ onContinue }: { onContinue: () => void }) {
+/**
+ * Exported for app/dev-purchase-complete.tsx, which renders it directly so the
+ * preview cannot drift from what ships. Nothing else outside this file uses it.
+ */
+export function AlreadyProPanel({ onContinue }: { onContinue: () => void }) {
   return (
     <View style={s.panel}>
       <View style={s.panelEmblem}>
@@ -594,11 +685,17 @@ function AlreadyProPanel({ onContinue }: { onContinue: () => void }) {
  * would open a feature the server has not authorised, and the gate would refuse
  * it a second later. Close is the only honest option, and the copy says why.
  */
-function ResolutionPanel({
+/**
+ * The post-purchase surface: "Pro unlocked" when the server has confirmed, and
+ * "Purchase complete" when payment succeeded but confirmation is still
+ * pending. Exported for app/dev-purchase-complete.tsx — see AlreadyProPanel.
+ */
+export function ResolutionPanel({
   phase,
   message,
   onContinue,
   onClose,
+  mustResolve = false,
 }: {
   // TerminalPhase, not a repeated literal union — if a third terminal phase is
   // ever added, this panel is forced to handle it rather than silently
@@ -607,8 +704,16 @@ function ResolutionPanel({
   message: string | null;
   onContinue: () => void;
   onClose: () => void;
+  /** True on a non-dismissible source: the button continues rather than closes. */
+  mustResolve?: boolean;
 }) {
   const unlocked = phase === "unlocked";
+  /**
+   * Paid, unconfirmed, and nowhere to close to. The copy states exactly that
+   * — it does not claim Pro is active, and it does not pretend the purchase
+   * failed.
+   */
+  const carryOn = !unlocked && mustResolve;
 
   return (
     <View style={s.panel}>
@@ -625,16 +730,18 @@ function ResolutionPanel({
       <Text style={s.panelBody}>
         {unlocked
           ? "Every Pro feature is now open on this account. Happy hunting."
-          : (message ??
-            "Your Pro access is finishing activation and will appear shortly.")}
+          : carryOn
+            ? "Your Pro access is still activating. You can enter FlipStart now \u2014 Pro unlocks automatically once it\u2019s confirmed."
+            : (message ??
+              "Your Pro access is finishing activation and will appear shortly.")}
       </Text>
       <Pressable
         onPress={unlocked ? onContinue : onClose}
         accessibilityRole="button"
-        accessibilityLabel={unlocked ? "Continue" : "Close"}
+        accessibilityLabel={unlocked ? "Continue" : carryOn ? "Continue to FlipStart" : "Close"}
         style={({ pressed }) => [s.panelBtn, pressed && { opacity: 0.86 }]}
       >
-        <Text style={s.panelBtnText}>{unlocked ? "Continue" : "Close"}</Text>
+        <Text style={s.panelBtnText}>{unlocked ? "Continue" : carryOn ? "Continue to FlipStart" : "Close"}</Text>
       </Pressable>
     </View>
   );
@@ -658,10 +765,31 @@ const s = StyleSheet.create({
   },
 
   scroll: { paddingHorizontal: 20, flexGrow: 1 },
+  /** Outlined, card white, forest text: clearly second to the forest CTA above. */
+  freeBtn: {
+    backgroundColor: PW.card,
+    borderRadius: PW_RADIUS.pill,
+    borderWidth: 1.6,
+    borderColor: PW.forest,
+    minHeight: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    overflow: "hidden",
+  },
+  freeTrim: {
+    position: "absolute", top: 3, left: 3, right: 3, bottom: 3,
+    borderRadius: PW_RADIUS.pill - 3, borderWidth: 1, borderColor: "rgba(196,163,52,0.45)",
+  },
+  freeText: { fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: "800", color: PW.forest },
   /** Caps the measure on iPad and Pro Max without affecting phones. */
   column: { width: "100%", maxWidth: 460, alignSelf: "center", gap: 20 },
+  /** Short screens: hero → plans 20 → 12. */
+  columnCompact: { gap: 12 },
 
   plansBlock: { gap: 12 },
+  /** Short screens: selector → CTA → Free 12 → 9. Both buttons keep their height. */
+  plansBlockCompact: { gap: 9 },
 
   activating: {
     fontSize: 12.5,

@@ -14,9 +14,10 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { supabase } from '@/lib/supabase';
-import { completeOnboarding } from '@/lib/onboarding-storage';
+import { completeOnboarding, readPendingNewUserOffer } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
+import { OnboardingMasthead } from '@/components/onboarding/OnboardingMasthead';
 
 const FOREST    = '#2A4A2A';
 const SCAN_DARK = '#152815';
@@ -85,7 +86,15 @@ export default function UsernameSetupScreen() {
       }
       await completeOnboarding('resell');
       await refreshProfile().catch(() => {});
-      router.replace('/(tabs)' as any);
+      /**
+       * A brand-new account created FROM onboarding is not finished here: its
+       * final offer is waiting. completeOnboarding() was a no-op for it (the
+       * pending marker gates that), and the Home gate would bounce it back to
+       * /onboarding anyway — but only after Home rendered for a frame. Going
+       * straight there removes that flash. Everyone else goes Home as before.
+       */
+      const pending = await readPendingNewUserOffer();
+      router.replace((pending ? '/onboarding' : '/(tabs)') as any);
     } catch { setError('Something went wrong. Please try again.'); setSaving(false); }
   };
 
@@ -93,11 +102,25 @@ export default function UsernameSetupScreen() {
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-      <ScrollView contentContainerStyle={[s.root, { paddingTop: insets.top + 24 }]} keyboardShouldPersistTaps="handled">
-        <View style={{ alignItems: 'center', marginBottom: 16 }}>
-          <MaterialIcons name="person-pin" size={44} color={FOREST} />
+      {/*
+        Layout, not logic. The content used to sit at the top of a
+        flexGrow container with nothing beneath it — half the screen blank.
+        Now the masthead anchors the top and the form is one centred group,
+        which also puts it where the keyboard pushes it anyway.
+      */}
+      <ScrollView
+        contentContainerStyle={[s.root, { paddingTop: insets.top + 14, paddingBottom: Math.max(insets.bottom, 16) + 16 }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        alwaysBounceVertical={false}
+      >
+        <View style={s.mastheadRow}><OnboardingMasthead /></View>
+
+        <View style={s.group}>
+        <View style={s.seal}>
+          <MaterialIcons name="person-pin" size={26} color={FOREST} />
         </View>
-        <Text style={s.title}>Choose your username</Text>
+        <Text style={s.title} accessibilityRole="header">Choose your username</Text>
         <Text style={s.subtitle}>Your public handle on FlipStart.{'\n'}You can't change it later.</Text>
 
         {error && <View style={s.errorBox}><MaterialIcons name="error-outline" size={14} color="#721C24" /><Text style={s.errorText}>{error}</Text></View>}
@@ -120,24 +143,39 @@ export default function UsernameSetupScreen() {
         {!['available','taken'].includes(availability) && <Text style={s.fieldHint}>3–24 characters · letters, numbers, underscores, periods, or hyphens</Text>}
 
         <Pressable onPress={handleContinue} disabled={!canSubmit}
-          style={({ pressed }) => [s.primaryBtn, !canSubmit && { opacity: 0.5 }, pressed && canSubmit && { opacity: 0.85 }]}>
+          accessibilityRole="button" accessibilityState={{ disabled: !canSubmit }}
+          style={({ pressed }) => [s.primaryBtn, !canSubmit && s.primaryBtnDisabled, pressed && canSubmit && { opacity: 0.85 }]}>
+          <View pointerEvents="none" style={s.primaryTrim} />
           {saving ? <ActivityIndicator color={CREAM} /> : <Text style={s.primaryBtnText}>Continue</Text>}
         </Pressable>
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const s = StyleSheet.create({
-  root:       { flexGrow: 1, backgroundColor: PARCHMENT, paddingHorizontal: 24, paddingBottom: 40 },
-  title:      { fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 10 },
-  subtitle:   { fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 21, marginBottom: 28 },
+  root:       { flexGrow: 1, backgroundColor: PARCHMENT, paddingHorizontal: 24 },
+  mastheadRow:{ alignItems: 'center' },
+  /** The whole form as one group, centred in whatever height is left. */
+  group:      { flex: 1, justifyContent: 'center', paddingVertical: 24 },
+  seal:       {
+    alignSelf: 'center', width: 52, height: 52, borderRadius: 26, marginBottom: 14,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(33,77,45,0.07)', borderWidth: 1, borderColor: 'rgba(33,77,45,0.22)',
+  },
+  title:      { fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 8, lineHeight: 34 },
+  subtitle:   { fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 21, marginBottom: 22 },
   errorBox:   { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: '#F8D7DA', borderRadius: 10, padding: 12, marginBottom: 14 },
   errorText:  { fontSize: 13, color: '#721C24', flex: 1, lineHeight: 18 },
   inputRow:   { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   input:      { backgroundColor: '#FFFEFA', borderRadius: 12, borderWidth: 1, borderColor: CARD_B, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: FOREST },
   availText:  { fontSize: 12, fontWeight: '600', marginBottom: 16, marginLeft: 4 },
   fieldHint:  { fontSize: 11, color: MUTED, marginBottom: 16, marginLeft: 4 },
-  primaryBtn: { backgroundColor: SCAN_DARK, borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  primaryBtn: { backgroundColor: SCAN_DARK, borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', marginTop: 4, overflow: 'hidden' },
+  /** Disabled keeps its structure — the same muted forest the onboarding CTA uses. */
+  primaryBtnDisabled: { backgroundColor: '#5F7562' },
+  /** The onboarding CTA's hairline gold trim, so this reads as the same button. */
+  primaryTrim: { position: 'absolute', top: 3, left: 3, right: 3, bottom: 3, borderRadius: 47, borderWidth: 1, borderColor: 'rgba(212,180,84,0.55)' },
   primaryBtnText: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: CREAM },
 });

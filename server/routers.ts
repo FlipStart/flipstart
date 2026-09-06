@@ -153,6 +153,45 @@ const appRouter_scan = router({
         // muid is the Supabase uid the SERVER verified from the x-supabase-auth
         // header. Null means unverified, and V1 then does not apply.
         const muid = await resolveSupabaseUserId(ctx?.req as never, "analyze");
+
+        /**
+         * ── THE EXPENSIVE ENDPOINT REQUIRES A VERIFIED IDENTITY ─────────────
+         *
+         * UNCONDITIONAL. Authentication is not a monetization setting.
+         *
+         * Omitting the `x-supabase-auth` header was a way OUT of the paid quota
+         * rather than a way to be denied: muid resolved to null, `useV1` fell
+         * false, the V1 reservation below was skipped entirely, and the request
+         * landed on the legacy counter — which is keyed on the client-supplied
+         * scannerId. Rotate that string and the 7/day per-scanner limit resets,
+         * up to the 2,000/day global backstop, on an endpoint that spends real
+         * OpenAI money on every call.
+         *
+         * An earlier version of this guard read
+         * `ENV.monetizationV1Enabled && !muid`, which tied the door being shut
+         * to a rollout flag: setting MONETIZATION_V1_ENABLED=false to roll back
+         * ACCOUNTING would silently reopen the bypass. Those are two different
+         * decisions and the flag now governs only the second one:
+         *
+         *   authenticated + V1 on   -> V1 ledger        (reserveScan below)
+         *   authenticated + V1 off  -> legacy counter   (rollback, intact)
+         *   unauthenticated         -> rejected, either way
+         *
+         * scannerId keeps its legacy accounting role below; it simply may never
+         * stand in for identity on this route.
+         *
+         * This denies nothing the product does. app/(tabs)/index.tsx routes a
+         * signed-out user to /onboarding ("Guests are not allowed"), the
+         * "Continue as guest" control on the auth landing is a router.back()
+         * that grants no session, and lib/trpc.ts attaches the header from a
+         * live getSession() on every request.
+         */
+        if (!muid) {
+          throw Object.assign(new Error("Please sign in to scan."), {
+            code: "NOT_AUTHENTICATED",
+          });
+        }
+
         const useV1 = Boolean(muid) && monetizationV1EnabledFor(muid);
 
         /**

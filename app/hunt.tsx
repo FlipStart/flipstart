@@ -153,9 +153,8 @@ export default function HuntScreen() {
         <Pressable onPress={() => router.push({ pathname: '/auth', params: { mode: 'login' } } as any)}>
           <Text style={{ color: '#8A7050', fontSize: 14, textDecorationLine: 'underline' }}>Already have an account? Log in</Text>
         </Pressable>
-        <Pressable onPress={() => router.back()} style={{ marginTop: 20 }}>
-          <Text style={{ color: '#8A7050', fontSize: 13 }}>Continue as guest</Text>
-        </Pressable>
+        {/* No "continue as guest": Hunt Mode requires an account, and the
+            label promised a mode the product no longer has. Back still works. */}
       </View>
     );
   }

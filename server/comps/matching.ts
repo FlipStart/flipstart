@@ -64,7 +64,16 @@ const W = {
   brand: 14,        // necessary, never sufficient
   closure: 12,      // decisive for hoodies and jackets
   material: 8,
-  era: 6,
+  /**
+   * Era, raised from 6.
+   *
+   * At 6 an era conflict cost about six points of a hundred — a vintage
+   * listing sat one place below an identical modern one instead of well below
+   * it. At 14 a conflict is felt, and because a CONSISTENT comp earns the full
+   * weight, the extra weight lands in both the numerator and the denominator
+   * for it: a matching comp's score is unchanged, only a conflicting one drops.
+   */
+  era: 14,
   department: 2,
   size: 2,
 };
@@ -102,6 +111,19 @@ const ACCESSORY= ["sticker", "decal", "patch", "keychain", "pin", "magnet", "pos
                   "chain", "mirror", "helmet", "gloves", "windshield", "fairing"];
 const KIDS     = ["youth", "kids", "toddler", "infant", "baby", "boys", "girls", "junior"];
 const REPRO    = ["reprint", "reproduction", "repro", "modern reprint", "new with tags", "nwt", "custom made", "bootleg"];
+/**
+ * EXPLICIT era claims in a listing title.
+ *
+ * Both lists are deliberately short. A weak hint — "made in usa", "single
+ * stitch", a copyright year — is evidence an appraiser weighs, not something
+ * that should silently reject a comp, so neither list carries any of them.
+ * "vtg" and "vntg" are absent because canonicalPhrase() has already turned
+ * them into "vintage" before this runs.
+ */
+const VINTAGE_CLAIM = ["vintage", "1960s", "1970s", "1980s", "1990s", "2000s", "retro", "antique"];
+const MODERN_CLAIM  = ["reissue", "reproduction", "retro release", "remake", "modern", "current season", "new release"];
+/** Canonical confidence (0-100) at which an era verdict may reject a comp. */
+const ERA_CONFIDENT_AT = 70;
 
 /** Item-type families. A hoodie is not a fleece jacket, and treating them as
  *  interchangeable is how a $12 comp lands against a $60 item. */
@@ -283,25 +305,70 @@ export function scoreComp(
     if (scanClosure) penalties.push("closure not stated in listing");
   }
 
-  // ── Era ────────────────────────────────────────────────────────────────────
-  const era = c.derived.era_effective.status;
-  const titleVintage = containsAny(t, ["vintage", "1990s", "1980s", "2000s", "retro"]);
+  /**
+   * ── Era ────────────────────────────────────────────────────────────────────
+   *
+   * Graded by the scan's OWN era confidence, because the cost of being wrong
+   * runs both ways: too lax and a 1990s listing anchors the median for a modern
+   * fleece; too strict and a confident-looking guess throws away the only real
+   * comps in the set.
+   *
+   *   confident scan + explicit opposite-era claim  → hard reject
+   *   unsure scan    + explicit opposite-era claim  → scored to zero, kept
+   *   consistent                                    → full credit
+   *
+   * Only EXPLICIT claims count on the listing side. A vintage item listed
+   * without the word "vintage" is ordinary, not a contradiction, so silence is
+   * never treated as a conflict — it earns partial credit, as before.
+   *
+   * "VTG"/"VNTG" reach this check already expanded by canonicalPhrase(), which
+   * is what makes the commonest vintage title on the marketplace legible here.
+   */
+  const eraEff = c.derived.era_effective;
+  const era = eraEff.status;
+  const titleVintage = containsAny(t, VINTAGE_CLAIM);
+  const titleModern  = containsAny(t, MODERN_CLAIM);
   const titleRepro = containsAny(t, REPRO);
+  /**
+   * Confident enough to reject on. `confidence` is 0-100 on the canonical
+   * analysis; `confirmed_vintage` is a routed verdict and stands on its own.
+   */
+  const eraConfident = era === "confirmed_vintage" || (eraEff.confidence ?? 0) >= ERA_CONFIDENT_AT;
+
   if (era === "confirmed_vintage" || era === "likely_vintage") {
     if (titleRepro) return reject("REPRODUCTION_MISMATCH", "");
-    // Absence of the word "vintage" is not a contradiction — plenty of genuine
-    // old items are listed without it.
-    parts.era = titleVintage ? W.era : W.era * 0.25;
-    if (titleVintage) positives.push("era wording matches");
+    // A vintage scan against a listing that advertises itself as a reissue or a
+    // current release is the mirror of the modern-vs-vintage case.
+    if (titleModern && !titleVintage) {
+      if (eraConfident) return reject("WRONG_ERA", "listing claims modern/reissue, item is vintage");
+      parts.era = 0; penalties.push("listing claims modern, item may be vintage");
+    } else {
+      // Absence of the word "vintage" is not a contradiction — plenty of
+      // genuine old items are listed without it.
+      parts.era = titleVintage ? W.era : W.era * 0.25;
+      if (titleVintage) positives.push("era wording matches");
+    }
   } else if (era === "modern" && titleVintage) {
+    if (eraConfident) return reject("WRONG_ERA", "listing claims vintage, item is modern");
     parts.era = 0; penalties.push("listing claims vintage, item is modern");
+  } else if (era === "vintage_inspired" && titleVintage) {
+    // Vintage-STYLED is not vintage. Never a reject — the scan itself is a
+    // statement about styling, not about age — but no credit either.
+    parts.era = 0; penalties.push("listing claims vintage, item is vintage-inspired");
+  } else if (era === "unknown") {
+    // Nothing known about our item's era, so nothing about the listing's era
+    // can agree or disagree with it. Not scored, so it cannot silently pull
+    // every comp's percentage down.
+    // Left out of `applicable` entirely by the guard below, so it does not
+    // count against the achievable total.
+    parts.era = 0;
   } else {
     // Modern scan, no vintage claim in the title: genuinely consistent, not
     // merely unknown. Full credit.
     parts.era = W.era;
     positives.push("era consistent");
   }
-  canScore("era");
+  if (era !== "unknown") canScore("era");
 
   // ── Department ─────────────────────────────────────────────────────────────
   const dept = (c.ai.visible_attributes as { target_department?: string }).target_department ?? "unknown";

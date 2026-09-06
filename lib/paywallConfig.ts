@@ -38,6 +38,13 @@ export type ProPaywallSource =
   | "scan_limit"
   /** Voluntary entry from Settings. Not a gate — the user came looking. */
   | "settings_upgrade"
+  /**
+   * The final screen of new-user onboarding: choose Pro, or continue on the
+   * Free plan. Not a gate either — nothing is locked, and the user is not
+   * allowed to leave without choosing, which is why it is the one source that
+   * is not dismissible and carries an explicit free option.
+   */
+  | "onboarding_offer"
   | "dev_preview";
 
 export interface PaywallConfig {
@@ -72,6 +79,26 @@ export interface PaywallConfig {
    * to.
    */
   secondaryValueLine: string | null;
+  /**
+   * Whether the close X and hardware back dismiss the paywall. Every contextual
+   * paywall is dismissible — "not now" must always be a tap away. Only the
+   * onboarding offer is not: it replaces the X with an explicit Free option so
+   * leaving is always a decision. Absent means true.
+   */
+  dismissible?: boolean;
+  /**
+   * When set, a secondary button with this label renders directly under the
+   * purchase CTA and resolves the paywall WITHOUT a purchase — the Free path.
+   * Null/absent on every contextual paywall.
+   */
+  freeContinueLabel?: string | null;
+  /**
+   * On short screens, tighten the column so that BOTH decisions — the purchase
+   * CTA and the free option — sit on the first frame. Only meaningful with
+   * `freeContinueLabel`; only the onboarding offer sets it. Other paywalls keep
+   * their approved spacing on every screen.
+   */
+  compactAboveFoldActions?: boolean;
 }
 
 /**
@@ -274,6 +301,50 @@ const SETTINGS_UPGRADE: PaywallConfig = {
   secondaryValueLine: null,
 };
 
+/**
+ * Scan allowances, mirrored from server/monetization/policy.ts.
+ *
+ * The client cannot import that module — it reads Railway environment. The
+ * same mirroring already exists in lib/scanBalanceDisplay.ts, so this follows
+ * an established convention rather than inventing one.
+ *
+ * These are FlipStart's own product configuration, not store data, which is
+ * why they are constants here while prices are never hardcoded: RevenueCat is
+ * the authority on what something costs, and we are the authority on what it
+ * includes.
+ */
+/** Free lifetime allowance, mirrored from server/monetization/policy.ts. */
+export const FREE_LIFETIME_SCANS = 15;
+export const MONTHLY_SCANS = 300;
+export const ANNUAL_SCANS = 4000;
+
+/**
+ * Onboarding offer — the last screen for a brand-new account.
+ *
+ * Broad Pro message rather than a locked feature: nothing has been refused
+ * yet. Not dismissible, because the choice IS the completion of onboarding —
+ * and never a trap, because the Free option is a visible button, not the X.
+ * No Scan Store: packs are irrelevant to someone who has not scanned.
+ */
+const ONBOARDING_OFFER: PaywallConfig = {
+  source: "onboarding_offer",
+  eyebrow: "FLIPSTART PRO",
+  headline: "Unlock the Full FlipStart Experience",
+  subtitle: "More scans and the complete toolkit for finding, analyzing, and flipping smarter.",
+  ctaLabel: "Start FlipStart Pro",
+  showScanStoreAlternative: false,
+  secondaryValueLine: null,
+  dismissible: false,
+  /**
+   * Derived from the real allowance, never typed: if the free tier changes,
+   * the button changes with it. The constant is declared above this block —
+   * it lives ABOVE the configs on purpose; a reference to a `const` declared
+   * later in the file would throw at module load.
+   */
+  freeContinueLabel: `Continue with ${FREE_LIFETIME_SCANS} Free Scans`,
+  compactAboveFoldActions: true,
+};
+
 const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
   generate_listings: GENERATE_LISTINGS,
   deep_analysis:     DEEP_ANALYSIS,
@@ -282,6 +353,7 @@ const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
   /** The one source where extra scans are a real answer to the user's problem. */
   scan_limit:        SCAN_LIMIT,
   settings_upgrade:  SETTINGS_UPGRADE,
+  onboarding_offer:  ONBOARDING_OFFER,
   dev_preview:       placeholder("dev_preview"),
 };
 
@@ -299,20 +371,3 @@ export function resolvePaywallConfig(source: ProPaywallSource): PaywallConfig {
 
 /** Every source, for tests and the dev preview picker. */
 export const PAYWALL_SOURCES = Object.keys(CONFIGS) as ProPaywallSource[];
-
-/**
- * Scan allowances, mirrored from server/monetization/policy.ts.
- *
- * The client cannot import that module — it reads Railway environment. The
- * same mirroring already exists in lib/scanBalanceDisplay.ts, so this follows
- * an established convention rather than inventing one.
- *
- * These are FlipStart's own product configuration, not store data, which is
- * why they are constants here while prices are never hardcoded: RevenueCat is
- * the authority on what something costs, and we are the authority on what it
- * includes.
- */
-/** Free lifetime allowance, mirrored from server/monetization/policy.ts. */
-export const FREE_LIFETIME_SCANS = 15;
-export const MONTHLY_SCANS = 300;
-export const ANNUAL_SCANS = 4000;

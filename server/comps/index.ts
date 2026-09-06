@@ -24,6 +24,21 @@ import { CompsError, type SoldCompsProvider, type CompsIneligibleReason } from "
 import { QUERY_BUILDER_VERSION, MATCH_ALGO_VERSION } from "./normalize.js";
 import { reserveRequest, releaseRequest, type BudgetState } from "./budget.js";
 
+/**
+ * How many sold listings to pull before ranking.
+ *
+ * THIS is where recency was winning. The provider returns the newest N within
+ * the history window, so with N=120 and a 365-day window a genuinely better
+ * comp from four months ago was frequently never in the set — no ranking
+ * function can promote a listing it was never shown. Ranking was already
+ * similarity-first; the candidate pool was not.
+ *
+ * 240 is the provider's documented maximum, so this is the deepest single-call
+ * window available. The budget counts CALLS, not results, so the spend ceiling
+ * is unaffected; the cost is a larger response to parse.
+ */
+const CANDIDATE_POOL = 240;
+
 export interface CompsRunRecord {
   ok: boolean;
   errorCode?: string;
@@ -148,7 +163,7 @@ export async function runCompsForAnalysis(
     try {
       const res = await provider().searchSold({
         keyword: built.query, marketplace: "ebay_us",
-        historyDays: built.historyDays, condition: "used", count: 120,
+        historyDays: built.historyDays, condition: "used", count: CANDIDATE_POOL,
       });
       items = res.items; rawCount = res.rawCount; latencyMs = res.latencyMs; malformed = res.malformed.length;
       // Saved durably and shared: the next person who scans anything producing

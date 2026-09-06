@@ -41,6 +41,12 @@ import { PW } from "./paywallTheme";
 
 export interface PaywallHeroProps {
   config: PaywallConfig;
+  /**
+   * Short-screen mode. Only GenericHero honours it (smaller emblem, tighter
+   * gaps); the contextual heroes ignore it, since only the onboarding offer
+   * ever asks. Copy, colours and every element stay — this is spacing.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -49,9 +55,9 @@ export interface PaywallHeroProps {
  * Named `GenericHero` rather than `DefaultHero` so that when every source has a
  * real hero, the thing left over is obviously the thing to delete.
  */
-export function GenericHero({ config }: PaywallHeroProps) {
+export function GenericHero({ config, compact = false }: PaywallHeroProps) {
   return (
-    <View style={s.hero}>
+    <View style={[s.hero, compact && s.heroCompact]}>
       {/*
        * Emblem.
        *
@@ -60,8 +66,8 @@ export function GenericHero({ config }: PaywallHeroProps) {
        * means the two screens read as the same family instead of two designers'
        * opinions.
        */}
-      <View style={s.emblem}>
-        <MaterialIcons name="workspace-premium" size={30} color={PW.gold} />
+      <View style={[s.emblem, compact && s.emblemCompact]}>
+        <MaterialIcons name="workspace-premium" size={compact ? 24 : 30} color={PW.gold} />
       </View>
 
       <OrnamentRule width={132} />
@@ -95,13 +101,15 @@ const HEROES: Partial<Record<ProPaywallSource, React.ComponentType<PaywallHeroPr
   settings_upgrade:  SettingsUpgradeHero,
 };
 
-export function PaywallHero({ config }: PaywallHeroProps) {
+export function PaywallHero({ config, compact = false }: PaywallHeroProps) {
   const Hero = HEROES[config.source] ?? GenericHero;
-  return <Hero config={config} />;
+  return <Hero config={config} compact={compact} />;
 }
 
 const s = StyleSheet.create({
   hero: { alignItems: "center", paddingHorizontal: 8, gap: 10 },
+  /** Short screens: gaps 10 → 6. Nothing is dropped. */
+  heroCompact: { gap: 6 },
 
   emblem: {
     width: 66,
@@ -113,6 +121,8 @@ const s = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 2,
   },
+  /** 66 → 48. Still the same gold-ringed mark, just not the tallest thing on a short screen. */
+  emblemCompact: { width: 48, height: 48, borderRadius: 24, marginBottom: 0 },
 
   /**
    * Green, not gold.

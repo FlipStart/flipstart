@@ -55,6 +55,20 @@ export interface OpenPaywallOptions {
    * rather than a field in the static config.
    */
   onUnlocked?: () => void;
+  /**
+   * Runs when the user resolves the paywall WITHOUT Pro: the explicit free
+   * option on a source that has one, or Close on a paid-but-unconfirmed
+   * activation when the source is not dismissible. Never fires on the X.
+   * Only the onboarding offer passes this today.
+   */
+  onDeclined?: () => void;
+  /**
+   * Runs when the user PAID but the server has not confirmed yet, and they
+   * chose to carry on rather than wait. Distinct from onDeclined on purpose:
+   * these two outcomes must never be recorded as the same thing, because one
+   * of them has a purchase behind it. Only the onboarding offer passes this.
+   */
+  onPendingActivation?: () => void;
 }
 
 interface PaywallRequest {
@@ -62,6 +76,8 @@ interface PaywallRequest {
   id: number;
   config: PaywallConfig;
   onUnlocked?: () => void;
+  onDeclined?: () => void;
+  onPendingActivation?: () => void;
 }
 
 interface ProPaywallContextValue {
@@ -114,6 +130,8 @@ export function ProPaywallProvider({ children }: { children: React.ReactNode }) 
         id: seq.current,
         config: resolvePaywallConfig(source),
         onUnlocked: options?.onUnlocked,
+        onDeclined: options?.onDeclined,
+        onPendingActivation: options?.onPendingActivation,
       });
     },
     [],

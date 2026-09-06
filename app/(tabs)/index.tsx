@@ -33,6 +33,7 @@ import { useAudioPlayer } from 'expo-audio';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image } from 'expo-image';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import { ScanStoreCTA } from '@/components/monetization/ScanStoreCTA';
 
 import { FONTS } from '@/constants/typography';
 import { type CapturedPhotoSet } from '@/lib/capture';
@@ -662,18 +663,16 @@ export default function HomeScreen() {
               )}
 
 
-            <Pressable
-              onPress={() => setShowScanModal(false)}
-              style={({ pressed }) => [sm.dismissBtn, pressed && { opacity: 0.8 }]}
-            >
-              <Text style={sm.dismissText}>Got it</Text>
-            </Pressable>
+            {/* The hero of this popup: someone checking their balance is
+                usually deciding whether to buy more, so the way into the store
+                is the strong object here and "Got it" is the quiet one.
 
-            {/* Secondary action.
                 Dismiss FIRST, then navigate — pushing while the modal is still
                 mounted leaves the sheet floating over the new screen on iOS, and it
                 would still be there on Back. */}
-            <Pressable
+            <ScanStoreCTA
+              visible={showScanModal}
+              style={sm.storeBtn}
               onPress={() => {
                 setShowScanModal(false);
                 // Voluntary entry = BROWSE. Clearing any stale intent is what
@@ -682,11 +681,16 @@ export default function HomeScreen() {
                 clearScanStoreIntent();
                 router.push('/scan-store' as any);
               }}
-              style={({ pressed }) => [sm.storeBtn, pressed && { opacity: 0.75 }]}
+            />
+
+            <Pressable
+              onPress={() => setShowScanModal(false)}
+              hitSlop={10}
               accessibilityRole="button"
-              accessibilityLabel="Go to Scan Store"
+              accessibilityLabel="Got it"
+              style={({ pressed }) => [sm.dismissBtn, pressed && { opacity: 0.6 }]}
             >
-              <Text style={sm.storeText}>Go to Scan Store</Text>
+              <Text style={sm.dismissText}>Got it</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -934,23 +938,12 @@ const sm = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 9, marginTop: 13,
   },
   warningText: { flex: 1, fontSize: 11.5, lineHeight: 15.5, color: '#8A3A2A', fontWeight: '600' },
-  dismissBtn: {
-    marginTop: 17, backgroundColor: GREEN, borderRadius: 50,
-    paddingVertical: 12, paddingHorizontal: 44,
-  },
-  dismissText: { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: CREAM },
-    /**
-     * Secondary treatment.
-     *
-     * Same pill radius and vertical padding as "Got it" so the pair reads as one
-     * stack, but outlined in gold on a transparent fill rather than solid green.
-     * Clearly subordinate without looking disabled — and deliberately quiet: no
-     * glow, no glimmer. The real Scan Store gets the strong treatment.
-     */
-    storeBtn: {
-      marginTop: 10, backgroundColor: 'transparent',
-      borderWidth: 1.5, borderColor: GOLD, borderRadius: 50,
-      paddingVertical: 12, paddingHorizontal: 30,
-    },
-    storeText: { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '800', color: BROWN },
+  /**
+   * The store CTA is the hero of this popup — see ScanStoreCTA for the brass
+   * treatment and motion. This is only its placement in the stack.
+   */
+  storeBtn: { alignSelf: 'stretch', marginTop: 17 },
+  /** Quiet dismiss beneath the hero. A text link, not a second button. */
+  dismissBtn: { marginTop: 12, paddingVertical: 8, paddingHorizontal: 20 },
+  dismissText: { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '700', color: BROWN },
 });

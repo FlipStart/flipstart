@@ -44,6 +44,27 @@ const ALIAS_GROUPS: string[][] = [
   ["l", "large"], ["m", "medium"], ["s", "small"],
   ["1990s", "90s", "nineties"],
   ["2000s", "00s", "y2k", "early 2000s"],
+
+  /**
+   * Marketplace shorthand.
+   *
+   * "VTG Patagonia Fleece" is one of the commonest sold-listing titles on the
+   * site and, until this entry existed, the matcher did not know it said
+   * "vintage" — so a vintage listing sat unpenalised next to a modern scan and
+   * an era-matching vintage comp got no credit. Everything downstream runs on
+   * canonicalPhrase(), so mapping it here fixes tokenisation, era detection and
+   * scoring at once.
+   *
+   * Deliberately CONSERVATIVE. Expanded only where the abbreviation has one
+   * meaning in apparel resale. "OG" (original / a colourway / a brand) and "DS"
+   * (deadstock / a size / a game console) are ambiguous and stay out — a wrong
+   * expansion is worse than none, because it invents a signal the title never
+   * carried.
+   */
+  ["vintage", "vtg", "vntg", "vint"],
+  ["new with tags", "nwt"],
+  ["new without tags", "nwot"],
+  ["new old stock", "nos"],
   ["navy", "navy blue"],
   ["womens", "women", "ladies", "female"],
   ["mens", "men", "male"],

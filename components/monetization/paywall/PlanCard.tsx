@@ -59,6 +59,12 @@ export interface PlanCardProps {
   selected: boolean;
   /** Annual carries the badge, the watermark and a slightly stronger outline. */
   preferred?: boolean;
+  /**
+   * Short-screen mode: less vertical padding, tighter line spacing. Every
+   * line — equivalent, billed amount, allowance, savings — still renders at
+   * its full size. Only air is removed.
+   */
+  compact?: boolean;
   /** The store could not offer this plan. Visible, explained, not selectable. */
   unavailable?: boolean;
   /** Locked during a purchase so the target cannot change mid-transaction. */
@@ -69,6 +75,7 @@ export interface PlanCardProps {
 export function PlanCard({
   name, priceLabel, allowance, footnote, equivalent = null,
   selected, preferred = false, unavailable = false, disabled = false, onSelect,
+  compact = false,
 }: PlanCardProps) {
   const inert = disabled || unavailable;
 
@@ -123,6 +130,7 @@ export function PlanCard({
       accessibilityLabel={a11y}
       style={({ pressed }) => [
         s.card,
+        compact && s.cardCompact,
         preferred && s.cardPreferred,
         selected && s.cardSelected,
         unavailable && s.cardUnavailable,
@@ -156,7 +164,7 @@ export function PlanCard({
 
       {showEquivDominant ? (
         <>
-          <View style={s.priceRow}>
+          <View style={[s.priceRow, compact && s.priceRowCompact]}>
             <Text style={s.amount}>{equivalent}</Text>
             <Text style={s.period}> / month</Text>
           </View>
@@ -164,7 +172,7 @@ export function PlanCard({
           <Text style={s.billedLine}>Billed {billed}</Text>
         </>
       ) : amount ? (
-        <View style={s.priceRow}>
+        <View style={[s.priceRow, compact && s.priceRowCompact]}>
           <Text style={s.amount}>{amount}</Text>
           <Text style={s.period}> {period}</Text>
         </View>
@@ -172,7 +180,7 @@ export function PlanCard({
         <View style={s.priceSkeleton}><Skeleton width={128} height={30} radius={6} /></View>
       )}
 
-      <Text style={s.allowance}>{allowance}</Text>
+      <Text style={[s.allowance, compact && s.allowanceCompact]}>{allowance}</Text>
 
       {unavailable ? (
         <Text style={s.unavailable}>Not available in your store right now</Text>
@@ -223,6 +231,8 @@ const s = StyleSheet.create({
     paddingBottom: 13,
     overflow: "hidden",
   },
+  /** Short screens: 12/13 → 8/9. Six points per card, no line removed. */
+  cardCompact: { paddingTop: 8, paddingBottom: 9 },
   cardPreferred: { borderColor: "rgba(33,77,45,0.35)" },
   /** Structure, not tint: forest border, real depth, white interior. */
   cardSelected: {
@@ -269,6 +279,7 @@ const s = StyleSheet.create({
   radioSelected: { backgroundColor: PW.forest, borderColor: PW.forest },
 
   priceRow: { flexDirection: "row", alignItems: "baseline", marginTop: 6 },
+  priceRowCompact: { marginTop: 3 },
   amount: { fontFamily: FONTS.serif, fontSize: 32, fontWeight: "800", color: PW.ink, lineHeight: 36 },
   period: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: "700", color: PW.ink, lineHeight: 36 },
   priceSkeleton: { height: 36, marginTop: 6, justifyContent: "center" },
@@ -282,6 +293,7 @@ const s = StyleSheet.create({
   billedLine: { marginTop: 2, fontFamily: FONTS.serif, fontSize: 14, fontWeight: "700", color: PW.forest },
 
   allowance: { marginTop: 5, fontSize: 15, color: PW.ink, fontWeight: "500" },
+  allowanceCompact: { marginTop: 3 },
 
   footRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 4 },
   footnote: { fontSize: 13.5, color: PW.brown, fontWeight: "600" },

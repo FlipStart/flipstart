@@ -335,7 +335,10 @@ export default function ScanStoreScreen() {
           <Spark size={13} />
         </View>
 
-        <View style={s.backBtn} />
+        {/* Width-only spacer so the brand row stays centered. Not s.backBtn:
+            that style carries the ring, and an empty ring here reads as a
+            ghost button in the top-right corner. */}
+        <View style={s.headerSpacer} />
       </View>
 
       <ScrollView
@@ -648,6 +651,7 @@ const s = StyleSheet.create({
     width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: 'rgba(33,77,45,0.35)',
   },
+  headerSpacer: { width: 36, height: 36 },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
   /** The masthead's wordmark: 19/800, tracked 5, forest. */
   brand: { fontFamily: FONTS.serif, fontSize: 19, fontWeight: '800', letterSpacing: 5, color: PW.forest },

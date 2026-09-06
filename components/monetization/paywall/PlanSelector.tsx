@@ -34,6 +34,8 @@ export interface PlanSelectorProps {
   annualAvailable: boolean;
   /** True during a purchase — the target must not change mid-transaction. */
   locked: boolean;
+  /** Short-screen mode: tighter card padding and gaps. Content unchanged. */
+  compact?: boolean;
 }
 
 export function PlanSelector({
@@ -44,12 +46,13 @@ export function PlanSelector({
   monthlyAvailable,
   annualAvailable,
   locked,
+  compact = false,
 }: PlanSelectorProps) {
   return (
     <View
       accessibilityRole="radiogroup"
       accessibilityLabel="Choose your plan"
-      style={s.group}
+      style={[s.group, compact && s.groupCompact]}
     >
       {/* Gold rules with sparks — the catalogue-heading treatment. */}
       <View style={s.headerRow}>
@@ -62,6 +65,7 @@ export function PlanSelector({
 
       {/* ANNUAL FIRST. */}
       <PlanCard
+        compact={compact}
         name="ANNUAL PRO"
         priceLabel={planPriceLabel(annualPricing, "year")}
         allowance={`${fmt(ANNUAL_SCANS)} scans per year`}
@@ -79,6 +83,7 @@ export function PlanSelector({
       />
 
       <PlanCard
+        compact={compact}
         name="MONTHLY PRO"
         priceLabel={planPriceLabel(monthlyPricing, "month")}
         allowance={`${fmt(MONTHLY_SCANS)} scans per month`}
@@ -94,6 +99,8 @@ export function PlanSelector({
 
 const s = StyleSheet.create({
   group: { gap: 10 },
+  /** Short screens: heading→card and card→card 10 → 7. */
+  groupCompact: { gap: 7 },
   headerRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 2 },
   headerRule: { flex: 1, height: 1, backgroundColor: "rgba(196,163,52,0.55)" },
   headerSpark: { color: "#C4A334", fontSize: 11 },

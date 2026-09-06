@@ -17,11 +17,12 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { supabase } from '@/lib/supabase';
-import { completeOnboarding } from '@/lib/onboarding-storage';
+import { completeOnboarding, readPendingNewUserOffer } from '@/lib/onboarding-storage';
 import { takeAuthReturnDest } from '@/lib/authReturn';
 import { useAuth } from '@/lib/auth-context';
 import { PENDING_USERNAME_KEY } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
+import { OnboardingMasthead } from '@/components/onboarding/OnboardingMasthead';
 import * as WebBrowser from 'expo-web-browser';
 import { sanitizeAuthError, isCancellation } from '@/lib/authErrors';
 import { claimAuthCode } from '@/lib/oauthCodeClaim';
@@ -45,9 +46,9 @@ export default function AuthScreen() {
   const params  = useLocalSearchParams<{ mode?: string; authEntryPoint?: string }>();
   const { refreshProfile } = useAuth();
 
-  // Entry context — drives whether the landing screen + guest skip are shown,
+  // Entry context — drives whether the landing screen is shown,
   // and where "back" goes. 'settings' = simple Log In/Create Account that returns
-  // to Settings. 'onboarding' = full landing with guest skip, part of onboarding.
+  // to Settings. 'onboarding' = full landing, part of onboarding.
   const entryPoint: 'settings' | 'onboarding' =
     params.authEntryPoint === 'settings' ? 'settings' : 'onboarding';
   const fromSettings = entryPoint === 'settings';
@@ -84,6 +85,28 @@ export default function AuthScreen() {
   // post-quiz final account prompt opens in 'signup' mode, so it's unaffected.
   // Settings has its own create/login entry points, also unaffected.
   const loginOnly = entryPoint === 'onboarding' && params.mode === 'login' && !cameFromLanding;
+
+  /**
+   * Does this device have a new-user onboarding funnel mid-flight?
+   *
+   * PRESENTATION ONLY. It never touches `loginOnly`, the new-account bounce, or
+   * any auth behaviour — it only decides which sentence sits under the login
+   * form. The marker is read, never written or cleared.
+   *
+   * Why it is needed: after email confirmation, app/auth/callback.tsx replaces
+   * to /auth?mode=login with no authEntryPoint, which defaults to 'onboarding'
+   * — so a user who has ALREADY finished Screens 1–10 lands in loginOnly and
+   * was being told to "take the quiz first". They have taken it; they are one
+   * sign-in away from the offer that finishes it.
+   */
+  const [pendingOnboarding, setPendingOnboarding] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    readPendingNewUserOffer()
+      .then(p => { if (alive) setPendingOnboarding(!!p); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
   const [username,     setUsername]     = useState('');
@@ -635,14 +658,17 @@ export default function AuthScreen() {
             }
           </Pressable>
 
-          {/* Guest skip */}
-          <Pressable
-            onPress={() => router.back()}
-            disabled={anyLoading}
-            style={({ pressed }) => [e.guestBtn, pressed && { opacity: 0.6 }]}
-          >
-            <Text style={e.guestText}>Continue as guest</Text>
-          </Pressable>
+          {/*
+            "Continue as guest" was removed. It promised something the product
+            no longer does: the home gate sends every signed-out user to
+            /onboarding ("Guests are not allowed"), and the scan endpoint now
+            requires a verified account, so the label described an outcome the
+            user could never reach.
+
+            Nothing is lost by dropping it. It was `router.back()` — the same
+            action as the close control at the top of this screen, which
+            remains the way out.
+          */}
         </ScrollView>
       </View>
     );
@@ -794,9 +820,16 @@ export default function AuthScreen() {
         >
           <MaterialIcons name="arrow-back" size={22} color={FOREST} />
         </Pressable>
+        {/* The same masthead-then-title the onboarding screens use, so this
+            form reads as the next step of that flow rather than a different app. */}
         <View style={s.headerBlock}>
-          <Text style={s.wordmark}>FlipStart</Text>
-          <Text style={s.subtitle}>{isSignUp ? 'Create your account' : 'Welcome back'}</Text>
+          <OnboardingMasthead />
+          <Text style={s.formTitle} accessibilityRole="header">{isSignUp ? 'Create Account' : 'Log In'}</Text>
+          {/* Only for a user arriving from the onboarding quiz: it is the
+              one thing that ties this form back to the profile they just built. */}
+          {isSignUp && pendingOnboarding && (
+            <Text style={s.formSupport}>One more step and your FlipStart profile is saved.</Text>
+          )}
         </View>
 
         {/* Email-exists special error — sign up attempted with existing account */}
@@ -815,7 +848,7 @@ export default function AuthScreen() {
         ) : null}
 
         {/* Login failed nudge — if on login screen with an error, remind them they can sign up */}
-        {!isSignUp && error && error !== '__EMAIL_EXISTS__' && (
+        {!isSignUp && error && error !== '__EMAIL_EXISTS__' && !(loginOnly && pendingOnboarding) && (
           <Pressable
             onPress={() => { if (loginOnly) { router.replace('/onboarding' as any); } else { setMode('signup'); setError(null); } }}
             style={({ pressed }) => [s.switchBtn, pressed && { opacity: 0.6 }, { marginTop: -8, marginBottom: 4 }]}
@@ -868,7 +901,15 @@ export default function AuthScreen() {
           {saving ? <ActivityIndicator color={CREAM} /> : <Text style={s.primaryBtnText}>{isSignUp ? 'Create Account' : 'Log In'}</Text>}
         </Pressable>
 
-        {loginOnly ? (
+        {loginOnly && pendingOnboarding ? (
+          // This device is mid-funnel: the quiz is DONE and an account was just
+          // created. Signing in is the next step, not a reason to start over —
+          // so this is a statement, not a link back to onboarding. The marker is
+          // left exactly as it is.
+          <View style={s.switchBtn}>
+            <Text style={s.switchText}>Log in to finish setting up FlipStart.</Text>
+          </View>
+        ) : loginOnly ? (
           // Onboarding login-only: no Create Account escape hatch. New users are
           // sent back to take the quiz first (the intended new-user funnel).
           <Pressable
@@ -953,7 +994,9 @@ export default function AuthScreen() {
 const s = StyleSheet.create({
   root:           { flexGrow: 1, backgroundColor: PARCHMENT, paddingHorizontal: 24, paddingBottom: 40 },
   backBtn:        { marginBottom: 8, alignSelf: 'flex-start' },
-  headerBlock:    { alignItems: 'center', marginBottom: 28, marginTop: 8 },
+  headerBlock:    { alignItems: 'center', marginBottom: 22, marginTop: 2, gap: 10 },
+  formTitle:      { fontFamily: FONTS.serif, fontSize: 28, fontWeight: '800', color: FOREST, textAlign: 'center', lineHeight: 34 },
+  formSupport:    { fontSize: 14, color: MUTED, textAlign: 'center', lineHeight: 20, marginTop: -4 },
   wordmark:       { fontFamily: FONTS.serif, fontSize: 32, fontWeight: '800', color: FOREST, marginBottom: 6 },
   subtitle:       { fontSize: 15, color: MUTED },
   title:          { fontFamily: FONTS.serif, fontSize: 26, fontWeight: '800', color: FOREST, textAlign: 'center', marginBottom: 14 },
@@ -997,6 +1040,4 @@ const e = StyleSheet.create({
   createBtnText: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: CREAM, letterSpacing: 0.2 },
   loginBtn:      { borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: FOREST },
   loginBtnText:  { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: FOREST },
-  guestBtn:      { alignItems: 'center', paddingVertical: 20 },
-  guestText:     { fontSize: 13, color: MUTED, textDecorationLine: 'underline' },
 });

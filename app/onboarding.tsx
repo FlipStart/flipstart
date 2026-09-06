@@ -1,568 +1,626 @@
 /**
  * app/onboarding.tsx
- * First-time onboarding flow (full-screen, vintage aesthetic).
  *
- * Flow:
- *   1. Welcome / value prop
- *   2. What do you hunt for?  (interests — stored locally)
- *   3. How FlipStart helps    (3 cards)
- *   4. Account benefits       (Create Account / Log In / Continue as guest)
+ * New-user onboarding — the complete flow.
  *
- * Auth routes into app/auth.tsx with authEntryPoint='onboarding'.
- * No paywall in this pass. Reached via router.replace('/onboarding') from the
- * home screen when onboarding is not yet complete.
+ * ── One route, one state machine ────────────────────────────────────────────
+ * Every stage renders inside this screen from local state, in the shared
+ * OnboardingShell. Nothing here pushes a new route except the existing /auth
+ * and /username-setup screens, and the final offer is the shared Pro paywall
+ * modal opened over this screen. The navigation stack stays exactly what
+ * app/_layout.tsx already protects.
+ *
+ * ── The journey ─────────────────────────────────────────────────────────────
+ *   Welcome → Motivation → Categories → Experience → Pain point
+ *   → Money value → Intelligence value → Gamification value
+ *   → Building your profile → Personalized result
+ *   → [existing /auth: create account] → Onboarding Pro offer → Enter FlipStart
+ *
+ * ── Account creation is not the end ─────────────────────────────────────────
+ * A brand-new account created from this funnel is finished only when the
+ * user explicitly chooses Pro (confirmed by the server) or Continue Free on
+ * the final offer. The mechanism is in lib/onboarding-storage.ts: Screen 10
+ * stages the answers and sets a PENDING OFFER marker; every auth success path
+ * already calls completeOnboarding(), which is a no-op while that marker
+ * exists; auth lands back here (authReturn, or the Home gate on a cold
+ * start); this screen resumes at the offer; the offer decision calls
+ * finishNewUserOnboarding(). No auth file changes.
+ *
+ * ── New vs. existing is explicit ────────────────────────────────────────────
+ * The marker alone is not proof: from the signup form the user can switch to
+ * "Log in instead" and sign into an old account. So a signed-in return with a
+ * marker is classified by auth's own `user.created_at` against the marker's
+ * timestamp (lib/onboardingAnswers.ts). Existing accounts are finished
+ * normally and never see the new-user offer; a marker bound to a DIFFERENT
+ * account is cleared, never applied. Sign In from Welcome clears any marker.
+ *
+ * ── Answers ─────────────────────────────────────────────────────────────────
+ * Session state until Screen 10. Staged to AsyncStorage (coded keys only)
+ * when the user chooses to create an account; written to the new account's
+ * auth.users.user_metadata once it exists; the staged copy is cleared only
+ * after that write is confirmed. A failed write never blocks anything.
+ *
+ * ── primaryGoal is not UserMode ─────────────────────────────────────────────
+ * Completion still passes the legacy literal 'resell', exactly as every
+ * caller did before. The quiz answer is an onboarding preference; it does not
+ * touch the unfinished "Buy for Yourself" mode.
+ *
+ * ── Focus, not mount ────────────────────────────────────────────────────────
+ * The resume decision runs under useFocusEffect. Auth returns here by
+ * REPLACING itself with a new instance of this screen; the original instance
+ * stays beneath, unfocused, and must not react to the auth change — or two
+ * screens would open the offer. Only the focused one decides.
  */
-
-import { useState, useCallback, useEffect } from 'react';
-import {
-  View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
-} from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View, Pressable } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FONTS } from '@/constants/typography';
-import { completeOnboarding, setOnboardingInterests } from '@/lib/onboarding-storage';
+import { PW } from '@/components/monetization/paywall/paywallTheme';
+import { useProPaywall } from '@/components/monetization/paywall/ProPaywallProvider';
+import { OnboardingShell } from '@/components/onboarding/OnboardingShell';
+import { PathCard, LadderRow, HelpCard } from '@/components/onboarding/QuestionCards';
+import { MoneyTeaser, IntelligenceTeaser, GamificationTeaser } from '@/components/onboarding/ValueTeasers';
+import { ProfileBuilding } from '@/components/onboarding/ProfileBuilding';
+import { ProfileResult } from '@/components/onboarding/ProfileResult';
+import {
+  ONBOARDING_VERSION, completeOnboarding, finishNewUserOnboarding,
+  stageOnboardingAnswers, readStagedAnswers, clearStagedAnswers, bindStagedAnswersToUser,
+  setPendingNewUserOffer, readPendingNewUserOffer, clearPendingNewUserOffer, bindPendingOfferToUser,
+} from '@/lib/onboarding-storage';
+import { classifyAccount, persistAnswersToAccount } from '@/lib/onboardingAnswers';
+import { setAuthReturnDest, clearAuthReturnDest } from '@/lib/authReturn';
+import {
+  EMPTY_ANSWERS, QUIZ_STAGES, PRIMARY_GOALS, EXPERIENCE_LEVELS, PAIN_POINTS,
+  stageIsComplete, stageProgress, togglePainPoint, answersComplete,
+  type OnboardingAnswers, type QuizStage,
+} from '@/lib/onboardingQuiz';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
-import { supabase } from '@/lib/supabase';
-import * as WebBrowser from 'expo-web-browser';
-import * as Linking from 'expo-linking';
 
-// Required by expo-web-browser for OAuth session handling.
-WebBrowser.maybeCompleteAuthSession();
+type Stage = 'welcome' | QuizStage;
 
-const FOREST    = '#2A4A2A';
-const SCAN_DARK = '#152815';
-// Page canvas only.
-// Was '#F0E8D4' -- the Hunt Mode background colour. Onboarding is not a
-// Hunt surface, so it now uses the app's white canvas. Cards, chips, the
-// gold hero treatment and the notice box below are all unchanged.
-const PARCHMENT = '#FFFFFF';
-const CREAM     = '#F4EED8';
-const CARD_B    = '#DDD0B0';
-const CARD_BG   = '#EDE0C4';
-const BROWN     = '#5A3A1A';
-const MUTED     = '#8A7050';
-const GOLD      = '#BE9C2C';
+/**
+ * What the focused screen decided on arrival.
+ *   none     — nothing pending: Welcome, then the quiz
+ *   hold     — signed in, marker set, profile not resolved yet
+ *   username — new account still needs a username (existing screen)
+ *   existing — an account that predates this funnel: finish normally
+ *   offer    — a new account from this funnel: resume at the offer
+ */
+type Resume = 'undecided' | 'none' | 'hold' | 'username' | 'existing' | 'offer';
 
-type Step = 0 | 1 | 2 | 3;
-
-const INTERESTS = [
-  'Vintage Clothing', 'Streetwear', 'Sneakers',
-  'Sportswear', 'Designer', 'Accessories', 'Everything',
-] as const;
-
-const HELP_CARDS = [
-  { icon: 'qr-code-scanner', title: 'Scan Finds', body: 'Estimate value before you buy.' },
-  { icon: 'travel-explore',  title: 'Hunt Mode',  body: 'Turn thrift trips into a game.' },
-  { icon: 'emoji-events',    title: 'Progress',   body: 'Unlock achievements, brands, and Diamonds in the Rough.' },
-] as const;
-
-const BENEFITS = [
-  { icon: 'sync',           text: 'Sync scans across all your devices'    },
-  { icon: 'emoji-events',   text: 'Earn XP, climb ranks, build streaks'   },
-  { icon: 'travel-explore', text: 'Save Hunt Mode progress automatically' },
-  { icon: 'lock',           text: 'Secure account backup, always safe'    },
-] as const;
+/** The stage transition: a short settle, once per stage. */
+const STAGE_ENTER = FadeInDown.duration(240);
 
 export default function OnboardingScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ notice?: string }>();
-  // Shown when a social login on the "Log In to Existing Account" route turned
-  // out to be a brand-new account (no quiz taken). We bounce them here.
-  const [notice, setNotice] = useState<string | null>(
+  const { user, profile, profileChecked, profileError, loading: authLoading, refreshProfile } = useAuth();
+  const signedIn = !!user;
+  const { openProPaywall, isPaywallOpen } = useProPaywall();
+
+  // Shown when a social login on the login-only route turned out to be a
+  // brand-new account. auth.tsx bounces here with this param.
+  const [notice] = useState<string | null>(
     params.notice === 'no_existing_account'
-      ? "That sign-in created a new account, not an existing one. Please take the quiz to get started."
+      ? "That log-in created a new account, not an existing one. Tap Get Started to set up FlipStart."
       : null,
   );
-  const insets = useSafeAreaInsets();
-  const { user, refreshProfile } = useAuth();
-  const signedIn = !!user;
 
-  const [step, setStep]           = useState<Step>(0);
-  const [selected, setSelected]   = useState<Set<string>>(new Set());
-  const [saving, setSaving]       = useState(false);
+  const [stage, setStage] = useState<Stage>('welcome');
+  /**
+   * The quiz ALWAYS starts empty.
+   *
+   * `answers` is written by exactly three functions, all of them tap handlers
+   * (setGoal, setExperience, tapPain). Nothing prefills it — not staged
+   * answers from an abandoned run, not anything else. A question that opens
+   * with an option already lit reads as the app having decided for you.
+   *
+   * A fresh object rather than EMPTY_ANSWERS itself: the module constant is
+   * shared, and handing its identity to state would make one accidental
+   * in-place mutation corrupt every later session on the device.
+   */
+  const [answers, setAnswers] = useState<OnboardingAnswers>(() => ({ ...EMPTY_ANSWERS, painPoints: [] }));
+  const [saving, setSaving] = useState(false);
+  const [resume, setResume] = useState<Resume>('undecided');
+  const [buildNeedsContinue, setBuildNeedsContinue] = useState(false);
 
-  // ── Social auth state (used on the final account prompt, step 3) ───────────
-  const [googleLoading, setGoogleLoading] = useState(false);
-  const [googleError,   setGoogleError]   = useState<string | null>(null);
-  const [appleStep,     setAppleStep]     = useState<'idle'|'opening'|'signing'|'loading'>('idle');
-  const [appleError,    setAppleError]    = useState<string | null>(null);
+  /** Exactly-once guards. */
+  const finishingRef = useRef(false);
+  const offerOpenedRef = useRef(false);
+  const decidedForRef = useRef<string | null | undefined>(undefined);
+  /** True once the answers are known to be on the account. */
+  const persistedRef = useRef(false);
 
-  // Analytics: onboarding screen entered (mount-once).
   useEffect(() => { trackAnalyticsEvent('onboarding_started', {}); }, []);
 
-  // ── Google Sign-In ──────────────────────────────────────────────────────────
-  const handleGoogleSignIn = useCallback(async () => {
-    if (googleLoading || saving || appleStep !== 'idle') return;
-    setGoogleLoading(true);
-    setGoogleError(null);
-    try {
-      const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: { redirectTo: 'flipstart://auth/callback', skipBrowserRedirect: true },
-      });
-      if (oauthError || !data?.url) {
-        setGoogleError('Could not start Google Sign-In. Please try again.');
-        return;
-      }
-      const result = await WebBrowser.openAuthSessionAsync(data.url, 'flipstart://');
-      if (result.type !== 'success') return; // user cancelled — no error shown
-      const parsed = Linking.parse(result.url);
-      const code = parsed.queryParams?.code as string | undefined;
-      if (!code) { setGoogleError('Google Sign-In did not return a code. Please try again.'); return; }
-      const { error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
-      if (sessionError) { setGoogleError(`Sign-In failed: ${sessionError.message}`); return; }
-      await refreshProfile().catch(() => {});
-      trackAnalyticsEvent('login_success', { auth_method: 'google', entry_point: 'onboarding' });
-      trackAnalyticsEvent('account_created', { auth_method: 'google', entry_point: 'onboarding' });
-      trackAnalyticsEvent('onboarding_completed', { auth_method: 'google', completed_onboarding_version: 'resell' });
-      await completeOnboarding('resell').catch(() => {});
-      router.replace('/(tabs)' as any);
-    } catch {
-      setGoogleError('Google Sign-In failed. Please try again.');
-    } finally {
-      setGoogleLoading(false);
-    }
-  }, [googleLoading, saving, appleStep, router, refreshProfile]);
+  // ── Resume decision — focused screen only, once per signed-in user ─────
+  const decide = useCallback(async () => {
+    const uid = user?.id ?? null;
+    const pending = await readPendingNewUserOffer();
+    const staged = await readStagedAnswers();
 
-  // ── Apple Sign-In ───────────────────────────────────────────────────────────
-  const handleAppleSignIn = useCallback(async () => {
-    if (appleStep !== 'idle' || saving || googleLoading) return;
-    setAppleStep('opening');
-    setAppleError(null);
-    try {
-      const AppleAuth = await import('expo-apple-authentication');
-      const available = await AppleAuth.isAvailableAsync();
-      if (!available) {
-        setAppleError('Apple Sign-In is not available on this device.');
-        setAppleStep('idle');
-        return;
-      }
-      const credential = await AppleAuth.signInAsync({
-        requestedScopes: [
-          AppleAuth.AppleAuthenticationScope.FULL_NAME,
-          AppleAuth.AppleAuthenticationScope.EMAIL,
-        ],
-      });
-      setAppleStep('signing');
-      const { identityToken, fullName } = credential;
-      if (!identityToken) {
-        setAppleError('Apple Sign-In failed. Please try again.');
-        setAppleStep('idle');
-        return;
-      }
-      const { error: sessionError } = await supabase.auth.signInWithIdToken({
-        provider: 'apple', token: identityToken,
-      });
-      if (sessionError) {
-        setAppleError(`Sign-In failed: ${sessionError.message}`);
-        setAppleStep('idle');
-        return;
-      }
-      setAppleStep('loading');
-      if (fullName?.givenName || fullName?.familyName) {
-        const displayName = [fullName.givenName, fullName.familyName].filter(Boolean).join(' ');
-        supabase.auth.updateUser({ data: { full_name: displayName } }).catch(() => {});
-      }
-      await refreshProfile().catch(() => {});
-      trackAnalyticsEvent('login_success', { auth_method: 'apple', entry_point: 'onboarding' });
-      trackAnalyticsEvent('account_created', { auth_method: 'apple', entry_point: 'onboarding' });
-      trackAnalyticsEvent('onboarding_completed', { auth_method: 'apple', completed_onboarding_version: 'resell' });
-      await completeOnboarding('resell').catch(() => {});
-      router.replace('/(tabs)' as any);
-    } catch (err: any) {
-      if (err?.code === 'ERR_REQUEST_CANCELED' || err?.code === 'ERR_CANCELED') {
-        setAppleStep('idle');
-        return;
-      }
-      setAppleError('Apple Sign-In failed. Please try again.');
-      setAppleStep('idle');
+    if (!uid) {
+      // Signed out. Staged answers from an abandoned run stay in storage —
+      // they still persist to the account if that run resumes — but they are
+      // NOT poured back into the quiz. Restoring them lit an option on the
+      // pain-point screen before the user had touched it.
+      setResume('none');
+      return;
     }
-    // Note: don't reset in finally — loading state persists briefly until navigation
-  }, [appleStep, saving, googleLoading, router, refreshProfile]);
+    if (!pending) { setResume('none'); return; }          // dev reset / version bump on an existing session
 
-  const toggleInterest = useCallback((value: string) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (value === 'Everything') {
-        // 'Everything' is exclusive — selecting it clears the rest.
-        return next.has('Everything') ? new Set() : new Set(['Everything']);
-      }
-      next.delete('Everything');
-      if (next.has(value)) next.delete(value); else next.add(value);
-      return next;
-    });
+    if (pending.userId && pending.userId !== uid) {
+      // Someone else's funnel. Never applied to this account.
+      await clearPendingNewUserOffer();
+      await clearStagedAnswers();
+      setResume('existing');
+      return;
+    }
+    if (classifyAccount(user?.created_at, pending.stagedAt) === 'existing') {
+      // "Log in instead" from the signup form, or any account older than this
+      // session. Finished normally; the offer is for new accounts only.
+      await clearPendingNewUserOffer();
+      await clearStagedAnswers();
+      setResume('existing');
+      return;
+    }
+
+    // A brand-new account from this funnel. Bind everything to it now.
+    await bindPendingOfferToUser(uid);
+    await bindStagedAnswersToUser(uid);
+
+    // Username setup is still required where it always was. profileError and
+    // a missing row both mean "not known yet" — hold, do not guess.
+    if (profileError || !profile) { setResume('hold'); return; }
+    if (!profile.onboarding_complete) { setResume('username'); return; }
+
+    setResume('offer');
+  }, [user?.id, user?.created_at, profile, profileError]);
+
+  const decidingRef = useRef(false);
+  useFocusEffect(useCallback(() => {
+    if (authLoading || !profileChecked) return;
+    const uid = user?.id ?? null;
+    const settled = resume !== 'undecided' && resume !== 'hold';
+    // Re-decide when the user changes, or when a held decision can now be made.
+    if (decidedForRef.current === uid && settled) return;
+    if (decidingRef.current) return;
+    decidingRef.current = true;
+    decidedForRef.current = uid;
+    decide().finally(() => { decidingRef.current = false; });
+  }, [authLoading, profileChecked, user?.id, resume, decide]));
+
+  /** Best-effort write of the staged answers to the account; clears the stage only on success. */
+  const persistIfStaged = useCallback(async () => {
+    if (persistedRef.current) return true;
+    const staged = await readStagedAnswers();
+    if (!staged) { persistedRef.current = true; return true; }
+    const ok = await persistAnswersToAccount(staged);
+    if (ok) { persistedRef.current = true; await clearStagedAnswers(); }
+    return ok;
   }, []);
 
-  // Persist interests (best-effort) then advance.
-  const saveInterestsAndNext = useCallback(() => {
-    const interests = Array.from(selected);
-    trackAnalyticsEvent('onboarding_quiz_completed', { selected_interests: interests });
-    setOnboardingInterests(interests).catch(() => {});
-    setStep(2);
-  }, [selected]);
+  // ── Navigation within the quiz ──────────────────────────────────────────
+  const stageIndex = stage === 'welcome' ? -1 : QUIZ_STAGES.indexOf(stage);
+  const canContinue = stage !== 'welcome' && stageIsComplete(stage, answers);
 
-  // Auth → reuse the shared auth screen with onboarding entry context.
-  const goToAuth = useCallback((mode: 'signup' | 'login') => {
-    trackAnalyticsEvent(
-      mode === 'signup' ? 'onboarding_create_account_tapped' : 'onboarding_login_tapped',
-      { entry_point: 'onboarding' },
-    );
-    router.push({ pathname: '/auth', params: { mode, authEntryPoint: 'onboarding' } } as any);
+  const start = useCallback(() => {
+    trackAnalyticsEvent('onboarding_get_started_tapped', { entry_point: 'onboarding' });
+    setStage(QUIZ_STAGES[0]);
+  }, []);
+
+  const back = useCallback(() => {
+    if (stage === 'result') { setStage('gamification'); return; }   // never replay the build
+    setStage(stageIndex <= 0 ? 'welcome' : QUIZ_STAGES[stageIndex - 1]);
+  }, [stage, stageIndex]);
+
+  /**
+   * Existing login-only route. Bounce protection lives in auth.tsx. An
+   * existing user is never a new-user funnel, so any pending marker goes.
+   */
+  const logIn = useCallback(() => {
+    trackAnalyticsEvent('onboarding_login_tapped', { entry_point: 'onboarding' });
+    void clearPendingNewUserOffer();
+    clearAuthReturnDest();
+    router.push({ pathname: '/auth', params: { mode: 'login', authEntryPoint: 'onboarding' } } as any);
   }, [router]);
 
-  // Finish onboarding → mark current version complete and enter the app.
-  // Used by "Continue as guest" (guest) and "Enter FlipStart" (signed-in).
-  const finishOnboarding = useCallback(async () => {
-    if (saving) return;
+  /**
+   * Screen 10, signed out: stage the answers, mark the funnel pending, ask
+   * auth to come back here, and hand off to the existing signup form (which
+   * carries Google and Apple). Nothing is completed yet.
+   */
+  const saveProfileAndCreateAccount = useCallback(async () => {
+    if (!answersComplete(answers) || saving) return;
     setSaving(true);
-    // Guests complete onboarding here (signed-in completion is tracked in the
-    // OAuth success paths above, so don't double-count).
-    if (!signedIn) {
-      trackAnalyticsEvent('onboarding_continue_guest_tapped', { entry_point: 'onboarding' });
-      trackAnalyticsEvent('guest_session_started', {});
-      trackAnalyticsEvent('onboarding_completed', { auth_method: 'guest', completed_onboarding_version: 'resell' });
+    await stageOnboardingAnswers({
+      primaryGoal: answers.primaryGoal,
+      experienceLevel: answers.experienceLevel,
+      painPoints: answers.painPoints,
+    });
+    await setPendingNewUserOffer();
+    setAuthReturnDest('/onboarding');
+    trackAnalyticsEvent('onboarding_create_account_tapped', { entry_point: 'onboarding', primary_goal: answers.primaryGoal });
+    setSaving(false);
+    router.push({ pathname: '/auth', params: { mode: 'signup', authEntryPoint: 'onboarding' } } as any);
+  }, [answers, saving, router]);
+
+  /**
+   * An account that already existed: a signed-in tester after a dev reset, or
+   * a login from the signup form. Persist the answers if there are any, mark
+   * the device complete, enter. Never the new-user offer.
+   */
+  const finishExisting = useCallback(async (reason: 'existing_account' | 'signed_in_quiz') => {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    setSaving(true);
+    if (answersComplete(answers)) {
+      await persistAnswersToAccount({
+        primaryGoal: answers.primaryGoal,
+        experienceLevel: answers.experienceLevel,
+        painPoints: answers.painPoints,
+        answeredAt: new Date().toISOString(),
+      });
     }
+    trackAnalyticsEvent('onboarding_completed', {
+      onboarding_version: ONBOARDING_VERSION, outcome: reason,
+      primary_goal: answers.primaryGoal, experience_level: answers.experienceLevel, pain_points: answers.painPoints,
+    });
+    // Legacy UserMode literal — not the quiz's primaryGoal. See the header.
     await completeOnboarding('resell').catch(() => {});
     router.replace('/(tabs)' as any);
-  }, [saving, router, signedIn]);
+  }, [answers, router]);
 
-  const back = useCallback(() => setStep(s => (s > 0 ? ((s - 1) as Step) : s)), []);
+  /**
+   * The end of a new-user funnel. Called ONLY from the offer, with the outcome
+   * that actually happened:
+   *   pro                — the SERVER confirmed Pro (onUnlocked)
+   *   free               — the user tapped Continue with 15 Free Scans
+   *   activation_pending — the purchase went through, the server has not
+   *                        confirmed yet, and the user chose to carry on
+   *
+   * The third is never recorded as `free`: money changed hands. Nothing here
+   * grants Pro, cancels anything, or touches reconciliation — the entitlement
+   * system surfaces Pro on its own once it confirms.
+   */
+  const finishNewUser = useCallback(async (outcome: 'pro' | 'free' | 'activation_pending') => {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    setSaving(true);
+    await persistIfStaged();                       // staged copy survives a failed write
+    /**
+     * Read the answers from storage rather than state.
+     *
+     * A user who created an account, closed the app, and reopened at the offer
+     * has an EMPTY in-memory quiz — this screen is a fresh mount. The staged
+     * payload is the truthful record of what they answered, and reading it
+     * here is what lets `answers` stay tap-only.
+     */
+    const recorded = (await readStagedAnswers()) ?? null;
+    trackAnalyticsEvent('onboarding_completed', {
+      onboarding_version: ONBOARDING_VERSION, outcome,
+      primary_goal: recorded?.primaryGoal ?? answers.primaryGoal,
+      experience_level: recorded?.experienceLevel ?? answers.experienceLevel,
+      pain_points: recorded?.painPoints ?? answers.painPoints,
+    });
+    await finishNewUserOnboarding('resell');       // clears the marker, writes the version
+    router.replace('/(tabs)' as any);
+  }, [answers, persistIfStaged, router]);
 
-  // ── Progress dots ───────────────────────────────────────────────────────────
-  const Dots = () => (
-    <View style={st.dotsRow}>
-      {[0, 1, 2, 3].map(i => (
-        <View key={i} style={[st.dot, i === step && st.dotActive]} />
-      ))}
-    </View>
-  );
+  // ── The offer: the shared Pro paywall, opened once per arrival ──────────
+  const [offerShown, setOfferShown] = useState(false);
+  const openOffer = useCallback(() => {
+    setOfferShown(true);
+    openProPaywall('onboarding_offer', {
+      onUnlocked: () => { void finishNewUser('pro'); },
+      onDeclined: () => { void finishNewUser('free'); },
+      onPendingActivation: () => { void finishNewUser('activation_pending'); },
+    });
+  }, [openProPaywall, finishNewUser]);
 
-  // ── Top bar (back chevron on steps > 0) ───────────────────────────────────────
-  const TopBar = () => (
-    <View style={st.topBar}>
-      {step > 0 ? (
-        <Pressable onPress={back} hitSlop={12} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
-          <MaterialIcons name="arrow-back" size={24} color={FOREST} />
-        </Pressable>
-      ) : <View style={{ width: 24 }} />}
-      <Dots />
-      <View style={{ width: 24 }} />
-    </View>
-  );
+  useEffect(() => {
+    if (stage !== 'offer' || resume !== 'offer') return;
+    if (offerOpenedRef.current) return;
+    offerOpenedRef.current = true;
+    openOffer();
+  }, [stage, resume, openOffer]);
 
+  // ── Acting on the resume decision ───────────────────────────────────────
+  useEffect(() => {
+    if (resume === 'username') { router.replace('/username-setup' as any); return; }
+    if (resume === 'existing') { void finishExisting('existing_account'); return; }
+    if (resume === 'offer') { setStage('offer'); void persistIfStaged(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resume]);
+
+  const next = useCallback(() => {
+    if (!canContinue) return;
+    if (stage === 'pain_points') {
+      trackAnalyticsEvent('onboarding_quiz_completed', {
+        primary_goal: answers.primaryGoal,
+        experience_level: answers.experienceLevel,
+        pain_points: answers.painPoints,
+      });
+    }
+    if (stage === 'result') {
+      if (signedIn) void finishExisting('signed_in_quiz');
+      else void saveProfileAndCreateAccount();
+      return;
+    }
+    setStage(QUIZ_STAGES[stageIndex + 1]);
+  }, [canContinue, stage, stageIndex, answers, signedIn, finishExisting, saveProfileAndCreateAccount]);
+
+  const buildDone = useCallback(() => { setStage('result'); }, []);
+
+  // ── Answer setters ──────────────────────────────────────────────────────
+  const setGoal       = (v: OnboardingAnswers['primaryGoal'])      => setAnswers(a => ({ ...a, primaryGoal: v }));
+  const setExperience = (v: OnboardingAnswers['experienceLevel'])  => setAnswers(a => ({ ...a, experienceLevel: v }));
+  const tapPain       = (v: OnboardingAnswers['painPoints'][number]) =>
+    setAnswers(a => ({ ...a, painPoints: togglePainPoint(a.painPoints, v) }));
+
+  // ── Resolving a new account: username, or an existing account finishing ─
+  if (resume === 'hold' || resume === 'username' || resume === 'existing') {
+    return (
+      <OnboardingShell
+        progress={stageProgress('result')}
+        headline={'Setting up your account\u2026'}
+        support="One moment."
+        centered
+        footer={profileError && resume === 'hold' ? (
+          <TextLink prefix="Taking a while?" action="Try again" onPress={() => { void refreshProfile(); }} />
+        ) : null}
+      >
+        <View style={w.holding}><ActivityIndicator color={PW.forest} /></View>
+      </OnboardingShell>
+    );
+  }
+
+  // ── Welcome ─────────────────────────────────────────────────────────────
+  /**
+   * Both actions render on the FIRST FRAME.
+   *
+   * They used to wait on two async reads — the completed-version key, to decide
+   * which button should dominate, and the resume decision, to avoid sending a
+   * returning new account into the quiz. Neither is needed now: a signed-out
+   * user always gets both a new-user path and a returning-user path, so there
+   * is nothing to decide, and the resume effect still overrides the stage the
+   * moment it resolves (a pending account is moved to its offer, an existing
+   * one is finished) — so an early tap cannot strand anyone.
+   *
+   * A signed-in user gets Get Started only: they are already authenticated, so
+   * Log In would be nonsense. They are never signed out and no second account
+   * is ever created.
+   */
+  if (stage === 'welcome') {
+    return (
+      <OnboardingShell
+        progress={null}
+        brand
+        brandLine="THRIFT INTELLIGENCE"
+        centered
+        headline={'Spot value.\nFind profitable flips.\nThrift smarter.'}
+        support="FlipStart helps you identify finds, understand resale potential, make smarter buy decisions, and level up every thrift trip."
+        ctaPlacement="content"
+        cta={{ label: 'Get Started', onPress: start, kicker: signedIn ? undefined : 'NEW HERE?', pulse: true }}
+        secondaryCta={signedIn ? undefined : {
+          label: 'Log In', onPress: logIn, kicker: 'ALREADY HAVE A FLIPSTART ACCOUNT?', pulse: true,
+        }}
+      >
+        <Animated.View entering={STAGE_ENTER} style={w.pillars}>
+          <Pillar icon="trending-up"   text="Smarter, more profitable buys" />
+          <Pillar icon="search"        text="Identify and understand your finds" />
+          <Pillar icon="emoji-events"  text="Every thrift trip becomes progress" />
+        </Animated.View>
+
+        {!!notice && (
+          <View style={w.notice} accessibilityLiveRegion="polite">
+            <MaterialIcons name="info-outline" size={15} color={PW.forest} />
+            <Text style={w.noticeText}>{notice}</Text>
+          </View>
+        )}
+      </OnboardingShell>
+    );
+  }
+
+  // ── Questions ───────────────────────────────────────────────────────────
+  const progress = stageProgress(stage);
+  const cta = { label: 'Continue', onPress: next, disabled: !canContinue };
+
+  /** Three rich path cards. Sparse screen, so the CTA follows the content. */
+  if (stage === 'motivation') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
+        eyebrow="QUESTION 1 OF 3" ctaPlacement="content"
+        headline="What brings you to FlipStart?" accent="FlipStart"
+        support="Pick the reason that fits you best.">
+        <Animated.View key={stage} entering={STAGE_ENTER} style={q.stack}>
+          {PRIMARY_GOALS.map(o => (
+            <PathCard key={o.value}
+              eyebrow={o.eyebrow ?? ''} title={o.title} support={o.support}
+              icon={(o.icon ?? 'auto-awesome') as any}
+              selected={answers.primaryGoal === o.value} onPress={() => setGoal(o.value)} />
+          ))}
+        </Animated.View>
+      </OnboardingShell>
+    );
+  }
+
+  /** A connected ladder — a different rhythm from the three cards before it. */
+  if (stage === 'experience') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
+        eyebrow="QUESTION 2 OF 3" ctaPlacement="content"
+        headline="How confident are you at spotting value?" accent="spotting value"
+        support={'We\u2019ll use this to shape your FlipStart profile.'}>
+        <Animated.View key={stage} entering={STAGE_ENTER} style={q.ladder}>
+          {EXPERIENCE_LEVELS.map((o, i) => (
+            <LadderRow key={o.value} title={o.title} support={o.support}
+              first={i === 0} last={i === EXPERIENCE_LEVELS.length - 1}
+              selected={answers.experienceLevel === o.value} onPress={() => setExperience(o.value)} />
+          ))}
+        </Animated.View>
+      </OnboardingShell>
+    );
+  }
+
+  /** A two-column field: all six visible at once, sweepable. Denser, so the
+      CTA stays anchored and the field scrolls beneath it on a small phone. */
+  if (stage === 'pain_points') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
+        eyebrow="QUESTION 3 OF 3"
+        headline="What do you want FlipStart to help with?" accent="FlipStart"
+        support="Choose everything that would make thrifting easier.">
+        <Animated.View key={stage} entering={STAGE_ENTER} style={q.grid}>
+          {PAIN_POINTS.map(o => (
+            <HelpCard key={o.value} title={o.title} icon={o.icon as any}
+              selected={answers.painPoints.includes(o.value)} onPress={() => tapPain(o.value)} />
+          ))}
+        </Animated.View>
+      </OnboardingShell>
+    );
+  }
+
+  // ── Value screens ───────────────────────────────────────────────────────
+  if (stage === 'money') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
+        ctaPlacement="content"
+        headline="Know the flip before you buy" accent="before you buy"
+        support="See the numbers that matter before you decide whether a find deserves your money.">
+        <Animated.View key={stage} entering={STAGE_ENTER}><MoneyTeaser /></Animated.View>
+      </OnboardingShell>
+    );
+  }
+
+  if (stage === 'intelligence') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
+        ctaPlacement="content"
+        headline="Spot what others might miss" accent="others might miss"
+        support={'FlipStart helps you understand unfamiliar finds \u2014 what they may be, what they may be worth, and what deserves a closer look.'}>
+        <Animated.View key={stage} entering={STAGE_ENTER}><IntelligenceTeaser /></Animated.View>
+      </OnboardingShell>
+    );
+  }
+
+  if (stage === 'gamification') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
+        headline="Turn every thrift trip into progress" accent="into progress"
+        support="Hunt, discover, earn XP, climb the ranks, and build a record of what you find.">
+        <Animated.View key={stage} entering={STAGE_ENTER}><GamificationTeaser /></Animated.View>
+      </OnboardingShell>
+    );
+  }
+
+  // ── Building the profile ────────────────────────────────────────────────
+  if (stage === 'building') {
+    return (
+      <OnboardingShell progress={progress} masthead centered ctaPlacement="content"
+        headline={'Building your FlipStart profile\u2026'} accent="FlipStart"
+        support="Putting your answers to work."
+        cta={buildNeedsContinue ? { label: 'Continue', onPress: buildDone } : undefined}
+      >
+        <ProfileBuilding answers={answers} onDone={buildDone} onReduceMotion={setBuildNeedsContinue} />
+      </OnboardingShell>
+    );
+  }
+
+  // ── The result ──────────────────────────────────────────────────────────
+  if (stage === 'result') {
+    if (!answersComplete(answers)) {
+      // Cannot happen through the UI; defensive so a partial state never
+      // renders a half-built profile.
+      return (
+        <OnboardingShell progress={progress} onBack={() => setStage('motivation')} headline="Let’s finish your profile"
+          support="A few answers are missing." cta={{ label: 'Back to the quiz', onPress: () => setStage('motivation') }} />
+      );
+    }
+    return (
+      <OnboardingShell progress={progress} onBack={back} masthead
+        headline="Your FlipStart profile is ready" accent="FlipStart"
+        support={signedIn ? undefined : 'Save your scans, XP, history, and profile across devices.'}
+        cta={{ label: signedIn ? 'Enter FlipStart' : 'Save My Profile', onPress: next, disabled: saving }}
+      >
+        <Animated.View key={stage} entering={STAGE_ENTER}>
+          <ProfileResult
+            primaryGoal={answers.primaryGoal}
+            experienceLevel={answers.experienceLevel}
+            painPoints={answers.painPoints}
+          />
+        </Animated.View>
+      </OnboardingShell>
+    );
+  }
+
+  // ── The offer host: the paywall modal renders over this ─────────────────
+  // stage === 'offer'
   return (
-    <View style={[st.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      <TopBar />
+    <OnboardingShell progress={1} centered masthead ctaPlacement="content"
+      headline="Choose how to start"
+      support={'Go Pro, or continue on the Free plan \u2014 you\u2019ll be scanning in a moment either way.'}
+      cta={offerShown && !isPaywallOpen && !saving ? { label: 'See your options', onPress: openOffer } : undefined}
+    >
+      <View style={w.holding}>{saving && <ActivityIndicator color={PW.forest} />}</View>
+    </OnboardingShell>
+  );
+}
 
-      {/* ── Step 1: Welcome ───────────────────────────────────────────────── */}
-      {step === 0 && (
-        <ScrollView contentContainerStyle={st.scroll} showsVerticalScrollIndicator={false}>
-          <View style={st.brandBlock}>
-            <Text style={st.wordmark}>FlipStart</Text>
-            <Text style={st.kicker}>✦ THRIFT INTELLIGENCE ✦</Text>
-          </View>
+// ── Welcome pieces ──────────────────────────────────────────────────────────
 
-          <View style={st.heroIcon}>
-            <MaterialIcons name="auto-awesome" size={44} color={GOLD} />
-          </View>
-
-          <Text style={st.headline}>Scan thrift finds.{'\n'}Know what to buy.</Text>
-          <Text style={st.subtitle}>
-            Your AI-powered resale assistant for spotting flips, tracking finds, and building your collection.
-          </Text>
-
-          {notice && (
-            <View style={st.noticeBox}>
-              <MaterialIcons name="info-outline" size={18} color={BROWN} />
-              <Text style={st.noticeText}>{notice}</Text>
-            </View>
-          )}
-
-          <View style={st.ctaBlock}>
-            {signedIn ? (
-              // Already signed in (e.g. re-onboarding after a version bump) — just
-              // walk them through the refreshed quiz; no login needed.
-              <Pressable onPress={() => setStep(1)} style={({ pressed }) => [st.primaryBtn, pressed && st.pressed]}>
-                <Text style={st.primaryBtnText}>Take the Quiz</Text>
-              </Pressable>
-            ) : (
-              <>
-                {/* New users → start the quiz. This does NOT complete onboarding. */}
-                <Pressable onPress={() => setStep(1)} style={({ pressed }) => [st.primaryBtn, pressed && st.pressed]}>
-                  <Text style={st.primaryBtnText}>Take the Quiz</Text>
-                </Pressable>
-                {/* Returning users → log in and skip the quiz (Flow B). Onboarding
-                    is marked complete by auth.tsx only on a SUCCESSFUL login. */}
-                <Pressable onPress={() => goToAuth('login')} style={({ pressed }) => [st.secondaryBtn, pressed && st.pressed]}>
-                  <Text style={st.secondaryBtnText}>Log In to Existing Account</Text>
-                </Pressable>
-              </>
-            )}
-          </View>
-        </ScrollView>
-      )}
-
-      {/* ── Step 2: Interests ─────────────────────────────────────────────── */}
-      {step === 1 && (
-        <ScrollView contentContainerStyle={st.scroll} showsVerticalScrollIndicator={false}>
-          <Text style={st.stepTitle}>What do you hunt for?</Text>
-          <Text style={st.stepSub}>Pick anything that fits. You can change this later.</Text>
-
-          <View style={st.chipsWrap}>
-            {INTERESTS.map(label => {
-              const on = selected.has(label);
-              return (
-                <Pressable
-                  key={label}
-                  onPress={() => toggleInterest(label)}
-                  style={({ pressed }) => [st.chip, on && st.chipOn, pressed && { opacity: 0.85 }]}
-                >
-                  {on && <MaterialIcons name="check" size={15} color={CREAM} style={{ marginRight: 6 }} />}
-                  <Text style={[st.chipText, on && st.chipTextOn]}>{label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <View style={st.bottomCta}>
-            <Pressable onPress={saveInterestsAndNext} style={({ pressed }) => [st.primaryBtn, pressed && st.pressed]}>
-              <Text style={st.primaryBtnText}>{selected.size > 0 ? 'Continue' : 'Skip for now'}</Text>
-            </Pressable>
-          </View>
-        </ScrollView>
-      )}
-
-      {/* ── Step 3: How FlipStart helps ───────────────────────────────────── */}
-      {step === 2 && (
-        <ScrollView contentContainerStyle={st.scroll} showsVerticalScrollIndicator={false}>
-          <Text style={st.stepTitle}>How FlipStart helps</Text>
-          <Text style={st.stepSub}>Three tools to flip smarter.</Text>
-
-          <View style={{ gap: 14, marginTop: 8 }}>
-            {HELP_CARDS.map(c => (
-              <View key={c.title} style={st.helpCard}>
-                <View style={st.helpIconBox}>
-                  <MaterialIcons name={c.icon as any} size={24} color={FOREST} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={st.helpTitle}>{c.title}</Text>
-                  <Text style={st.helpBody}>{c.body}</Text>
-                </View>
-              </View>
-            ))}
-          </View>
-
-          <View style={st.bottomCta}>
-            <Pressable onPress={() => setStep(3)} style={({ pressed }) => [st.primaryBtn, pressed && st.pressed]}>
-              <Text style={st.primaryBtnText}>Continue</Text>
-            </Pressable>
-          </View>
-        </ScrollView>
-      )}
-
-      {/* ── Step 4: Account prompt — matches the Hunt Mode gate design ───── */}
-      {step === 3 && (
-        <ScrollView contentContainerStyle={ac.scroll} showsVerticalScrollIndicator={false}>
-          {signedIn ? (
-            // Already signed in (e.g. version-bump re-onboarding) — skip the auth pitch.
-            <>
-              <View style={ac.headerBlock}>
-                <Text style={ac.wordmark}>FlipStart</Text>
-                <Text style={ac.tagline}>Account secured.{'\n'}You{'\u2019'}re all set.</Text>
-              </View>
-              <View style={ac.signedInBadge}>
-                <MaterialIcons name="verified-user" size={20} color={FOREST} />
-                <Text style={ac.signedInText}>Your progress syncs and stays backed up.</Text>
-              </View>
-              <View style={ac.benefitsCard}>
-                {BENEFITS.map(({ icon, text }) => (
-                  <View key={text} style={ac.benefitRow}>
-                    <MaterialIcons name={icon as any} size={18} color={GOLD} />
-                    <Text style={ac.benefitText}>{text}</Text>
-                  </View>
-                ))}
-              </View>
-              <View style={ac.ctaBlock}>
-                <Pressable onPress={finishOnboarding} disabled={saving} style={({ pressed }) => [ac.createBtn, (pressed || saving) && { opacity: 0.85 }]}>
-                  {saving ? <ActivityIndicator color={CREAM} /> : <Text style={ac.createBtnText}>Enter FlipStart</Text>}
-                </Pressable>
-              </View>
-            </>
-          ) : (
-            // Guest user — show the full auth pitch matching the Hunt Mode gate screen.
-            <>
-              <View style={ac.headerBlock}>
-                <Text style={ac.wordmark}>FlipStart</Text>
-                <Text style={ac.tagline}>Flip smarter.{'\n'}Track everything.</Text>
-              </View>
-
-              <View style={ac.benefitsCard}>
-                {BENEFITS.map(({ icon, text }) => (
-                  <View key={text} style={ac.benefitRow}>
-                    <MaterialIcons name={icon as any} size={18} color={GOLD} />
-                    <Text style={ac.benefitText}>{text}</Text>
-                  </View>
-                ))}
-              </View>
-
-              <View style={ac.ctaBlock}>
-                <Pressable onPress={() => goToAuth('signup')} style={({ pressed }) => [ac.createBtn, pressed && { opacity: 0.87 }]}>
-                  <Text style={ac.createBtnText}>Create Account</Text>
-                </Pressable>
-                <Pressable onPress={() => goToAuth('login')} style={({ pressed }) => [ac.loginBtn, pressed && { opacity: 0.87 }]}>
-                  <Text style={ac.loginBtnText}>Log In</Text>
-                </Pressable>
-              </View>
-
-              {/* ── Social auth ─────────────────────────────────── */}
-              <View style={ac.dividerRow}>
-                <View style={ac.dividerLine} />
-                <Text style={ac.dividerText}>or continue with</Text>
-                <View style={ac.dividerLine} />
-              </View>
-
-              {(googleError || appleError) && (
-                <View style={ac.errorBox}>
-                  <MaterialIcons name="error-outline" size={14} color="#721C24" />
-                  <Text style={ac.errorText}>{googleError ?? appleError}</Text>
-                </View>
-              )}
-
-              <Pressable
-                onPress={handleGoogleSignIn}
-                disabled={googleLoading || saving || appleStep !== 'idle'}
-                style={({ pressed }) => [ac.googleBtn, (pressed || googleLoading) && { opacity: 0.8 }]}
-              >
-                {googleLoading ? (
-                  <ActivityIndicator color="#3C4043" size="small" />
-                ) : (
-                  <>
-                    <Text style={ac.googleG}>
-                      <Text style={{ color: '#4285F4' }}>G</Text>
-                      <Text style={{ color: '#EA4335' }}>o</Text>
-                      <Text style={{ color: '#FBBC05' }}>o</Text>
-                      <Text style={{ color: '#4285F4' }}>g</Text>
-                      <Text style={{ color: '#34A853' }}>l</Text>
-                      <Text style={{ color: '#EA4335' }}>e</Text>
-                    </Text>
-                    <Text style={ac.googleBtnText}>Continue with Google</Text>
-                  </>
-                )}
-              </Pressable>
-
-              <Pressable
-                onPress={handleAppleSignIn}
-                disabled={appleStep !== 'idle' || saving || googleLoading}
-                style={({ pressed }) => [ac.appleBtn, (pressed || appleStep !== 'idle') && { opacity: 0.8 }]}
-              >
-                {appleStep === 'idle'
-                  ? <Text style={ac.appleBtnText}> Continue with Apple</Text>
-                  : appleStep === 'opening'
-                  ? <ActivityIndicator color="#FFFFFF" size="small" />
-                  : appleStep === 'signing'
-                  ? <Text style={ac.appleBtnText}>Signing you in…</Text>
-                  : <Text style={ac.appleBtnText}>Loading profile…</Text>
-                }
-              </Pressable>
-
-              {/* Guest mode removed — an account is required to use FlipStart. */}
-            </>
-          )}
-        </ScrollView>
-      )}
+/** One pillar: a forest glyph in the benefits strip's hairline ring, one line. */
+function Pillar({ icon, text }: { icon: ComponentProps<typeof MaterialIcons>['name']; text: string }) {
+  return (
+    <View style={w.pillar}>
+      <View style={w.pillarSeal}>
+        <MaterialIcons name={icon} size={19} color={PW.forest} />
+      </View>
+      <Text style={w.pillarText}>{text}</Text>
     </View>
   );
 }
 
-const st = StyleSheet.create({
-  root:          { flex: 1, backgroundColor: PARCHMENT },
-  topBar:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 4 },
-  dotsRow:       { flexDirection: 'row', gap: 7, alignItems: 'center' },
-  dot:           { width: 7, height: 7, borderRadius: 4, backgroundColor: CARD_B },
-  dotActive:     { backgroundColor: GOLD, width: 22 },
+/** "Already have an account? Sign In" — prefix in brown, action in forest. */
+function TextLink({ prefix, action, onPress }: { prefix: string; action: string; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} hitSlop={10} accessibilityRole="button" accessibilityLabel={`${prefix} ${action}`}
+      style={({ pressed }) => [w.link, pressed && { opacity: 0.6 }]}>
+      <Text style={w.linkPrefix}>{prefix} <Text style={w.linkAction}>{action}</Text></Text>
+    </Pressable>
+  );
+}
 
-  scroll:        { paddingHorizontal: 24, paddingBottom: 32, flexGrow: 1 },
+const w = StyleSheet.create({
+  pillars: { gap: 12, marginTop: 6, paddingHorizontal: 6 },
+  pillar: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  pillarSeal: {
+    width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(33,77,45,0.07)', borderWidth: 1, borderColor: 'rgba(33,77,45,0.22)',
+  },
+  pillarText: { flex: 1, fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: '700', color: PW.ink, lineHeight: 21 },
 
-  brandBlock:    { alignItems: 'center', marginTop: 24, marginBottom: 24 },
-  wordmark:      { fontFamily: FONTS.serif, fontSize: 40, fontWeight: '900', color: FOREST, letterSpacing: -0.5 },
-  kicker:        { fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 2, marginTop: 8 },
-  tagline:       { fontFamily: FONTS.serif, fontSize: 24, fontWeight: '700', color: SCAN_DARK, textAlign: 'center', lineHeight: 32, marginTop: 14 },
+  notice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14,
+    backgroundColor: PW.goldTint, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(196,163,52,0.45)',
+    paddingHorizontal: 12, paddingVertical: 9,
+  },
+  noticeText: { flex: 1, fontSize: 12.5, lineHeight: 17, color: PW.brown, fontWeight: '600' },
 
-  heroIcon:      { alignSelf: 'center', width: 92, height: 92, borderRadius: 24, backgroundColor: GOLD + '18', borderWidth: 1.5, borderColor: GOLD + '40', justifyContent: 'center', alignItems: 'center', marginTop: 8, marginBottom: 24 },
-  headline:      { fontFamily: FONTS.serif, fontSize: 27, fontWeight: '800', color: FOREST, textAlign: 'center', lineHeight: 35, marginBottom: 14 },
-  subtitle:      { fontSize: 15, color: BROWN, textAlign: 'center', lineHeight: 22, paddingHorizontal: 6 },
-  noticeBox:     { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#F6E9C8', borderWidth: 1, borderColor: GOLD, borderRadius: 12, padding: 12, marginTop: 18 },
-  noticeText:    { flex: 1, fontSize: 13, color: BROWN, lineHeight: 19 },
+  link: { alignSelf: 'center', paddingVertical: 6, paddingHorizontal: 8 },
+  linkPrefix: { fontSize: 14, color: PW.brown, fontWeight: '600' },
+  linkAction: { fontFamily: FONTS.serif, fontWeight: '800', color: PW.forest },
 
-  stepTitle:     { fontFamily: FONTS.serif, fontSize: 26, fontWeight: '800', color: FOREST, marginTop: 24, marginBottom: 8 },
-  stepSub:       { fontSize: 14, color: MUTED, lineHeight: 20, marginBottom: 20 },
-
-  chipsWrap:     { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  chip:          { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 13, borderRadius: 50, borderWidth: 1.5, borderColor: CARD_B, backgroundColor: '#FFF9EE' },
-  chipOn:        { backgroundColor: SCAN_DARK, borderColor: SCAN_DARK },
-  chipText:      { fontSize: 14, fontWeight: '600', color: BROWN },
-  chipTextOn:    { color: CREAM },
-
-  helpCard:      { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: CARD_BG, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: CARD_B },
-  helpIconBox:   { width: 48, height: 48, borderRadius: 12, backgroundColor: FOREST + '12', justifyContent: 'center', alignItems: 'center' },
-  helpTitle:     { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: FOREST, marginBottom: 3 },
-  helpBody:      { fontSize: 13.5, color: BROWN, lineHeight: 19 },
-
-  benefitsCard:  { backgroundColor: CARD_BG, borderRadius: 18, padding: 20, marginBottom: 28, gap: 14, borderWidth: 1, borderColor: CARD_B },
-  benefitRow:    { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  benefitText:   { fontSize: 14, color: BROWN, flex: 1, lineHeight: 20 },
-
-  signedInBadge: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: FOREST + '14', borderRadius: 14, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: FOREST + '33' },
-  signedInText:  { flex: 1, fontSize: 13.5, color: FOREST, fontWeight: '600', lineHeight: 19 },
-  accountPitch:  { fontSize: 15, color: BROWN, textAlign: 'center', fontWeight: '600', marginBottom: 18, lineHeight: 21 },
-
-  ctaBlock:      { gap: 12, marginTop: 'auto', paddingTop: 24 },
-  bottomCta:     { marginTop: 'auto', paddingTop: 28 },
-  primaryBtn:    { backgroundColor: SCAN_DARK, borderRadius: 50, paddingVertical: 18, alignItems: 'center', justifyContent: 'center' },
-  primaryBtnText:{ fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: CREAM, letterSpacing: 0.2 },
-  secondaryBtn:  { borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: FOREST },
-  secondaryBtnText: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: FOREST },
-  guestBtn:      { alignItems: 'center', paddingVertical: 16 },
-  guestText:     { fontSize: 13, color: MUTED, textDecorationLine: 'underline' },
-  pressed:       { opacity: 0.87 },
+  holding: { alignItems: 'center', paddingTop: 28 },
 });
 
-// ─── Account prompt styles (step 3) — mirrors auth.tsx entry-mode ─────────────
-const ac = StyleSheet.create({
-  scroll:       { paddingHorizontal: 24, paddingBottom: 48, paddingTop: 8, flexGrow: 1 },
-  headerBlock:  { alignItems: 'center', marginBottom: 28, marginTop: 12 },
-  wordmark:     { fontFamily: FONTS.serif, fontSize: 42, fontWeight: '900', color: FOREST, letterSpacing: -0.5, marginBottom: 14 },
-  tagline:      { fontFamily: FONTS.serif, fontSize: 24, fontWeight: '700', color: SCAN_DARK, textAlign: 'center', lineHeight: 32 },
-
-  benefitsCard: { backgroundColor: '#EDE0C4', borderRadius: 18, padding: 20, marginBottom: 28, gap: 14, borderWidth: 1, borderColor: CARD_B },
-  benefitRow:   { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  benefitText:  { fontSize: 14, color: BROWN, flex: 1, lineHeight: 20 },
-
-  ctaBlock:     { gap: 12, marginBottom: 8 },
-  createBtn:    { backgroundColor: SCAN_DARK, borderRadius: 50, paddingVertical: 18, alignItems: 'center', justifyContent: 'center' },
-  createBtnText:{ fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: CREAM, letterSpacing: 0.2 },
-  loginBtn:     { borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: FOREST },
-  loginBtnText: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: FOREST },
-
-  dividerRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14, marginTop: 6 },
-  dividerLine:  { flex: 1, height: 1, backgroundColor: CARD_B },
-  dividerText:  { fontSize: 12, color: MUTED, fontWeight: '600' },
-
-  errorBox:     { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: '#F8D7DA', borderRadius: 10, padding: 12, marginBottom: 12 },
-  errorText:    { fontSize: 13, color: '#721C24', flex: 1, lineHeight: 18 },
-
-  googleBtn:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: '#FFFFFF', borderRadius: 50, paddingVertical: 16, borderWidth: 1.5, borderColor: '#DADCE0', marginBottom: 10 },
-  googleG:      { fontSize: 15, fontWeight: '800' },
-  googleBtnText:{ fontSize: 15, fontWeight: '600', color: '#3C4043' },
-  appleBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#000000', borderRadius: 50, paddingVertical: 16 },
-  appleBtnText: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
-
-  guestBtn:     { alignItems: 'center', paddingVertical: 20 },
-  guestText:    { fontSize: 13, color: MUTED, textDecorationLine: 'underline' },
-
-  signedInBadge:{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#2A4A2A14', borderRadius: 14, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: '#2A4A2A33' },
-  signedInText: { flex: 1, fontSize: 13.5, color: '#2A4A2A', fontWeight: '600', lineHeight: 19 },
+const q = StyleSheet.create({
+  stack: { gap: 10 },
+  /** Cards breathe like every other list; the rail bridges the gap. */
+  ladder: { gap: 10 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
 });

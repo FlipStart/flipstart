@@ -6,7 +6,10 @@
  *
  * Auth is opened with authEntryPoint='featureGate' and a returnTo target so the
  * user lands back on the locked feature after a successful sign-in.
- * "Continue as guest" returns the user to Home (declining the optional account).
+ * There is no "continue as guest" action. It used to replace to Home, but the
+ * home gate sends a signed-out user straight to /onboarding — so the control
+ * that read as "decline the account" in fact walked the user into the signup
+ * funnel. This is a tab screen; switching tabs is the way out.
  */
 
 import { View, Text, StyleSheet, Pressable, ScrollView } from 'react-native';
@@ -53,11 +56,6 @@ export default function FeatureGate({ icon, title, subtitle, body, benefits, ret
   };
 
   // Declining the optional account → return to Home (stays inside the app).
-  const continueAsGuest = () => {
-    if (!navGuard()) return;
-    router.replace('/(tabs)' as any);
-  };
-
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
       <ScrollView
@@ -91,9 +89,6 @@ export default function FeatureGate({ icon, title, subtitle, body, benefits, ret
           <Pressable onPress={() => openAuth('login')} style={({ pressed }) => [s.secondaryBtn, pressed && { opacity: 0.87 }]}>
             <Text style={s.secondaryBtnText}>Log In</Text>
           </Pressable>
-          <Pressable onPress={continueAsGuest} hitSlop={8} style={({ pressed }) => [s.guestBtn, pressed && { opacity: 0.5 }]}>
-            <Text style={s.guestText}>Continue as guest</Text>
-          </Pressable>
         </View>
       </ScrollView>
     </View>
@@ -119,6 +114,4 @@ const s = StyleSheet.create({
   primaryBtnText: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: CREAM, letterSpacing: 0.2 },
   secondaryBtn:   { borderRadius: 50, paddingVertical: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: FOREST },
   secondaryBtnText:{ fontFamily: FONTS.serif, fontSize: 17, fontWeight: '700', color: FOREST },
-  guestBtn:       { alignItems: 'center', paddingVertical: 14 },
-  guestText:      { fontSize: 13, color: MUTED, textDecorationLine: 'underline' },
 });

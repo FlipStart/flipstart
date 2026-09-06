@@ -62,6 +62,15 @@ describe("shared system", () => {
     expect(new Set(hexes)).toEqual(new Set(["#EDF3EC", "#FFF4C8"]));
   });
 
+  it("balances the back button with a width-only spacer — never a second ring", () => {
+    // Regression: the spacer once reused s.backBtn, which carries the hairline
+    // ring, and drew an empty "ghost" circle in the top-right corner.
+    expect(STORE).toMatch(/<View style=\{s\.headerSpacer\} \/>\s*<\/View>\s*<ScrollView/);
+    expect(STORE).toMatch(/headerSpacer: \{ width: 36, height: 36 \},/);
+    expect((STORE.match(/style=\{s\.backBtn\}/g) ?? []).length).toBe(0);
+    expect((STORE.match(/\[s\.backBtn,/g) ?? []).length).toBe(1);
+  });
+
   it("opens with the masthead brand row and a paywall-sized serif title", () => {
     expect(STORE).toMatch(/import \{ Spark \} from '@\/components\/monetization\/paywall\/PaywallMasthead';/);
     expect(STORE).toMatch(/<Spark size=\{13\} \/>\s*<Text style=\{s\.brand\}[^>]*>FLIPSTART<\/Text>\s*<Spark size=\{13\} \/>/);
