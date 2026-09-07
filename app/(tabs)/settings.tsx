@@ -731,6 +731,12 @@ export default function SettingsScreen() {
             >
               <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 Purchase Complete (Dev)</Text>
             </Pressable>
+            <Pressable
+              onPress={() => router.push('/dev-splash' as any)}
+              style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 Launch Screen (Dev)</Text>
+            </Pressable>
 
           </>
         )}

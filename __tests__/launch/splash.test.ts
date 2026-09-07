@@ -59,6 +59,17 @@ describe("splash background colour", () => {
     expect([...colours]).toEqual(["#214D2D"]);
   });
 
+  it("points every platform at the generated splash image", () => {
+    // Four entries: ios, android, dark.ios, dark.android. A platform left out
+    // falls back to a bare colour on that device only — easy to miss in QA.
+    const paths = CONFIG.match(/image:\s*"([^"]+)"/g) ?? [];
+    expect(paths).toHaveLength(4);
+    for (const p of paths) {
+      expect(p).toContain("./assets/images/flipstart-splash.png");
+      expect(p).not.toMatch(/https?:/);      // bundled, never fetched
+    }
+  });
+
   it("keeps the full-bleed settings the project already worked out", () => {
     // Both are load-bearing per the comments in app.config.ts; changing either
     // reintroduces a letterboxed or constrained launch image on iOS.
@@ -66,12 +77,18 @@ describe("splash background colour", () => {
     expect(CONFIG).toMatch(/resizeMode: "cover"/);
   });
 
-  it("loads the image from a bundled path, never the network", () => {
-    const paths = CONFIG.match(/image:\s*"([^"]+)"/g) ?? [];
-    expect(paths.length).toBeGreaterThanOrEqual(4);
-    for (const p of paths) {
-      expect(p).toContain("./assets/");
-      expect(p).not.toMatch(/https?:/);
+  it("never points the launch screen at the network", () => {
+    const block = CONFIG.slice(CONFIG.indexOf('"expo-splash-screen"'),
+                               CONFIG.indexOf('"expo-build-properties"'));
+    expect(block).not.toMatch(/https?:/);
+  });
+
+  it("leaves the app icon and adaptive-icon assets alone", () => {
+    // Those are separate from the splash and must keep resolving, or the build
+    // fails for a different reason.
+    for (const asset of ["icon.png", "android-icon-background.png",
+                         "android-icon-foreground.png", "android-icon-monochrome.png"]) {
+      expect(CONFIG, asset).toContain(asset);
     }
   });
 });

@@ -514,6 +514,10 @@ export default function RootLayout() {
               <Stack.Screen name="dev-scans" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
               {/* Design playground. No network, no state, no privilege. */}
               <Stack.Screen name="dev/theme-lab" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+              {/* Launch-screen composition preview. Full-screen, no fade, so it
+                  presents the way the real splash does. Renders nothing but the
+                  lockup — it cannot show the native storyboard. */}
+              <Stack.Screen name="dev-splash" options={{ headerShown: false, animation: 'fade', presentation: 'fullScreenModal' }} />
             </Stack.Protected>
             {/* Sold Comps visual preview.
                 Stack.Protected blocks NAVIGATION to the route. The route file
