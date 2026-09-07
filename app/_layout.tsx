@@ -289,10 +289,10 @@ export default function RootLayout() {
   const [frame, setFrame] = useState<Rect>(initialFrame);
 
   // ── Cinematic splash → app transition ────────────────────────────────────
-  // Strategy: hold splash until BOTH conditions are met:
+  // Strategy: hide the splash as soon as EITHER is true:
   //   (a) root layout has painted its first frame (onLayout fires)
-  //   (b) a minimum of 1800ms has elapsed (feels intentional, not frozen)
-  // whichever takes longer wins — usually the 1800ms timer on fast devices.
+  //   (b) a 4s failsafe elapses, in case layout never reports
+  // whichever comes FIRST wins — in practice always (a).
   // This eliminates the "flash then jump" by ensuring the app is visually
   // ready before the native splash fades out.
   const appOpacity   = useRef(new Animated.Value(0)).current;
@@ -300,8 +300,22 @@ export default function RootLayout() {
   const timerFired   = useRef(false);
   const hideCalled   = useRef(false);
 
+  /**
+   * Hide the splash when the app is READY, not after a fixed wait.
+   *
+   * This used to require layoutFired AND timerFired, where the timer was a
+   * flat 1800ms minimum — so a cold launch that was ready in 400ms still sat
+   * on the splash for another 1.4 seconds. That is branding time charged to
+   * the user on every single launch.
+   *
+   * Layout is the real readiness signal and is kept. The timer is now a
+   * FAILSAFE rather than a floor: it ORs in, so if onLayout somehow never
+   * fires the app still appears instead of hanging on the splash forever.
+   * The old AND-condition offered no such protection — if layout never fired,
+   * waiting longer never helped.
+   */
   const triggerTransition = useCallback(() => {
-    if (!layoutFired.current || !timerFired.current) return;
+    if (!layoutFired.current && !timerFired.current) return;
     if (hideCalled.current) return;
     hideCalled.current = true;
     // Hide native splash — setOptions({fade,duration}) configured at module level
@@ -314,12 +328,17 @@ export default function RootLayout() {
     }).start();
   }, []);
 
-  // Arm the minimum-time gate (1800ms)
+  /**
+   * Failsafe only. Long enough that it never wins a normal launch — layout
+   * fires in a few hundred milliseconds — and short enough that a device
+   * which never reports layout is not stuck staring at a static image.
+   */
+  const SPLASH_FAILSAFE_MS = 4000;
   useEffect(() => {
     const timer = setTimeout(() => {
       timerFired.current = true;
       triggerTransition();
-    }, 1800);
+    }, SPLASH_FAILSAFE_MS);
     return () => clearTimeout(timer);
   }, [triggerTransition]);
 

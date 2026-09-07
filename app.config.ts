@@ -76,29 +76,31 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        // enableFullScreenImage_legacy: true is required for iOS to generate
-        // a full-bleed launch storyboard. Without this the plugin generates
-        // a centered constrained image view regardless of resizeMode.
-        enableFullScreenImage_legacy: true,
+        // ── Solid-colour launch screen, no image ──────────────────────────
+        //
+        // There is deliberately NO `image` key here. With only a
+        // backgroundColor the plugin generates a plain launch screen, which is
+        // the simplest thing that can possibly work: nothing to load, nothing
+        // to scale, nothing to crop, and no asset that can go missing and
+        // break prebuild.
+        //
+        // Deep forest green — PW.forest from
+        // components/monetization/paywall/paywallTheme.ts, the same token the
+        // onboarding masthead, paywalls and results header use. Was #E8C99A
+        // (sand), which matched nothing else in the app.
+        //
+        // enableFullScreenImage_legacy and resizeMode are gone WITH the image:
+        // both only describe how an image is laid out, so they have nothing to
+        // act on here. (Their original comments recorded a real SDK 51-54 bug
+        // about resizeMode being silently overridden — that only matters if an
+        // image comes back. If you add one, restore both settings too.)
+        backgroundColor: "#214D2D",
 
-        // resizeMode MUST be at the top level — placing it inside the ios{}
-        // object causes the plugin to silently override it back to "contain"
-        // when generating the iOS launch storyboard. (Known SDK 51-54 bug)
-        resizeMode: "cover",
-
-        backgroundColor: "#E8C99A",
-
-        ios: {
-          image:           "./assets/images/flipstart-splash.png",
-          backgroundColor: "#E8C99A",
-        },
-        android: {
-          image:           "./assets/images/flipstart-splash.png",
-          backgroundColor: "#E8C99A",
-        },
+        ios:     { backgroundColor: "#214D2D" },
+        android: { backgroundColor: "#214D2D" },
         dark: {
-          ios:     { image: "./assets/images/flipstart-splash.png", backgroundColor: "#E8C99A" },
-          android: { image: "./assets/images/flipstart-splash.png", backgroundColor: "#E8C99A" },
+          ios:     { backgroundColor: "#214D2D" },
+          android: { backgroundColor: "#214D2D" },
         },
       },
     ],
