@@ -23,6 +23,30 @@ import { useAuth } from '@/lib/auth-context';
 import { PENDING_USERNAME_KEY } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
 import { OnboardingMasthead } from '@/components/onboarding/OnboardingMasthead';
+/**
+ * Apple's OWN button component.
+ *
+ * Guideline 4 requires the system-drawn Sign in with Apple button — its logo,
+ * type and layout are Apple's artwork and may not be recreated. The previous
+ * black Pressable with the words "Continue with Apple" was a recreation, which
+ * is what review flagged.
+ *
+ * Imported statically because a component cannot be lazily required at render.
+ * handleAppleSignIn keeps its own dynamic import for the SIGN-IN call, which is
+ * left exactly as it was.
+ */
+import * as AppleAuthentication from 'expo-apple-authentication';
+
+/**
+ * Dimensions for Apple's button.
+ *
+ * expo-apple-authentication REQUIRES an explicit width and height — the native
+ * view collapses to nothing without them, which is the failure mode to avoid on
+ * a reviewer's iPad. Height matches the Google button above it (15pt padding +
+ * 15pt text), and the radius matches its capsule.
+ */
+const APPLE_BTN_HEIGHT = 50;
+const APPLE_BTN_RADIUS = 50;
 import * as WebBrowser from 'expo-web-browser';
 import { sanitizeAuthError, isCancellation } from '@/lib/authErrors';
 import { claimAuthCode } from '@/lib/oauthCodeClaim';
@@ -334,6 +358,27 @@ export default function AuthScreen() {
   };
 
   // ── Apple Sign-In ──────────────────────────────────────────────────────────
+  /**
+   * Whether to render Apple's button at all.
+   *
+   * The native component exists only on iOS, and only where Sign in with Apple
+   * is actually offered — so it is gated on both. Per the Expo docs this is
+   * isAvailableAsync(), not a guess from the OS version. Nothing is substituted
+   * when it is false: a fake Apple button is exactly what we are removing.
+   *
+   * The previous custom button rendered on Android too, where the handler could
+   * only ever fail.
+   */
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (Platform.OS !== 'ios') return;
+    AppleAuthentication.isAvailableAsync()
+      .then(ok => { if (!cancelled) setAppleAvailable(ok); })
+      .catch(() => { /* leave hidden */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const handleAppleSignIn = async () => {
     if (appleStep !== 'idle' || saving || googleLoading) return; // prevent double-tap / race
     setAppleStep('opening');
@@ -647,16 +692,37 @@ export default function AuthScreen() {
             )}
           </Pressable>
 
-          <Pressable
-            onPress={handleAppleSignIn}
-            disabled={anyLoading}
-            style={({ pressed }) => [s.appleBtn, { marginTop: 10 }, (pressed || appleStep !== 'idle') && { opacity: 0.8 }]}
-          >
-            {appleStep !== 'idle'
-              ? <ActivityIndicator color="#FFFFFF" size="small" />
-              : <Text style={s.appleBtnText}> Continue with Apple</Text>
-            }
-          </Pressable>
+          {/*
+            Apple's own button. Its label, logo and layout are drawn by the
+            system — we supply only size, corner radius and the press handler.
+            backgroundColor and borderRadius are deliberately NOT in the style:
+            Expo documents that setting them breaks the native rendering, which
+            is why cornerRadius is a prop instead.
+
+            Sized to match the Google button above it (15pt padding + 15pt text
+            ≈ 50pt), so the pair stays visually even.
+          */}
+          {appleAvailable && (
+            <View style={{ marginTop: 10 }}>
+              <AppleAuthentication.AppleAuthenticationButton
+                buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
+                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                cornerRadius={APPLE_BTN_RADIUS}
+                style={{ width: '100%', height: APPLE_BTN_HEIGHT }}
+                onPress={handleAppleSignIn}
+              />
+              {/* The native button cannot host a spinner, so progress is
+                  reported beneath it. handleAppleSignIn already guards
+                  re-entry, so a second tap is harmless. */}
+              {appleStep !== 'idle' && (
+                <Text style={s.appleStatusText}>
+                  {appleStep === 'opening' ? 'Opening Apple…'
+                    : appleStep === 'signing' ? 'Signing you in…'
+                    : 'Loading profile…'}
+                </Text>
+              )}
+            </View>
+          )}
 
           {/*
             "Continue as guest" was removed. It promised something the product
@@ -972,20 +1038,24 @@ export default function AuthScreen() {
             <Text style={s.errorText}>{appleError}</Text>
           </View>
         )}
-        <Pressable
-          onPress={handleAppleSignIn}
-          disabled={appleStep !== 'idle' || saving || googleLoading}
-          style={({ pressed }) => [s.appleBtn, (pressed || appleStep !== 'idle') && { opacity: 0.8 }]}
-        >
-          {appleStep === 'idle'
-            ? <Text style={s.appleBtnText}> Continue with Apple</Text>
-            : appleStep === 'opening'
-            ? <ActivityIndicator color="#FFFFFF" size="small" />
-            : appleStep === 'signing'
-            ? <Text style={s.appleBtnText}>Signing you in…</Text>
-            : <Text style={s.appleBtnText}>Loading profile…</Text>
-          }
-        </Pressable>
+        {appleAvailable && (
+          <View style={{ marginTop: 10 }}>
+            <AppleAuthentication.AppleAuthenticationButton
+              buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
+              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+              cornerRadius={APPLE_BTN_RADIUS}
+              style={{ width: '100%', height: APPLE_BTN_HEIGHT }}
+              onPress={handleAppleSignIn}
+            />
+            {appleStep !== 'idle' && (
+              <Text style={s.appleStatusText}>
+                {appleStep === 'opening' ? 'Opening Apple…'
+                  : appleStep === 'signing' ? 'Signing you in…'
+                  : 'Loading profile…'}
+              </Text>
+            )}
+          </View>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -1021,8 +1091,8 @@ const s = StyleSheet.create({
   googleBtn:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: '#FFFFFF', borderRadius: 50, paddingVertical: 15, borderWidth: 1.5, borderColor: '#DADCE0' },
   googleG:        { fontSize: 15, fontWeight: '800' },
   googleBtnText:  { fontSize: 15, fontWeight: '600', color: '#3C4043' },
-  appleBtn:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#000000', borderRadius: 50, paddingVertical: 15, marginTop: 10 },
-  appleBtnText:   { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
+  /** Progress under Apple's button — the native view cannot host a spinner. */
+  appleStatusText: { fontSize: 12.5, color: MUTED, textAlign: 'center', marginTop: 8 },
 });
 
 // ─── Entry screen styles ──────────────────────────────────────────────────────
