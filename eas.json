@@ -18,8 +18,7 @@
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://flipstart-production.up.railway.app",
-        "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_PASTE_YOUR_KEY_HERE"
+        "EXPO_PUBLIC_API_BASE_URL": "https://flipstart-production.up.railway.app"
       }
     }
   },
