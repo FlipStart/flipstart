@@ -11,7 +11,7 @@
 
 // ─── Small HTML helpers ──────────────────────────────────────────────────────
 
-const esc = (v: unknown): string =>
+export const esc = (v: unknown): string =>
   String(v ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
@@ -33,22 +33,22 @@ const dateOnly = (v: unknown): string => {
   try { return new Date(String(v)).toLocaleDateString(); } catch { return esc(v); }
 };
 
-function isErr(section: any): section is { error: string } {
+export function isErr(section: any): section is { error: string } {
   return section && typeof section === "object" && typeof section.error === "string";
 }
-function errorCard(title: string, section: any): string {
+export function errorCard(title: string, section: any): string {
   return `<div class="card err"><div class="card-h">${esc(title)}</div>
     <div class="err-msg">⚠ Section failed: ${esc(section.error)}</div></div>`;
 }
-function card(label: string, value: string, sub = ""): string {
+export function card(label: string, value: string, sub = ""): string {
   return `<div class="stat"><div class="stat-v">${value}</div><div class="stat-l">${esc(label)}</div>${sub ? `<div class="stat-s">${esc(sub)}</div>` : ""}</div>`;
 }
-function section(id: string, title: string, body: string, note = ""): string {
+export function section(id: string, title: string, body: string, note = ""): string {
   return `<section id="${esc(id)}"><h2>${esc(title)}${note ? `<span class="note">${esc(note)}</span>` : ""}</h2>${body}</section>`;
 }
 
 // Horizontal bar (for funnel / shares).
-function bar(pctValue: number | null, colorVar = "--accent"): string {
+export function bar(pctValue: number | null, colorVar = "--accent"): string {
   const w = Math.max(0, Math.min(100, pctValue ?? 0));
   return `<div class="bar"><div class="bar-fill" style="width:${w}%;background:var(${colorVar})"></div></div>`;
 }
@@ -126,7 +126,7 @@ function renderSessions(s: any): string {
   return section("sessions", "5 · Session / App Open", `<div class="stat-grid">${grid}</div>`);
 }
 
-function renderScans(s: any): string {
+export function renderScans(s: any): string {
   if (isErr(s)) return errorCard("Scan Metrics", s);
   const grid = [
     card("Scans started", num(s.started)),
@@ -148,7 +148,7 @@ function renderScans(s: any): string {
   return section("scans", "6 · Scan Metrics", `<div class="stat-grid">${grid}</div>${daily}`, "profiles-only");
 }
 
-function renderTrust(s: any): string {
+export function renderTrust(s: any): string {
   if (isErr(s)) return errorCard("Scan Trust / Feedback", s);
   if (s.noData) return section("trust", "7 · Scan Trust / Feedback", `<div class="card"><div class="muted">No feedback submitted yet.</div></div>`);
   const grid = [
@@ -188,7 +188,7 @@ function renderTrust(s: any): string {
   return section("trust", "7 · Scan Trust / Feedback", `<div class="stat-grid">${grid}</div>${tables}`);
 }
 
-function renderCost(s: any): string {
+export function renderCost(s: any): string {
   if (isErr(s)) return errorCard("Cost / Budget", s);
   const grid = [
     card("Est. cost today", money(s.costToday)),
@@ -204,7 +204,7 @@ function renderCost(s: any): string {
   return section("cost", "8 · Cost / Budget", `<div class="stat-grid">${grid}</div>${rates}`, "Estimated");
 }
 
-function renderHunt(s: any): string {
+export function renderHunt(s: any): string {
   if (isErr(s)) return errorCard("Hunt Mode", s);
   const grid = [
     card("Hunt Mode opens", num(s.opened)),
@@ -221,7 +221,7 @@ function renderHunt(s: any): string {
   return section("hunt", "9 · Hunt Mode", `<div class="stat-grid">${grid}</div>`);
 }
 
-function renderProgress(s: any): string {
+export function renderProgress(s: any): string {
   if (isErr(s)) return errorCard("Progress Tab Engagement", s);
   const grid = [
     card("Progress opens", num(s.progress?.total), `${num(s.progress?.uniqueUsers)} users`),
@@ -249,7 +249,7 @@ function rarityBadge(label: string): string {
   return `<span class="rb ${cls}">${esc(label)}</span>`;
 }
 
-function renderAchievements(s: any): string {
+export function renderAchievements(s: any): string {
   if (isErr(s)) return errorCard("Achievement Analytics", s);
   const grid = [
     card("Total unlocked", num(s.totalUnlocked)),
@@ -269,7 +269,7 @@ function renderAchievements(s: any): string {
     `<div class="stat-grid">${grid}</div>${cats}`, "source: user_achievements");
 }
 
-function renderBrands(s: any): string {
+export function renderBrands(s: any): string {
   if (isErr(s)) return errorCard("Brand Compendium Analytics", s);
   const rc = s.rarityCounts ?? {};
   const grid = [
@@ -312,7 +312,7 @@ function renderBrands(s: any): string {
      <h3>All brands by rarity</h3>${byRarity}`, "source: user_brand_discoveries");
 }
 
-function renderDiamonds(s: any): string {
+export function renderDiamonds(s: any): string {
   if (isErr(s)) return errorCard("Diamonds in the Rough Analytics", s);
   const grid = [
     card("Total unlocks", num(s.totalUnlocks)),
@@ -339,7 +339,7 @@ function renderDiamonds(s: any): string {
      ${neverCard}`, "source: user_diamond_discoveries");
 }
 
-function renderListings(s: any): string {
+export function renderListings(s: any): string {
   if (isErr(s)) return errorCard("Listing Generation", s);
   const p = s.platforms ?? {};
   const grid = [
@@ -361,7 +361,7 @@ function renderListings(s: any): string {
   return section("listings", "14 · Listing Generation", `<div class="stat-grid">${grid}</div>${fails}`);
 }
 
-function renderDataQuality(s: any): string {
+export function renderDataQuality(s: any): string {
   if (isErr(s)) return errorCard("Data Quality / Tracking Status", s);
   const grid = [
     card("Total events", num(s.totalEvents)),
@@ -388,7 +388,7 @@ function renderDataQuality(s: any): string {
     `<div class="stat-grid">${grid}</div><div class="two-col">${connCard}${statusCard}</div>`);
 }
 
-function renderSold(s: any): string {
+export function renderSold(s: any): string {
   if (isErr(s)) return errorCard("Sold Items / Realized Profit", s);
   if (!s || !s.itemsSold) {
     return section("sold", "16 \u00b7 Sold Items / Realized Profit",
@@ -435,7 +435,7 @@ function renderSold(s: any): string {
     "gross = sold \u2212 paid, pre-fees");
 }
 
-function emptyRow(cols: number): string {
+export function emptyRow(cols: number): string {
   return `<tr><td colspan="${cols}" class="muted" style="text-align:center">No data yet</td></tr>`;
 }
 
@@ -544,7 +544,7 @@ export function generateFounderDashboardV3(metrics: any): string {
   return shell(body, metrics.generatedAt);
 }
 
-function shell(body: string, generatedAt: string): string {
+export function shell(body: string, generatedAt: string): string {
   const toc = TOC.map(([id, label]) => `<a href="#${id}">${esc(label)}</a>`).join("");
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

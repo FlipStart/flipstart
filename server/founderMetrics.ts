@@ -47,7 +47,7 @@ function pct(part: number, whole: number): number {
 // Supabase caps a single select at 1000 rows. For beta scale this paginates
 // safely up to a sane ceiling so totals are accurate without unbounded reads.
 
-async function fetchAll<T = any>(
+export async function fetchAll<T = any>(
   table: string,
   columns: string,
   opts: { gte?: { col: string; val: string }; maxRows?: number } = {},
@@ -104,6 +104,8 @@ export interface BaseData {
     event_name: string;
     created_at: string;
     metadata: any;
+    /** V4 client snapshot; absent on legacy rows and pre-migration environments. */
+    entitlement_state_snapshot?: string | null;
   }>;
 }
 
@@ -169,9 +171,21 @@ export async function loadBaseData(): Promise<BaseData> {
   const ghostProfiles = realProfiles.length - profiles.length;
 
   const profileIds = new Set(profiles.map(p => p.id));
-  const events = await fetchAll<BaseData["events"][number]>(
-    "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata",
-  );
+  /**
+   * The V4 snapshot column is selected when present. Same fallback shape as
+   * is_internal: a missing column is a query ERROR, so an environment without
+   * the migration still gets the legacy projection rather than a blank page.
+   */
+  let events: BaseData["events"];
+  try {
+    events = await fetchAll<BaseData["events"][number]>(
+      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata, entitlement_state_snapshot",
+    );
+  } catch {
+    events = await fetchAll<BaseData["events"][number]>(
+      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata",
+    );
+  }
   return {
     profiles, profileIds, events, ghostProfiles,
     // undefined (not 0) when the migration has not run, so the dashboard can

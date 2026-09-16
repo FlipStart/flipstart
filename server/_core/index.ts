@@ -259,22 +259,28 @@ async function startServer() {
     }
   });
 
-  // ── Founder Dashboard V3 (Supabase-backed, read-only, profiles-only) ────────
-  // Separate from the legacy file-based dashboards above (which stay alive).
-  // Protected by FOUNDER_DASHBOARD_SECRET (distinct from DEV_SECRET).
+  // ── Founder Dashboard (Supabase-backed, read-only) ──────────────────────────
+  // The URL keeps its historical "-v3" name so every existing bookmark still
+  // works; the page it serves is V4. Same auth (FOUNDER_DASHBOARD_SECRET),
+  // same server-rendered HTML, same service-role reads. V3's metrics are still
+  // computed and rendered further down the page; V4 layers the business
+  // analytics on top. If the V4 layer fails, the page degrades to V3 sections
+  // with a banner rather than a 500.
   app.get("/api/dev/founder-dashboard-v3", async (req, res) => {
     if (!secretOk(req.query.secret, process.env.FOUNDER_DASHBOARD_SECRET)) {
       return res.status(401).send("<h1>401 Unauthorized</h1>");
     }
     try {
       const { getFounderDashboardV3Metrics } = require("../founderMetrics");
-      const { generateFounderDashboardV3 } = require("../founderDashboardV3");
-      const metrics = await getFounderDashboardV3Metrics();
-      const html = generateFounderDashboardV3(metrics);
+      const { getFounderDashboardV4Metrics } = require("../founderMetricsV4");
+      const { generateFounderDashboardV4 } = require("../founderDashboardV4");
+      const v3 = await getFounderDashboardV3Metrics();
+      const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3);
+      const html = generateFounderDashboardV4(metrics);
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(html);
     } catch (e: any) {
-      res.status(500).send("<pre>Founder Dashboard V3 error: " + (e?.message ?? e) + "</pre>");
+      res.status(500).send("<pre>Founder Dashboard error: " + (e?.message ?? e) + "</pre>");
     }
   });
 
