@@ -365,7 +365,7 @@ export default function HomeScreen() {
     startScan({
       origin: 'home',
       run: () => router.push('/camera' as any),
-      goToScanStore: () => router.push('/scan-store' as any),
+      goToScanStore: () => router.push('/scan-store?from=home_gate' as any),
     });
   };
 
@@ -712,7 +712,7 @@ export default function HomeScreen() {
                 // stops an old exhausted-scan attempt resuming after a purchase
                 // the user made just to stock up.
                 clearScanStoreIntent();
-                router.push('/scan-store' as any);
+                router.push('/scan-store?from=home_cta' as any);
               }}
             />
 

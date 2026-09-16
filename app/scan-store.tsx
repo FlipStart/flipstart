@@ -66,7 +66,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import Svg, { Defs, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { FONTS } from '@/constants/typography';
 import { Skeleton } from '@/components/monetization/Skeleton';
@@ -84,7 +84,7 @@ import {
 } from '@/lib/scanPackCatalog';
 import { readProductPricing, type ProductPricing } from '@/lib/paywallPricing';
 import { clearScanStoreIntent, consumeScanStoreIntent, scanStoreEntryMode } from '@/lib/scanStoreIntent';
-import { trackAnalyticsEvent } from '@/lib/analytics';
+import { trackAnalyticsEvent, currentScanBalances } from '@/lib/analytics';
 
 type Phase = 'idle' | 'purchasing' | 'granting' | 'recovering';
 
@@ -114,6 +114,8 @@ export default function ScanStoreScreen() {
    * Reading it live would flip it to "browse" the instant the intent is
    * consumed, changing the screen's behaviour mid-purchase.
    */
+  /** Route param set by whichever screen pushed us here; 'unknown' if absent. */
+  const params = useLocalSearchParams<{ from?: string }>();
   const [entryMode] = useState(() => scanStoreEntryMode());
 
   const [products, setProducts] = useState<ScanPackProductsResult | null>(null);
@@ -145,7 +147,24 @@ export default function ScanStoreScreen() {
   }, [attempt]);
 
   useEffect(() => {
-    trackAnalyticsEvent('scan_store_opened', { entry_mode: entryMode });
+    /**
+     * entry_mode is KEPT unchanged ('browse' | 'resume_scan') so existing rows
+     * and any query written against them stay valid. What it could never answer
+     * is WHERE the user came from — six different screens push this route and
+     * all of them looked identical in the data.
+     *
+     * entry_source adds that, read from the route param the callers now pass,
+     * and falls back to 'unknown' rather than guessing.
+     *
+     * The balances say whether visitors are Pro users who do not need packs, or
+     * free users who have run dry — the likeliest explanation for a store that
+     * gets opened and never converts.
+     */
+    trackAnalyticsEvent('scan_store_opened', {
+      entry_mode:   entryMode,
+      entry_source: typeof params.from === 'string' && params.from ? params.from : 'unknown',
+      ...(currentScanBalances() ?? {}),
+    });
   }, [entryMode]);
 
   /**
@@ -239,7 +258,9 @@ export default function ScanStoreScreen() {
     setActiveSku(sku);
     setNotice(null);
     setPhase('purchasing');
-    trackAnalyticsEvent('scan_pack_purchase_started', { product_id: sku, entry_mode: entryMode });
+    trackAnalyticsEvent('scan_pack_purchase_started', {
+      product_id: sku, entry_mode: entryMode, ...(currentScanBalances() ?? {}),
+    });
 
     const r = await purchaseScanPack(sku, startedUid, () => uidRef.current ?? null);
 

@@ -521,7 +521,7 @@ export default function SettingsScreen() {
               // Voluntary entry = browse mode. Clearing any stale intent stops
               // an old blocked-scan attempt resuming after a top-up purchase.
               clearScanStoreIntent();
-              router.push('/scan-store' as any);
+              router.push('/scan-store?from=settings' as any);
             }}
           />
           <View style={s.cardDivider} />

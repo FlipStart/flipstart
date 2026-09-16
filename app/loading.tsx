@@ -323,6 +323,25 @@ export default function LoadingScreen() {
           .then(m => m.recordCompletedScan())
           .catch(() => {});
 
+        /**
+         * scan_completed — the dashboard's own metric, finally emitted.
+         *
+         * server/founderMetrics.ts has always queried `scan_completed`, and
+         * lib/analytics.ts has always exported recordScanCompleted() to emit
+         * it, but nothing ever called the emitter. That is why the activation
+         * funnel reads zero: the consumer and the producer both existed and
+         * were never connected.
+         *
+         * Fired here, where the analysis genuinely resolved, before any save
+         * decision — the same authoritative point the review counter uses. The
+         * `scans` table remains the source of truth for scan COUNTS; this event
+         * exists for funnel and session attribution, which a table row cannot
+         * provide.
+         */
+        void import("@/lib/analytics")
+          .then(m => m.recordScanCompleted({ scan_id: scanId }))
+          .catch(() => {});
+
         const scanId = `scan_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
         const safeIdentification = {

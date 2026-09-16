@@ -367,8 +367,19 @@ describe("final offer", () => {
   it("free resolves without any store call, and never while a transaction is live", () => {
     const fn = code(MODAL).slice(code(MODAL).indexOf("const continueFree"), code(MODAL).indexOf("const closeResolution"));
     expect(fn).toMatch(/if \(isBusy\(state\.phase\)\) return;/);
-    expect(fn).toMatch(/dismiss\(false\);\s*request\?\.onDeclined\?\.\(\);/);
+    /**
+     * continueFree now calls onDismiss(false) directly rather than going
+     * through dismiss(), because dismiss() emits an explicit-CLOSE event and
+     * choosing the free path is not closing the sheet. The user-visible
+     * behaviour is identical — same callback, same order, same navigation —
+     * and the free path is now recorded as its own outcome.
+     */
+    expect(fn).toMatch(/paywallAnalytics\.continueFree\(config\.source\);/);
+    expect(fn).toMatch(/onDismiss\(false\);\s*request\?\.onDeclined\?\.\(\);/);
+    /** The safety property this test exists for, unchanged. */
     expect(fn).not.toMatch(/purchase|restore|mutate|invalidate|grant/i);
+    /** And it must never be recorded as an explicit close. */
+    expect(fn).not.toMatch(/paywallAnalytics\.closed/);
   });
   it("keeps Restore, the live pricing hierarchy and Annual-by-default", () => {
     expect(MODAL).toMatch(/onRestore=\{runRestore\}/);

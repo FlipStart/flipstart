@@ -386,7 +386,9 @@ describe("scan store alternative", () => {
   /** Requirement 47. The voluntary entry point predates this phase. */
   it("keeps the scan-balance popup's own Scan Store button", () => {
     const home = read("app/(tabs)/index.tsx");
-    expect(home).toMatch(/router\.push\('\/scan-store' as any\)/);
+    // Accepts the additive ?from= entry-source tag. What this pins is that Home
+    // navigates to the store at all, which is unchanged.
+    expect(home).toMatch(/router\.push\('\/scan-store(\?[^']*)?' as any\)/);
     expect(home).toMatch(/sm\.storeBtn/);
   });
 });

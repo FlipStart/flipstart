@@ -109,7 +109,7 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
     startScan({
       origin: 'tab',
       run: () => router.push('/camera' as any),
-      goToScanStore: () => router.push('/scan-store' as any),
+      goToScanStore: () => router.push('/scan-store?from=tab_gate' as any),
     });
   };
 

@@ -225,7 +225,7 @@ export function ProPaywallHost({ rootHost = false }: { rootHost?: boolean }) {
       request={_request}
       consumeUnlock={_consumeUnlock}
       onDismiss={() => _dismiss()}
-      onScanStore={() => router.push("/scan-store" as any)}
+      onScanStore={() => router.push("/scan-store?from=paywall" as any)}
     />
   );
 }

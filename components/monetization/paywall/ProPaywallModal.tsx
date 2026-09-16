@@ -273,9 +273,20 @@ export function ProPaywallModal({
   }, [config, user?.id, confirmProWithServer, invalidateEntitlement]);
 
   // ── Dismissal ─────────────────────────────────────────────────────────────
+  /**
+   * Dismissal.
+   *
+   * `resolved` true means the sheet is closing because the user got what they
+   * came for (purchase or restore), and that already has its own event — so we
+   * only clear the active-paywall marker. `resolved` false is now an EXPLICIT
+   * close, since the free path no longer routes through here.
+   */
   const dismiss = useCallback(
     (resolved: boolean) => {
-      if (config) paywallAnalytics.dismissed(config.source, resolved);
+      if (config) {
+        if (resolved) paywallAnalytics.resolved(config.source);
+        else paywallAnalytics.closed(config.source);
+      }
       onDismiss(resolved);
     },
     [config, onDismiss],
@@ -319,9 +330,19 @@ export function ProPaywallModal({
    */
   const continueFree = useCallback(() => {
     if (isBusy(state.phase)) return;
-    dismiss(false);
+    /**
+     * Emits paywall_continue_free instead of routing through dismiss().
+     *
+     * dismiss() emits paywall_dismissed{resolved:false} — the same row an
+     * explicit X produced — so choosing the free path and closing the sheet
+     * were the same event in the data. They are different decisions and are
+     * now recorded as such. onDismiss is still called so the sheet closes and
+     * every caller behaves exactly as before.
+     */
+    if (config) paywallAnalytics.continueFree(config.source);
+    onDismiss(false);
     request?.onDeclined?.();
-  }, [state.phase, dismiss, request]);
+  }, [state.phase, config, onDismiss, request]);
 
   /**
    * The button on the paid-but-unconfirmed panel.

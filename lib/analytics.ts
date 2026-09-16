@@ -35,6 +35,105 @@ let _backgroundedAt: number | null = null;   // when app last went to background
 let _identityUserId: string | null = null;
 
 /** Set/clear the signed-in identity for analytics attribution. */
+/**
+ * Event-time monetization snapshot.
+ *
+ * Held in memory and refreshed whenever the app ALREADY receives entitlement
+ * state, so writing an event costs nothing extra: no RevenueCat call, no
+ * server round trip, no await. Every event inherits it automatically rather
+ * than each feature remembering to attach it.
+ *
+ * `null` is the honest value before entitlement resolves, and it stays null
+ * for pre-auth events. Defaulting to "free" would invent data — a signed-out
+ * user browsing onboarding is not a Free customer, they are unknown.
+ *
+ * NOT authoritative. This is what the CLIENT believed; RevenueCat remains the
+ * authority on what a user was actually entitled to. The `_snapshot` suffix on
+ * the stored columns exists to keep that distinction visible in queries.
+ */
+type EntitlementSnapshot = "free" | "monthly" | "annual" | "unknown";
+
+let _entitlementState: EntitlementSnapshot | null = null;
+let _subscriptionProduct: string | null = null;
+/** Scan buckets at event time. Null until entitlement resolves. */
+let _scanBalances: {
+  freeScansRemaining: number;
+  subscriptionScansRemaining: number;
+  packScansRemaining: number;
+  totalUsableScans: number;
+} | null = null;
+
+/**
+ * Called from wherever the app already holds entitlement state. Cheap enough
+ * to call on every change — it only assigns module locals.
+ */
+export function setAnalyticsMonetizationContext(ctx: {
+  resolved: boolean;
+  plan?: string | null;
+  subscriptionProduct?: string | null;
+  freeScansRemaining?: number;
+  subscriptionScansRemaining?: number;
+  packScansRemaining?: number;
+  totalUsableScans?: number;
+} | null): void {
+  try {
+    if (!ctx || !ctx.resolved) {
+      _entitlementState = "unknown";
+      _subscriptionProduct = null;
+      _scanBalances = null;
+      return;
+    }
+    const plan = ctx.plan;
+    _entitlementState =
+      plan === "free" || plan === "monthly" || plan === "annual" ? plan : "unknown";
+    _subscriptionProduct = typeof ctx.subscriptionProduct === "string" && ctx.subscriptionProduct
+      ? ctx.subscriptionProduct
+      : null;
+    _scanBalances = {
+      freeScansRemaining:         ctx.freeScansRemaining ?? 0,
+      subscriptionScansRemaining: ctx.subscriptionScansRemaining ?? 0,
+      packScansRemaining:         ctx.packScansRemaining ?? 0,
+      totalUsableScans:           ctx.totalUsableScans ?? 0,
+    };
+  } catch { /* analytics must never throw into a caller */ }
+}
+
+/**
+ * The scan buckets as of now, or null if entitlement has not resolved.
+ * Callers attach this to events where balance context is meaningful; it is NOT
+ * added to every event, because most events do not care and the column budget
+ * is better spent on the ones that do.
+ */
+/**
+ * The entitlement the client currently believes, or null before any context
+ * has been set. Exposed so the value written onto events is observable rather
+ * than implicit — a mis-tagged cohort is otherwise invisible until a query
+ * returns nonsense weeks later.
+ */
+export function currentEntitlementSnapshot(): string | null {
+  return _entitlementState;
+}
+
+export function currentScanBalances(): Record<string, number> | null {
+  return _scanBalances ? { ..._scanBalances } : null;
+}
+
+/**
+ * Which paywall is on screen right now, or null.
+ *
+ * Purely for abandonment inference: it lets app_backgrounded record that a
+ * paywall was open when the user left. Cleared on every terminal paywall
+ * action so it can never go stale and mislabel an ordinary background later.
+ */
+let _activePaywallSource: string | null = null;
+
+export function setActivePaywall(source: string | null): void {
+  _activePaywallSource = source;
+}
+export function getActivePaywall(): string | null {
+  return _activePaywallSource;
+}
+
 export function setAnalyticsIdentity(userId: string | null): void {
   _identityUserId = userId ?? null;
 }
@@ -80,7 +179,22 @@ const META_BLOCKLIST = new Set([
   "image", "images", "imageUri", "imageUris", "photo", "photos", "base64",
   "aiResult", "rawResult", "rawResponse", "analysis", "fullResult",
   "email", "password", "token", "accessToken", "apiKey",
+  // Identity and credentials. user_id is a column already — none of these ever
+  // belong in metadata, and the purchaser's name/email is joined server-side in
+  // the dashboard from auth.users, never carried through the event pipeline.
+  "emailAddress", "userEmail", "fullName", "displayName", "name",
+  "identityToken", "authorizationCode", "idToken", "refreshToken",
+  "secret", "apiSecret", "serviceRoleKey", "authorization",
 ]);
+
+/**
+ * Substring sweep over key names.
+ *
+ * The exact-match list above only catches keys someone thought of. A future
+ * caller writing `{ userEmailAddress }` or `{ appleIdentityToken }` would slip
+ * straight through it. This catches the shape rather than the spelling.
+ */
+const META_KEY_PATTERNS = /email|password|secret|token|authorization|api[-_]?key|credential/i;
 
 // Strip blocked keys and cap size so we never store huge/sensitive payloads.
 function sanitizeMeta(meta: Record<string, unknown>): Record<string, unknown> {
@@ -88,6 +202,7 @@ function sanitizeMeta(meta: Record<string, unknown>): Record<string, unknown> {
   try {
     for (const [k, v] of Object.entries(meta ?? {})) {
       if (META_BLOCKLIST.has(k)) continue;
+      if (META_KEY_PATTERNS.test(k)) continue;
       if (typeof v === "string" && v.length > 500) { out[k] = v.slice(0, 500); continue; }
       out[k] = v;
     }
@@ -104,6 +219,7 @@ function writeEventToSupabase(
   eventName: string,
   metadata: Record<string, unknown>,
   route?: string,
+  occurredAt?: string,
 ): void {
   void (async () => {
     try {
@@ -120,6 +236,12 @@ function writeEventToSupabase(
         app_version:    getAppVersion(),
         route:          route ?? null,
         metadata:       sanitizeMeta(metadata),
+        // Event-time snapshot, inherited by every event automatically.
+        entitlement_state_snapshot:    _entitlementState,
+        subscription_product_snapshot: _subscriptionProduct,
+        // Client clock. created_at stays the server's ingestion time, so the
+        // two can be compared to spot offline writes and skewed device clocks.
+        occurred_at:    occurredAt ?? new Date().toISOString(),
       });
       if (error && __DEV__) console.warn("[analytics] supabase insert failed:", error.message);
     } catch (e) {
@@ -292,7 +414,15 @@ export function resumeOrStartSession(): void {
 export function backgroundSession(): void {
   try {
     _backgroundedAt = Date.now();
-    logEvent("app_backgrounded");
+    /**
+     * Records whether a paywall was on screen when the user left.
+     *
+     * This is the closest we get to abandonment: iOS gives no synchronous
+     * signal for termination, so "backgrounded with a paywall open, no terminal
+     * paywall event, never came back" is the inference. Null on an ordinary
+     * background, so the two are distinguishable.
+     */
+    logEvent("app_backgrounded", { active_paywall_source: _activePaywallSource });
   } catch { /* never throw */ }
 }
 

@@ -89,6 +89,8 @@ async function countRows(
 // avoid refetching profiles/events repeatedly.
 
 export interface BaseData {
+  /** How many profiles were excluded as internal/test. Surfaced, never hidden. */
+  internalProfiles?: number;
   /** REAL users only — abandoned ghost profiles are excluded (see loadBaseData). */
   profiles: Array<{ id: string; created_at: string; onboarding_complete?: boolean }>;
   profileIds: Set<string>;
@@ -117,24 +119,65 @@ export interface BaseData {
 const GHOST_GRACE_MS = 60 * 60 * 1000; // 1 hour
 
 export async function loadBaseData(): Promise<BaseData> {
-  const allProfiles = await fetchAll<{ id: string; created_at: string; onboarding_complete?: boolean }>(
-    "profiles", "id, created_at, onboarding_complete",
-  );
+  type ProfileRow = {
+    id: string; created_at: string; onboarding_complete?: boolean; is_internal?: boolean;
+  };
+
+  /**
+   * Selecting a column Postgres does not have is an ERROR, not a null — so if
+   * this ran before the migration, the whole dashboard would blank rather than
+   * degrade. Falling back to the old column list keeps V4 deployable in either
+   * order: deploy first and the dashboard behaves exactly as V3 did, run the
+   * migration and the exclusion switches itself on.
+   */
+  let allProfiles: ProfileRow[];
+  let hasInternalColumn = true;
+  try {
+    allProfiles = await fetchAll<ProfileRow>(
+      "profiles", "id, created_at, onboarding_complete, is_internal",
+    );
+  } catch {
+    hasInternalColumn = false;
+    allProfiles = await fetchAll<ProfileRow>(
+      "profiles", "id, created_at, onboarding_complete",
+    );
+  }
+
+  /**
+   * Internal accounts are removed at the SOURCE.
+   *
+   * Filtering here rather than in each metric means every downstream number —
+   * user counts, retention, funnels, sessions, scans, cohorts — is clean by
+   * construction, and a future section cannot forget to apply it. With four
+   * real subscribers, the founder's own test purchases were the single largest
+   * distortion in the dashboard.
+   *
+   * `is_internal` is missing on a row only if the migration has not been run.
+   * Treated as false in that case, so the dashboard behaves exactly as it did
+   * before rather than blanking.
+   */
+  const realProfiles = allProfiles.filter(p => p.is_internal !== true);
+  const internalProfiles = allProfiles.length - realProfiles.length;
 
   const ghostCutoff = Date.now() - GHOST_GRACE_MS;
-  const profiles = allProfiles.filter(p => {
+  const profiles = realProfiles.filter(p => {
     if (p.onboarding_complete === true) return true;         // real, completed
     const created = Date.parse(p.created_at);
     if (!Number.isFinite(created)) return true;              // unparseable — keep
     return created >= ghostCutoff;                           // still in grace window
   });
-  const ghostProfiles = allProfiles.length - profiles.length;
+  const ghostProfiles = realProfiles.length - profiles.length;
 
   const profileIds = new Set(profiles.map(p => p.id));
   const events = await fetchAll<BaseData["events"][number]>(
     "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata",
   );
-  return { profiles, profileIds, events, ghostProfiles };
+  return {
+    profiles, profileIds, events, ghostProfiles,
+    // undefined (not 0) when the migration has not run, so the dashboard can
+    // say "not yet available" rather than claiming zero internal accounts.
+    internalProfiles: hasInternalColumn ? internalProfiles : undefined,
+  };
 }
 
 // Filter helpers over the in-memory event set (profiles-only).

@@ -16,6 +16,8 @@
  * a tampered client gets a nicer-looking screen and no extra capability.
  */
 import { useCallback, useEffect, useRef } from "react";
+
+import { setAnalyticsMonetizationContext } from '@/lib/analytics';
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/lib/auth-context";
 
@@ -172,6 +174,31 @@ export function useEntitlement(): EntitlementView {
 
   const b = ent.balances ?? {};
   const features = ent.features ?? {};
+
+  /**
+   * Feed the analytics snapshot from the state this hook already holds.
+   *
+   * Deliberately here rather than in an effect: this is the one place that
+   * knows authoritative entitlement for the current user, it runs whenever
+   * that changes, and the call only assigns module locals — no network, no
+   * await, no render impact. Every analytics event written after this point
+   * inherits the snapshot without the feature having to know about it.
+   *
+   * Wrapped because analytics must never be able to break entitlement.
+   */
+  try {
+    setAnalyticsMonetizationContext({
+      resolved: true,
+      plan: ent.plan ?? "free",
+      // The client view carries no product id; the plan is the segmentation
+      // key and RevenueCat remains authoritative for the exact product.
+      subscriptionProduct: null,
+      freeScansRemaining:         b.freeScansRemaining ?? 0,
+      subscriptionScansRemaining: b.subscriptionScansRemaining ?? 0,
+      packScansRemaining:         b.packScansRemaining ?? 0,
+      totalUsableScans:           b.totalUsableScans ?? 0,
+    });
+  } catch { /* never block entitlement on telemetry */ }
 
   return {
     status: "ready",

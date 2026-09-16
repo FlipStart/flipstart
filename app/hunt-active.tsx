@@ -556,7 +556,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
         logHuntScanStarted(stats.scanned);
         router.push('/camera' as any);
       },
-      goToScanStore: () => router.push('/scan-store' as any),
+      goToScanStore: () => router.push('/scan-store?from=hunt_active' as any),
     });
   };
 

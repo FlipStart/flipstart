@@ -87,7 +87,10 @@ describe("Home scan-balance popup", () => {
   });
 
   it("keeps the navigation contract byte for byte: dismiss, clear intent, then push", () => {
-    expect(HOME).toMatch(/<ScanStoreCTA\s+visible=\{showScanModal\}\s+style=\{sm\.storeBtn\}\s+onPress=\{\(\) => \{\s*setShowScanModal\(false\);[\s\S]*?clearScanStoreIntent\(\);\s*router\.push\('\/scan-store' as any\);\s*\}\}/);
+    // Every step of the ordering contract is still pinned exactly:
+    // setShowScanModal(false) -> clearScanStoreIntent() -> router.push.
+    // Only the URL literal is relaxed, for the additive ?from= tag.
+    expect(HOME).toMatch(/<ScanStoreCTA\s+visible=\{showScanModal\}\s+style=\{sm\.storeBtn\}\s+onPress=\{\(\) => \{\s*setShowScanModal\(false\);[\s\S]*?clearScanStoreIntent\(\);\s*router\.push\('\/scan-store(\?[^']*)?' as any\);\s*\}\}/);
     expect(HOME).toMatch(/sm\.storeBtn/);
   });
 

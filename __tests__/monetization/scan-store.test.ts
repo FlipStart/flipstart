@@ -379,7 +379,9 @@ describe("resume behaviour", () => {
   /** Requirement 41. Voluntary entry must not inherit an old intent. */
   it("clears the intent on voluntary entry from the balance sheet", () => {
     const home = read("app/(tabs)/index.tsx");
-    expect(home).toMatch(/clearScanStoreIntent\(\);\s*\r?\n\s*router\.push\('\/scan-store' as any\)/);
+    // ORDERING is the contract: clear the intent, THEN push. Unchanged. Only the
+    // URL literal gained an additive ?from= tag.
+    expect(home).toMatch(/clearScanStoreIntent\(\);\s*\r?\n\s*router\.push\('\/scan-store(\?[^']*)?' as any\)/);
   });
 });
 
