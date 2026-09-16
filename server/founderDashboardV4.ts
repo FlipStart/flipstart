@@ -38,6 +38,9 @@ import {
   const pct = (v: number | null): string => v === null ? "—" : `${(v * 100).toFixed(1)}%`;
   const hrs = (h: number | null): string => {
     if (h === null || !Number.isFinite(h)) return "—";
+    // Negative = the reference event came AFTER the purchase (e.g. first scan
+    // after paying). "-2400m" is technically right and reads as garbage.
+    if (h < 0) return `<span class="muted" title="${esc(`${Math.abs(h).toFixed(1)}h before`)}">paid first</span>`;
     if (h < 1) return `${Math.round(h * 60)}m`;
     if (h < 48) return `${h.toFixed(1)}h`;
     return `${(h / 24).toFixed(1)}d`;
@@ -99,7 +102,7 @@ import {
       m("Scans 7d", sc && !isErr(sc) ? { value: sc.scans7 ?? sc.last7 ?? null, trust: "EXACT" } : null),
       m("Activated (1+ scan)", x.activation && !isErr(x.activation) ? x.activation.activationRate : null),
       m("Paywall viewers 7d", pw && !isErr(pw) ? pw.viewers7 : null), m("Purchases 7d", pw && !isErr(pw) ? pw.purchases7 : null),
-      m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Scan-pack buyers", mo.scanPackBuyers),
+      m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Holding pack scans", mo.scanPackHolders),
       m("Total purchases", { value: (mo.purchaseCompletions?.value ?? 0) + (mo.scanPackPurchases?.value ?? 0), trust: "EXACT" }),
       m("Revenue", mo.revenue), m("MRR", mo.mrr),
       m("Est. API spend", ue && !isErr(ue) ? ue.estimatedSpend : null, { dp: 2 }),
@@ -131,7 +134,7 @@ import {
     if (isErr(mo)) return errorCard("Monetization", mo);
     return section("mon", "4 · Monetization", grid([
       m("Current Free", mo.currentFree), m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Total paying", mo.totalPaying),
-      m("Scan-pack buyers", mo.scanPackBuyers), m("Paywall viewers (all time)", mo.paywallViewers),
+      m("Holding pack scans (ledger)", mo.scanPackHolders), m("Pack purchases Apple-approved", mo.scanPackApproved), m("Paywall viewers (all time)", mo.paywallViewers),
       m("Purchase starts", mo.purchaseStarts), m("Purchase completions", mo.purchaseCompletions),
       m("Cancellations", mo.purchaseCancellations), m("Failures", mo.purchaseFailures),
       m("Viewer → purchase", mo.viewToPurchase),
@@ -200,7 +203,7 @@ import {
     ]);
     const rows = (pj.journeys as PaidJourney[]).slice(0, 200).map(j => [
       esc(j.displayName ?? "—"), esc(j.email ?? "—"), `<code class="uid" title="${esc(j.userId)}">${esc(j.userId.slice(0, 8))}…</code>`,
-      esc(j.currentPlan), esc(j.firstPaidKind), esc(j.firstPaidProduct ?? "—"),
+      esc(j.currentPlan), j.firstPaidKind === "scan_pack" ? `${esc(j.firstPaidKind)} ${j.packGrantConfirmed ? "✓ granted" : `<span class="muted" title="Apple approved but the ledger holds no pack scans — the server may have refused the grant">? unconfirmed</span>`}` : esc(j.firstPaidKind), esc(j.firstPaidProduct ?? "—"),
       when(j.accountCreatedAt ?? j.profileCreatedAt), when(j.firstScanAt), when(j.firstPaywallAt), when(j.firstPurchaseAt), when(j.latestActivityAt),
       hrs(j.hoursAccountToPay), hrs(j.hoursFirstScanToPay), hrs(j.hoursFirstPaywallToPay),
       num(j.scansBeforePay), num(j.sessionsBeforePay), num(j.activeDaysBeforePay), num(j.paywallImpressionsBeforePay), num(j.uniquePaywallSourcesBeforePay),

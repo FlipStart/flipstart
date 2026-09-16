@@ -301,6 +301,35 @@ describe("sessions and monetization", () => {
     expect(s.durationNote.trust).toBe("LEGACY");
     expect((s as any).avgDuration).toBeUndefined();
   });
+  it("never calls an Apple-approved pack purchase a buyer unless the ledger agrees", () => {
+    // The client event fires on Apple approval, before the server grant. A
+    // sandbox purchase the server refused still emits it. This is exactly the
+    // "4 scan pack buyers" that were not real.
+    const d = fixture();
+    d.base.events.push(
+      ev("u-never", "scan_pack_purchase_started", t(2, 9), { product_id: "flipstart_scan_pack_40" }, "s-p"),
+      ev("u-never", "scan_pack_purchase_completed", t(2, 9), { product_id: "flipstart_scan_pack_40" }, "s-p"),
+    );
+    // u-never has no account_usage row → no pack balance → server never granted.
+    const mo = M.getMonetization(d, M.getPaywalls(d, NO_CUTOVER), M.getPaidJourneys(d));
+    expect(mo.scanPackApproved.value).toBe(1);        // Apple said yes
+    expect(mo.scanPackHolders.value).toBe(0);         // ledger says nobody holds scans
+    expect(mo.scanPackApproved.note).toMatch(/includes sandbox and server-rejected/);
+    // And the paid-journey roster does not list them as a paying user.
+    expect(M.getPaidJourneys(d).journeys.map(j => j.userId)).not.toContain("u-never");
+  });
+
+  it("does list a pack buyer whose ledger balance confirms the grant", () => {
+    const d = fixture();
+    d.base.events.push(ev("u-never", "scan_pack_purchase_completed", t(2, 9), { product_id: "flipstart_scan_pack_40" }, "s-p"));
+    d.usage.set("u-never", { user_id: "u-never", subscription_product_id: null, subscription_period_end: null, subscription_scans_used: 0, free_scans_used: 0, pack_scan_balance: 40 });
+    const j = M.getPaidJourneys(d).journeys.find(j => j.userId === "u-never")!;
+    expect(j).toBeDefined();
+    expect(j.firstPaidKind).toBe("scan_pack");
+    expect(j.packGrantConfirmed).toBe(true);
+    expect(M.getMonetization(d, M.getPaywalls(d, NO_CUTOVER), M.getPaidJourneys(d)).scanPackHolders.value).toBe(1);
+  });
+
   it("does not fabricate MRR or revenue", () => {
     const d = fixture();
     const mo = M.getMonetization(d, M.getPaywalls(d, NO_CUTOVER), M.getPaidJourneys(d));
@@ -350,6 +379,32 @@ describe("rendering", () => {
   it("labels acquisition attribution as not tracked", () => { expect(html).toMatch(/Acquisition source attribution not currently tracked/); });
   it("carries the trust legend and badges", () => { expect(html).toMatch(/class="tb tb-exact"/); expect(html).toMatch(/class="legend"/); });
   it("shows legacy session duration warning, not a number", () => { expect(html).toMatch(/Session duration is hidden/); });
+});
+
+describe("internal flag reaches every aggregate, not just the roster", () => {
+  it("drops an internal user's events, scans and usage, not only their profile row", async () => {
+    // loadV4Data is where the filter is applied. Drive it with a base whose
+    // profileIds already exclude u-pay (as loadBaseData would after the flag),
+    // and stubbed table loads that still contain u-pay's rows.
+    const base = fixture().base;
+    base.profiles = base.profiles.filter((p: any) => p.id !== "u-pay");
+    base.profileIds = new Set(base.profiles.map((p: any) => p.id));
+    const fm = await import("../../server/founderMetrics");
+    const spy = vi.spyOn(fm, "fetchAll").mockImplementation(async (table: string) => {
+      if (table === "scans") return fixture().scans as any;
+      if (table === "account_usage") return [...fixture().usage.values()] as any;
+      return [] as any;
+    });
+    const d = await M.loadV4Data(base);
+    spy.mockRestore();
+    expect(d.base.events.some(e => e.user_id === "u-pay")).toBe(false);
+    expect(d.scans.some(sc => sc.user_id === "u-pay")).toBe(false);
+    expect(d.usage.has("u-pay")).toBe(false);
+    // Anonymous events are kept: they cannot be attributed to anyone.
+    expect(d.base.events.some(e => e.user_id === null)).toBe(true);
+    // And the aggregates no longer see the excluded user's purchase.
+    expect(M.getPaywalls(d, NO_CUTOVER).rows.find(r => r.source === "deep_analysis")!.purchases).toBe(0);
+  });
 });
 
 describe("route and PII surface", () => {

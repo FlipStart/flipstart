@@ -133,10 +133,24 @@ export async function loadV4Data(base?: BaseData): Promise<V4Data> {
     fetchAuthUsers().catch(() => [] as AuthUser[]),
     fetchAll<ProfileRow>("profiles", "id, display_name, username, created_at"),
   ]);
+  /**
+   * Apply the profile filter to EVERYTHING, not just the profile list.
+   *
+   * loadBaseData() drops internal and ghost profiles but returns every event
+   * and no scans at all. If only the roster respected the flag, marking a test
+   * account internal would remove its row from Paid Journeys while its paywall
+   * impressions, Scan Store opens and scans kept inflating every aggregate.
+   * One filter, applied once, at the source.
+   *
+   * Anonymous (pre-auth) events are kept: they cannot be attributed to any
+   * profile, so there is nothing to exclude them by.
+   */
+  const keep = b.profileIds;
+  const events = b.events.filter(e => !e.user_id || keep.has(e.user_id));
   return {
-    base: b,
-    scans,
-    usage:    new Map(usageRows.map(u => [u.user_id, u])),
+    base: { ...b, events },
+    scans: scans.filter(sc => !sc.user_id || keep.has(sc.user_id)),
+    usage:    new Map(usageRows.filter(u => keep.has(u.user_id)).map(u => [u.user_id, u])),
     auth:     new Map(authUsers.map(u => [u.id, u])),
     profiles: new Map(profileRows.map(p => [p.id, p])),
     now: new Date(),
@@ -427,6 +441,7 @@ export function getOnboardingOffer(d: V4Data, c: Cutover) {
 export interface PaidJourney {
   userId: string; displayName: string | null; email: string | null;
   currentPlan: PlanState; firstPaidProduct: string | null; firstPaidKind: "monthly" | "annual" | "scan_pack" | "unknown";
+  packGrantConfirmed: boolean | null;
   firstPurchaseAt: string | null; latestPaidEventAt: string | null;
   firstSeenAt: string | null; accountCreatedAt: string | null; profileCreatedAt: string;
   firstScanAt: string | null; firstPaywallAt: string | null; latestActivityAt: string | null;
@@ -458,7 +473,12 @@ export function getPaidJourneys(d: V4Data) {
     // A user can also be paying with no completed-event history (pre-analytics
     // or webhook-only). Their plan still counts; the timeline is just thinner.
     const plan = currentPlan(d, p.id);
-    if (!paidEvents.length && plan === "free" && (d.usage.get(p.id)?.pack_scan_balance ?? 0) <= 0) continue;
+    const subEvent = paidEvents.some(e => e.event_name === PW_EVENTS.completed);
+    const holdsPacks = (d.usage.get(p.id)?.pack_scan_balance ?? 0) > 0;
+    // Paying = a server-confirmed subscription event, OR a current plan, OR a
+    // pack balance. An Apple-approved pack event alone is not enough — the
+    // server may have refused it (sandbox / environment mismatch).
+    if (!subEvent && plan === "free" && !holdsPacks) continue;
 
     const first = paidEvents[0] ?? null;
     const firstAt = first?.created_at ?? null;
@@ -481,6 +501,7 @@ export function getPaidJourneys(d: V4Data) {
     const scans = scansByUser.get(p.id) ?? [];
     const scansBefore = firstAt ? scans.filter(s => s < firstAt) : scans;
     const preEvs = firstAt ? evs.filter(before) : evs;
+    const packGranted = (d.usage.get(p.id)?.pack_scan_balance ?? 0) > 0;
     const kind = !first ? (plan === "free" ? "scan_pack" : plan)
       : first.event_name === "scan_pack_purchase_completed" ? "scan_pack"
       : (metaStr(first, "selected_plan") as "monthly" | "annual" | null) ?? "unknown";
@@ -493,6 +514,8 @@ export function getPaidJourneys(d: V4Data) {
       userId: p.id, displayName: prof?.display_name ?? prof?.username ?? null, email: auth?.email ?? null,
       currentPlan: plan, firstPaidProduct: first ? (metaStr(first, "product_id") ?? metaStr(first, "selected_plan")) : d.usage.get(p.id)?.subscription_product_id ?? null,
       firstPaidKind: kind,
+      // Only meaningful for pack purchases: did the server actually grant?
+      packGrantConfirmed: kind === "scan_pack" ? packGranted : null,
       firstPurchaseAt: firstAt, latestPaidEventAt: paidEvents.at(-1)?.created_at ?? null,
       firstSeenAt: firstSeen, accountCreatedAt: auth?.created_at ?? null, profileCreatedAt: p.created_at,
       firstScanAt: scans[0] ?? null, firstPaywallAt: evs.find(e => e.event_name === PW_EVENTS.opened)?.created_at ?? null,
@@ -562,20 +585,35 @@ export function getPaidJourneys(d: V4Data) {
 export function getMonetization(d: V4Data, paywalls: ReturnType<typeof getPaywalls>, journeys: ReturnType<typeof getPaidJourneys>) {
   const plans = { free: 0, monthly: 0, annual: 0 };
   for (const p of d.base.profiles) plans[currentPlan(d, p.id)]++;
-  const packBuyers = new Set(d.base.events.filter(e => e.event_name === "scan_pack_purchase_completed" && e.user_id).map(e => e.user_id!)).size;
+  /**
+   * Two different facts, kept apart on purpose.
+   *
+   * scan_pack_purchase_completed fires when APPLE approves the purchase
+   * (status 'success' OR 'sync_pending') — it does not wait for the server
+   * grant the way paywall_purchase_completed does. A sandbox purchase the
+   * server then rejects still emits it. So it is "Apple-approved attempts",
+   * not buyers.
+   *
+   * Users actually HOLDING pack scans comes from the ledger. It undercounts
+   * historical buyers (balances drain to zero) but it never counts a purchase
+   * that was refused.
+   */
+  const packApproved = new Set(d.base.events.filter(e => e.event_name === "scan_pack_purchase_completed" && e.user_id).map(e => e.user_id!)).size;
+  const packHolders = [...d.usage.values()].filter(u => (u.pack_scan_balance ?? 0) > 0).length;
   const sum = (k: keyof PaywallRow) => paywalls.rows.reduce((a, r) => a + (r[k] as number), 0);
   const all = d.base.events;
   return {
     currentFree: exact(plans.free), currentMonthly: exact(plans.monthly), currentAnnual: exact(plans.annual),
     totalPaying: exact(plans.monthly + plans.annual),
-    scanPackBuyers: exact(packBuyers),
+    scanPackApproved: exact(packApproved, "Apple-approved pack purchases (client event; includes sandbox and server-rejected)"),
+    scanPackHolders: exact(packHolders, "users with pack_scan_balance > 0 in the ledger — the only server-confirmed signal"),
     paywallViewers: paywalls.totalViewers,
     purchaseStarts: exact(sum("purchaseStarts")), purchaseCompletions: exact(sum("purchases")),
     purchaseCancellations: exact(sum("cancelled")), purchaseFailures: exact(sum("failed")),
     viewToPurchase: derived(sum("purchases"), paywalls.totalViewers.value ?? 0, "unique paywall viewers who purchased"),
     monthlyPurchases: exact(all.filter(e => e.event_name === PW_EVENTS.completed && metaStr(e, "selected_plan") === "monthly").length),
     annualPurchases:  exact(all.filter(e => e.event_name === PW_EVENTS.completed && metaStr(e, "selected_plan") === "annual").length),
-    scanPackPurchases: exact(all.filter(e => e.event_name === "scan_pack_purchase_completed").length),
+    scanPackPurchases: exact(all.filter(e => e.event_name === "scan_pack_purchase_completed").length, "Apple-approved, not server-granted"),
     planSelection: { monthly: sum("monthlySelected"), annual: sum("annualSelected") },
     revenue: unavailable("Exact revenue requires RevenueCat transaction amounts, which are not stored server-side. Purchase counts are exact."),
     mrr: unavailable("MRR requires live RevenueCat data — not sourced server-side."),
