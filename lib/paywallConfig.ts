@@ -339,31 +339,30 @@ const ONBOARDING_OFFER: PaywallConfig = {
    * that matters most to someone hesitating at this screen: nothing is
    * being locked away permanently.
    *
-   * "free scans", not "lifetime scans". The allowance genuinely is lifetime
-   * and the app says so elsewhere, but on the one screen a new user cannot
-   * dismiss, "lifetime" reads as a ceiling — "only 15, ever?" — at the exact
-   * moment the job is reassurance. Accurate either way; this framing does not
-   * spend the user's goodwill to make the point.
+   * "lifetime scans", stated plainly.
    *
-   * FREE_LIFETIME_SCANS is interpolated, not typed, for the same reason the
-   * button label was: change the allowance and this line follows.
+   * An earlier revision said "free scans" to avoid "lifetime" reading as a
+   * ceiling. The clarity argument wins instead: a user who believes 15 scans
+   * arrive every month discovers otherwise at scan 16, and that is a worse
+   * moment than a slightly blunter sentence here. The line now carries all
+   * three facts a hesitating user needs — how many, that they do not renew,
+   * and that upgrading is available later, not required now.
+   *
+   * FREE_LIFETIME_SCANS is interpolated, never typed: change the allowance and
+   * this line follows it.
    */
-  secondaryValueLine: `${FREE_LIFETIME_SCANS} free scans included · Upgrade anytime`,
+  secondaryValueLine: `${FREE_LIFETIME_SCANS} lifetime scans included · Upgrade anytime`,
   dismissible: false,
   /**
-   * "Free Plan", not "15 Free Scans".
+   * "Continue Free" — two words, no number, no ambiguity.
    *
-   * This is the one paywall a brand-new user cannot dismiss, and the risk it
+   * This is the one paywall a brand-new user cannot dismiss, so the risk it
    * carries is someone reading it as "FlipStart costs money" and closing the
-   * app. Naming the free option as a PLAN puts it alongside Monthly and
-   * Annual as a third choice, which is what it actually is. A number in the
-   * button read more like a trial allowance than a way to continue.
-   *
-   * The count moves to secondaryValueLine above rather than disappearing —
-   * it is still on the same screen, just no longer the headline of the
-   * button.
+   * app. The shortest possible statement that continuing costs nothing beats
+   * any longer phrasing here; the count and the terms sit immediately beneath
+   * in secondaryValueLine, where they inform without competing.
    */
-  freeContinueLabel: "Continue with Free Plan",
+  freeContinueLabel: "Continue Free",
   compactAboveFoldActions: true,
 };
 

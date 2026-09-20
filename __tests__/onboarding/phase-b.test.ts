@@ -340,16 +340,24 @@ describe("final offer", () => {
     expect(PAYWALL_SOURCES).toContain("onboarding_offer");
     expect(cfg.headline).toBe("Unlock the Full FlipStart Experience");
     expect(cfg.showScanStoreAlternative).toBe(false);
-    expect(cfg.freeContinueLabel).toBe("Continue with Free Plan");
+    expect(cfg.freeContinueLabel).toBe("Continue Free");
     /**
      * The allowance moved out of the button and into the line beneath it. It
      * must still be interpolated from the constant, not typed — otherwise
      * changing FREE_LIFETIME_SCANS would leave the screen lying about it.
      */
-    expect(cfg.secondaryValueLine).toBe("15 free scans included · Upgrade anytime");
-    expect(CONFIG).toMatch(/secondaryValueLine: `\$\{FREE_LIFETIME_SCANS\} free scans included/);
-    /** "lifetime" reads as a ceiling on the one screen a new user cannot leave. */
-    expect(cfg.secondaryValueLine).not.toMatch(/lifetime/i);
+    expect(cfg.secondaryValueLine).toBe("15 lifetime scans included · Upgrade anytime");
+    expect(CONFIG).toMatch(/secondaryValueLine: `\$\{FREE_LIFETIME_SCANS\} lifetime scans included/);
+    /**
+     * The line must say "lifetime" explicitly. A user who assumes the 15 scans
+     * renew monthly finds out at scan 16, which is a worse moment to learn it
+     * than this one. (An earlier revision banned the word here for tone; the
+     * clarity requirement supersedes it.)
+     */
+    expect(cfg.secondaryValueLine).toMatch(/lifetime/i);
+    /** And all three facts a hesitating user needs are present. */
+    expect(cfg.secondaryValueLine).toMatch(/15/);
+    expect(cfg.secondaryValueLine).toMatch(/Upgrade anytime/);
     expect(cfg.dismissible).toBe(false);
     expect(code(CONFIG)).not.toMatch(/No thanks|Skip|Maybe later|Continue without Pro/);
   });
@@ -530,7 +538,7 @@ describe("pending activation on the onboarding offer", () => {
 
   it("leaves the normal offer exactly as it was", () => {
     const cfg = resolvePaywallConfig("onboarding_offer");
-    expect(cfg.freeContinueLabel).toBe("Continue with Free Plan");
+    expect(cfg.freeContinueLabel).toBe("Continue Free");
     expect(cfg.dismissible).toBe(false);
     expect(cfg.showScanStoreAlternative).toBe(false);
     expect(MODAL).toMatch(/useState<PurchaseTarget>\("annual"\)/);
@@ -630,7 +638,7 @@ describe("Phase 1 flow shape", () => {
   });
 
   it("leaves the paywall and version alone", () => {
-    expect(resolvePaywallConfig("onboarding_offer").freeContinueLabel).toBe("Continue with Free Plan");
+    expect(resolvePaywallConfig("onboarding_offer").freeContinueLabel).toBe("Continue Free");
     expect(resolvePaywallConfig("onboarding_offer").dismissible).toBe(false);
     expect(STORAGE).toMatch(/export const ONBOARDING_VERSION = 3;/);
   });

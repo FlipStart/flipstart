@@ -22,6 +22,10 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+const root = path.resolve(__dirname, "../..");
+
 import {
   PAYWALL_SOURCES,
   ANNUAL_SCANS,
@@ -36,6 +40,8 @@ import {
   NO_PRICING,
   annualSavingsLabel,
   annualSavingsPercent,
+  annualMonthlyEquivalent,
+  planCtaLabel,
   planPriceLabel,
   readProductPricing,
   renewalDisclosure,
@@ -500,5 +506,79 @@ describe("invariants", () => {
   it("only ever reaches unlocked through afterActivation(true)", () => {
     expect(afterActivation(true, "annual").phase).toBe("unlocked");
     expect(afterActivation(false, "annual").phase).not.toBe("unlocked");
+  });
+});
+/**
+ * Price independence.
+ *
+ * FlipStart changed from $7.99/$39.99 to $5.99/$19.99 by editing App Store
+ * Connect alone — no code change was needed, because no price is ever typed
+ * into this codebase. These tests exist so that stays true: a hardcoded
+ * fallback is indistinguishable from a real price on screen, and it would be
+ * wrong for every user outside the US the moment it appeared.
+ */
+describe("prices are never hardcoded", () => {
+  const strip = (src: string) => {
+    let out = "", mode: "code" | "line" | "block" | "sq" | "dq" | "tpl" = "code", i = 0;
+    while (i < src.length) {
+      const c = src[i], n = src[i + 1];
+      if (mode === "code") {
+        if (c === "/" && n === "/") { mode = "line"; i += 2; continue; }
+        if (c === "/" && n === "*") { mode = "block"; i += 2; continue; }
+        if (c === "'") mode = "sq"; else if (c === '"') mode = "dq"; else if (c === "`") mode = "tpl";
+        out += c; i++; continue;
+      }
+      if (mode === "line") { if (c === "\n") { mode = "code"; out += c; } i++; continue; }
+      if (mode === "block") { if (c === "*" && n === "/") { mode = "code"; i += 2; } else i++; continue; }
+      if (c === "\\") { out += c + (src[i + 1] ?? ""); i += 2; continue; }
+      if ((mode === "sq" && c === "'") || (mode === "dq" && c === '"') || (mode === "tpl" && c === "`")) mode = "code";
+      out += c; i++;
+    }
+    return out;
+  };
+  const files = [
+    "lib/paywallPricing.ts", "lib/paywallConfig.ts",
+    "components/monetization/paywall/PlanCard.tsx",
+    "components/monetization/paywall/PlanSelector.tsx",
+    "components/monetization/paywall/PaywallPurchaseButton.tsx",
+    "components/monetization/paywall/ProPaywallModal.tsx",
+  ];
+
+  it("no subscription price literal appears in shipped code", () => {
+    for (const f of files) {
+      const code = strip(readFileSync(path.join(root, f), "utf8"));
+      // Old prices, new prices, and their per-month derivations.
+      expect(code, f).not.toMatch(/\$\s?(7\.99|39\.99|3\.33|5\.99|19\.99|1\.67)/);
+    }
+  });
+
+  it("there is no currency fallback to stand in for a missing price", () => {
+    const code = strip(readFileSync(path.join(root, "lib/paywallPricing.ts"), "utf8"));
+    expect(code).not.toMatch(/\?\?\s*["'`]\$/);
+  });
+
+  it("the per-month figure is computed, so a price change needs no code change", () => {
+    // The exact figures behind the $19.99 move.
+    expect(annualMonthlyEquivalent(USD(39.99, "$39.99"))).toBe("$3.33");
+    expect(annualMonthlyEquivalent(USD(19.99, "$19.99"))).toBe("$1.67");
+    expect(annualMonthlyEquivalent(USD(5.99 * 12, "$71.88"))).toBe("$5.99");
+  });
+
+  it("savings recompute from whatever the store reports", () => {
+    expect(annualSavingsPercent(USD(7.99, "$7.99"), USD(39.99, "$39.99"))).toBe(58);
+    expect(annualSavingsPercent(USD(5.99, "$5.99"), USD(19.99, "$19.99"))).toBe(72);
+  });
+
+  it("CTA labels carry the store's own localized string", () => {
+    expect(planCtaLabel("annual", USD(19.99, "$19.99"))).toBe("Start Annual Pro \u00B7 $19.99/year");
+    expect(planCtaLabel("monthly", USD(5.99, "$5.99"))).toBe("Start Monthly Pro \u00B7 $5.99/month");
+    // A non-USD storefront is passed through untouched.
+    expect(planCtaLabel("annual", { priceString: "19,99 €", priceAmount: 19.99, currencyCode: "EUR" }))
+      .toBe("Start Annual Pro \u00B7 19,99 €/year");
+  });
+
+  it("allowances and the free tier are unchanged by the price move", () => {
+    const cfg = readFileSync(path.join(root, "lib/paywallConfig.ts"), "utf8");
+    expect(cfg).toMatch(/export const FREE_LIFETIME_SCANS = 15;/);
   });
 });
