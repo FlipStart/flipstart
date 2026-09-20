@@ -43,16 +43,19 @@ const PRICING = read("lib/paywallPricing.ts");
 // ── 1. Annual price hierarchy ───────────────────────────────────────────────
 
 describe("Annual price hierarchy", () => {
-  it("leads with the monthly equivalent, styled at the same size the plain price used to be", () => {
+  it("leads with the monthly equivalent, styled at the same size AND color the plain price used to be (ink, not green)", () => {
+    // The headline number needs no accent color to be the biggest thing on the
+    // card — the color moved to the supporting "Billed" line instead. See below.
     expect(CARD).toMatch(/const showEquivDominant = Boolean\(equivalent && amount\);/);
-    expect(CARD).toMatch(/<Text style=\{\[s\.amount, s\.amountGreen\]\}>\{equivalent\}<\/Text>/);
+    expect(CARD).toMatch(/<Text style=\{s\.amount\}>\{equivalent\}<\/Text>/);
     expect(CARD).toMatch(/amount: \{ fontFamily: FONTS\.serif, fontSize: 32, fontWeight: "800", color: PW\.ink, lineHeight: 36 \}/);
-    expect(CARD).toMatch(/amountGreen: \{ color: PW\.forest \}/);
+    expect(code(CARD)).not.toMatch(/amountGreen|periodGreen/);
   });
 
-  it("bills the real annual charge underneath, tight (no spaces around the slash)", () => {
+  it("bills the real annual charge underneath, tight (no spaces around the slash), in forest green", () => {
     expect(CARD).toMatch(/const billed = priceLabel \? priceLabel\.replace\(\/\\s\+\/g, ""\) : null;/);
     expect(CARD).toContain('<Text style={s.billedLine}>Billed {billed}</Text>');
+    expect(CARD).toMatch(/billedLine: \{[^}]*color: PW\.forest/);
     // "$39.99 / year" -> "$39.99/year"
     expect("$39.99 / year".replace(/\s+/g, "")).toBe("$39.99/year");
   });
@@ -61,7 +64,7 @@ describe("Annual price hierarchy", () => {
     expect(CARD).toMatch(/const showEquivDominant = Boolean\(equivalent && amount\);/);
     expect(CARD).toMatch(/\{showEquivDominant \? \(/);
     // The old "equivalent && (...)" second-block form is gone — merged into the branch above.
-    expect(code(CARD)).not.toMatch(/equivRow|equivAmount|equivPeriod/);
+    expect(code(CARD)).not.toMatch(/equivRow|equivAmount|equivPeriod|amountGreen|periodGreen/);
   });
 
   it("falls back to the plain price, undecorated, when the equivalent can't be shown honestly", () => {

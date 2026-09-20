@@ -140,17 +140,12 @@ describe("generate_listings configuration", () => {
   });
 
   /**
-   * The secondary line exists, and stays a single sentence.
-   *
-   * The brief allows acknowledging the rest of Pro but forbids a feature
-   * checklist. Length is the thing that turns one into the other.
+   * No secondary line. The three-paywall redesign removed it: the MORE WITH
+   * PRO strip names the rest of Pro, and the line was the 30pt between the
+   * CTA and that strip that pushed the strip below the first screen.
    */
-  it("keeps the secondary value line short and tick-free", () => {
-    const line = GL().secondaryValueLine;
-    expect(line).toBeTruthy();
-    expect(line!.length).toBeLessThan(110);
-    expect(line!).not.toContain("✓");
-    expect(line!.split("\n").length).toBe(1);
+  it("has no secondary value line — the benefits strip carries it", () => {
+    expect(GL().secondaryValueLine).toBeNull();
   });
 });
 

@@ -114,12 +114,13 @@ describe("plan cards", () => {
     expect(sel).toMatch(/borderColor: PW\.forest/);
   });
 
-  it("gives the monthly equivalent the actual headline size, in forest green — and bills the real charge underneath", () => {
-    // Same size as the plain price it replaced as headline (32/36), not the
-    // smaller secondary size it used to carry.
+  it("gives the monthly equivalent the actual headline size, in ink — and bills the real charge underneath, in forest green", () => {
+    // Same size AND color as the plain price it replaced as headline (32/36,
+    // ink) — the headline number needs no accent color to be the biggest
+    // thing on the card. The accent moved to the supporting "Billed" line.
     expect(CARD).toMatch(/amount: \{ fontFamily: FONTS\.serif, fontSize: 32, fontWeight: "800", color: PW\.ink, lineHeight: 36 \}/);
-    expect(CARD).toMatch(/amountGreen: \{ color: PW\.forest \}/);
-    expect(CARD).toMatch(/billedLine: \{[^}]*fontSize: 14/);
+    expect(CARD).toMatch(/<Text style=\{s\.amount\}>\{equivalent\}<\/Text>/);
+    expect(CARD).toMatch(/billedLine: \{[^}]*fontSize: 14[^}]*color: PW\.forest/);
     expect(CARD).toContain("Billed {billed}");
   });
 

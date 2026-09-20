@@ -39,6 +39,10 @@ import { getSupabaseAdmin } from "./supabaseAdmin";
 import { derivePlan, type AccountUsage, type PlanState } from "./monetization/policy";
 import { PAYWALL_SOURCES } from "../lib/paywallConfig";
 import { SCAN_PACKS } from "../lib/scanPackCatalog";
+import {
+  DASHBOARD_TZ, DASHBOARD_TZ_LABEL, centralDay, centralToday, centralRangeUtc,
+  addCentralDays, centralDaysBetween, formatDayLabel,
+} from "./dashboardDates";
 
 export type Trust = "EXACT" | "DERIVED" | "ESTIMATED" | "NOT_TRACKED" | "LEGACY";
 
@@ -62,6 +66,213 @@ const unavailable = (note = "Available after Analytics V4 cutover"): Metric =>
 
 const DAY = 86_400_000;
 const SMALL_SAMPLE = 20;
+
+// ── Global launch cohort ────────────────────────────────────────────────────
+
+/**
+ * Which users a section is about.
+ *
+ * `post_launch` is the DEFAULT for business analytics. FlipStart accumulated
+ * ~160 development-era profiles before it was public; mixing them with real
+ * acquisitions makes activation and free-user behaviour meaningless — an
+ * abandoned dev account looks identical to a real user who never scanned.
+ *
+ * `all` preserves every historical number for platform totals and long-term
+ * product context. Nothing is deleted; the scope only chooses who is counted.
+ */
+export type Scope = "post_launch" | "all";
+
+export interface LaunchCohort {
+  scope: Scope;
+  /** ISO boundary, or null in `all` scope. */
+  at: string | null;
+  /** Where the value came from, for the Data Quality section. */
+  source: "env" | "default";
+  assumed: boolean;
+  label: string;
+}
+
+/**
+ * FlipStart's global App Store launch.
+ *
+ * Read from FLIPSTART_GLOBAL_LAUNCH_AT so it can be corrected without a
+ * deploy, but it DEFAULTS to the known date rather than disabling the cohort
+ * when unset. That differs deliberately from ANALYTICS_V4_CUTOVER_AT: the
+ * cutover describes data that may not exist yet, so guessing it would invent
+ * numbers; the launch date is a fixed historical company event that already
+ * happened, and refusing to apply it would leave the dashboard showing the
+ * misleading all-time mix by default.
+ *
+ * The 00:00:00Z time-of-day is an ASSUMPTION — no exact launch timestamp is
+ * stored anywhere in the product. Surfaced as such in Data Quality.
+ *
+ * These two constants are unrelated concepts and must never be conflated:
+ *   GLOBAL_LAUNCH_AT       → which USERS are counted (acquisition cohort)
+ *   ANALYTICS_V4_CUTOVER_AT → which FIELDS are trustworthy (instrumentation)
+ */
+export const GLOBAL_LAUNCH_AT_DEFAULT = "2026-09-08T00:00:00Z";
+
+export function getLaunchCohort(scope: Scope = "post_launch", env: NodeJS.ProcessEnv = process.env): LaunchCohort {
+  if (scope === "all") {
+    return { scope: "all", at: null, source: "default", assumed: false, label: "All time" };
+  }
+  const raw = (env.FLIPSTART_GLOBAL_LAUNCH_AT ?? "").trim();
+  const parsed = raw && Number.isFinite(Date.parse(raw)) ? new Date(Date.parse(raw)).toISOString() : null;
+  const at = parsed ?? new Date(Date.parse(GLOBAL_LAUNCH_AT_DEFAULT)).toISOString();
+  return {
+    scope: "post_launch", at, source: parsed ? "env" : "default",
+    // The DATE is known; only the time-of-day is assumed, and only when the
+    // env var is absent.
+    assumed: !parsed,
+    label: `Since ${at.slice(0, 10)}`,
+  };
+}
+
+/** Parse ?scope= into a Scope. Anything unrecognised falls back to the default. */
+export function parseScope(raw: unknown): Scope {
+  return raw === "all" || raw === "all_time" ? "all" : "post_launch";
+}
+
+// ── Analysis window ─────────────────────────────────────────────────────────
+
+/**
+ * WHEN the activity being analysed happened.
+ *
+ * Completely independent of Scope, which decides WHICH USERS are eligible.
+ * Scope = Post Launch + range = Sep 15–20 means: of the users acquired since
+ * global launch, what did they do between the 15th and the 20th. A user who
+ * joined on the 10th still contributes scans on the 18th — that is correct,
+ * and collapsing the two filters into one is the mistake this separation
+ * exists to prevent.
+ *
+ * ── Two semantics, one control ──────────────────────────────────────────────
+ * The same selected range means different things to different sections, and
+ * each says which it is using on screen:
+ *
+ *   ACTIVITY   — scans, paywalls, sessions, purchases, Scan Store, features.
+ *                Rows whose own timestamp falls inside the window.
+ *
+ *   COHORT     — activation and retention. The window selects who ENTERED
+ *                during it, then follows them FORWARD past the end date. A
+ *                three-day window would otherwise make D7 retention
+ *                impossible by construction, and a campaign's activation
+ *                would be truncated before anyone had a chance to activate.
+ */
+export type RangePreset =
+  | "today" | "yesterday" | "7d" | "14d" | "30d" | "since_launch" | "all" | "custom";
+
+export interface AnalysisWindow {
+  preset: RangePreset;
+  /** Central calendar days, inclusive. Null start = unbounded (All Available). */
+  fromDay: string | null;
+  toDay: string | null;
+  /** Half-open UTC bounds: >= startMs, < endMs. Null = unbounded on that side. */
+  startMs: number | null;
+  endMs: number | null;
+  /** Inclusive day count, 0 when unbounded. */
+  days: number;
+  label: string;
+  timezone: string;
+  timezoneLabel: string;
+  /** Set when the requested range was rejected; the fallback is in use. */
+  warning: string | null;
+}
+
+const PRESET_LABELS: Record<RangePreset, string> = {
+  today: "Today", yesterday: "Yesterday", "7d": "Last 7 Days", "14d": "Last 14 Days",
+  "30d": "Last 30 Days", since_launch: "Since Global Launch", all: "All Available", custom: "Custom",
+};
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function windowFrom(preset: RangePreset, fromDay: string | null, toDay: string | null, warning: string | null): AnalysisWindow {
+  if (!fromDay || !toDay) {
+    return {
+      preset, fromDay: null, toDay: null, startMs: null, endMs: null, days: 0,
+      label: PRESET_LABELS[preset], timezone: DASHBOARD_TZ, timezoneLabel: DASHBOARD_TZ_LABEL, warning,
+    };
+  }
+  const r = centralRangeUtc(fromDay, toDay);
+  if (!r) {
+    return {
+      preset: "all", fromDay: null, toDay: null, startMs: null, endMs: null, days: 0,
+      label: PRESET_LABELS.all, timezone: DASHBOARD_TZ, timezoneLabel: DASHBOARD_TZ_LABEL,
+      warning: warning ?? `Could not interpret ${fromDay} → ${toDay}; showing all available activity.`,
+    };
+  }
+  return {
+    preset, fromDay, toDay, startMs: r.startMs, endMs: r.endMs,
+    days: centralDaysBetween(fromDay, toDay),
+    label: preset === "custom" || preset === "since_launch"
+      ? `${formatDayLabel(fromDay)} – ${formatDayLabel(toDay)}`
+      : `${PRESET_LABELS[preset]} (${formatDayLabel(fromDay)} – ${formatDayLabel(toDay)})`,
+    timezone: DASHBOARD_TZ, timezoneLabel: DASHBOARD_TZ_LABEL, warning,
+  };
+}
+
+/**
+ * Build the window from query params.
+ *
+ * Never throws and never silently reinterprets a bad range: an invalid request
+ * falls back to the default and says why, so a typo cannot masquerade as a
+ * real result.
+ */
+export function resolveAnalysisWindow(
+  params: { preset?: unknown; from?: unknown; to?: unknown },
+  scope: Scope = "post_launch",
+  now: Date = new Date(),
+  env: NodeJS.ProcessEnv = process.env,
+): AnalysisWindow {
+  const today = centralToday(now);
+  const raw = typeof params.preset === "string" ? params.preset : "";
+  const from = typeof params.from === "string" ? params.from.trim() : "";
+  const to = typeof params.to === "string" ? params.to.trim() : "";
+
+  // An explicit from/to implies a custom range even without preset=custom.
+  const wantsCustom = raw === "custom" || (!raw && (!!from || !!to));
+  if (wantsCustom) {
+    if (!DAY_RE.test(from) || !DAY_RE.test(to)) {
+      return windowFrom("7d", addCentralDays(today, -6), today,
+        "Custom range needs both a start and an end date as YYYY-MM-DD. Showing the last 7 days.");
+    }
+    if (from > to) {
+      // Swapping silently would be a reinterpretation; say what happened.
+      return windowFrom("custom", to, from, `Start was after end, so the dates were swapped: ${formatDayLabel(to)} – ${formatDayLabel(from)}.`);
+    }
+    const future = to > today
+      ? `End date is in the future; there is no activity after ${formatDayLabel(today)}.`
+      : null;
+    return windowFrom("custom", from, to, future);
+  }
+
+  switch (raw) {
+    case "today":     return windowFrom("today", today, today, null);
+    case "yesterday": { const y = addCentralDays(today, -1); return windowFrom("yesterday", y, y, null); }
+    case "14d":       return windowFrom("14d", addCentralDays(today, -13), today, null);
+    case "30d":       return windowFrom("30d", addCentralDays(today, -29), today, null);
+    case "all":       return windowFrom("all", null, null, null);
+    case "since_launch": {
+      const at = getLaunchCohort("post_launch", env).at;
+      const day = at ? centralDay(at) : null;
+      return day
+        ? windowFrom("since_launch", day, today, null)
+        : windowFrom("all", null, null, "Global launch date unavailable; showing all activity.");
+    }
+    case "7d":
+    default:
+      // The default. Business activity is read week to week.
+      return windowFrom("7d", addCentralDays(today, -6), today, null);
+  }
+}
+
+/** Is an ISO timestamp inside the activity window? Unbounded window = always. */
+export function inWindow(w: AnalysisWindow, isoStr: string | null | undefined): boolean {
+  if (w.startMs === null || w.endMs === null) return true;
+  if (!isoStr) return false;
+  const t = Date.parse(isoStr);
+  if (!Number.isFinite(t)) return false;
+  return t >= w.startMs && t < w.endMs;
+}
 
 // ── Cutover ─────────────────────────────────────────────────────────────────
 
@@ -103,6 +314,20 @@ interface AuthUser { id: string; email: string | null; created_at: string; }
 interface ProfileRow { id: string; display_name: string | null; username: string | null; created_at: string; }
 
 export interface V4Data {
+  window: AnalysisWindow;
+  /**
+   * Events and scans restricted to the ACTIVITY window. Most sections use
+   * these. `allEvents` / `allScans` keep the unwindowed set for the sections
+   * that must look outside it — a purchaser's history before the range, and
+   * retention's follow-up after it.
+   */
+  allEvents: BaseData["events"];
+  allScans: ScanRow[];
+  cohort: LaunchCohort;
+  /** Profiles excluded by the scope. 0 in `all`. */
+  preLaunchProfiles: number;
+  /** Anonymous events dropped because they cannot be cohort-attributed. */
+  anonymousExcluded: number;
   base: BaseData;
   scans: ScanRow[];
   usage: Map<string, UsageRow>;
@@ -125,7 +350,13 @@ async function fetchAuthUsers(): Promise<AuthUser[]> {
   return out;
 }
 
-export async function loadV4Data(base?: BaseData): Promise<V4Data> {
+export async function loadV4Data(
+  base?: BaseData,
+  scope: Scope = "post_launch",
+  env: NodeJS.ProcessEnv = process.env,
+  window: AnalysisWindow = resolveAnalysisWindow({}, scope, new Date(), env),
+): Promise<V4Data> {
+  const cohort = getLaunchCohort(scope, env);
   const b = base ?? await loadBaseData();
   const [scans, usageRows, authUsers, profileRows] = await Promise.all([
     fetchAll<ScanRow>("scans", "user_id, created_at"),
@@ -134,22 +365,54 @@ export async function loadV4Data(base?: BaseData): Promise<V4Data> {
     fetchAll<ProfileRow>("profiles", "id, display_name, username, created_at"),
   ]);
   /**
-   * Apply the profile filter to EVERYTHING, not just the profile list.
+   * ONE filter, applied once, at the source.
    *
-   * loadBaseData() drops internal and ghost profiles but returns every event
-   * and no scans at all. If only the roster respected the flag, marking a test
-   * account internal would remove its row from Paid Journeys while its paywall
-   * impressions, Scan Store opens and scans kept inflating every aggregate.
-   * One filter, applied once, at the source.
+   * Two things narrow the population and both land here, so every downstream
+   * section is correct by construction rather than by each one remembering:
    *
-   * Anonymous (pre-auth) events are kept: they cannot be attributed to any
-   * profile, so there is nothing to exclude them by.
+   *   1. is_internal / ghost profiles — already removed by loadBaseData().
+   *   2. the acquisition cohort — profiles created before the global launch,
+   *      removed here when scope is post_launch.
+   *
+   * The cohort is defined by ACCOUNT CREATION, never by activity date. A
+   * pre-launch user who scans or pays in October is still a pre-launch
+   * acquisition and stays out of post-launch numbers; their rows appear in
+   * `all` scope only. Filtering events by their own timestamp instead would
+   * silently fold those users back in, which is the exact mistake this scope
+   * exists to prevent.
    */
-  const keep = b.profileIds;
-  const events = b.events.filter(e => !e.user_id || keep.has(e.user_id));
+  const cohortProfiles = cohort.at
+    ? b.profiles.filter(p => p.created_at >= cohort.at!)
+    : b.profiles;
+  const preLaunchProfiles = b.profiles.length - cohortProfiles.length;
+  const keep = new Set(cohortProfiles.map(p => p.id));
+
+  /**
+   * Anonymous (pre-auth) events carry no user_id, so they cannot be attributed
+   * to an acquisition cohort. In post_launch scope they are EXCLUDED rather
+   * than guessed at — an anonymous onboarding event could belong to a
+   * dev-era profile just as easily as a new one. They remain in `all`.
+   */
+  const events = cohort.at
+    ? b.events.filter(e => !!e.user_id && keep.has(e.user_id))
+    : b.events.filter(e => !e.user_id || keep.has(e.user_id));
+  const anonymousExcluded = cohort.at ? b.events.filter(e => !e.user_id).length : 0;
+
+  /**
+   * Cohort first, then window. Order matters and is not interchangeable:
+   * the cohort decides who is eligible at all, the window decides which of
+   * their activity is being examined. Reversing it would let a pre-launch
+   * user back in whenever they were active during the selected dates.
+   */
+  const cohortScans = scans.filter(sc => !!sc.user_id && keep.has(sc.user_id));
+  const windowedEvents = events.filter(e => inWindow(window, e.created_at));
+  const windowedScans = cohortScans.filter(sc => inWindow(window, sc.created_at));
+
   return {
-    base: { ...b, events },
-    scans: scans.filter(sc => !sc.user_id || keep.has(sc.user_id)),
+    window, allEvents: events, allScans: cohortScans,
+    cohort, preLaunchProfiles, anonymousExcluded,
+    base: { ...b, profiles: cohortProfiles, profileIds: keep, events: windowedEvents },
+    scans: windowedScans,
     usage:    new Map(usageRows.filter(u => keep.has(u.user_id)).map(u => [u.user_id, u])),
     auth:     new Map(authUsers.map(u => [u.id, u])),
     profiles: new Map(profileRows.map(p => [p.id, p])),
@@ -185,8 +448,15 @@ function currentPlan(d: V4Data, uid: string): PlanState {
   return u ? derivePlan(u, d.now) : "free";
 }
 
-/** UTC calendar day, e.g. "2026-09-15". The one timezone the dashboard uses. */
-const dayOf = (isoStr: string) => isoStr.slice(0, 10);
+/**
+ * The dashboard's calendar day, e.g. "2026-09-15".
+ *
+ * CENTRAL, not UTC. Every day-based metric routes through here — daily trends,
+ * active days, retention anchors, "same day" conversion buckets — so the whole
+ * dashboard agrees on when a day starts. Previously this sliced the ISO string,
+ * which is a UTC day: an event at 8pm Central counted as tomorrow.
+ */
+const dayOf = (isoStr: string) => centralDay(isoStr);
 
 // ── Executive + Acquisition ─────────────────────────────────────────────────
 
@@ -231,11 +501,16 @@ export function getAcquisition(d: V4Data) {
 
 // ── Activation ──────────────────────────────────────────────────────────────
 
-/** Per-user scan counts and first scan time, from the authoritative scans table. */
-function scanStats(d: V4Data) {
+/** Per-user scan counts within the ACTIVITY window. */
+function scanStats(d: V4Data) { return scanStatsOver(d.scans); }
+
+/** Per-user scan counts over ALL of the cohort's scans, ignoring the window. */
+function scanStatsAll(d: V4Data) { return scanStatsOver(d.allScans); }
+
+function scanStatsOver(rows: ScanRow[]) {
   const counts = new Map<string, number>();
   const first = new Map<string, string>();
-  for (const s of d.scans) {
+  for (const s of rows) {
     if (!s.user_id) continue;
     counts.set(s.user_id, (counts.get(s.user_id) ?? 0) + 1);
     const f = first.get(s.user_id);
@@ -245,8 +520,19 @@ function scanStats(d: V4Data) {
 }
 
 export function getActivation(d: V4Data) {
-  const { profiles } = d.base;
-  const { counts, first } = scanStats(d);
+  /**
+   * COHORT semantics, not activity.
+   *
+   * The window selects users ACQUIRED during it, then their scans are counted
+   * for all time — including after the window closes. A campaign run Sep 20–22
+   * is judged by whether the people it brought in ever activated, which is a
+   * question about them, not about those three days. Truncating at the end
+   * date would report every campaign as a failure.
+   */
+  const profiles = d.window.startMs === null
+    ? d.base.profiles
+    : d.base.profiles.filter(p => inWindow(d.window, p.created_at));
+  const { counts, first } = scanStatsAll(d);
   const withAtLeast = (n: number) => profiles.filter(p => (counts.get(p.id) ?? 0) >= n).length;
   const total = profiles.length;
 
@@ -259,7 +545,9 @@ export function getActivation(d: V4Data) {
     if (Number.isFinite(h) && h >= 0) hours.push(h);
   }
 
-  const onboardingDone = new Set(d.base.events.filter(e => e.event_name === "onboarding_completed" && e.user_id).map(e => e.user_id!)).size;
+  const ids = new Set(profiles.map(p => p.id));
+  // Also all-time: a user acquired in the window may finish onboarding later.
+  const onboardingDone = new Set(d.allEvents.filter(e => e.event_name === "onboarding_completed" && e.user_id && ids.has(e.user_id)).map(e => e.user_id!)).size;
 
   return {
     // Sequential lifecycle. Each stage is a superset-free count: "users with
@@ -276,6 +564,8 @@ export function getActivation(d: V4Data) {
     // who completed onboarding after it shipped, so it is not a superset of
     // "1+ scans" and would break the nesting the ladder promises.
     onboardingCompleted: exact(onboardingDone, "users with an onboarding_completed event"),
+    cohortWindow: d.window.startMs === null ? null : { from: d.window.fromDay, to: d.window.toDay, label: d.window.label },
+    semantics: "Acquisition cohort: users who signed up during the selected range. Their scans are counted for all time, including after the range ends.",
     neverScanned: exact(total - withAtLeast(1)),
     activationRate: derived(withAtLeast(1), total, "users with at least one scan"),
     hoursToFirstScanMedian: { value: median(hours), trust: "DERIVED" as Trust, d: hours.length },
@@ -750,6 +1040,11 @@ export function getFreeBehaviour(d: V4Data) {
     neverScanned: exact(b["0"]),
     exhausted: { value: exhausted, trust: "EXACT" as Trust, note: "free_scans_used ≥ 15 in account_usage (current state)" },
     exhaustedRate: derived(exhausted, free.length),
+    /** Share of free users reaching each depth — the pricing question. */
+    everScanned:  derived(free.length - b["0"], free.length),
+    reached3Plus: derived(lifetime.filter(n => n >= 3).length, free.length),
+    reached5Plus: derived(lifetime.filter(n => n >= 5).length, free.length),
+    reached10Plus: derived(lifetime.filter(n => n >= 10).length, free.length),
     balanceHistoryNote: "Historical free-scan balance is not stored; only the current ledger state is known. Post-cutover, balances are captured on each paywall impression.",
   };
 }
@@ -764,15 +1059,39 @@ export function getRetentionV2(d: V4Data) {
    * UTC day (anchor + N). Eligible for DN only if the anchor is ≥ N+1 days
    * old, so the window has actually elapsed.
    */
+  /**
+   * COHORT semantics. The window selects users whose FIRST activity fell
+   * inside it; their return events are then read from the unwindowed set, so
+   * D7 can be observed even when a three-day range is selected. Filtering
+   * returns to the window would make long windows the only measurable ones.
+   */
   const firstDay = new Map<string, string>(), days = new Map<string, Set<string>>();
-  for (const e of d.base.events) {
+  for (const e of d.allEvents) {
     if (!e.user_id) continue;
     const day = dayOf(e.created_at);
     const f = firstDay.get(e.user_id); if (!f || day < f) firstDay.set(e.user_id, day);
     (days.get(e.user_id) ?? days.set(e.user_id, new Set()).get(e.user_id)!).add(day);
   }
+  // Restrict the COHORT (not the returns) to users who first appeared in range.
+  if (d.window.startMs !== null) {
+    for (const [uid, f] of [...firstDay]) {
+      /**
+       * The EARLIEST event, not the first in array order. `find()` returns
+       * whatever the query happened to return first, which silently excluded
+       * users whose earliest event sat later in the array.
+       */
+      let earliest: string | null = null;
+      for (const e of d.allEvents) {
+        if (e.user_id !== uid) continue;
+        if (!earliest || e.created_at < earliest) earliest = e.created_at;
+      }
+      if (!earliest || !inWindow(d.window, earliest)) { firstDay.delete(uid); days.delete(uid); }
+    }
+  }
   const today = dayOf(iso(d.now));
-  const addDays = (day: string, n: number) => dayOf(new Date(Date.parse(day + "T00:00:00Z") + n * DAY).toISOString());
+  // DST-safe: Central days are not all 24h, so stepping by milliseconds from
+  // a UTC midnight would drift by an hour twice a year and mis-bucket a return.
+  const addDays = (day: string, n: number) => addCentralDays(day, n) ?? day;
   const calc = (n: number) => {
     let eligible = 0, returned = 0;
     for (const [uid, f] of firstDay) {
@@ -782,7 +1101,13 @@ export function getRetentionV2(d: V4Data) {
     }
     return { ...derived(returned, eligible), smallSample: eligible < SMALL_SAMPLE };
   };
-  return { anchor: "first analytics event (UTC day)", timezone: "UTC", d1: calc(1), d3: calc(3), d7: calc(7), d14: calc(14), d30: calc(30), cohortUsers: firstDay.size };
+  return {
+    anchor: "first analytics event (Central calendar day)",
+    timezone: DASHBOARD_TZ_LABEL,
+    cohortWindow: d.window.startMs === null ? null : { from: d.window.fromDay, to: d.window.toDay, label: d.window.label },
+    semantics: "Retention cohort: users first active during the selected range. Follow-up activity extends beyond the range end.",
+    d1: calc(1), d3: calc(3), d7: calc(7), d14: calc(14), d30: calc(30), cohortUsers: firstDay.size,
+  };
 }
 
 // ── Sessions, feature usage, data quality ───────────────────────────────────
@@ -813,12 +1138,51 @@ export function getFeatureUsage(d: V4Data) {
   ];
 }
 
-export function getDataQualityV4(d: V4Data, c: Cutover) {
+export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: number) {
   const all = d.base.events;
   const post = v4Events(d, c);
   const snap = (e: Ev) => e.entitlement_state_snapshot as string | null | undefined;
   const withSnap = post.filter(e => snap(e) != null);
+  const inScope = d.base.profiles.length;
+  // Defensive: every real V4Data carries these, but the section must degrade
+  // rather than throw if it is ever handed a partial object.
+  const cohort = d.cohort ?? { scope: "all" as Scope, at: null, source: "default" as const, assumed: false, label: "All time" };
+  const preLaunch = d.preLaunchProfiles ?? 0;
+  const allTime = totalProfilesAllTime ?? (inScope + preLaunch);
   return {
+    /**
+     * Scope facts. Deliberately separate from the cutover block below —
+     * GLOBAL_LAUNCH_AT selects WHICH USERS are counted; ANALYTICS_V4_CUTOVER_AT
+     * selects WHICH FIELDS are trustworthy. Conflating them would make a
+     * pre-launch user look like missing instrumentation, or vice versa.
+     */
+    /** Part 29 debug block: verify the filters are doing what they claim. */
+    window: {
+      preset: d.window?.preset ?? "all",
+      label: d.window?.label ?? "All available",
+      from: d.window?.fromDay ?? null,
+      to: d.window?.toDay ?? null,
+      timezone: d.window?.timezone ?? DASHBOARD_TZ,
+      timezoneLabel: d.window?.timezoneLabel ?? DASHBOARD_TZ_LABEL,
+      warning: d.window?.warning ?? null,
+      eligibleUsers: exact(inScope, "users passing the scope filter"),
+      eventsInWindow: exact(d.base.events.length, "events inside the activity window"),
+      eventsAllTime: exact((d.allEvents ?? d.base.events).length),
+      scansInWindow: exact(d.scans.length, "scans inside the activity window"),
+      scansAllTime: exact((d.allScans ?? d.scans).length),
+    },
+    scope: {
+      scope: cohort.scope,
+      launchAt: cohort.at,
+      source: cohort.source,
+      assumed: cohort.assumed,
+      postLaunchProfiles: exact(inScope),
+      preLaunchProfiles: exact(preLaunch),
+      postLaunchShare: derived(inScope, allTime, "share of all profiles acquired since launch"),
+      anonymousExcluded: exact(d.anonymousExcluded ?? 0, "pre-auth events with no user_id — cannot be cohort-attributed, so excluded from post-launch analytics"),
+      scanPackWarning: "Historical Scan Pack purchase events include test activity. No genuine scan-pack sale has occurred; purchase counts are not monetization evidence.",
+      note: "GLOBAL_LAUNCH_AT defines the acquisition cohort. ANALYTICS_V4_CUTOVER_AT defines instrumentation trust. They are independent.",
+    },
     totalEvents: exact(all.length),
     authenticated: exact(all.filter(e => e.user_id).length), anonymous: exact(all.filter(e => !e.user_id).length),
     missingSession: exact(all.filter(e => !e.session_id).length),
@@ -859,17 +1223,25 @@ export function getUnitEconomics(d: V4Data, v3Cost: any) {
 
 // ── Entry point ─────────────────────────────────────────────────────────────
 
-export async function getFounderDashboardV4Metrics(v3Metrics: any, env: NodeJS.ProcessEnv = process.env) {
+export async function getFounderDashboardV4Metrics(
+  v3Metrics: any,
+  scope: Scope = "post_launch",
+  env: NodeJS.ProcessEnv = process.env,
+  rangeParams: { preset?: unknown; from?: unknown; to?: unknown } = {},
+) {
   const cutover = getCutover(env);
+  const cohort = getLaunchCohort(scope, env);
+  const window = resolveAnalysisWindow(rangeParams, scope, new Date(), env);
   let d: V4Data;
-  try { d = await loadV4Data(); } catch (e: any) { return { ...v3Metrics, v4: null, v4Error: e?.message ?? "failed to load V4 data", cutover }; }
+  try { d = await loadV4Data(undefined, scope, env, window); }
+  catch (e: any) { return { ...v3Metrics, v4: null, v4Error: e?.message ?? "failed to load V4 data", cutover, cohort, window }; }
 
   const safe = <T,>(name: string, fn: () => T): T | { error: string } => { try { return fn(); } catch (e: any) { return { error: `${name}: ${e?.message ?? e}` }; } };
   const paywalls = safe("paywalls", () => getPaywalls(d, cutover));
   const journeys = safe("paidJourneys", () => getPaidJourneys(d));
   return {
     ...v3Metrics,
-    cutover,
+    cutover, cohort, window,
     acquisition: safe("acquisition", () => getAcquisition(d)),
     activation:  safe("activation", () => getActivation(d)),
     paywalls, paidJourneys: journeys,
@@ -883,5 +1255,6 @@ export async function getFounderDashboardV4Metrics(v3Metrics: any, env: NodeJS.P
     featureUsage: safe("featureUsage", () => getFeatureUsage(d)),
     unitEconomics: safe("unitEconomics", () => getUnitEconomics(d, v3Metrics?.cost)),
     dataQualityV4: safe("dataQualityV4", () => getDataQualityV4(d, cutover)),
+    preLaunchProfiles: d.preLaunchProfiles,
   };
 }

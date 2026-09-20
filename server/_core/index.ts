@@ -272,11 +272,17 @@ async function startServer() {
     }
     try {
       const { getFounderDashboardV3Metrics } = require("../founderMetrics");
-      const { getFounderDashboardV4Metrics } = require("../founderMetricsV4");
+      const { getFounderDashboardV4Metrics, parseScope } = require("../founderMetricsV4");
       const { generateFounderDashboardV4 } = require("../founderDashboardV4");
+      // ?scope=all for the full history; anything else (including absent) is
+      // post_launch, which is the default for business analytics.
+      const scope = parseScope(req.query.scope);
+      // ?preset=7d|30d|today|... or ?from=YYYY-MM-DD&to=YYYY-MM-DD. Invalid
+      // input falls back to the 7-day default and says so on the page.
+      const range = { preset: req.query.preset, from: req.query.from, to: req.query.to };
       const v3 = await getFounderDashboardV3Metrics();
-      const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3);
-      const html = generateFounderDashboardV4(metrics);
+      const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3, scope, process.env, range);
+      const html = generateFounderDashboardV4(metrics, String(req.query.secret ?? ""));
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(html);
     } catch (e: any) {

@@ -109,8 +109,9 @@ describe("third_photo configuration", () => {
     }
   });
 
-  it("keeps the secondary line short", () => {
-    expect(TP().secondaryValueLine).toBe("More visual evidence for your scan.");
+  /** Removed in the three-paywall redesign so the benefits strip clears the fold. */
+  it("has no secondary value line", () => {
+    expect(TP().secondaryValueLine).toBeNull();
   });
 
   /**

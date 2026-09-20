@@ -113,6 +113,12 @@ export default function DevScansScreen() {
 
   const st = statusQ.data;
 
+  // Placed after every hook so hook order is identical on each render, and
+  // before any UI so a release build renders nothing at all. The route is
+  // also blocked by <Stack.Protected guard={__DEV__}> in app/_layout.tsx;
+  // this is the second layer, for a route reached some other way.
+  if (!__DEV__) return null;
+
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
       <View style={s.header}>

@@ -333,15 +333,37 @@ const ONBOARDING_OFFER: PaywallConfig = {
   subtitle: "More scans and the complete toolkit for finding, analyzing, and flipping smarter.",
   ctaLabel: "Start FlipStart Pro",
   showScanStoreAlternative: false,
-  secondaryValueLine: null,
+  /**
+   * Renders directly under the free button, small and brown — subordinate by
+   * design. It carries the number the button no longer says, plus the fact
+   * that matters most to someone hesitating at this screen: nothing is
+   * being locked away permanently.
+   *
+   * "free scans", not "lifetime scans". The allowance genuinely is lifetime
+   * and the app says so elsewhere, but on the one screen a new user cannot
+   * dismiss, "lifetime" reads as a ceiling — "only 15, ever?" — at the exact
+   * moment the job is reassurance. Accurate either way; this framing does not
+   * spend the user's goodwill to make the point.
+   *
+   * FREE_LIFETIME_SCANS is interpolated, not typed, for the same reason the
+   * button label was: change the allowance and this line follows.
+   */
+  secondaryValueLine: `${FREE_LIFETIME_SCANS} free scans included · Upgrade anytime`,
   dismissible: false,
   /**
-   * Derived from the real allowance, never typed: if the free tier changes,
-   * the button changes with it. The constant is declared above this block —
-   * it lives ABOVE the configs on purpose; a reference to a `const` declared
-   * later in the file would throw at module load.
+   * "Free Plan", not "15 Free Scans".
+   *
+   * This is the one paywall a brand-new user cannot dismiss, and the risk it
+   * carries is someone reading it as "FlipStart costs money" and closing the
+   * app. Naming the free option as a PLAN puts it alongside Monthly and
+   * Annual as a third choice, which is what it actually is. A number in the
+   * button read more like a trial allowance than a way to continue.
+   *
+   * The count moves to secondaryValueLine above rather than disappearing —
+   * it is still on the same screen, just no longer the headline of the
+   * button.
    */
-  freeContinueLabel: `Continue with ${FREE_LIFETIME_SCANS} Free Scans`,
+  freeContinueLabel: "Continue with Free Plan",
   compactAboveFoldActions: true,
 };
 

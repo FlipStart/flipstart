@@ -133,8 +133,8 @@ describe("the three redesigned heroes", () => {
         expect(code(file)).not.toMatch(/useSharedValue|withTiming|withRepeat|withDelay|LayoutAnimation/);
       });
 
-      it("sets the headline at the Deep Analysis size so the siblings match", () => {
-        expect(file).toMatch(/headline: \{[^}]*fontSize: 30[^}]*lineHeight: 35/);
+      it("sets the headline at one shared size across the three siblings", () => {
+        expect(file).toMatch(/headline: \{[^}]*fontSize: 28[^}]*lineHeight: 32/);
         expect(file).toMatch(/const COMPACT_BELOW = 740;/);
       });
 
@@ -201,8 +201,9 @@ describe("Third Photo teaser", () => {
     expect(code(HERO)).not.toMatch(/name="lock"|lock-outline|padlock|opacity: 0\.3\d/i);
   });
 
-  it("uses a detail icon on the DETAIL frame, and a hanger and a tag on the two included frames", () => {
-    expect(HERO).toMatch(/label="DETAIL" icon="center-focus-strong"[^/]*state="premium"/);
+  it("uses an add-a-photo icon on the EXTRA PHOTO frame, and a hanger and a tag on the two included frames", () => {
+    expect(HERO).toMatch(/label="EXTRA PHOTO" icon="add-a-photo"[^/]*state="premium"/);
+    expect(code(HERO)).not.toMatch(/"GRAPHIC"|"DETAIL"/);
     expect(HERO).toMatch(/label="FRONT" icon="checkroom"[^/]*state="filled"/);
     expect(HERO).toMatch(/label="TAG" icon="local-offer"[^/]*state="filled"/);
   });
@@ -236,10 +237,12 @@ describe("MORE WITH PRO", () => {
     expect(BENEF).toMatch(/iconWrapEmphasized: \{[^}]*borderColor: PW\.gold/);
   });
 
-  it("no longer repeats the strip's contents in the Generate Listings tagline", () => {
-    const line = resolvePaywallConfig("generate_listings").secondaryValueLine ?? "";
-    expect(line).toBe("Built from your scan, ready for your edits.");
-    expect(line).not.toMatch(/Deep Analysis|AI Context|3-photo/);
+  it("has no tagline between the CTA and the strip on any of the three — the 30pt that kept the strip below the fold", () => {
+    for (const s of ["generate_listings", "third_photo", "camera_context"] as const) {
+      expect(resolvePaywallConfig(s).secondaryValueLine).toBeNull();
+    }
+    // The other sources keep theirs; this was a fold decision, not a copy rule.
+    expect(resolvePaywallConfig("scan_limit").secondaryValueLine).not.toBeNull();
   });
 });
 

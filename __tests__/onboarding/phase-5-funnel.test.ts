@@ -225,12 +225,19 @@ describe("new account → onboarding offer", () => {
 describe("onboarding offer", () => {
   const cfg = resolvePaywallConfig("onboarding_offer");
 
-  it("exists, sells the complete experience, and derives the free label from the real allowance", () => {
+  it("exists, sells the complete experience, and derives the free allowance line from the constant", () => {
     expect(PAYWALL_SOURCES).toContain("onboarding_offer");
     expect(cfg.headline).toBe("Unlock the Full FlipStart Experience");
     expect(cfg.subtitle).toBe("More scans and the complete toolkit for finding, analyzing, and flipping smarter.");
-    expect(cfg.freeContinueLabel).toBe(`Continue with ${FREE_LIFETIME_SCANS} Free Scans`);
-    expect(CONFIG).toMatch(/freeContinueLabel: `Continue with \$\{FREE_LIFETIME_SCANS\} Free Scans`,/);
+    expect(cfg.freeContinueLabel).toBe("Continue with Free Plan");
+    /**
+     * The allowance moved out of the BUTTON and into the line beneath it, so
+     * the button is now a plain string. What this assertion has always been
+     * protecting — that the number is derived from the constant and never
+     * typed by hand — now applies to secondaryValueLine.
+     */
+    expect(CONFIG).toMatch(/secondaryValueLine: `\$\{FREE_LIFETIME_SCANS\} free scans included · Upgrade anytime`,/);
+    expect(cfg.secondaryValueLine).toBe("15 free scans included · Upgrade anytime");
     // The constant is declared ABOVE the config, or the reference would throw at load.
     expect(CONFIG.indexOf("export const FREE_LIFETIME_SCANS")).toBeLessThan(CONFIG.indexOf("const ONBOARDING_OFFER"));
   });

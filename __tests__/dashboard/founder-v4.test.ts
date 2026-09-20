@@ -31,7 +31,7 @@ const t = (daysAgo: number, hour = 10) => new Date(NOW.getTime() - daysAgo * 86_
 const ev = (user_id: string | null, event_name: string, created_at: string, metadata: any = {}, session_id = "s1", snap?: string) =>
   ({ user_id, anonymous_id: user_id ? null : "anon-1", session_id, event_name, created_at, metadata, entitlement_state_snapshot: snap });
 
-function fixture(opts: { cutoverEvents?: boolean } = {}) {
+function fixture(opts: { cutoverEvents?: boolean; scope?: "post_launch" | "all"; window?: any } = {}) {
   const profiles = [
     { id: "u-pay", created_at: t(10), onboarding_complete: true },      // pays on day 3 via deep_analysis
     { id: "u-free", created_at: t(8), onboarding_complete: true },      // free, 3 scans, saw 2 paywalls
@@ -90,7 +90,19 @@ function fixture(opts: { cutoverEvents?: boolean } = {}) {
     ["u-free", { id: "u-free", email: "free@example.com", created_at: t(8) }],
   ]);
   const prof = new Map([["u-pay", { id: "u-pay", display_name: "Payer <b>", username: "payer", created_at: t(10) }]]);
-  return { base: { profiles, profileIds: new Set(profiles.map(p => p.id)), events, ghostProfiles: 0 }, scans, usage, auth, profiles: prof, now: NOW } as any;
+  /**
+   * An unbounded window by default, so existing assertions describe all-time
+   * behaviour. Range-specific tests pass their own window explicitly.
+   */
+  const window = opts.window ?? M.resolveAnalysisWindow({ preset: "all" }, "all", NOW);
+  const inWin = (t: string) => window.startMs === null || (Date.parse(t) >= window.startMs && Date.parse(t) < window.endMs!);
+  return {
+    window, allEvents: events, allScans: scans,
+    cohort: M.getLaunchCohort(opts.scope ?? "all"),
+    preLaunchProfiles: 0, anonymousExcluded: 0,
+    base: { profiles, profileIds: new Set(profiles.map(p => p.id)), events: events.filter(e => inWin(e.created_at)), ghostProfiles: 0 },
+    scans: scans.filter(sc => inWin(sc.created_at)), usage, auth, profiles: prof, now: NOW,
+  } as any;
 }
 
 const NO_CUTOVER = M.getCutover({} as any);
@@ -253,10 +265,13 @@ describe("free user behaviour", () => {
   });
 });
 
-describe("retention is anchored on first activity", () => {
+describe("retention is anchored on first activity, in Central", () => {
   const r = M.getRetentionV2(fixture());
-  it("uses first analytics event, UTC, and reports sample size", () => {
-    expect(r.anchor).toMatch(/first analytics event/); expect(r.timezone).toBe("UTC");
+  it("uses first analytics event, Central days, and reports sample size", () => {
+    expect(r.anchor).toMatch(/first analytics event/);
+    // The whole dashboard is on Central now; a UTC anchor here would silently
+    // disagree with the date filter.
+    expect(r.timezone).toBe("Central Time");
     expect(r.cohortUsers).toBe(2);
   });
   it("counts a day-1 return", () => {
@@ -395,7 +410,10 @@ describe("internal flag reaches every aggregate, not just the roster", () => {
       if (table === "account_usage") return [...fixture().usage.values()] as any;
       return [] as any;
     });
-    const d = await M.loadV4Data(base);
+    // Scope "all" isolates the behaviour under test: this is about the
+    // is_internal flag, not the launch cohort, and the fixture's profiles
+    // predate the global launch date.
+    const d = await M.loadV4Data(base, "all", {} as any, M.resolveAnalysisWindow({ preset: "all" }, "all", NOW));
     spy.mockRestore();
     expect(d.base.events.some(e => e.user_id === "u-pay")).toBe(false);
     expect(d.scans.some(sc => sc.user_id === "u-pay")).toBe(false);
@@ -413,7 +431,12 @@ describe("route and PII surface", () => {
     expect(idx).toMatch(/app\.get\("\/api\/dev\/founder-dashboard-v3"/);
     expect(idx).not.toMatch(/founder-dashboard-v4"/);
     expect(idx).toMatch(/secretOk\(req\.query\.secret, process\.env\.FOUNDER_DASHBOARD_SECRET\)/);
-    expect(idx).toMatch(/generateFounderDashboardV4\(metrics\)/);
+    // The secret rides along so the scope tabs keep the session.
+    expect(idx).toMatch(/generateFounderDashboardV4\(metrics, String\(req\.query\.secret/);
+    expect(idx).toMatch(/const scope = parseScope\(req\.query\.scope\);/);
+    expect(idx).toMatch(/getFounderDashboardV4Metrics\(v3, scope, process\.env, range\)/);
+    // Range params come from the query string, alongside scope.
+    expect(idx).toMatch(/const range = \{ preset: req\.query\.preset, from: req\.query\.from, to: req\.query\.to \};/);
   });
   it("email is read only through the service-role admin API, server-side", () => {
     const src = read("server/founderMetricsV4.ts");
@@ -425,5 +448,229 @@ describe("route and PII surface", () => {
     expect(src).not.toMatch(/@[a-z0-9-]+\.(com|app)/i);
     expect(src).not.toMatch(/is_internal\s*=/);
     expect(src).toMatch(/Nobody is excluded/);
+  });
+});
+
+// ── Post-global-launch cohort ───────────────────────────────────────────────
+
+/**
+ * The cohort is defined by ACCOUNT CREATION, never by activity date. These
+ * tests exist because the tempting shortcut — filtering events by their own
+ * timestamp — silently folds pre-launch users back in the moment they do
+ * anything after launch, which is exactly what this scope must prevent.
+ */
+describe("global launch cohort", () => {
+  const LAUNCH = "2026-09-08T00:00:00Z";
+
+  /** A pre-launch account that is still very active AFTER launch. */
+  function mixedFixture() {
+    const d = fixture({ scope: "all" });
+    d.base.profiles = [
+      { id: "u-old", created_at: "2026-07-01T10:00:00Z", onboarding_complete: true },   // pre-launch
+      { id: "u-new", created_at: "2026-09-10T10:00:00Z", onboarding_complete: true },   // post-launch
+    ];
+    d.base.profileIds = new Set(["u-old", "u-new"]);
+    d.base.events = [
+      // Pre-launch user, all activity AFTER launch — must still be excluded.
+      ev("u-old", "app_session_started", "2026-09-12T10:00:00Z", {}, "s-old"),
+      ev("u-old", "paywall_opened", "2026-09-12T10:00:00Z", { paywall_source: "deep_analysis" }, "s-old"),
+      ev("u-old", "paywall_purchase_started", "2026-09-12T10:01:00Z", { paywall_source: "deep_analysis", selected_plan: "monthly" }, "s-old"),
+      ev("u-old", "paywall_purchase_completed", "2026-09-12T10:01:00Z", { paywall_source: "deep_analysis", selected_plan: "monthly" }, "s-old"),
+      ev("u-old", "scan_store_opened", "2026-09-12T10:02:00Z", { entry_mode: "browse" }, "s-old"),
+      // Post-launch user.
+      ev("u-new", "app_session_started", "2026-09-11T10:00:00Z", {}, "s-new"),
+      ev("u-new", "paywall_opened", "2026-09-11T10:00:00Z", { paywall_source: "onboarding_offer" }, "s-new"),
+      // Anonymous, unattributable.
+      ev(null, "app_session_started", "2026-09-11T11:00:00Z", {}, "s-anon"),
+    ];
+    d.scans = [
+      { user_id: "u-old", created_at: "2026-09-12T10:00:00Z" },   // after launch, pre-launch user
+      { user_id: "u-old", created_at: "2026-09-13T10:00:00Z" },
+      { user_id: "u-new", created_at: "2026-09-11T10:30:00Z" },
+    ];
+    d.usage = new Map<string, any>([
+      ["u-old", { user_id: "u-old", subscription_product_id: "flipstart_pro_monthly", subscription_period_end: "2026-12-01T00:00:00Z", subscription_scans_used: 5, free_scans_used: 15, pack_scan_balance: 0 }],
+      ["u-new", { user_id: "u-new", subscription_product_id: null, subscription_period_end: null, subscription_scans_used: 0, free_scans_used: 1, pack_scan_balance: 0 }],
+    ]);
+    d.auth = new Map([
+      ["u-old", { id: "u-old", email: "old@example.com", created_at: "2026-07-01T10:00:00Z" }],
+      ["u-new", { id: "u-new", email: "new@example.com", created_at: "2026-09-10T10:00:00Z" }],
+    ]);
+    return d;
+  }
+
+  /** Run loadV4Data over the mixed fixture at a given scope. */
+  async function scoped(scope: "post_launch" | "all") {
+    const d = mixedFixture();
+    const fm = await import("../../server/founderMetrics");
+    const spy = vi.spyOn(fm, "fetchAll").mockImplementation(async (table: string) => {
+      if (table === "scans") return d.scans as any;
+      if (table === "account_usage") return [...d.usage.values()] as any;
+      return [] as any;
+    });
+    // Unbounded window: these tests are about the USER cohort, not the
+    // activity window, and the fixture's dates predate the 7-day default.
+    const out = await M.loadV4Data(d.base, scope, { FLIPSTART_GLOBAL_LAUNCH_AT: LAUNCH } as any,
+      M.resolveAnalysisWindow({ preset: "all" }, scope, NOW));
+    spy.mockRestore();
+    out.auth = d.auth;
+    return out;
+  }
+
+  it("1 · defaults to post_launch", () => {
+    expect(M.parseScope(undefined)).toBe("post_launch");
+    expect(M.parseScope("")).toBe("post_launch");
+    expect(M.parseScope("garbage")).toBe("post_launch");
+    expect(M.getLaunchCohort().scope).toBe("post_launch");
+  });
+
+  it("2 · All Time remains available and applies no boundary", () => {
+    expect(M.parseScope("all")).toBe("all");
+    const c = M.getLaunchCohort("all");
+    expect(c.scope).toBe("all"); expect(c.at).toBeNull();
+  });
+
+  it("12 · the launch date is centralized, with one default and one override", () => {
+    expect(M.GLOBAL_LAUNCH_AT_DEFAULT).toBe("2026-09-08T00:00:00Z");
+    const def = M.getLaunchCohort("post_launch", {} as any);
+    expect(def.at).toBe("2026-09-08T00:00:00.000Z");
+    expect(def.source).toBe("default");
+    expect(def.assumed).toBe(true);                       // time-of-day assumed
+    const env = M.getLaunchCohort("post_launch", { FLIPSTART_GLOBAL_LAUNCH_AT: "2026-09-08T17:30:00Z" } as any);
+    expect(env.at).toBe("2026-09-08T17:30:00.000Z");
+    expect(env.source).toBe("env"); expect(env.assumed).toBe(false);
+    // An unparseable override falls back rather than disabling the cohort.
+    expect(M.getLaunchCohort("post_launch", { FLIPSTART_GLOBAL_LAUNCH_AT: "launch day" } as any).at)
+      .toBe("2026-09-08T00:00:00.000Z");
+    // Exactly one hardcoded date in the source.
+    const src = read("server/founderMetricsV4.ts");
+    expect((src.match(/2026-09-08/g) ?? []).length).toBe(1);
+  });
+
+  it("3+4 · excludes a pre-launch user active after launch; includes a post-launch user", async () => {
+    const post = await scoped("post_launch");
+    expect(post.base.profiles.map((p: any) => p.id)).toEqual(["u-new"]);
+    expect(post.preLaunchProfiles).toBe(1);
+    const all = await scoped("all");
+    expect(all.base.profiles.map((p: any) => p.id).sort()).toEqual(["u-new", "u-old"]);
+    expect(all.preLaunchProfiles).toBe(0);
+  });
+
+  it("5 · scan counts use the USER cohort, not the scan timestamp", async () => {
+    const post = await scoped("post_launch");
+    // u-old's two scans both happened AFTER launch and must still be excluded.
+    expect(post.scans.map((s: any) => s.user_id)).toEqual(["u-new"]);
+    const act = M.getActivation(post);
+    expect(act.lifecycle[0].users).toBe(1);
+    const all = await scoped("all");
+    expect(all.scans.length).toBe(3);
+  });
+
+  it("6 · paywall events use the user cohort", async () => {
+    const post = await scoped("post_launch");
+    const pw = M.getPaywalls(post, NO_CUTOVER);
+    expect(pw.rows.find(r => r.source === "deep_analysis")!.impressions).toBe(0);
+    expect(pw.rows.find(r => r.source === "onboarding_offer")!.impressions).toBe(1);
+    const all = M.getPaywalls(await scoped("all"), NO_CUTOVER);
+    expect(all.rows.find(r => r.source === "deep_analysis")!.impressions).toBe(1);
+  });
+
+  it("7 · purchases use the user cohort", async () => {
+    const post = await scoped("post_launch");
+    const mo = M.getMonetization(post, M.getPaywalls(post, NO_CUTOVER), M.getPaidJourneys(post));
+    expect(mo.purchaseCompletions.value).toBe(0);
+    expect(mo.monthlyPurchases.value).toBe(0);
+    const all = await scoped("all");
+    const moAll = M.getMonetization(all, M.getPaywalls(all, NO_CUTOVER), M.getPaidJourneys(all));
+    expect(moAll.purchaseCompletions.value).toBe(1);
+  });
+
+  it("8 · Paid User Journeys use the user cohort", async () => {
+    expect(M.getPaidJourneys(await scoped("post_launch")).journeys.map(j => j.userId)).toEqual([]);
+    expect(M.getPaidJourneys(await scoped("all")).journeys.map(j => j.userId)).toEqual(["u-old"]);
+  });
+
+  it("9 · current plan cohorts use the user cohort", async () => {
+    const post = M.getCohorts(await scoped("post_launch"));
+    expect(post.monthly.users.value).toBe(0);   // u-old is Monthly but pre-launch
+    expect(post.free.users.value).toBe(1);
+    const all = M.getCohorts(await scoped("all"));
+    expect(all.monthly.users.value).toBe(1);
+  });
+
+  it("10 · retention uses post-launch users only", async () => {
+    const post = await scoped("post_launch");
+    expect(M.getRetentionV2(post).cohortUsers).toBe(1);
+    expect(M.getRetentionV2(await scoped("all")).cohortUsers).toBe(2);
+  });
+
+  it("11 · anonymous unattributed events do not leak into post-launch metrics", async () => {
+    const post = await scoped("post_launch");
+    expect(post.base.events.some((e: any) => !e.user_id)).toBe(false);
+    expect(post.anonymousExcluded).toBe(1);
+    // They remain available in All Time.
+    expect((await scoped("all")).base.events.some((e: any) => !e.user_id)).toBe(true);
+  });
+
+  it("13 · Scan Pack test contamination is labelled, not silently counted", () => {
+    const render = read("server/founderDashboardV4.ts");
+    expect(render).toMatch(/Historical Scan Pack purchase events include test activity/);
+    // The purchase-derived KPIs are demoted to LEGACY in that section.
+    expect(render).toMatch(/m\("Completed", \{ value: s\.outcomes\.completed, trust: "LEGACY"/);
+    expect(render).toMatch(/m\("Visitor → buyer", \{ \.\.\.s\.visitorToBuyer, trust: "LEGACY"/);
+    const q = M.getDataQualityV4(fixture({ scope: "all" }), NO_CUTOVER);
+    expect(q.scope.scanPackWarning).toMatch(/No genuine scan-pack sale has occurred/);
+  });
+
+  it("14 · all-time metrics are unchanged by the feature", async () => {
+    // Scope "all" must reproduce pre-change behaviour exactly.
+    const all = await scoped("all");
+    expect(all.cohort.at).toBeNull();
+    expect(all.base.events.length).toBe(8);
+    expect(all.scans.length).toBe(3);
+    expect(all.usage.size).toBe(2);
+  });
+
+  it("17 · launch scope and V4 cutover are independent concepts", () => {
+    const q = M.getDataQualityV4(fixture({ scope: "all" }), NO_CUTOVER);
+    expect(q.scope.note).toMatch(/GLOBAL_LAUNCH_AT defines the acquisition cohort/);
+    expect(q.scope.note).toMatch(/ANALYTICS_V4_CUTOVER_AT defines instrumentation trust/);
+    // Different env vars, neither reading the other.
+    const src = read("server/founderMetricsV4.ts");
+    expect(src).toMatch(/env\.FLIPSTART_GLOBAL_LAUNCH_AT/);
+    expect(src).toMatch(/env\.ANALYTICS_V4_CUTOVER_AT/);
+    expect(src).not.toMatch(/ANALYTICS_V4_CUTOVER_AT[\s\S]{0,80}FLIPSTART_GLOBAL_LAUNCH_AT/);
+  });
+
+  it("15 · the dashboard route is unchanged and carries scope", () => {
+    const idx = read("server/_core/index.ts");
+    expect(idx).toMatch(/app\.get\("\/api\/dev\/founder-dashboard-v3"/);
+    expect(idx).not.toMatch(/founder-dashboard-v4"/);
+    expect(idx).toMatch(/parseScope\(req\.query\.scope\)/);
+  });
+
+  it("renders scope tabs with Post Launch selected by default", () => {
+    const d = fixture({ scope: "all" });
+    const metrics: Record<string, any> = {
+      configured: true, generatedAt: NOW.toISOString(), cutover: NO_CUTOVER,
+      cohort: M.getLaunchCohort("post_launch", { FLIPSTART_GLOBAL_LAUNCH_AT: LAUNCH } as any),
+      acquisition: M.getAcquisition(d), activation: M.getActivation(d), paywalls: M.getPaywalls(d, NO_CUTOVER),
+      paidJourneys: M.getPaidJourneys(d), onboardingOffer: M.getOnboardingOffer(d, NO_CUTOVER), scanStore: M.getScanStore(d, NO_CUTOVER),
+      cohorts: M.getCohorts(d), freeBehaviour: M.getFreeBehaviour(d), retentionV2: M.getRetentionV2(d), sessionsV2: M.getSessionsV2(d),
+      featureUsage: M.getFeatureUsage(d), unitEconomics: M.getUnitEconomics(d, null), dataQualityV4: M.getDataQualityV4(d, NO_CUTOVER),
+      scans: { error: "s" }, trust: { error: "s" }, cost: { error: "s" }, hunt: { error: "s" }, progress: { error: "s" },
+      achievements: { error: "s" }, brands: { error: "s" }, diamonds: { error: "s" }, listings: { error: "s" }, sold: { error: "s" },
+    };
+    metrics.monetization = M.getMonetization(d, metrics.paywalls, metrics.paidJourneys);
+    const html = R.generateFounderDashboardV4(metrics, "SEKRET");
+    // Post Launch carries the "on" class; All Time does not.
+    expect(html).toMatch(/<a class="scope-tab on" href="[^"]*">Post Launch<\/a>/);
+    expect(html).toMatch(/<a class="scope-tab" href="[^"]*">All Time<\/a>/);
+    expect(html).toMatch(/Scope: Post Global Launch/);
+    // The & in the query string is HTML-escaped, as it must be in an href.
+    expect(html).toMatch(/&amp;scope=all/);
+    // The secret is URL-encoded so an odd character cannot break the link.
+    expect(html).toContain("?secret=SEKRET");
+    expect(html).toMatch(/Only accounts created on or after this date are counted/);
   });
 });

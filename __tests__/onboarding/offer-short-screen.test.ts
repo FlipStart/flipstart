@@ -174,7 +174,7 @@ describe("what is compressed", () => {
 
   it("keeps the offer contract: label from the constant, no X, no Scan Store, not dismissible", () => {
     const cfg = resolvePaywallConfig("onboarding_offer");
-    expect(cfg.freeContinueLabel).toBe(`Continue with ${FREE_LIFETIME_SCANS} Free Scans`);
+    expect(cfg.freeContinueLabel).toBe("Continue with Free Plan");
     expect(cfg.dismissible).toBe(false);
     expect(cfg.showScanStoreAlternative).toBe(false);
     expect(MODAL).toMatch(/\{dismissible && \(\s*<Pressable\s*onPress=\{requestClose\}/);

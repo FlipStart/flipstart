@@ -176,9 +176,18 @@ export default function OAuthCallback() {
         }
 
         // Exchange code for session token
+        /**
+         * Presence and length only.
+         *
+         * A 20-character prefix of a live OAuth code and state was being
+         * written to the device log. Both are single-use and short-lived, so
+         * the risk was small, but an authorization code is exactly the kind of
+         * value that should never be in a log line — and length is all that
+         * was ever useful for debugging a malformed callback.
+         */
         console.log("[OAuth] Exchanging code for session token...", {
-          code: code.substring(0, 20) + "...",
-          state: state.substring(0, 20) + "...",
+          codeLength: code.length,
+          stateLength: state.length,
         });
         const result = await Api.exchangeOAuthCode(code, state);
         console.log("[OAuth] Exchange result:", {
