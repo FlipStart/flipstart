@@ -382,3 +382,130 @@ describe("route and UI", () => {
     expect(read("server/dashboardDates.ts")).toMatch(/export const DASHBOARD_TZ = "America\/Chicago"/);
   });
 });
+
+// ── Acquisition respects the selected window ────────────────────────────────
+
+/**
+ * The reported bug: selecting 2026-09-21 → 2026-10-04 showed no "new users"
+ * figure for that range. Acquisition computed everything from fixed offsets
+ * (today / 7d / 30d) and never read the window, so the one question the
+ * section exists to answer had no card at all.
+ */
+describe("acquisition uses the selected window", () => {
+  const NOW_OCT = new Date("2026-10-04T15:00:00Z");   // 10:00 Central, Oct 4
+  const prof = (id: string, created_at: string) => ({ id, created_at, onboarding_complete: true });
+
+  function data(range: any) {
+    const profiles = [
+      prof("before-1", "2026-09-10T12:00:00Z"),   // before range
+      prof("before-2", "2026-09-20T12:00:00Z"),   // day before range starts
+      prof("in-1",     "2026-09-21T12:00:00Z"),   // first day of range
+      prof("in-2",     "2026-09-21T13:00:00Z"),   // same day — makes it the peak
+      prof("in-3",     "2026-09-28T12:00:00Z"),   // middle
+      prof("in-4",     "2026-10-04T12:00:00Z"),   // last day of range
+      prof("after-1",  "2026-10-05T12:00:00Z"),   // after range
+    ];
+    const w = M.resolveAnalysisWindow(range, "all", NOW_OCT, ENV);
+    return {
+      window: w, allEvents: [], allScans: [],
+      cohort: M.getLaunchCohort("all"), preLaunchProfiles: 0, anonymousExcluded: 0,
+      base: { profiles, profileIds: new Set(profiles.map(p => p.id)), events: [], ghostProfiles: 0 },
+      scans: [], usage: new Map(), auth: new Map(), profiles: new Map(), now: NOW_OCT,
+    } as any;
+  }
+  const SEP21_OCT4 = { preset: "custom", from: "2026-09-21", to: "2026-10-04" };
+
+  it("reports new users for the exact dates selected", () => {
+    const a = M.getAcquisition(data(SEP21_OCT4));
+    // in-1..in-4 only. Both boundary days are inclusive; neighbours are not.
+    expect(a.newInRange.value).toBe(4);
+  });
+
+  it("includes both boundary days in full", () => {
+    // A single-day range on the last day of the window picks up only that day.
+    const a = M.getAcquisition(data({ preset: "custom", from: "2026-10-04", to: "2026-10-04" }));
+    expect(a.newInRange.value).toBe(1);
+    // And the day before the range is excluded even though it is adjacent.
+    const b = M.getAcquisition(data({ preset: "custom", from: "2026-09-21", to: "2026-09-21" }));
+    expect(b.newInRange.value).toBe(2);
+  });
+
+  it("averages over the window's days, not only the days with signups", () => {
+    const a = M.getAcquisition(data(SEP21_OCT4));
+    expect(a.rangeDays).toBe(14);               // Sep 21 → Oct 4 inclusive
+    expect(a.signupsPerDay.value).toBeCloseTo(4 / 14, 5);
+    // Dividing by "days that had signups" (3) would overstate by ~4.7x.
+    expect(a.signupsPerDay.value).not.toBeCloseTo(4 / 3, 5);
+  });
+
+  it("names the peak signup day", () => {
+    const a = M.getAcquisition(data(SEP21_OCT4));
+    expect(a.peakSignupDay).toBe("2026-09-21");
+    expect(a.peakSignupCount.value).toBe(2);
+  });
+
+  it("charts the selected window, not a fixed 30 days", () => {
+    const a = M.getAcquisition(data(SEP21_OCT4));
+    expect(a.trend.length).toBe(14);
+    expect(a.trend[0].day).toBe("2026-09-21");
+    expect(a.trend.at(-1)!.day).toBe("2026-10-04");
+    // Signups land on their own days.
+    expect(a.trend.find((t: any) => t.day === "2026-09-21")!.newUsers).toBe(2);
+    expect(a.trend.find((t: any) => t.day === "2026-09-28")!.newUsers).toBe(1);
+  });
+
+  it("keeps the fixed 7d/30d cards independent of the selection", () => {
+    const narrow = M.getAcquisition(data({ preset: "custom", from: "2026-09-21", to: "2026-09-21" }));
+    const wide = M.getAcquisition(data(SEP21_OCT4));
+    // The range figure moves...
+    expect(narrow.newInRange.value).not.toBe(wide.newInRange.value);
+    // ...while "new in the last 7 days" is the same both times, because it is
+    // anchored on today and must stay readable as current momentum.
+    expect(narrow.new7.value).toBe(wide.new7.value);
+    expect(narrow.totalUsers.value).toBe(wide.totalUsers.value);
+  });
+
+  it("an unbounded window counts everyone and falls back to a 30-day chart", () => {
+    const a = M.getAcquisition(data({ preset: "all" }));
+    expect(a.newInRange.value).toBe(7);
+    expect(a.newInRange.note).toMatch(/all available/);
+    expect(a.trend.length).toBe(30);
+  });
+
+  it("uses Central days — an evening signup counts as the local day", () => {
+    // 2026-10-05T02:00Z is 9pm Central on Oct 4, so it belongs to Oct 4.
+    const profiles = [prof("evening", "2026-10-05T02:00:00Z")];
+    const w = M.resolveAnalysisWindow({ preset: "custom", from: "2026-10-04", to: "2026-10-04" }, "all", NOW_OCT, ENV);
+    const d = {
+      window: w, allEvents: [], allScans: [], cohort: M.getLaunchCohort("all"),
+      preLaunchProfiles: 0, anonymousExcluded: 0,
+      base: { profiles, profileIds: new Set(["evening"]), events: [], ghostProfiles: 0 },
+      scans: [], usage: new Map(), auth: new Map(), profiles: new Map(), now: NOW_OCT,
+    } as any;
+    expect(M.getAcquisition(d).newInRange.value).toBe(1);
+  });
+
+  it("renders the range figure prominently, separate from the fixed cards", () => {
+    const a = M.getAcquisition(data(SEP21_OCT4));
+    const metrics: Record<string, any> = {
+      configured: true, generatedAt: NOW_OCT.toISOString(), cutover: M.getCutover({} as any),
+      cohort: M.getLaunchCohort("all"), window: a_window(SEP21_OCT4), acquisition: a,
+      activation: { error: "s" }, paywalls: { error: "s" }, paidJourneys: { error: "s" }, monetization: { error: "s" },
+      onboardingOffer: { error: "s" }, scanStore: { error: "s" }, cohorts: { error: "s" }, freeBehaviour: { error: "s" },
+      retentionV2: { error: "s" }, sessionsV2: { error: "s" }, featureUsage: { error: "s" }, unitEconomics: { error: "s" },
+      dataQualityV4: { error: "s" }, scans: { error: "s" }, trust: { error: "s" }, cost: { error: "s" }, hunt: { error: "s" },
+      progress: { error: "s" }, achievements: { error: "s" }, brands: { error: "s" }, diamonds: { error: "s" },
+      listings: { error: "s" }, sold: { error: "s" },
+    };
+    const html = R.generateFounderDashboardV4(metrics, "S");
+    expect(html).toMatch(/New users in range/);
+    expect(html).toMatch(/Selected window/);
+    expect(html).toMatch(/Signups \/ day/);
+    expect(html).toMatch(/Peak signup day/);
+    // The fixed cards are labelled so they cannot be mistaken for the range.
+    expect(html).toMatch(/Current momentum/);
+    expect(html).toMatch(/not affected by the date selection/);
+  });
+
+  function a_window(range: any) { return M.resolveAnalysisWindow(range, "all", NOW_OCT, ENV); }
+});

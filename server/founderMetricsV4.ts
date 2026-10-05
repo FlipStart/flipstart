@@ -463,14 +463,47 @@ const dayOf = (isoStr: string) => centralDay(isoStr);
 export function getAcquisition(d: V4Data) {
   const { profiles } = d.base;
   const now = d.now;
+  const w = d.window;
+
+  /**
+   * New users INSIDE the selected window — the number this section exists to
+   * answer, and the one that was missing.
+   *
+   * Acquisition is the one section where the window applies to PROFILES
+   * rather than to events: "how many users did I gain between these dates" is
+   * a question about signups, not activity. loadV4Data deliberately leaves
+   * profiles unwindowed because every other section needs the whole cohort,
+   * so the filter belongs here.
+   *
+   * The fixed 7d/30d cards stay alongside, explicitly labelled, so current
+   * momentum is still visible while a historical range is selected.
+   */
+  const inRange = w.startMs === null
+    ? profiles
+    : profiles.filter(p => inWindow(w, p.created_at));
+
   const newSince = (days: number) => profiles.filter(p => p.created_at >= iso(ago(now, days))).length;
   const activeSince = (days: number) => new Set(
-    d.base.events.filter(e => e.user_id && e.created_at >= iso(ago(now, days))).map(e => e.user_id!),
+    d.allEvents.filter(e => e.user_id && e.created_at >= iso(ago(now, days))).map(e => e.user_id!),
   ).size;
 
-  // Daily trend, last 30 days, UTC days.
+  /**
+   * The trend spans the SELECTED window, not a fixed 30 days. An unbounded
+   * window falls back to the last 30 days, because an all-time daily chart is
+   * unreadable and would grow without limit.
+   */
   const days: string[] = [];
-  for (let i = 29; i >= 0; i--) days.push(dayOf(iso(ago(now, i))));
+  if (w.fromDay && w.toDay) {
+    let cursor: string | null = w.fromDay;
+    // Hard stop at 370 so a multi-year custom range cannot build a huge array.
+    for (let guard = 0; cursor && cursor <= w.toDay && guard < 370; guard++) {
+      days.push(cursor);
+      cursor = addCentralDays(cursor, 1);
+    }
+  } else {
+    for (let i = 29; i >= 0; i--) days.push(dayOf(iso(ago(now, i))));
+  }
+
   const newByDay = new Map(days.map(x => [x, 0]));
   const activeByDay = new Map(days.map(x => [x, new Set<string>()]));
   for (const p of profiles) { const k = dayOf(p.created_at); if (newByDay.has(k)) newByDay.set(k, newByDay.get(k)! + 1); }
@@ -479,7 +512,22 @@ export function getAcquisition(d: V4Data) {
     const k = dayOf(e.created_at);
     activeByDay.get(k)?.add(e.user_id);
   }
-  // Cumulative growth.
+
+  /**
+   * Peak signup day and the per-day average, over the window's days.
+   *
+   * The average divides by the number of DAYS IN THE WINDOW, not by the days
+   * that happen to have signups — otherwise a week with one busy day and six
+   * empty ones would report that busy day's figure as its average.
+   */
+  let peakDay: string | null = null, peakCount = 0;
+  for (const day of days) {
+    const n = newByDay.get(day) ?? 0;
+    if (n > peakCount) { peakCount = n; peakDay = day; }
+  }
+  const windowDays = w.fromDay && w.toDay ? centralDaysBetween(w.fromDay, w.toDay) : days.length;
+
+  // Cumulative growth across the charted days.
   let cum = 0;
   const sorted = [...profiles].sort((a, b) => a.created_at < b.created_at ? -1 : 1);
   const cumulative = days.map(day => {
@@ -489,10 +537,24 @@ export function getAcquisition(d: V4Data) {
 
   return {
     totalUsers: exact(profiles.length),
+
+    // ── The selected window ──────────────────────────────────────────────
+    newInRange: exact(inRange.length, w.startMs === null
+      ? "all available" : `signups between ${w.fromDay} and ${w.toDay}`),
+    rangeLabel: w.label,
+    rangeDays: windowDays,
+    signupsPerDay: { value: windowDays > 0 ? inRange.length / windowDays : null, trust: "DERIVED" as Trust, d: windowDays },
+    peakSignupDay: peakDay,
+    peakSignupCount: exact(peakCount),
+    /** How many of the eligible cohort signed up during the window. */
+    shareOfCohort: derived(inRange.length, profiles.length, "of all users in scope"),
+
+    // ── Fixed windows, independent of the selection ──────────────────────
     newToday: exact(profiles.filter(p => dayOf(p.created_at) === dayOf(iso(now))).length),
     new7: exact(newSince(7)), new30: exact(newSince(30)),
     dau: exact(activeSince(1)), wau: exact(activeSince(7)), mau: exact(activeSince(30)),
     dauMau: derived(activeSince(1), activeSince(30)),
+
     trend: days.map(day => ({ day, newUsers: newByDay.get(day) ?? 0, active: activeByDay.get(day)?.size ?? 0 })),
     cumulative,
     attributionNote: "Acquisition source attribution not currently tracked.",

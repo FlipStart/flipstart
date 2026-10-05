@@ -102,7 +102,7 @@ function renderExecutive(x: any): string {
     ? `<div class="banner ok">Analytics V4 active since ${esc(c.at)}</div>`
     : `<div class="banner warn"><strong>Awaiting Analytics V4 client release.</strong> ${esc(c?.status ?? "")} — V4-only metrics show “Not yet available” until then.</div>`;
   return section("exec", "1 · Executive", scopeNote + banner + legend() + grid([
-    m("Total users", a.totalUsers), m("New users 7d", a.new7), m("New users 30d", a.new30),
+    m("Total users", a.totalUsers), m("New users in range", a.newInRange), m("New users 7d", a.new7), m("New users 30d", a.new30),
     m("DAU", a.dau), m("WAU", a.wau), m("MAU", a.mau), m("DAU / MAU", a.dauMau, { fmt: "pct" }),
     m("Scans 7d", sc && !isErr(sc) ? { value: sc.scans7 ?? sc.last7 ?? null, trust: "EXACT" } : null),
     m("Activated (1+ scan)", x.activation && !isErr(x.activation) ? x.activation.activationRate : null),
@@ -117,12 +117,24 @@ function renderExecutive(x: any): string {
 
 function renderAcquisition(a: any): string {
   if (isErr(a)) return errorCard("Acquisition", a);
+  /**
+   * The selected range comes FIRST and is visually separated from the fixed
+   * 7d/30d cards. Those two groups answer different questions — "what did my
+   * campaign do" versus "how are we doing right now" — and mixing them in one
+   * grid is what made the range figure impossible to find.
+   */
+  const rangeBlock = `<div class="card"><div class="card-h">Selected window · ${esc(a.rangeLabel ?? "")}</div>${grid([
+    m("New users in range", a.newInRange),
+    m("Signups / day", a.signupsPerDay, { dp: 2 }),
+    m("Peak signup day", { value: null, trust: "EXACT", note: a.peakSignupDay ? `${a.peakSignupDay} · ${num(a.peakSignupCount?.value)} signups` : "no signups in range" }),
+    m("Share of cohort", a.shareOfCohort),
+  ])}<div class="muted">Counted by account creation date inside the window, in ${esc("Central Time")}. ${esc(String(a.rangeDays ?? 0))} day(s) in range.</div></div>`;
   const trend = table(["Day", "New", "Active"], a.trend.slice(-14).reverse().map((r: any) => [esc(r.day), num(r.newUsers), num(r.active)]), "compact");
-  const growth = `<div class="spark">${a.cumulative.map((p: any) => `<span title="${esc(p.day)}: ${p.users}" style="height:${Math.max(2, p.users / (a.cumulative.at(-1)?.users || 1) * 40)}px"></span>`).join("")}</div><div class="muted">Cumulative users, last 30 days</div>`;
-  return section("acq", "2 · Acquisition / Users", grid([
+  const growth = `<div class="spark">${a.cumulative.map((p: any) => `<span title="${esc(p.day)}: ${p.users}" style="height:${Math.max(2, p.users / (a.cumulative.at(-1)?.users || 1) * 40)}px"></span>`).join("")}</div><div class="muted">Cumulative users across the charted window</div>`;
+  return section("acq", "2 · Acquisition / Users", rangeBlock + `<div class="card"><div class="card-h">Current momentum <span class="muted">— fixed windows, not affected by the date selection</span></div>${grid([
     m("Total profiles", a.totalUsers), m("New today", a.newToday), m("New 7d", a.new7), m("New 30d", a.new30),
     m("Active today", a.dau), m("Active 7d", a.wau), m("Active 30d", a.mau),
-  ]) + `<div class="two"><div class="card"><div class="card-h">Cumulative growth</div>${growth}</div><div class="card"><div class="card-h">Daily trend (last 14d, UTC)</div>${trend}</div></div>
+  ])}</div>` + `<div class="two"><div class="card"><div class="card-h">Cumulative growth</div>${growth}</div><div class="card"><div class="card-h">Daily trend <span class="muted">— last 14 charted days, Central</span></div>${trend}</div></div>
   <div class="note-block">${badge("NOT_TRACKED")} ${esc(a.attributionNote)}</div>`);
 }
 
