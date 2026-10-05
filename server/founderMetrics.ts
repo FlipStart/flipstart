@@ -92,7 +92,7 @@ export async function fetchAll<T = any>(
 }
 
 // Count-only helper (cheap; uses head request).
-async function countRows(
+export async function countRows(
   table: string,
   filter?: { col: string; gte?: string; eq?: string },
 ): Promise<number> {
@@ -113,6 +113,12 @@ async function countRows(
 export interface BaseData {
   /** How many profiles were excluded as internal/test. Surfaced, never hidden. */
   internalProfiles?: number;
+  /**
+   * IDs of the internal/test profiles, so integrity checks can PROVE none of
+   * their activity leaked into the numbers, and the User Explorer can label
+   * them. Undefined when the is_internal column does not exist yet.
+   */
+  internalIds?: Set<string>;
   /** REAL users only — abandoned ghost profiles are excluded (see loadBaseData). */
   profiles: Array<{ id: string; created_at: string; onboarding_complete?: boolean }>;
   profileIds: Set<string>;
@@ -133,6 +139,14 @@ export interface BaseData {
     event_name: string;
     created_at: string;
     metadata: any;
+    /**
+     * Event-time app version and route. Loaded so integrity checks can count
+     * rows missing them — before this, neither column was selected, so any
+     * "missing app_version" check would have read a perfect score off data it
+     * never looked at.
+     */
+    app_version?: string | null;
+    route?: string | null;
     /** V4 client snapshot; absent on legacy rows and pre-migration environments. */
     entitlement_state_snapshot?: string | null;
   }>;
@@ -210,6 +224,7 @@ export async function loadBaseData(): Promise<BaseData> {
    * before rather than blanking.
    */
   const realProfiles = allProfiles.filter(p => p.is_internal !== true);
+  const internalIds = new Set(allProfiles.filter(p => p.is_internal === true).map(p => p.id));
   const internalProfiles = allProfiles.length - realProfiles.length;
 
   /**
@@ -220,12 +235,12 @@ export async function loadBaseData(): Promise<BaseData> {
   let events: BaseData["events"];
   try {
     events = await fetchAll<BaseData["events"][number]>(
-      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata, entitlement_state_snapshot",
+      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata, app_version, route, entitlement_state_snapshot",
       { order: ["created_at", "id"] },
     );
   } catch {
     events = await fetchAll<BaseData["events"][number]>(
-      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata",
+      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata, app_version, route",
       { order: ["created_at", "id"] },
     );
   }
@@ -258,6 +273,7 @@ export async function loadBaseData(): Promise<BaseData> {
     // undefined (not 0) when the migration has not run, so the dashboard can
     // say "not yet available" rather than claiming zero internal accounts.
     internalProfiles: hasInternalColumn ? internalProfiles : undefined,
+    internalIds: hasInternalColumn ? internalIds : undefined,
   };
 }
 

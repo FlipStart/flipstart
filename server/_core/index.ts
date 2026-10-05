@@ -266,13 +266,20 @@ async function startServer() {
   // computed and rendered further down the page; V4 layers the business
   // analytics on top. If the V4 layer fails, the page degrades to V3 sections
   // with a banner rather than a 500.
-  app.get("/api/dev/founder-dashboard-v3", async (req, res) => {
+  /**
+   * GET renders the dashboard; POST is the same page plus a User Explorer
+   * search. Search text (which may be an email) travels only in the POST
+   * body, so it never lands in a URL, the browser history, or Railway's
+   * request logs. A selected user is identified by their opaque user ID.
+   * Both verbs share one handler and one secret check.
+   */
+  const founderDashboard = async (req: any, res: any) => {
     if (!secretOk(req.query.secret, process.env.FOUNDER_DASHBOARD_SECRET)) {
       return res.status(401).send("<h1>401 Unauthorized</h1>");
     }
     try {
       const { getFounderDashboardV3Metrics, loadBaseData } = require("../founderMetrics");
-      const { getFounderDashboardV4Metrics, parseScope } = require("../founderMetricsV4");
+      const { getFounderDashboardV4Metrics, parseScope, parseExplorerParams } = require("../founderMetricsV4");
       const { generateFounderDashboardV4 } = require("../founderDashboardV4");
       // ?scope=all for the full history; anything else (including absent) is
       // post_launch, which is the default for business analytics.
@@ -280,19 +287,23 @@ async function startServer() {
       // ?preset=7d|30d|today|... or ?from=YYYY-MM-DD&to=YYYY-MM-DD. Invalid
       // input falls back to the 7-day default and says so on the page.
       const range = { preset: req.query.preset, from: req.query.from, to: req.query.to };
+      const body = req.method === "POST" && req.body && typeof req.body === "object" ? req.body : {};
+      const explorer = parseExplorerParams(body.q, body.user ?? req.query.user);
       // Load once, share with both halves: one snapshot, half the queries.
       // A load failure falls through to V3's own handling (which reports it).
       let base: any;
       try { base = await loadBaseData(); } catch { base = undefined; }
       const v3 = await getFounderDashboardV3Metrics(base);
-      const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3, scope, process.env, range, base);
+      const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3, scope, process.env, range, base, explorer);
       const html = generateFounderDashboardV4(metrics, String(req.query.secret ?? ""));
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(html);
     } catch (e: any) {
       res.status(500).send("<pre>Founder Dashboard error: " + (e?.message ?? e) + "</pre>");
     }
-  });
+  };
+  app.get("/api/dev/founder-dashboard-v3", founderDashboard);
+  app.post("/api/dev/founder-dashboard-v3", founderDashboard);
 
   // JSON variant for programmatic access / debugging.
   app.get("/api/dev/founder-dashboard-v3.json", async (req, res) => {

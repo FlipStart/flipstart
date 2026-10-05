@@ -49,13 +49,24 @@ const hrs = (h: number | null): string => {
 // Central, like everything else on the page — not the raw UTC ISO string.
 const when = (s: string | null | undefined): string => { const f = formatCentralDateTime(s); return f ? esc(f) : "—"; };
 
-const TRUST_LABEL: Record<Trust, string> = { EXACT: "exact", DERIVED: "derived", ESTIMATED: "est.", NOT_TRACKED: "n/t", LEGACY: "legacy" };
+const TRUST_LABEL: Record<Trust, string> = { EXACT: "exact", DERIVED: "derived", ESTIMATED: "est.", NOT_TRACKED: "n/t", LEGACY: "legacy", PARTIAL: "partial", CONFLICT: "conflict" };
 const TRUST_TIP: Record<Trust, string> = {
   EXACT: "A count from an authoritative table.", DERIVED: "Arithmetic over exact inputs.",
   ESTIMATED: "A model, not a measurement.", NOT_TRACKED: "Not collected.", LEGACY: "Known unreliable. Shown for context only.",
+  PARTIAL: "Some underlying data is missing, so this is a floor, not the full number.",
+  CONFLICT: "Two sources that should agree, don't.",
 };
 const badge = (t: Trust) => `<span class="tb tb-${t.toLowerCase()}" title="${esc(TRUST_TIP[t])}">${TRUST_LABEL[t]}</span>`;
-const small = (d: number | undefined) => (d !== undefined && d < 20) ? `<span class="ss" title="Small sample: fewer than 20 in the denominator">n&lt;20</span>` : "";
+/**
+ * Two tiers, never suppressing the number. Below 20 a rate is noisy; below 5
+ * a single person changes it by 20 points or more.
+ */
+export const SMALL_SAMPLE = 20, VERY_SMALL_SAMPLE = 5;
+const small = (d: number | undefined) =>
+  d === undefined || d >= SMALL_SAMPLE ? ""
+  : d < VERY_SMALL_SAMPLE
+    ? `<span class="ss ss-vs" title="Very small sample: fewer than 5 in the denominator — one person moves this by 20+ points">n&lt;5</span>`
+    : `<span class="ss" title="Small sample: fewer than 20 in the denominator">n&lt;20</span>`;
 
 /** A metric card. Handles unavailable, rates with N, and plain counts. */
 function m(label: string, x: Metric | null | undefined, opts: { dp?: number; fmt?: "pct" | "hrs" | "num" } = {}): string {
@@ -97,9 +108,142 @@ const buckets = (obj: Record<string, number>, total?: number, unit = "Users") =>
   const t = total ?? Object.values(obj).reduce((a, b) => a + b, 0);
   return table(["Bucket", unit, "Share"], Object.entries(obj).map(([k, v]) => [esc(k), num(v), t ? pct(v / t) : "—"]));
 };
-const legend = () => `<div class="legend">${(["EXACT", "DERIVED", "ESTIMATED", "NOT_TRACKED", "LEGACY"] as Trust[]).map(t => `${badge(t)} ${esc(TRUST_TIP[t])}`).join(" &nbsp; ")}</div>`;
+const legend = () => `<div class="legend">${(["EXACT", "DERIVED", "ESTIMATED", "PARTIAL", "CONFLICT", "NOT_TRACKED", "LEGACY"] as Trust[]).map(t => `${badge(t)} ${esc(TRUST_TIP[t])}`).join(" &nbsp; ")}</div>`;
 
 // ── Sections ─────────────────────────────────────────────────────────────────
+
+/**
+ * Links back into this page keep the founder secret, the scope and the date
+ * range, so following one never logs you out or silently changes the view.
+ * Rendering is synchronous, so this is set at the start of each render and
+ * cannot be seen by another request mid-render.
+ */
+let pageQuery = "";
+function setPageQuery(secret: string | undefined, scope: Scope, win?: AnalysisWindow) {
+  const parts = [`secret=${encodeURIComponent(secret ?? "")}`];
+  if (scope === "all") parts.push("scope=all");
+  if (win?.preset === "custom" && win.fromDay && win.toDay) parts.push("preset=custom", `from=${win.fromDay}`, `to=${win.toDay}`);
+  else if (win?.preset) parts.push(`preset=${encodeURIComponent(win.preset)}`);
+  pageQuery = "?" + parts.join("&");
+}
+/**
+ * Journey data quality. INFERRED is its own badge rather than a trust level:
+ * it means a key fact came from current state (the plan) instead of an
+ * event, which is neither "partial" nor "conflicting".
+ */
+const Q_TIP: Record<string, string> = {
+  EXACT: "Every join is complete.",
+  PARTIAL: "Some underlying data is missing; counts are floors.",
+  INFERRED: "Key facts come from current state, not from events.",
+  CONFLICT: "Sources disagree.",
+};
+function qBadge(q: string, reasons: string[] = []): string {
+  const cls = q === "EXACT" ? "exact" : q === "PARTIAL" ? "partial" : q === "CONFLICT" ? "conflict" : "derived";
+  const tip = [Q_TIP[q] ?? "", ...reasons].filter(Boolean).join(" • ");
+  return `<span class="tb tb-${cls}" title="${esc(tip)}">${esc(q.toLowerCase())}</span>`;
+}
+/** A link that opens one user in the Explorer. Only the opaque user ID is in it — never an email. */
+const explorerHref = (uid: string) => `${pageQuery}&user=${encodeURIComponent(uid)}#explorer`;
+const userLink = (uid: string, label: string) => `<a class="ulink" href="${esc(explorerHref(uid))}">${esc(label)}</a>`;
+
+function renderAttention(items: any): string {
+  if (!Array.isArray(items) || items.length === 0) {
+    return `<div class="attn attn-none"><strong>Founder attention</strong> <span class="muted">— nothing flagged by the rules right now.</span></div>`;
+  }
+  return `<div class="attn"><div class="attn-h">Founder attention <span class="muted">— rules over numbers on this page, not predictions</span></div>${
+    items.map((i: any) => `<a class="attn-i attn-${esc(i.level)}" href="#${esc(i.anchor)}"><span class="attn-ic">${esc(i.icon)}</span><span><strong>${esc(i.title)}</strong><br><span class="muted">${esc(i.detail)}</span></span></a>`).join("")
+  }</div>`;
+}
+
+function renderIntegrity(di: any): string {
+  // Absent (e.g. the metrics layer was skipped) must degrade like every other
+  // section — one missing block can never take the whole page down.
+  if (!di || typeof di !== "object") return section("integrity", "1b · Data Integrity", `<div class="card muted">Data Integrity is unavailable for this load.</div>`);
+  if (isErr(di)) return errorCard("Data Integrity", di);
+  const c = di.counts;
+  const sevPill = (sv: string) => `<span class="sev sev-${esc(sv.toLowerCase())}">${esc(sv)}</span>`;
+  const head = grid([
+    m("Analytics health", di.health),
+    textCard("Integrity issues", `${di.conflicts + di.warnings} detected`, di.conflicts ? "CONFLICT" : di.warnings ? "PARTIAL" : "EXACT",
+      `${di.conflicts} conflict(s) · ${di.warnings} warning(s) · ${di.infos} explained`),
+    textCard("Loader", di.loader?.status === "ok" ? "OK" : String(di.loader?.status ?? "unknown"), di.loader?.status === "ok" ? "EXACT" : "CONFLICT", di.loader?.note),
+  ]);
+  const evGrid = grid([
+    m("Signed-out events", c.anonymousEvents), m("…linked by device", c.linkedByDevice), m("…shared device, not linked", c.ambiguousDevice),
+    m("…never linkable", c.unlinkable), m("Missing session_id", c.missingSession), m("Missing app_version", c.missingVersion),
+    m("Missing route", c.missingRoute), m("Orphan events", c.orphanEvents), m("Internal accounts excluded", c.internalExcluded),
+    ...(c.internalLeaked ? [m("Internal accounts in scope", c.internalLeaked)] : []), m("Shared devices", c.sharedDevices),
+  ]);
+  const recon = table(["Source", "Count", "What it measures"],
+    di.reconciliation.map((r: any) => [esc(r.source), num(r.value), `<span class="muted">${esc(r.meaning)}</span>`]));
+  const rows = (di.issues as any[]).slice(0, 150).map(i => [
+    i.userId ? userLink(i.userId, i.user ?? i.userId.slice(0, 8) + "…") : "—",
+    esc(i.label), sevPill(i.severity), `<span class="muted">${esc(i.sourceA)}</span>`, `<span class="muted">${esc(i.sourceB)}</span>`,
+    when(i.at), `<span class="muted">${esc(i.notes)}</span>`,
+  ]);
+  const more = di.issues.length > 150 ? `<div class="muted">Showing 150 of ${num(di.issues.length)}, most severe first.</div>` : "";
+  return section("integrity", "1b · Data Integrity", head + evGrid +
+    `<div class="two"><div class="card"><div class="card-h">Scan sources — different things, not expected to match</div>${recon}</div>
+     <div class="card"><div class="card-h">Behaviour, not errors</div>${grid([m("Scanned, never saved", di.behaviour.scannedNeverSaved), m("Save rate", di.behaviour.saveRate)])}<div class="muted">${esc(di.behaviour.note)}</div></div></div>
+     <div class="card wide"><div class="card-h">Issues — most severe first</div>${rows.length ? table(["User", "Issue", "Severity", "Source A", "Source B", "When", "Notes"], rows, "compact") : `<div class="muted">No issues found.</div>`}${more}
+     <div class="muted">CONFLICT: sources that must agree, don't. WARNING: data missing or suspect, so numbers may be floors. INFO: looks odd, has an innocent explanation — never counted against health. ${esc(di.scopeNote)}</div></div>`,
+    di.conflicts ? `${di.conflicts} conflict(s)` : "");
+}
+
+function renderExplorer(ex: any): string {
+  if (ex && isErr(ex)) return errorCard("User Explorer", ex);
+  const form = `<form class="xsearch" method="post" action="${esc(pageQuery)}#explorer">
+    <input type="search" name="q" value="${esc(ex?.query ?? "")}" placeholder="Name, username, email or user ID" maxlength="200" autocomplete="off">
+    <button type="submit">Search</button>
+    <span class="muted">Search runs by form post, so what you type never appears in a URL or a server log.</span></form>`;
+  let body = "";
+  if (ex?.results) {
+    body += ex.results.length
+      ? `<div class="card">${table(["User", "Username", "Email", "Created", "Plan", "Status"], ex.results.map((r: any) => [
+          userLink(r.userId, r.displayName ?? r.username ?? r.userId.slice(0, 8) + "…"), esc(r.username ?? "—"), esc(r.email ?? "—"),
+          when(r.createdAt), esc(r.plan), r.internal ? `<span class="sev sev-info">internal</span>` : r.inScope ? "in scope" : `<span class="muted">outside scope</span>`]), "compact")}
+          ${ex.results.length >= 25 ? `<div class="muted">First 25 matches — narrow the search.</div>` : ""}</div>`
+      : `<div class="card muted">No users match.</div>`;
+  }
+  if (ex?.notFound) body += `<div class="card muted">No user with that ID.</div>`;
+  const u = ex?.user;
+  if (u) {
+    const id = u.identity, b = u.balance, us = u.usage, mo = u.monetization, j = mo.journey;
+    const status = id.internal ? "internal account — excluded from every metric" : id.inScope ? "in the current scope" : "outside the current scope — not in the dashboard's numbers";
+    const col = (n: number | null) => n === null ? `<span class="muted">n/t</span>` : num(n);
+    body += `<div class="card"><div class="card-h">${esc(id.displayName ?? id.username ?? "User")} <span class="muted">— ${esc(status)}${id.sharedDevice ? " · shares a device with another account" : ""}</span></div>
+      ${table(["", ""], [
+        ["Email", esc(id.email ?? "—")], ["User ID", `<code>${esc(id.userId)}</code>`], ["Username", esc(id.username ?? "—")],
+        ["Account created", when(id.accountCreated)], ["Profile created", when(id.profileCreated)],
+        ["Plan", `${esc(id.plan)}${id.product ? ` <span class="muted">${esc(id.product)}</span>` : ""}${id.periodEnd ? ` <span class="muted">· period ends ${when(id.periodEnd)}</span>` : ""}`],
+        ["Scan balance", b.hasLedgerRow ? `${num(b.freeRemaining)} of ${num(b.freeUsed + b.freeRemaining)} free left · ${num(b.packBalance)} pack${b.subscriptionLimit ? ` · ${num(b.subscriptionUsed)} / ${num(b.subscriptionLimit)} this period` : ""}` : `<span class="muted">no ledger row yet</span>`],
+        ["App version", id.firstVersion ? `first ${esc(id.firstVersion)} · latest ${esc(id.lastVersion ?? "")}` : `<span class="muted">none recorded</span>`],
+        ["Active", `${when(id.firstActive)} → ${when(id.lastActive)}`],
+      ], "compact kv")}</div>
+      <div class="card"><div class="card-h">Usage</div>${grid([
+        m("Lifetime scans", { value: us.lifetimeScans, trust: "EXACT" }), m("Scans 7d", { value: us.scans7, trust: "EXACT" }),
+        m("Scans 30d", { value: us.scans30, trust: "EXACT" }), m("Failed scans", { value: us.failedScans, trust: "EXACT" }),
+        m("Signed-out scans (device)", { value: us.linkedScans, trust: us.linkedScans ? "PARTIAL" : "EXACT" }),
+        m("Saved items", { value: us.savedItems, trust: "EXACT" }), m("Sessions", { value: us.sessions, trust: "EXACT" }),
+        m("Active days", { value: us.activeDays, trust: "EXACT" }), m("Listings", { value: us.listings, trust: "EXACT" }),
+        m("Hunt opens", { value: us.huntOpens, trust: "EXACT" }), m("Hunts completed", { value: us.huntCompletions, trust: "EXACT" }),
+        m("Progress opens", { value: us.progressOpens, trust: "EXACT" }), m("Scan Store opens", { value: us.scanStoreOpens, trust: "EXACT" }),
+        m("Deep Analysis opens", { value: null, trust: "NOT_TRACKED", available: false, note: `no open event — ${us.deepAnalysisPaywalls} paywall view(s)` }),
+      ])}<div class="muted">Collections — brands ${col(u.collections?.brands ?? null)} · diamonds ${col(u.collections?.diamonds ?? null)} · achievements ${col(u.collections?.achievements ?? null)}</div></div>
+      <div class="card"><div class="card-h">Monetization</div>${grid([
+        textCard("First paywall", mo.firstPaywall), m("Paywall views", { value: mo.paywallImpressions, trust: "EXACT" }),
+        m("Plan selections", { value: mo.planSelections, trust: "EXACT" }), m("Purchase starts", { value: mo.purchaseStarts, trust: "EXACT" }),
+        m("Purchases", { value: mo.purchaseCompletions, trust: "EXACT" }), m("Cancelled", { value: mo.cancellations, trust: "EXACT" }),
+        m("Restores", { value: mo.restores, trust: "EXACT" }),
+        m("Est. API cost", { value: u.costEstimate, trust: "ESTIMATED" }, { dp: 3 }),
+      ])}${j ? `<div class="muted">Journey ${qBadge(j.quality, j.qualityReasons)} —
+        converted on ${esc(j.convertingPaywall ?? "UNKNOWN")} · ${num(j.scansBeforePay)} scans, ${num(j.sessionsBeforePay)} sessions and ${num(j.paywallImpressionsBeforePay)} paywall views before paying · account → pay ${hrs(j.hoursAccountToPay)}
+        ${j.qualityReasons.length ? `<br>${j.qualityReasons.map((r: string) => esc(r)).join("<br>")}` : ""}</div>` : `<div class="muted">Not a paying user.</div>`}</div>
+      <div class="card wide"><div class="card-h">Timeline <span class="muted">— Central Time, oldest first${u.timelineTotal > u.timeline.length ? ` · last ${num(u.timeline.length)} of ${num(u.timelineTotal)} events` : ""}</span></div>
+      ${table(["When", "Event", "Detail"], u.timeline.map((r: any) => [when(r.at), `${esc(r.event)}${r.linked ? ` <span class="sev sev-info" title="Written while signed out on this user's device; attributed by device">device</span>` : ""}`, `<span class="muted">${esc(r.detail)}</span>`]), "compact")}</div>`;
+  }
+  return section("explorer", "1c · User Explorer", `<div class="card">${form}<div class="muted">Founder-only. Shows any account — pre-launch and internal included — with its whole history; scope and date range do not apply here.</div></div>` + body);
+}
 
 function renderExecutive(x: any): string {
   const a = x.acquisition, mo = x.monetization, pw = x.paywalls, ret = x.retentionV2, ue = x.unitEconomics, sc = x.scans;
@@ -113,7 +257,7 @@ function renderExecutive(x: any): string {
   const banner = c?.configured
     ? `<div class="banner ok">Analytics V4 active since ${esc(c.at)}</div>`
     : `<div class="banner warn"><strong>Awaiting Analytics V4 client release.</strong> ${esc(c?.status ?? "")} — V4-only metrics show “Not yet available” until then.</div>`;
-  return section("exec", "1 · Executive", scopeNote + banner + legend() + grid([
+  return section("exec", "1 · Executive", renderAttention(x.founderAttention) + scopeNote + banner + legend() + grid([
     m("Total users", a.totalUsers), m("New users in range", a.newInRange), m("New users 7d", a.new7), m("New users 30d", a.new30),
     m("DAU", a.dau), m("WAU", a.wau), m("MAU", a.mau), m("DAU / MAU", a.dauMau, { fmt: "pct" }),
     m("Scans 7d", a && !isErr(a) ? a.scans7 : null),
@@ -231,7 +375,7 @@ function renderPaidJourneys(pj: any): string {
     m("Mean paywall impressions before pay", { value: pj.paywallsBeforePay.mean, trust: "DERIVED", d: pj.paywallsBeforePay.d }, { dp: 1 }),
   ]);
   const rows = (pj.journeys as PaidJourney[]).slice(0, 200).map(j => [
-    esc(j.displayName ?? "—"), esc(j.email ?? "—"), `<code class="uid" title="${esc(j.userId)}">${esc(j.userId.slice(0, 8))}…</code>`,
+    qBadge(j.quality, j.qualityReasons), esc(j.displayName ?? "—"), esc(j.email ?? "—"), userLink(j.userId, j.userId.slice(0, 8) + "…"),
     esc(j.currentPlan), j.firstPaidKind === "scan_pack" ? `${esc(j.firstPaidKind)} ${j.packGrantConfirmed ? "✓ granted" : `<span class="muted" title="Apple approved but the ledger holds no pack scans — the server may have refused the grant">? unconfirmed</span>`}` : esc(j.firstPaidKind), esc(j.firstPaidProduct ?? "—"),
     when(j.accountCreatedAt ?? j.profileCreatedAt), when(j.firstScanAt), when(j.firstPaywallAt), when(j.firstPurchaseAt), when(j.latestActivityAt),
     hrs(j.hoursAccountToPay), hrs(j.hoursFirstScanToPay), hrs(j.hoursFirstPaywallToPay),
@@ -245,7 +389,7 @@ function renderPaidJourneys(pj: any): string {
      <div class="card"><div class="card-h">Scans before first payment</div>${buckets(pj.scanBuckets)}</div></div>
      <div class="card"><div class="card-h">Purchases by converting paywall</div>${attribution}<div class="muted">Direct attribution = source on purchase_completed, confirmed by the preceding purchase_started. Disagreement → UNKNOWN.</div></div>
      <div class="card wide"><div class="card-h">Every paying user (newest first, up to 200) — founder-only, contains email</div>
-     ${table(["Name", "Email", "UID", "Plan", "Kind", "Product", "Account", "First scan", "First paywall", "First purchase", "Last active",
+     ${table(["Data", "Name", "Email", "UID", "Plan", "Kind", "Product", "Account", "First scan", "First paywall", "First purchase", "Last active",
               "Acct→pay", "Scan→pay", "Paywall→pay", "Scans", "Sessions", "Days", "PW impr.", "PW srcs", "First PW", "Last PW", "Converting", "Store visits", "Hunt", "Listings"], rows, "compact wrap")}</div>`,
     pj.smallSample ? "small sample" : "");
 }
@@ -382,7 +526,7 @@ function renderDataQualityV4(q: any): string {
 // ── Composer ─────────────────────────────────────────────────────────────────
 
 const TOC: Array<[string, string]> = [
-  ["exec", "Executive"], ["acq", "Users"], ["act", "Activation"], ["mon", "Monetization"], ["pw", "Paywalls"], ["offer", "Onboarding offer"],
+  ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["act", "Activation"], ["mon", "Monetization"], ["pw", "Paywalls"], ["offer", "Onboarding offer"],
   ["paid", "Paid journeys"], ["store", "Scan Store"], ["cohorts", "Cohorts"], ["free", "Free users"], ["ret", "Retention"], ["sess", "Sessions"],
   ["scans", "Scans"], ["feat", "Features"], ["cost", "Cost"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
@@ -391,6 +535,7 @@ const TOC: Array<[string, string]> = [
 export function generateFounderDashboardV4(metrics: any, secret?: string): string {
   const scope: Scope = metrics?.cohort?.scope === "all" ? "all" : "post_launch";
   const win: AnalysisWindow | undefined = metrics?.window;
+  setPageQuery(secret, scope, win);
   if (metrics && metrics.configured === false) {
     return shell(`<div class="banner warn"><strong>Supabase not configured.</strong> Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the server.</div>`, "—", scope, secret, win);
   }
@@ -401,7 +546,8 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
        renderAchievements(metrics.achievements), renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold)].join(""), metrics.generatedAt, scope, secret, win);
   }
   const body = [
-    renderExecutive(metrics), renderAcquisition(metrics.acquisition), renderActivation(metrics.activation),
+    renderExecutive(metrics), renderIntegrity(metrics.dataIntegrity), renderExplorer(metrics.userExplorer),
+    renderAcquisition(metrics.acquisition), renderActivation(metrics.activation),
     renderMonetization(metrics.monetization), renderPaywalls(metrics.paywalls), renderOnboardingOffer(metrics.onboardingOffer),
     renderPaidJourneys(metrics.paidJourneys), renderScanStore(metrics.scanStore), renderCohorts(metrics.cohorts),
     renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderSessionsV2(metrics.sessionsV2),
@@ -470,6 +616,21 @@ table.funnel td.stg{width:30%}table.funnel td.w{width:30%}
 .bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden}.bar-fill{height:100%}
 .tb{display:inline-block;font-size:9px;font-weight:600;letter-spacing:.4px;padding:1px 5px;border-radius:3px;vertical-align:middle;margin-left:4px;text-transform:uppercase;cursor:help}
 .tb-exact{background:#1f3b2a;color:#7bd394}.tb-derived{background:#1f2f3b;color:#7fb8e8}.tb-estimated{background:#3b331f;color:#e8c77f}.tb-not_tracked{background:#2a2a2a;color:#9a9a9a}.tb-legacy{background:#3b1f1f;color:#e88f7f}
+.tb-partial{background:#33291a;color:#e0b46a}.tb-conflict{background:#4a1d1d;color:#ff9b8a}
+.ss-vs{color:#ff9b8a;border-color:#ff9b8a}
+.attn{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:12px}
+.attn-none{color:var(--muted);font-size:12px}
+.attn-h{font-weight:600;font-size:12px;margin-bottom:8px}
+.attn-i{display:flex;gap:10px;align-items:flex-start;padding:7px 9px;border-radius:5px;margin-top:5px;text-decoration:none;color:var(--fg);border-left:3px solid var(--line)}
+.attn-i:hover{background:#0b110e}.attn-ic{font-size:16px;line-height:1.2}
+.attn-critical{border-left-color:#ff6b5a}.attn-warning{border-left-color:var(--warn)}.attn-opportunity{border-left-color:var(--accent)}.attn-info{border-left-color:#7fb8e8}
+.sev{display:inline-block;font-size:9.5px;font-weight:600;padding:1px 6px;border-radius:3px;letter-spacing:.3px}
+.sev-conflict{background:#4a1d1d;color:#ff9b8a}.sev-warning{background:#33291a;color:#e0b46a}.sev-info{background:#1f2f3b;color:#7fb8e8}
+.ulink{color:var(--fg);text-decoration:underline;text-decoration-color:var(--line)}.ulink:hover{text-decoration-color:var(--accent)}
+.xsearch{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.xsearch input{flex:1;min-width:220px;background:#0b110e;border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:5px 8px;font-size:12.5px;font-family:inherit}
+.xsearch button{background:var(--accent);color:#14200f;border:0;border-radius:4px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer}
+table.kv td:first-child{color:var(--muted);width:150px}
 .ss{display:inline-block;font-size:9.5px;color:var(--warn);border:1px solid var(--warn);border-radius:3px;padding:0 4px;margin-left:4px;cursor:help}
 .legend{font-size:11px;color:var(--muted);margin:6px 0 12px}.muted{color:var(--muted);font-size:11px}.note-block{color:var(--muted);font-size:11.5px;padding:8px 10px;border-left:2px solid var(--line);margin:6px 0 10px}
 .banner{padding:9px 12px;border-radius:6px;margin-bottom:10px;font-size:12px}.banner.warn{background:#2c2410;border:1px solid var(--warn)}.banner.ok{background:#12291b;border:1px solid var(--ok)}

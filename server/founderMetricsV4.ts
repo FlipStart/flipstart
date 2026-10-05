@@ -34,9 +34,10 @@
  * Four table loads (profiles+events via loadBaseData, scans, account_usage,
  * auth users) and everything else is maps in memory. No per-user queries.
  */
-import { loadBaseData, fetchAll, type BaseData } from "./founderMetrics";
+import { loadBaseData, fetchAll, countRows, type BaseData } from "./founderMetrics";
 import { getSupabaseAdmin } from "./supabaseAdmin";
-import { derivePlan, type AccountUsage, type PlanState } from "./monetization/policy";
+import { derivePlan, type AccountUsage, type PlanState,
+  FREE_LIFETIME_SCANS, MONTHLY_SCANS, ANNUAL_SCANS } from "./monetization/policy";
 import { PAYWALL_SOURCES } from "../lib/paywallConfig";
 import { SCAN_PACKS } from "../lib/scanPackCatalog";
 import {
@@ -44,7 +45,13 @@ import {
   addCentralDays, centralDaysBetween, formatDayLabel,
 } from "./dashboardDates";
 
-export type Trust = "EXACT" | "DERIVED" | "ESTIMATED" | "NOT_TRACKED" | "LEGACY";
+/**
+ * PARTIAL  — some of the underlying data is missing, so the figure is a floor.
+ * CONFLICT — two sources that should agree, don't.
+ * Neither is ever used for a figure whose joins are complete; EXACT is never
+ * used for one whose joins are not.
+ */
+export type Trust = "EXACT" | "DERIVED" | "ESTIMATED" | "NOT_TRACKED" | "LEGACY" | "PARTIAL" | "CONFLICT";
 
 /** A number with its provenance and, for rates, its denominator. */
 export interface Metric {
@@ -313,6 +320,63 @@ interface UsageRow extends AccountUsage { user_id: string; }
 interface AuthUser { id: string; email: string | null; created_at: string; }
 interface ProfileRow { id: string; display_name: string | null; username: string | null; created_at: string; }
 
+/**
+ * Device linking.
+ *
+ * Every analytics row carries the device's anonymous_id — including rows
+ * written while signed in. So an event written while signed OUT can be
+ * attributed to an account when that device has only ever signed in as ONE
+ * account. A device used by several accounts (a founder's test phone) is
+ * ambiguous: its signed-out events are never attributed, and every account on
+ * it is flagged so its journeys are marked PARTIAL rather than presented as
+ * complete.
+ *
+ * Linked events are kept apart from each user's own events. Nothing in the
+ * metric sections reads them; they appear in the Explorer timeline (tagged)
+ * and in integrity checks, where "linked by device" is stated, not assumed.
+ */
+export interface DeviceLink {
+  /** Signed-out events attributable to exactly one account, by user. */
+  byUser: Map<string, Ev[]>;
+  /** Users who share a device with at least one other account. */
+  sharedDeviceUsers: Set<string>;
+  sharedDevices: Array<{ anonymousId: string; users: string[] }>;
+  anonymousEvents: number;
+  linkedEvents: number;
+  ambiguousEvents: number;
+  unlinkableEvents: number;
+}
+
+export function buildDeviceLink(events: Ev[]): DeviceLink {
+  const usersByDevice = new Map<string, Set<string>>();
+  for (const e of events) {
+    if (!e.user_id || !e.anonymous_id) continue;
+    (usersByDevice.get(e.anonymous_id) ?? usersByDevice.set(e.anonymous_id, new Set()).get(e.anonymous_id)!).add(e.user_id);
+  }
+  const sharedDeviceUsers = new Set<string>();
+  const sharedDevices: DeviceLink["sharedDevices"] = [];
+  for (const [anon, users] of usersByDevice) {
+    if (users.size > 1) {
+      sharedDevices.push({ anonymousId: anon, users: [...users].sort() });
+      for (const u of users) sharedDeviceUsers.add(u);
+    }
+  }
+  const byUser = new Map<string, Ev[]>();
+  let anonymousEvents = 0, linkedEvents = 0, ambiguousEvents = 0, unlinkableEvents = 0;
+  for (const e of events) {
+    if (e.user_id) continue;
+    anonymousEvents++;
+    const users = e.anonymous_id ? usersByDevice.get(e.anonymous_id) : undefined;
+    if (!users || users.size === 0) { unlinkableEvents++; continue; }
+    if (users.size > 1) { ambiguousEvents++; continue; }
+    const [uid] = users;
+    (byUser.get(uid) ?? byUser.set(uid, []).get(uid)!).push(e);
+    linkedEvents++;
+  }
+  for (const l of byUser.values()) l.sort((a, b) => a.created_at < b.created_at ? -1 : 1);
+  return { byUser, sharedDeviceUsers, sharedDevices, anonymousEvents, linkedEvents, ambiguousEvents, unlinkableEvents };
+}
+
 export interface V4Data {
   window: AnalysisWindow;
   /**
@@ -334,6 +398,17 @@ export interface V4Data {
   anonymousScans: number;
   /** Every analytics row the loader returned, before any scope or window. */
   eventsLoaded: number;
+  /**
+   * Unfiltered sets, for the two features that must see past the scope:
+   * the User Explorer (any user, whole history) and integrity checks that
+   * prove nothing excluded leaked in. Every metric section ignores these.
+   */
+  rawEvents: Ev[];
+  rawUsage: Map<string, UsageRow>;
+  rawSaved: ScanRow[];
+  allProfileRows: ProfileRow[];
+  internalIds?: Set<string>;
+  link: DeviceLink;
   /** Exact database count, for the loader-integrity check. Undefined = unverified. */
   eventsInDatabase?: number;
   cohort: LaunchCohort;
@@ -443,6 +518,12 @@ export async function loadV4Data(
   return {
     window, allEvents: events, allScans: cohortScans, allSaved: cohortSaved, anonymousScans,
     eventsLoaded: b.events.length, eventsInDatabase: b.eventsInDatabase,
+    rawEvents: b.events,
+    rawUsage: new Map(usageRows.map(u => [u.user_id, u])),
+    rawSaved: savedRows,
+    allProfileRows: profileRows,
+    internalIds: b.internalIds,
+    link: buildDeviceLink(b.events),
     cohort, preLaunchProfiles, anonymousExcluded,
     base: { ...b, profiles: cohortProfiles, profileIds: keep, events: windowedEvents },
     scans: windowedScans,
@@ -857,6 +938,154 @@ export interface PaidJourney {
   scanStoreVisitsBeforePay: number;
   huntEventsBeforePay: number; listingsBeforePay: number;
   sameSession: boolean;
+  /**
+   * How far this row can be trusted, and why. See journeyQuality().
+   *   EXACT    — every join complete
+   *   PARTIAL  — some underlying data missing; counts are floors
+   *   INFERRED — key facts come from current state, not events
+   *   CONFLICT — sources disagree (e.g. a scan-only paywall with no scan)
+   */
+  quality: "EXACT" | "PARTIAL" | "INFERRED" | "CONFLICT";
+  qualityReasons: string[];
+  /** Signed-out scans on this user's device before paying. Not in scansBeforePay. */
+  linkedScansBeforePay: number;
+}
+
+/**
+ * Paywalls that can only be reached AFTER a scan: Generate Listings and Deep
+ * Analysis sit on a scan's results, and the scan limit appears only once the
+ * allowance is used. A purchase converted on one of these with no scan
+ * recorded before it is a contradiction between sources, not a quirk.
+ */
+export const SCAN_REQUIRED_PAYWALLS = new Set(["generate_listings", "deep_analysis", "scan_limit"]);
+
+export interface JourneyInput {
+  userId: string;
+  profileCreatedAt: string;
+  evs: Ev[];               // this user's own events, ascending, full history
+  scans: string[];         // scan_completed timestamps, ascending
+  saved: string[];         // saved-item timestamps, ascending
+  linked: Ev[];            // device-linked signed-out events
+  sharedDevice: boolean;
+  plan: PlanState;
+  usage?: UsageRow;
+  auth?: AuthUser;
+  prof?: ProfileRow;
+}
+
+const isPaidEvent = (e: Ev) => e.event_name === "paywall_purchase_completed" || e.event_name === "scan_pack_purchase_completed";
+
+/**
+ * One user's journey to payment — the single definition shared by Paid User
+ * Journeys and the User Explorer, so "converting paywall" or "scans before
+ * pay" can never mean two different things on the same page.
+ *
+ * Returns null for someone who is not a payer.
+ */
+export function buildJourney(x: JourneyInput): PaidJourney | null {
+  const { evs } = x;
+  const paidEvents = evs.filter(isPaidEvent);
+  const subEvent = paidEvents.some(e => e.event_name === "paywall_purchase_completed");
+  const holdsPacks = (x.usage?.pack_scan_balance ?? 0) > 0;
+  // Paying = a server-confirmed subscription event, OR a current plan, OR a
+  // pack balance. An Apple-approved pack event alone is not enough — the
+  // server may have refused it (sandbox / environment mismatch).
+  if (!subEvent && x.plan === "free" && !holdsPacks) return null;
+
+  const first = paidEvents[0] ?? null;
+  const firstAt = first?.created_at ?? null;
+  // "Before" is inclusive of the purchase instant but never the paid event
+  // itself: the paywall that opened and the purchase_started that preceded a
+  // completion often share its second, and a strict `<` dropped the
+  // converting paywall from the purchaser's own history.
+  const before = (ev: Ev) => !!firstAt && ev !== first && ev.created_at <= firstAt && !isPaidEvent(ev);
+
+  const prePaywalls = evs.filter(e => e.event_name === "paywall_opened" && before(e));
+  const preStart = [...evs].reverse().find(e => e.event_name === "paywall_purchase_started" && before(e));
+  // Direct attribution: the completed event carries its own source. The last
+  // purchase_started before it must agree, or it is UNKNOWN rather than guessed.
+  const completedSrc = first ? metaStr(first, "paywall_source") : null;
+  const startSrc = preStart ? metaStr(preStart, "paywall_source") : null;
+  const converting = first?.event_name === "scan_pack_purchase_completed" ? "scan_store"
+    : (completedSrc && (!startSrc || startSrc === completedSrc)) ? completedSrc : null;
+
+  const firstSeen = evs[0]?.created_at ?? null;
+  const scansBefore = firstAt ? x.scans.filter(t => t < firstAt) : x.scans;
+  const preEvs = firstAt ? evs.filter(before) : evs;
+  const kind = !first ? (x.plan === "free" ? "scan_pack" : x.plan)
+    : first.event_name === "scan_pack_purchase_completed" ? "scan_pack"
+    : (metaStr(first, "selected_plan") as "monthly" | "annual" | null) ?? "unknown";
+  const h = (a: string | null, b: string | null) => (a && b) ? (Date.parse(b) - Date.parse(a)) / 3_600_000 : null;
+  const linkedScansBeforePay = x.linked.filter(e => e.event_name === "scan_completed" && (!firstAt || e.created_at < firstAt)).length;
+  const savedBeforePay = firstAt ? x.saved.filter(t => t < firstAt).length : x.saved.length;
+
+  const j: PaidJourney = {
+    userId: x.userId, displayName: x.prof?.display_name ?? x.prof?.username ?? null, email: x.auth?.email ?? null,
+    currentPlan: x.plan, firstPaidProduct: first ? (metaStr(first, "product_id") ?? metaStr(first, "selected_plan")) : x.usage?.subscription_product_id ?? null,
+    firstPaidKind: kind,
+    // Only meaningful for pack purchases: did the server actually grant?
+    packGrantConfirmed: kind === "scan_pack" ? holdsPacks : null,
+    firstPurchaseAt: firstAt, latestPaidEventAt: paidEvents.at(-1)?.created_at ?? null,
+    firstSeenAt: firstSeen, accountCreatedAt: x.auth?.created_at ?? null, profileCreatedAt: x.profileCreatedAt,
+    firstScanAt: x.scans[0] ?? null, firstPaywallAt: evs.find(e => e.event_name === "paywall_opened")?.created_at ?? null,
+    latestActivityAt: evs.at(-1)?.created_at ?? null,
+    hoursFirstSeenToPay: h(firstSeen, firstAt), hoursAccountToPay: h(x.auth?.created_at ?? x.profileCreatedAt, firstAt),
+    hoursFirstScanToPay: h(x.scans[0] ?? null, firstAt), hoursFirstPaywallToPay: h(prePaywalls[0]?.created_at ?? null, firstAt),
+    scansBeforePay: scansBefore.length,
+    sessionsBeforePay: new Set(preEvs.map(e => e.session_id).filter(Boolean)).size,
+    activeDaysBeforePay: new Set(preEvs.map(e => dayOf(e.created_at))).size,
+    paywallImpressionsBeforePay: prePaywalls.length,
+    uniquePaywallSourcesBeforePay: new Set(prePaywalls.map(e => metaStr(e, "paywall_source")).filter(Boolean)).size,
+    firstPaywallSource: prePaywalls[0] ? metaStr(prePaywalls[0], "paywall_source") : null,
+    lastPaywallBeforePay: prePaywalls.at(-1) ? metaStr(prePaywalls.at(-1)!, "paywall_source") : null,
+    convertingPaywall: converting,
+    scanStoreVisitsBeforePay: preEvs.filter(e => e.event_name === "scan_store_opened").length,
+    huntEventsBeforePay: preEvs.filter(e => e.event_name.startsWith("hunt_")).length,
+    listingsBeforePay: preEvs.filter(e => e.event_name === "listing_generated").length,
+    sameSession: !!first && !!first.session_id && evs.some(e => e.session_id === first.session_id && e.event_name === "paywall_opened"),
+    quality: "EXACT", qualityReasons: [], linkedScansBeforePay,
+  };
+  const q = journeyQuality(j, {
+    hasPurchaseEvent: !!first,
+    restored: evs.some(e => e.event_name === "paywall_restore_completed"),
+    savedBeforePay, sharedDevice: x.sharedDevice,
+    // null or "" = written without a version. undefined = the column was not
+    // loaded at all, which is not the same thing and is not counted.
+    missingVersion: evs.filter(e => e.app_version === null || e.app_version === "").length,
+  });
+  j.quality = q.quality; j.qualityReasons = q.reasons;
+  return j;
+}
+
+/**
+ * Worst finding wins: CONFLICT > INFERRED > PARTIAL > EXACT. Every reason is
+ * kept, so the badge's tooltip says exactly what is wrong.
+ */
+export function journeyQuality(j: PaidJourney, ctx: {
+  hasPurchaseEvent: boolean; restored: boolean; savedBeforePay: number;
+  sharedDevice: boolean; missingVersion: number;
+}): { quality: PaidJourney["quality"]; reasons: string[] } {
+  const conflict: string[] = [], inferred: string[] = [], partial: string[] = [];
+  const scanless = j.scansBeforePay === 0 && j.linkedScansBeforePay === 0;
+  if (j.convertingPaywall && SCAN_REQUIRED_PAYWALLS.has(j.convertingPaywall) && scanless) {
+    if (ctx.savedBeforePay > 0) {
+      partial.push(`Converted on ${j.convertingPaywall}, which needs a scan; no scan event is recorded, but ${ctx.savedBeforePay} saved item(s) exist — the scan likely predates analytics.`);
+    } else {
+      conflict.push(`Converted on ${j.convertingPaywall}, which can only be reached after a scan, but no scan is recorded before payment.`);
+    }
+  }
+  if (!ctx.hasPurchaseEvent) {
+    inferred.push(ctx.restored
+      ? "No purchase event — the plan appears to come from a restore. Timing and paywall unknown."
+      : "No purchase event — known from the current plan only. Timing and converting paywall unknown.");
+  } else if (!j.convertingPaywall) {
+    inferred.push("The purchase and the preceding purchase start name different paywalls, so the converting paywall is unknown.");
+  }
+  if (ctx.sharedDevice) partial.push("This account shares a device with another account, so signed-out activity on it cannot be attributed.");
+  if (j.linkedScansBeforePay > 0) partial.push(`${j.linkedScansBeforePay} signed-out scan(s) on this device before payment are linked by device and not counted in Scans.`);
+  if (ctx.missingVersion > 0) partial.push(`${ctx.missingVersion} event(s) have no app version.`);
+  const quality = conflict.length ? "CONFLICT" : inferred.length ? "INFERRED" : partial.length ? "PARTIAL" : "EXACT";
+  return { quality, reasons: [...conflict, ...inferred, ...partial] };
 }
 
 /** Every user with any confirmed purchase, with the full pre-purchase story. */
@@ -878,88 +1107,29 @@ export function getPaidJourneys(d: V4Data) {
   for (const l of scansByUser.values()) l.sort();
   const bounded = d.window.startMs !== null;
 
-  const isPaid = (e: Ev) => e.event_name === PW_EVENTS.completed || e.event_name === "scan_pack_purchase_completed";
+  const savedByUser = new Map<string, string[]>();
+  for (const sv of d.allSaved ?? []) { if (sv.user_id) (savedByUser.get(sv.user_id) ?? savedByUser.set(sv.user_id, []).get(sv.user_id)!).push(sv.created_at); }
+  for (const l of savedByUser.values()) l.sort();
 
   const journeys: PaidJourney[] = [];
   for (const p of d.base.profiles) {
-    const evs = evsByUser.get(p.id) ?? [];
-    const paidEvents = evs.filter(isPaid);
-    // A user can also be paying with no completed-event history (pre-analytics
-    // or webhook-only). Their plan still counts; the timeline is just thinner.
-    const plan = currentPlan(d, p.id);
-    const subEvent = paidEvents.some(e => e.event_name === PW_EVENTS.completed);
-    const holdsPacks = (d.usage.get(p.id)?.pack_scan_balance ?? 0) > 0;
-    // Paying = a server-confirmed subscription event, OR a current plan, OR a
-    // pack balance. An Apple-approved pack event alone is not enough — the
-    // server may have refused it (sandbox / environment mismatch).
-    if (!subEvent && plan === "free" && !holdsPacks) continue;
-
-    const first = paidEvents[0] ?? null;
-    const firstAt = first?.created_at ?? null;
-
+    const j = buildJourney({
+      userId: p.id, profileCreatedAt: p.created_at,
+      evs: evsByUser.get(p.id) ?? [], scans: scansByUser.get(p.id) ?? [], saved: savedByUser.get(p.id) ?? [],
+      linked: d.link?.byUser.get(p.id) ?? [], sharedDevice: d.link?.sharedDeviceUsers.has(p.id) ?? false,
+      plan: currentPlan(d, p.id), usage: d.usage.get(p.id), auth: d.auth.get(p.id), prof: d.profiles.get(p.id),
+    });
+    if (!j) continue;
     /**
      * Selection by FIRST purchase date.
      *
      * In a bounded range, a row appears only if this user's first purchase
      * falls inside it. Users who bought earlier are current subscribers, not
-     * conversions in this period — listing them here (as before) filled
-     * narrow ranges with blank-history rows. A payer with no purchase event at
-     * all cannot be dated, so they appear only when the range is unbounded.
+     * conversions in this period. A payer with no purchase event at all cannot
+     * be dated, so they appear only when the range is unbounded.
      */
-    if (bounded && (!firstAt || !inWindow(d.window, firstAt))) continue;
-    // "Before" is inclusive of the purchase instant but never the paid event
-    // itself: the paywall that opened and the purchase_started that preceded a
-    // completion often share its second, and a strict `<` dropped the
-    // converting paywall from the purchaser's own history.
-    const before = (ev: Ev) => !!firstAt && ev !== first && ev.created_at <= firstAt && !isPaid(ev);
-
-    const prePaywalls = evs.filter(e => e.event_name === PW_EVENTS.opened && before(e));
-    const preStart = [...evs].reverse().find(e => e.event_name === PW_EVENTS.started && before(e));
-    // Direct attribution: the completed event carries its own source. The last
-    // purchase_started before it must agree, or it is UNKNOWN rather than guessed.
-    const completedSrc = first ? metaStr(first, "paywall_source") : null;
-    const startSrc = preStart ? metaStr(preStart, "paywall_source") : null;
-    const converting = first?.event_name === "scan_pack_purchase_completed" ? "scan_store"
-      : (completedSrc && (!startSrc || startSrc === completedSrc)) ? completedSrc : null;
-
-    const firstSeen = evs[0]?.created_at ?? null;
-    const scans = scansByUser.get(p.id) ?? [];
-    const scansBefore = firstAt ? scans.filter(s => s < firstAt) : scans;
-    const preEvs = firstAt ? evs.filter(before) : evs;
-    const packGranted = (d.usage.get(p.id)?.pack_scan_balance ?? 0) > 0;
-    const kind = !first ? (plan === "free" ? "scan_pack" : plan)
-      : first.event_name === "scan_pack_purchase_completed" ? "scan_pack"
-      : (metaStr(first, "selected_plan") as "monthly" | "annual" | null) ?? "unknown";
-
-    const h = (a: string | null, b: string | null) => (a && b) ? (Date.parse(b) - Date.parse(a)) / 3_600_000 : null;
-    const auth = d.auth.get(p.id);
-    const prof = d.profiles.get(p.id);
-
-    journeys.push({
-      userId: p.id, displayName: prof?.display_name ?? prof?.username ?? null, email: auth?.email ?? null,
-      currentPlan: plan, firstPaidProduct: first ? (metaStr(first, "product_id") ?? metaStr(first, "selected_plan")) : d.usage.get(p.id)?.subscription_product_id ?? null,
-      firstPaidKind: kind,
-      // Only meaningful for pack purchases: did the server actually grant?
-      packGrantConfirmed: kind === "scan_pack" ? packGranted : null,
-      firstPurchaseAt: firstAt, latestPaidEventAt: paidEvents.at(-1)?.created_at ?? null,
-      firstSeenAt: firstSeen, accountCreatedAt: auth?.created_at ?? null, profileCreatedAt: p.created_at,
-      firstScanAt: scans[0] ?? null, firstPaywallAt: evs.find(e => e.event_name === PW_EVENTS.opened)?.created_at ?? null,
-      latestActivityAt: evs.at(-1)?.created_at ?? null,
-      hoursFirstSeenToPay: h(firstSeen, firstAt), hoursAccountToPay: h(auth?.created_at ?? p.created_at, firstAt),
-      hoursFirstScanToPay: h(scans[0] ?? null, firstAt), hoursFirstPaywallToPay: h(prePaywalls[0]?.created_at ?? null, firstAt),
-      scansBeforePay: scansBefore.length,
-      sessionsBeforePay: new Set(preEvs.map(e => e.session_id).filter(Boolean)).size,
-      activeDaysBeforePay: new Set(preEvs.map(e => dayOf(e.created_at))).size,
-      paywallImpressionsBeforePay: prePaywalls.length,
-      uniquePaywallSourcesBeforePay: new Set(prePaywalls.map(e => metaStr(e, "paywall_source")).filter(Boolean)).size,
-      firstPaywallSource: prePaywalls[0] ? metaStr(prePaywalls[0], "paywall_source") : null,
-      lastPaywallBeforePay: prePaywalls.at(-1) ? metaStr(prePaywalls.at(-1)!, "paywall_source") : null,
-      convertingPaywall: converting,
-      scanStoreVisitsBeforePay: preEvs.filter(e => e.event_name === "scan_store_opened").length,
-      huntEventsBeforePay: preEvs.filter(e => e.event_name.startsWith("hunt_")).length,
-      listingsBeforePay: preEvs.filter(e => e.event_name === "listing_generated").length,
-      sameSession: !!first && !!first.session_id && evs.some(e => e.session_id === first.session_id && e.event_name === PW_EVENTS.opened),
-    });
+    if (bounded && (!j.firstPurchaseAt || !inWindow(d.window, j.firstPurchaseAt))) continue;
+    journeys.push(j);
   }
   journeys.sort((a, b) => (b.firstPurchaseAt ?? "") < (a.firstPurchaseAt ?? "") ? -1 : 1);
 
@@ -1295,7 +1465,7 @@ export function getFeatureUsage(d: V4Data) {
     { feature: "Generate Listings", accessed: null, paywallTriggered: pw("generate_listings"), completed: count("listing_generated"), completedUsers: users(e => e.event_name === "listing_generated"), note: "completed = listing_generated events" },
     { feature: "Deep Analysis", accessed: null, paywallTriggered: pw("deep_analysis"), completed: null, completedUsers: null, note: "Only the paywall is tracked. Completion is NOT TRACKED." },
     { feature: "Hunt Mode", accessed: count("hunt_mode_opened") || null, paywallTriggered: null, completed: count("hunt_ended"), completedUsers: users(e => e.event_name.startsWith("hunt_")), note: "accessed = hunt_mode_opened; completed = hunt_ended" },
-    { feature: "Progress tab", accessed: count("progress_opened") || null, paywallTriggered: null, completed: null, completedUsers: users(e => e.event_name.startsWith("progress_") || e.event_name.startsWith("brand_") || e.event_name.startsWith("diamond_")), note: "accessed only" },
+    { feature: "Progress tab", accessed: count("progress_tab_opened") || null, paywallTriggered: null, completed: null, completedUsers: users(e => e.event_name.startsWith("progress_") || e.event_name.startsWith("brand_") || e.event_name.startsWith("diamond_")), note: "accessed only" },
     { feature: "Scan saved", accessed: null, paywallTriggered: null, completed: count("scan_saved") || null, completedUsers: users(e => e.event_name === "scan_saved"), note: "from scan_saved events where present" },
   ];
 }
@@ -1458,6 +1628,450 @@ export function loaderIntegrity(loaded: number | undefined, inDb: number | undef
 
 const isErrLike = (x: any) => !!x && typeof x === "object" && typeof x.error === "string";
 
+// ── Data Integrity ──────────────────────────────────────────────────────────
+
+export type IssueSeverity = "CONFLICT" | "WARNING" | "INFO";
+export interface IntegrityIssue {
+  userId: string | null;
+  user: string | null;
+  type: string;
+  label: string;
+  severity: IssueSeverity;
+  sourceA: string;
+  sourceB: string;
+  at: string | null;
+  notes: string;
+}
+
+/** Same-user, same-product purchase events this close together are duplicates. */
+export const DUPLICATE_PURCHASE_WINDOW_MS = 10 * 60_000;
+/**
+ * An event this much earlier than the account is a real problem; anything
+ * smaller is the gap between the device writing the row and Supabase
+ * creating the account, not a contradiction.
+ */
+export const BEFORE_ACCOUNT_TOLERANCE_MS = 60_000;
+
+/**
+ * Contradictions between sources, surfaced before anything else is trusted.
+ *
+ * Runs over the users IN SCOPE and their FULL history — the date range is
+ * deliberately ignored, because a problem with someone's data is still a
+ * problem when it happened last month.
+ *
+ * Three things are kept apart on purpose:
+ *   CONFLICT — sources that must agree, don't
+ *   WARNING  — data is missing or suspect, numbers may be floors
+ *   INFO     — looks odd, has an innocent explanation; never counted against health
+ * And a fourth bucket that is NOT an issue at all: behaviour that only looks
+ * like a contradiction (scanning without saving), reported so it is not
+ * mistaken for one.
+ */
+export function getDataIntegrity(d: V4Data) {
+  const issues: IntegrityIssue[] = [];
+  const nameOf = (uid: string) => {
+    const p = d.profiles.get(uid);
+    return p?.display_name ?? p?.username ?? null;
+  };
+  const evsByUser = new Map<string, Ev[]>();
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+  for (const l of evsByUser.values()) l.sort((a, b) => a.created_at < b.created_at ? -1 : 1);
+  const scanTimes = new Map<string, string[]>();
+  for (const sc of d.allScans) if (sc.user_id) (scanTimes.get(sc.user_id) ?? scanTimes.set(sc.user_id, []).get(sc.user_id)!).push(sc.created_at);
+  for (const l of scanTimes.values()) l.sort();
+  const savedTimes = new Map<string, string[]>();
+  for (const sv of d.allSaved ?? []) if (sv.user_id) (savedTimes.get(sv.user_id) ?? savedTimes.set(sv.user_id, []).get(sv.user_id)!).push(sv.created_at);
+  for (const l of savedTimes.values()) l.sort();
+  const linkedScans = (uid: string) => (d.link?.byUser.get(uid) ?? []).filter(e => e.event_name === "scan_completed");
+
+  let scannedNeverSaved = 0, scannedUsers = 0;
+
+  for (const p of d.base.profiles) {
+    const uid = p.id;
+    const user = nameOf(uid);
+    const evs = evsByUser.get(uid) ?? [];
+    const scans = scanTimes.get(uid) ?? [];
+    const saved = savedTimes.get(uid) ?? [];
+    const linked = linkedScans(uid);
+    const add = (i: Omit<IntegrityIssue, "userId" | "user">) => issues.push({ userId: uid, user, ...i });
+    const scannedBy = (t: string) => scans.some(st => st <= t) || linked.some(e => e.created_at <= t);
+    const savedBy = (t: string) => saved.some(st => st <= t);
+
+    if (scans.length) { scannedUsers++; if (!saved.length) scannedNeverSaved++; }
+
+    // 1 · A scan-only paywall seen before any scan.
+    const flaggedSources = new Set<string>();
+    for (const e of evs) {
+      if (e.event_name !== "paywall_opened") continue;
+      const src = metaStr(e, "paywall_source");
+      if (!src || !SCAN_REQUIRED_PAYWALLS.has(src) || flaggedSources.has(src) || scannedBy(e.created_at)) continue;
+      flaggedSources.add(src);
+      if (savedBy(e.created_at)) {
+        add({ type: "scan_paywall_no_scan_event", label: `${src} paywall without a scan event`, severity: "WARNING",
+          sourceA: `paywall_opened · ${src}`, sourceB: "saved item exists, no scan_completed", at: e.created_at,
+          notes: "A saved item shows a scan happened; its event is missing — the scan likely predates analytics." });
+      } else {
+        add({ type: "scan_paywall_no_scan", label: `${src} paywall before any scan`, severity: "CONFLICT",
+          sourceA: `paywall_opened · ${src}`, sourceB: "no scan_completed, no saved item", at: e.created_at,
+          notes: "This paywall can only be reached after a scan, but no scan is recorded before it." });
+      }
+    }
+
+    // 2 · A listing generated before any scan.
+    const firstListing = evs.find(e => e.event_name === "listing_generated");
+    if (firstListing && !scannedBy(firstListing.created_at)) {
+      add({ type: "listing_no_scan", label: "Listing generated before any scan",
+        severity: savedBy(firstListing.created_at) ? "WARNING" : "CONFLICT",
+        sourceA: "listing_generated", sourceB: savedBy(firstListing.created_at) ? "saved item exists, no scan_completed" : "no scan_completed, no saved item",
+        at: firstListing.created_at, notes: "Listings are generated from a scan's result." });
+    }
+
+    // 3 · Saved items with no scan events at all.
+    if (saved.length && !scans.length) {
+      add({ type: "saved_no_scan_events", label: "Saved items but no scan events",
+        severity: linked.length ? "INFO" : "WARNING",
+        sourceA: `${saved.length} saved item(s)`, sourceB: linked.length ? `${linked.length} signed-out scan(s) linked by device` : "0 scan_completed",
+        at: saved[0], notes: linked.length ? "The scans ran while signed out on this device." : "Scans predate analytics, ran signed-out on a shared device, or their events were lost." });
+    }
+
+    // 4 · Plan state vs purchase history.
+    const plan = currentPlan(d, uid);
+    const purchases = evs.filter(e => e.event_name === "paywall_purchase_completed");
+    if (plan !== "free" && purchases.length === 0) {
+      const restored = evs.some(e => e.event_name === "paywall_restore_completed");
+      add({ type: "plan_without_purchase", label: `Current ${plan} with no purchase event`,
+        severity: restored ? "INFO" : "WARNING",
+        sourceA: `account_usage · ${plan}`, sourceB: restored ? "paywall_restore_completed" : "no paywall_purchase_completed",
+        at: d.usage.get(uid)?.subscription_period_start ?? null,
+        notes: restored ? "Restored on this account rather than bought here." : "Bought before analytics, outside the app, or the confirmation event was lost. Server-side purchase records are not readable from this dashboard yet." });
+    }
+    if (plan === "free" && purchases.length > 0) {
+      add({ type: "purchase_without_plan", label: "Purchase event but currently Free", severity: "INFO",
+        sourceA: "paywall_purchase_completed", sourceB: "account_usage · free", at: purchases[0].created_at,
+        notes: "Expired, cancelled, refunded, or a sandbox purchase that lapsed." });
+    }
+
+    // 5 · Duplicate purchase events.
+    const purchaseLike = evs.filter(isPaidEvent);
+    for (let i = 1; i < purchaseLike.length; i++) {
+      const a = purchaseLike[i - 1], b = purchaseLike[i];
+      const keyA = `${a.event_name}|${metaStr(a, "selected_plan") ?? metaStr(a, "product_id") ?? ""}`;
+      const keyB = `${b.event_name}|${metaStr(b, "selected_plan") ?? metaStr(b, "product_id") ?? ""}`;
+      if (keyA === keyB && Date.parse(b.created_at) - Date.parse(a.created_at) <= DUPLICATE_PURCHASE_WINDOW_MS) {
+        add({ type: "duplicate_purchase", label: "Duplicate purchase event", severity: "WARNING",
+          sourceA: `${a.event_name} @ ${a.created_at}`, sourceB: `${b.event_name} @ ${b.created_at}`, at: b.created_at,
+          notes: "Two identical purchase events within 10 minutes — purchase counts may be inflated." });
+        break;
+      }
+    }
+
+    // 6 · Activity before the account existed. Compared with the AUTH account,
+    //     not the profile row: the profile is written at the username step,
+    //     after sign-in, so every Google/Apple user would otherwise be flagged.
+    const authAt = d.auth.get(uid)?.created_at;
+    if (authAt && evs.length && Date.parse(evs[0].created_at) < Date.parse(authAt) - BEFORE_ACCOUNT_TOLERANCE_MS) {
+      add({ type: "event_before_account", label: "Activity before the account was created", severity: "WARNING",
+        sourceA: `first event @ ${evs[0].created_at}`, sourceB: `auth account @ ${authAt}`, at: evs[0].created_at,
+        notes: "Clock skew on the device, or events attributed to the wrong account." });
+    }
+
+    // 7 · The ledger says MORE free scans were used than were ever recorded.
+    //     The reverse (more events than ledger) is normal: the ledger started
+    //     later and subscription counts reset each period.
+    const freeUsed = d.usage.get(uid)?.free_scans_used ?? 0;
+    if (plan === "free" && freeUsed > scans.length + linked.length) {
+      add({ type: "ledger_ahead_of_events", label: "Ledger counts more scans than were recorded", severity: "WARNING",
+        sourceA: `account_usage · ${freeUsed} free scans used`, sourceB: `${scans.length + linked.length} scan_completed`, at: null,
+        notes: "Scan events are missing for this user — the dashboard undercounts them." });
+    }
+
+    // 8 · Shared device.
+    if (d.link?.sharedDeviceUsers.has(uid)) {
+      const dev = d.link.sharedDevices.find(x => x.users.includes(uid));
+      add({ type: "shared_device", label: "Device shared with other accounts", severity: "INFO",
+        sourceA: `anonymous_id ${dev?.anonymousId.slice(0, 8) ?? "?"}…`, sourceB: `${(dev?.users.length ?? 1) - 1} other account(s)`, at: null,
+        notes: "Usually a test device. Signed-out activity on it is not attributed to anyone." });
+    }
+  }
+
+  // ── Event-level counts (not per user) ──────────────────────────────────
+  const raw = d.rawEvents ?? [];
+  const knownProfiles = new Set((d.allProfileRows ?? []).map(p => p.id));
+  const orphans = raw.filter(e => e.user_id && knownProfiles.size > 0 && !knownProfiles.has(e.user_id)).length;
+  const internalLeak = d.internalIds ? d.base.profiles.filter(p => d.internalIds!.has(p.id)).length : null;
+  const versionLoaded = raw.some(e => e.app_version !== undefined);
+
+  const counts = {
+    eventsTotal: exact(raw.length),
+    anonymousEvents: exact(d.link?.anonymousEvents ?? 0, "rows with no user_id — written while signed out"),
+    linkedByDevice: exact(d.link?.linkedEvents ?? 0, "attributable: the device only ever signed in as one account"),
+    ambiguousDevice: exact(d.link?.ambiguousEvents ?? 0, "device shared by several accounts — not attributed"),
+    unlinkable: exact(d.link?.unlinkableEvents ?? 0, "device never signed in — cannot be attributed"),
+    missingSession: exact(raw.filter(e => !e.session_id).length),
+    missingVersion: versionLoaded
+      ? exact(raw.filter(e => e.app_version === null || e.app_version === "").length)
+      : { value: null, trust: "NOT_TRACKED" as Trust, available: false, note: "app_version not loaded" },
+    missingRoute: versionLoaded
+      ? exact(raw.filter(e => !e.route).length, "most events are not tied to a screen route by design")
+      : { value: null, trust: "NOT_TRACKED" as Trust, available: false, note: "route not loaded" },
+    orphanEvents: exact(orphans, "user_id with no profile row at all"),
+    internalExcluded: d.internalIds === undefined
+      ? { value: null, trust: "NOT_TRACKED" as Trust, available: false, note: "is_internal column missing" }
+      : exact(d.internalIds.size, "internal/test accounts excluded from every number"),
+    internalLeaked: internalLeak === null ? null : exact(internalLeak, "internal accounts found in scope — must be 0"),
+    sharedDevices: exact(d.link?.sharedDevices.length ?? 0),
+  };
+
+  /**
+   * Scan sources side by side. They measure different things, so they are
+   * not expected to match — the note says why, instead of a red flag.
+   */
+  const ledgerTotal = d.base.profiles.reduce((a, p) => {
+    const u = d.usage.get(p.id); return a + (u?.free_scans_used ?? 0) + (u?.subscription_scans_used ?? 0);
+  }, 0);
+  const reconciliation = [
+    { source: "scan_completed events", value: d.allScans.length, meaning: "Scans performed. The dashboard's scan count." },
+    { source: "Saved items (scans table)", value: (d.allSaved ?? []).length, meaning: "Items kept in a collection — a subset of scans, plus items saved before analytics existed." },
+    { source: "Ledger (account_usage)", value: ledgerTotal, meaning: "Free scans used plus THIS period's subscription scans. Resets each billing period, so lower than lifetime." },
+  ];
+
+  const sev = { CONFLICT: 0, WARNING: 1, INFO: 2 } as const;
+  issues.sort((a, b) => sev[a.severity] - sev[b.severity] || (b.at ?? "").localeCompare(a.at ?? ""));
+  const usersWithProblems = new Set(issues.filter(i => i.severity !== "INFO").map(i => i.userId));
+  const inScope = d.base.profiles.length;
+  const loader = loaderIntegrity(d.eventsLoaded, d.eventsInDatabase);
+
+  return {
+    issues,
+    conflicts: issues.filter(i => i.severity === "CONFLICT").length,
+    warnings: issues.filter(i => i.severity === "WARNING").length,
+    infos: issues.filter(i => i.severity === "INFO").length,
+    /**
+     * Health = in-scope users with no CONFLICT or WARNING ÷ in-scope users.
+     * A defensible denominator: every user either has a problem or does not.
+     * INFO items are explained oddities and do not count against it.
+     */
+    health: derived(inScope - usersWithProblems.size, inScope, "in-scope users with no conflicts or warnings"),
+    counts, reconciliation, loader,
+    behaviour: {
+      scannedNeverSaved: exact(scannedNeverSaved, "scanned but never saved anything"),
+      saveRate: derived((d.allSaved ?? []).length, d.allScans.length, "saved items per completed scan"),
+      note: "Scanning without saving is normal behaviour, not an integrity issue.",
+    },
+    scopeNote: "Checks cover users in the current scope and their full history; the date range does not apply.",
+  };
+}
+
+// ── User Explorer ───────────────────────────────────────────────────────────
+
+export interface ExplorerParams { query?: string; uid?: string }
+export const EXPLORER_MAX_RESULTS = 25;
+export const EXPLORER_TIMELINE_LIMIT = 400;
+const UID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Accept only well-formed input; anything else is ignored, never echoed back raw. */
+export function parseExplorerParams(q: unknown, uid: unknown): ExplorerParams {
+  const query = typeof q === "string" ? q.trim().slice(0, 200) : "";
+  const id = typeof uid === "string" && UID_RE.test(uid.trim()) ? uid.trim().toLowerCase() : "";
+  return { query: query || undefined, uid: id || undefined };
+}
+
+/**
+ * Search across EVERY profile — pre-launch, internal and ghost included —
+ * because the Explorer is for looking someone up, not for counting. Matches
+ * display name, username and email (substring, case-insensitive) and user ID
+ * (prefix).
+ */
+export function searchUsers(d: V4Data, query: string) {
+  const q = query.toLowerCase();
+  const out: Array<{ userId: string; displayName: string | null; username: string | null; email: string | null;
+    createdAt: string; plan: PlanState; inScope: boolean; internal: boolean }> = [];
+  for (const p of d.allProfileRows ?? []) {
+    const email = d.auth.get(p.id)?.email ?? null;
+    const hit = (p.display_name ?? "").toLowerCase().includes(q) || (p.username ?? "").toLowerCase().includes(q)
+      || (email ?? "").toLowerCase().includes(q) || p.id.toLowerCase().startsWith(q);
+    if (!hit) continue;
+    const u = d.rawUsage?.get(p.id);
+    out.push({ userId: p.id, displayName: p.display_name, username: p.username, email, createdAt: p.created_at,
+      plan: u ? derivePlan(u, d.now) : "free", inScope: d.base.profileIds.has(p.id), internal: !!d.internalIds?.has(p.id) });
+    if (out.length >= EXPLORER_MAX_RESULTS) break;
+  }
+  return out;
+}
+
+/**
+ * One user's entire history — scope and date range deliberately do not
+ * apply. Built from the RAW events so a pre-launch or internal account can
+ * still be inspected, with its status shown rather than hidden.
+ */
+export function exploreUser(d: V4Data, uid: string, rates: { NORMAL: number; HUNT: number; LISTING: number } | null) {
+  const prof = (d.allProfileRows ?? []).find(p => p.id === uid);
+  if (!prof) return null;
+  const evs = (d.rawEvents ?? []).filter(e => e.user_id === uid).sort((a, b) => a.created_at < b.created_at ? -1 : 1);
+  const linked = d.link?.byUser.get(uid) ?? [];
+  const usage = d.rawUsage?.get(uid);
+  const auth = d.auth.get(uid);
+  const plan: PlanState = usage ? derivePlan(usage, d.now) : "free";
+  const scans = evs.filter(e => e.event_name === "scan_completed").map(e => e.created_at);
+  const saved = (d.rawSaved ?? []).filter(sv => sv.user_id === uid).map(sv => sv.created_at).sort();
+  const count = (name: string) => evs.filter(e => e.event_name === name).length;
+  const since = (days: number) => iso(ago(d.now, days));
+  const versions = evs.map(e => e.app_version).filter((v): v is string => !!v);
+
+  const journey = buildJourney({
+    userId: uid, profileCreatedAt: prof.created_at, evs, scans, saved, linked,
+    sharedDevice: d.link?.sharedDeviceUsers.has(uid) ?? false, plan, usage, auth, prof,
+  });
+
+  const limit = plan === "monthly" ? MONTHLY_SCANS : plan === "annual" ? ANNUAL_SCANS : null;
+  const cost = rates
+    ? scans.length * rates.NORMAL + count("hunt_scan_started") * rates.HUNT + count("listing_generated") * rates.LISTING
+    : null;
+
+  /**
+   * Timeline: the user's own events, the device-linked signed-out events
+   * (tagged), and the two account-creation moments, in one ascending list.
+   * Capped to the most recent rows so a heavy user cannot produce a page
+   * that never finishes rendering; the cap is stated, not silent.
+   */
+  type Row = { at: string; event: string; detail: string; linked: boolean };
+  const describe = (e: Ev) => {
+    const parts: string[] = [];
+    for (const k of ["paywall_source", "selected_plan", "product_id", "errorType", "entry_source", "primary_goal", "reason", "brand", "category"]) {
+      const v = metaStr(e, k); if (v) parts.push(`${k.replace(/_/g, " ")}: ${v}`);
+    }
+    return parts.join(" · ");
+  };
+  const rows: Row[] = [
+    ...evs.map(e => ({ at: e.created_at, event: e.event_name, detail: describe(e), linked: false })),
+    ...linked.map(e => ({ at: e.created_at, event: e.event_name, detail: describe(e), linked: true })),
+  ];
+  if (auth?.created_at) rows.push({ at: auth.created_at, event: "account_created", detail: "auth account", linked: false });
+  rows.push({ at: prof.created_at, event: "profile_created", detail: "username saved", linked: false });
+  rows.sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : 0);
+  const timeline = rows.slice(-EXPLORER_TIMELINE_LIMIT);
+
+  return {
+    identity: {
+      userId: uid, displayName: prof.display_name, username: prof.username, email: auth?.email ?? null,
+      accountCreated: auth?.created_at ?? null, profileCreated: prof.created_at,
+      plan, product: usage?.subscription_product_id ?? null, periodEnd: usage?.subscription_period_end ?? null,
+      inScope: d.base.profileIds.has(uid), internal: !!d.internalIds?.has(uid),
+      sharedDevice: d.link?.sharedDeviceUsers.has(uid) ?? false,
+      firstVersion: versions[0] ?? null, lastVersion: versions.at(-1) ?? null,
+      firstActive: evs[0]?.created_at ?? null, lastActive: evs.at(-1)?.created_at ?? null,
+    },
+    balance: {
+      freeRemaining: usage ? Math.max(0, FREE_LIFETIME_SCANS - (usage.free_scans_used ?? 0)) : FREE_LIFETIME_SCANS,
+      freeUsed: usage?.free_scans_used ?? 0,
+      packBalance: usage?.pack_scan_balance ?? 0,
+      subscriptionUsed: usage?.subscription_scans_used ?? 0,
+      subscriptionLimit: limit,
+      hasLedgerRow: !!usage,
+    },
+    usage: {
+      lifetimeScans: scans.length,
+      scans7: scans.filter(t => t >= since(7)).length,
+      scans30: scans.filter(t => t >= since(30)).length,
+      failedScans: count("scan_failed"),
+      linkedScans: linked.filter(e => e.event_name === "scan_completed").length,
+      savedItems: saved.length,
+      sessions: new Set(evs.map(e => e.session_id).filter(Boolean)).size,
+      activeDays: new Set(evs.map(e => dayOf(e.created_at))).size,
+      listings: count("listing_generated"),
+      huntOpens: count("hunt_mode_opened"),
+      huntCompletions: count("hunt_ended"),
+      progressOpens: count("progress_tab_opened"),
+      scanStoreOpens: count("scan_store_opened"),
+      // Deep Analysis has no "opened" event — only its paywall is tracked.
+      deepAnalysisOpens: null as number | null,
+      deepAnalysisPaywalls: evs.filter(e => e.event_name === "paywall_opened" && metaStr(e, "paywall_source") === "deep_analysis").length,
+    },
+    monetization: {
+      firstPaywall: (() => { const e = evs.find(x => x.event_name === "paywall_opened"); return e ? metaStr(e, "paywall_source") : null; })(),
+      paywallImpressions: count("paywall_opened"),
+      planSelections: count("paywall_plan_selected"),
+      purchaseStarts: count("paywall_purchase_started"),
+      purchaseCompletions: count("paywall_purchase_completed"),
+      cancellations: count("paywall_purchase_cancelled"),
+      restores: count("paywall_restore_completed"),
+      journey,
+    },
+    costEstimate: cost,
+    timeline,
+    timelineTotal: rows.length,
+  };
+}
+
+// ── Founder Attention ───────────────────────────────────────────────────────
+
+export interface AttentionItem {
+  level: "critical" | "warning" | "opportunity" | "info";
+  icon: string;
+  title: string;
+  detail: string;
+  anchor: string;
+}
+
+/**
+ * Rules over numbers already on the page — no model, no guessing. Each rule
+ * states its threshold so it can be read and argued with. At most five,
+ * most urgent first.
+ */
+export const ATTENTION_RULES = {
+  activationBelow: 0.5,      // fewer than half have scanned
+  activationMinUsers: 10,    // below this, a rate is too noisy to call out
+  powerUserScans30d: 25,
+};
+
+export function getFounderAttention(m: any): AttentionItem[] {
+  const out: AttentionItem[] = [];
+  const ok = (x: any) => x && typeof x === "object" && !("error" in x && typeof x.error === "string");
+  const di = m.dataIntegrity, act = m.activation, pj = m.paidJourneys, pu = m.powerUserPeak;
+
+  if (ok(di) && (di.loader?.status === "skipped" || di.loader?.status === "duplicated")) {
+    out.push({ level: "critical", icon: "🚨", title: "Loader integrity failed",
+      detail: `${di.loader.note} Every event-based number on this page is suspect until this is resolved.`, anchor: "dq" });
+  }
+  if (ok(di) && di.conflicts > 0) {
+    const ex = di.issues.find((i: IntegrityIssue) => i.severity === "CONFLICT");
+    out.push({ level: "warning", icon: "⚠️", title: `${di.conflicts} analytics conflict${di.conflicts === 1 ? "" : "s"}`,
+      detail: ex ? `e.g. ${ex.user ?? "a user"}: ${ex.label.toLowerCase()}.` : "Sources disagree.", anchor: "integrity" });
+  }
+  if (ok(act)) {
+    const total = act.lifecycle?.[0]?.users ?? 0, scanned = act.lifecycle?.[1]?.users ?? 0;
+    if (total >= ATTENTION_RULES.activationMinUsers && scanned / total < ATTENTION_RULES.activationBelow) {
+      out.push({ level: "warning", icon: "⚠️", title: "Activation bottleneck",
+        detail: `${total - scanned} of ${total} users acquired in this range have never completed a scan.`, anchor: "act" });
+    }
+  }
+  if (ok(pj)) {
+    const neverScanned = (pj.journeys ?? []).filter((j: PaidJourney) => !j.firstScanAt).length;
+    if (neverScanned > 0) {
+      out.push({ level: "info", icon: "💡", title: `${neverScanned} paying user${neverScanned === 1 ? " has" : "s have"} never completed a scan`,
+        detail: "They paid — mostly at the onboarding offer — but have not used the core feature yet.", anchor: "paid" });
+    }
+  }
+  if (pu && pu.scans30 >= ATTENTION_RULES.powerUserScans30d) {
+    out.push({ level: "opportunity", icon: "🔥", title: "Power user",
+      detail: `${pu.user ?? "One user"} (${pu.plan}) completed ${pu.scans30} scans in the last 30 days.`, anchor: "explorer" });
+  }
+  const order = { critical: 0, warning: 1, opportunity: 2, info: 3 } as const;
+  return out.sort((a, b) => order[a.level] - order[b.level]).slice(0, 5);
+}
+
+/** The single most active user in scope over the last 30 days. */
+export function getPowerUserPeak(d: V4Data) {
+  const t30 = iso(ago(d.now, 30));
+  const counts = new Map<string, number>();
+  for (const sc of d.allScans) if (sc.user_id && sc.created_at >= t30) counts.set(sc.user_id, (counts.get(sc.user_id) ?? 0) + 1);
+  let top: string | null = null, n = 0;
+  for (const [uid, c] of counts) if (c > n) { n = c; top = uid; }
+  if (!top) return null;
+  const p = d.profiles.get(top);
+  return { userId: top, user: p?.display_name ?? p?.username ?? null, plan: currentPlan(d, top), scans30: n };
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────────
 
 export async function getFounderDashboardV4Metrics(
@@ -1467,6 +2081,7 @@ export async function getFounderDashboardV4Metrics(
   rangeParams: { preset?: unknown; from?: unknown; to?: unknown } = {},
   /** The route's single load, shared with V3. Loaded here only if absent. */
   preloaded?: BaseData,
+  explorerParams: ExplorerParams = {},
 ) {
   const cutover = getCutover(env);
   const cohort = getLaunchCohort(scope, env);
@@ -1478,9 +2093,14 @@ export async function getFounderDashboardV4Metrics(
   const safe = <T,>(name: string, fn: () => T): T | { error: string } => { try { return fn(); } catch (e: any) { return { error: `${name}: ${e?.message ?? e}` }; } };
   const paywalls = safe("paywalls", () => getPaywalls(d, cutover));
   const journeys = safe("paidJourneys", () => getPaidJourneys(d));
-  return {
+  const rates = v3Metrics?.cost && !isErrLike(v3Metrics.cost) ? v3Metrics.cost.rates ?? null : null;
+  const explorer = await safeAsync("userExplorer", () => getExplorer(d, explorerParams, rates));
+  const out: any = {
     ...v3Metrics,
     cutover, cohort, window,
+    dataIntegrity: safe("dataIntegrity", () => getDataIntegrity(d)),
+    powerUserPeak: safe("powerUserPeak", () => getPowerUserPeak(d)),
+    userExplorer: explorer,
     acquisition: safe("acquisition", () => getAcquisition(d)),
     activation:  safe("activation", () => getActivation(d)),
     paywalls, paidJourneys: journeys,
@@ -1495,5 +2115,42 @@ export async function getFounderDashboardV4Metrics(
     unitEconomics: safe("unitEconomics", () => getUnitEconomics(d, v3Metrics?.cost)),
     dataQualityV4: safe("dataQualityV4", () => getDataQualityV4(d, cutover)),
     preLaunchProfiles: d.preLaunchProfiles,
+  };
+  // Last: Founder Attention reads the finished metrics, never raw data, so it
+  // can only ever restate what the page itself shows.
+  out.founderAttention = safe("founderAttention", () => getFounderAttention(out));
+  return out;
+}
+
+async function safeAsync<T>(name: string, fn: () => Promise<T>): Promise<T | { error: string }> {
+  try { return await fn(); } catch (e: any) { return { error: `${name}: ${e?.message ?? e}` }; }
+}
+
+/**
+ * Collection counts for ONE selected user — three small count queries, run
+ * only when a user is selected. Each failure degrades to null on its own.
+ */
+async function collectionCounts(uid: string) {
+  const one = async (table: string) => {
+    try { return await countRows(table, { col: "user_id", eq: uid }); } catch { return null; }
+  };
+  const [achievements, brands, diamonds] = await Promise.all([
+    one("user_achievements"), one("user_brand_discoveries"), one("user_diamond_discoveries"),
+  ]);
+  return { achievements, brands, diamonds };
+}
+
+async function getExplorer(d: V4Data, params: ExplorerParams, rates: any) {
+  const results = params.query ? searchUsers(d, params.query) : null;
+  const user = params.uid ? exploreUser(d, params.uid, rates) : null;
+  const collections = user ? await collectionCounts(params.uid!) : null;
+  return {
+    // The query is echoed back only so the search box keeps its text; it is
+    // escaped at render and never placed in a URL.
+    query: params.query ?? null,
+    results,
+    selectedUid: params.uid ?? null,
+    user: user ? { ...user, collections } : null,
+    notFound: !!params.uid && !user,
   };
 }
