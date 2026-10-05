@@ -268,16 +268,55 @@ describe("scan store", () => {
   });
 });
 
-describe("dead emitter wired up", () => {
-  it("scan_completed is finally emitted at the completion point", () => {
-    // founderMetrics has always queried it; nothing ever called the emitter.
-    expect(code("app/loading.tsx")).toMatch(/m\.recordScanCompleted\(\{ scan_id: scanId \}\)/);
-    expect(code("server/founderMetrics.ts")).toContain('"scan_completed"');
+/**
+ * scan_completed is emitted EXACTLY ONCE per successful scan.
+ *
+ * History, so this is not repeated: an audit searched for callers of the
+ * recordScanCompleted() helper, found none, and concluded the event was never
+ * sent. It was — directly, via logEvent("scan_completed"), with 1,715 rows in
+ * production at the time. A second emitter was then added on that false
+ * premise, which would have doubled every event-based scan count (and the
+ * in-session completedScanCount) the moment the build shipped. It was caught
+ * against production data before release.
+ *
+ * The lesson the test encodes: search for the EVENT NAME, not one helper that
+ * happens to produce it.
+ */
+describe("scan_completed has a single emitter", () => {
+  it("loading.tsx emits scan_completed exactly once", () => {
+    const l = code("app/loading.tsx");
+    const direct = (l.match(/logEvent\(\s*["']scan_completed["']/g) ?? []).length;
+    const viaHelper = (l.match(/recordScanCompleted\s*\(/g) ?? []).length;
+    expect(direct + viaHelper).toBe(1);
+    expect(direct).toBe(1);   // the original, live emitter, which carries confidence/category/brand
   });
 
-  it("fires before any save decision, from the analysis result", () => {
+  it("nothing else in the app emits it", () => {
+    for (const f of ["app/results.tsx", "app/hunt-active.tsx", "app/(tabs)/index.tsx"]) {
+      let src = "";
+      try { src = code(f); } catch { continue; }
+      expect(src, f).not.toMatch(/logEvent\(\s*["']scan_completed["']/);
+      expect(src, f).not.toMatch(/recordScanCompleted\s*\(/);
+    }
+  });
+
+  it("the session completed-scan counter is incremented once per scan", () => {
+    /**
+     * recordScanCompleted() increments the counter INTERNALLY, so a call to it
+     * counts as an increment even though the string never appears here.
+     * Counting only the direct call would pass on the very bug it guards.
+     */
+    const helperIncrements = /incrementSessionCount\(\s*["']completedScanCount["']\s*\)/
+      .test(code("lib/analytics.ts").slice(code("lib/analytics.ts").indexOf("export function recordScanCompleted")));
+    expect(helperIncrements).toBe(true);   // documents why helper calls count below
     const l = code("app/loading.tsx");
-    expect(l.indexOf("recordScanCompleted")).toBeGreaterThan(l.indexOf("analysis response received"));
+    const direct = (l.match(/incrementSessionCount\(\s*["']completedScanCount["']\s*\)/g) ?? []).length;
+    const viaHelper = (l.match(/recordScanCompleted\s*\(/g) ?? []).length;
+    expect(direct + viaHelper).toBe(1);
+  });
+
+  it("the dashboard still reads the event", () => {
+    expect(code("server/founderMetrics.ts")).toContain('"scan_completed"');
   });
 });
 
@@ -286,8 +325,13 @@ describe("internal account exclusion", () => {
 
   it("filters internal profiles at the source, not per metric", () => {
     expect(fm).toMatch(/const realProfiles = allProfiles\.filter\(p => p\.is_internal !== true\);/);
-    // Applied before the ghost filter, so both narrow the same set.
-    expect(fm.indexOf("realProfiles")).toBeLessThan(fm.indexOf("ghostCutoff"));
+    // Applied before the ghost filter, so both narrow the same set: the ghost
+    // filter receives the ALREADY internally-filtered profiles. (Asserted
+    // directly — the ghost rule now lives in filterGhostProfiles(), declared
+    // above the loader, so comparing where words sit in the file no longer
+    // reflects the order the filters run in.)
+    expect(fm).toMatch(/const profiles = filterGhostProfiles\(realProfiles, events\);/);
+    expect(fm).toMatch(/const ghostProfiles = realProfiles\.length - profiles\.length;/);
   });
 
   it("survives running BEFORE the migration", () => {

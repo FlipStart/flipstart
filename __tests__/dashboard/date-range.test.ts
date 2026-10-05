@@ -141,6 +141,10 @@ describe("scope and range are independent filters", () => {
       // Post-launch user, OUTSIDE the range.
       ev("u-post", "paywall_opened", "2026-09-01T16:00:00Z", { paywall_source: "scan_limit" }),
       ev("u-post", "scan_store_opened", "2026-09-01T16:05:00Z", { entry_mode: "browse" }),
+      // Scans are scan_completed events — same users and times as `scans` below.
+      ev("u-pre",  "scan_completed", "2026-09-20T15:00:00Z"),   // in range, wrong cohort
+      ev("u-post", "scan_completed", "2026-09-20T17:00:00Z"),   // in range, right cohort
+      ev("u-post", "scan_completed", "2026-09-01T17:00:00Z"),   // out of range
     ],
   } as any;
   const scans = [
@@ -172,7 +176,8 @@ describe("scope and range are independent filters", () => {
     // Only u-post is eligible; only Sep 20 activity counts.
     expect(d.base.profiles.map((p: any) => p.id)).toEqual(["u-post"]);
     expect(d.base.events.every((e: any) => e.user_id === "u-post")).toBe(true);
-    expect(d.base.events.length).toBe(1);
+    // u-post's Sep 20 paywall view and Sep 20 scan; nothing from u-pre, nothing from Sep 1.
+    expect(d.base.events.length).toBe(2);
   });
 
   it("7 · a pre-launch user active during the range stays excluded", async () => {
@@ -295,7 +300,7 @@ describe("scope and range are independent filters", () => {
   it("20 · all-time scope with all-available range is the full dataset", async () => {
     const d = await load("all", { preset: "all" });
     expect(d.base.profiles.length).toBe(2);
-    expect(d.base.events.length).toBe(5);
+    expect(d.base.events.length).toBe(8);   // 5 activity events + 3 scan events
     expect(d.scans.length).toBe(3);
   });
 });

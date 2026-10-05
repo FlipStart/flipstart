@@ -27,6 +27,7 @@ import {
   renderBrands, renderDiamonds, renderListings, renderSold, renderScans,
 } from "./founderDashboardV3";
 import type { Metric, Trust, PaywallRow, PaidJourney, Scope, AnalysisWindow, RangePreset } from "./founderMetricsV4";
+import { formatCentralDateTime } from "./dashboardDates";
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -45,7 +46,8 @@ const hrs = (h: number | null): string => {
   if (h < 48) return `${h.toFixed(1)}h`;
   return `${(h / 24).toFixed(1)}d`;
 };
-const when = (s: string | null | undefined): string => s ? esc(s.slice(0, 16).replace("T", " ")) : "—";
+// Central, like everything else on the page — not the raw UTC ISO string.
+const when = (s: string | null | undefined): string => { const f = formatCentralDateTime(s); return f ? esc(f) : "—"; };
 
 const TRUST_LABEL: Record<Trust, string> = { EXACT: "exact", DERIVED: "derived", ESTIMATED: "est.", NOT_TRACKED: "n/t", LEGACY: "legacy" };
 const TRUST_TIP: Record<Trust, string> = {
@@ -67,6 +69,11 @@ function m(label: string, x: Metric | null | undefined, opts: { dp?: number; fmt
   else { v = num(x.value, opts.dp ?? 0); if (x.d !== undefined) sub = `n=${num(x.d)} ${small(x.d)}`; }
   return `<div class="stat"><div class="stat-v">${v} ${badge(x.trust)}</div><div class="stat-l">${esc(label)}</div>${sub || x.note ? `<div class="stat-s">${sub}${x.note ? ` <span class="muted">${esc(x.note)}</span>` : ""}</div>` : ""}</div>`;
 }
+/** A card whose answer is a word or a date rather than a number. */
+function textCard(label: string, text: string | null | undefined, trust: Trust = "EXACT", sub?: string): string {
+  const v = text ? esc(text) : `<span class="muted">none</span>`;
+  return `<div class="stat"><div class="stat-v stat-text">${v} ${badge(trust)}</div><div class="stat-l">${esc(label)}</div>${sub ? `<div class="stat-s">${esc(sub)}</div>` : ""}</div>`;
+}
 const grid = (cards: string[]) => `<div class="stat-grid">${cards.join("")}</div>`;
 const na = (label: string, note = "Awaiting Analytics V4 client release") => `<div class="card na"><div class="card-h">${esc(label)}</div><div class="muted">${esc(note)}</div></div>`;
 const rate = (n: number, d: number) => d ? `${num(n)} / ${num(d)} · ${pct(n / d)} ${small(d)}` : "—";
@@ -81,9 +88,14 @@ const funnel = (rows: Array<{ stage: string; users: number; note?: string }>) =>
     return `<tr><td class="stg">${esc(r.stage)}${r.note ? ` <span class="muted">${esc(r.note)}</span>` : ""}</td><td class="r">${num(r.users)}</td><td class="r">${top ? pct(r.users / top) : "—"}</td><td class="w">${bar(top ? r.users / top * 100 : 0)}</td><td>${drop}</td></tr>`;
   }).join("")}</table>`;
 };
-const buckets = (obj: Record<string, number>, total?: number) => {
+/**
+ * `unit` names what the counts are. Defaults to "Users"; plan selections pass
+ * "Selections", because they count selection EVENTS — one user choosing
+ * Annual twice is two rows, and calling that "users" overstated reach.
+ */
+const buckets = (obj: Record<string, number>, total?: number, unit = "Users") => {
   const t = total ?? Object.values(obj).reduce((a, b) => a + b, 0);
-  return table(["Bucket", "Users", "Share"], Object.entries(obj).map(([k, v]) => [esc(k), num(v), t ? pct(v / t) : "—"]));
+  return table(["Bucket", unit, "Share"], Object.entries(obj).map(([k, v]) => [esc(k), num(v), t ? pct(v / t) : "—"]));
 };
 const legend = () => `<div class="legend">${(["EXACT", "DERIVED", "ESTIMATED", "NOT_TRACKED", "LEGACY"] as Trust[]).map(t => `${badge(t)} ${esc(TRUST_TIP[t])}`).join(" &nbsp; ")}</div>`;
 
@@ -104,13 +116,13 @@ function renderExecutive(x: any): string {
   return section("exec", "1 · Executive", scopeNote + banner + legend() + grid([
     m("Total users", a.totalUsers), m("New users in range", a.newInRange), m("New users 7d", a.new7), m("New users 30d", a.new30),
     m("DAU", a.dau), m("WAU", a.wau), m("MAU", a.mau), m("DAU / MAU", a.dauMau, { fmt: "pct" }),
-    m("Scans 7d", sc && !isErr(sc) ? { value: sc.scans7 ?? sc.last7 ?? null, trust: "EXACT" } : null),
+    m("Scans 7d", a && !isErr(a) ? a.scans7 : null),
     m("Activated (1+ scan)", x.activation && !isErr(x.activation) ? x.activation.activationRate : null),
     m("Paywall viewers 7d", pw && !isErr(pw) ? pw.viewers7 : null), m("Purchases 7d", pw && !isErr(pw) ? pw.purchases7 : null),
     m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Holding pack scans", mo.scanPackHolders),
     m("Total purchases", { value: (mo.purchaseCompletions?.value ?? 0) + (mo.scanPackPurchases?.value ?? 0), trust: "EXACT" }),
     m("Revenue", mo.revenue), m("MRR", mo.mrr),
-    m("Est. API spend", ue && !isErr(ue) ? ue.estimatedSpend : null, { dp: 2 }),
+    m("Est. API spend (in range)", ue && !isErr(ue) ? ue.estimatedSpend : null, { dp: 2 }),
     m("D7 retention", ret && !isErr(ret) ? ret.d7 : null),
   ]));
 }
@@ -126,14 +138,14 @@ function renderAcquisition(a: any): string {
   const rangeBlock = `<div class="card"><div class="card-h">Selected window · ${esc(a.rangeLabel ?? "")}</div>${grid([
     m("New users in range", a.newInRange),
     m("Signups / day", a.signupsPerDay, { dp: 2 }),
-    m("Peak signup day", { value: null, trust: "EXACT", note: a.peakSignupDay ? `${a.peakSignupDay} · ${num(a.peakSignupCount?.value)} signups` : "no signups in range" }),
+    textCard("Peak signup day", a.peakSignupDay, "EXACT", a.peakSignupDay ? `${num(a.peakSignupCount?.value)} signups` : "no signups in range"),
     m("Share of cohort", a.shareOfCohort),
   ])}<div class="muted">Counted by account creation date inside the window, in ${esc("Central Time")}. ${esc(String(a.rangeDays ?? 0))} day(s) in range.</div></div>`;
   const trend = table(["Day", "New", "Active"], a.trend.slice(-14).reverse().map((r: any) => [esc(r.day), num(r.newUsers), num(r.active)]), "compact");
   const growth = `<div class="spark">${a.cumulative.map((p: any) => `<span title="${esc(p.day)}: ${p.users}" style="height:${Math.max(2, p.users / (a.cumulative.at(-1)?.users || 1) * 40)}px"></span>`).join("")}</div><div class="muted">Cumulative users across the charted window</div>`;
   return section("acq", "2 · Acquisition / Users", rangeBlock + `<div class="card"><div class="card-h">Current momentum <span class="muted">— fixed windows, not affected by the date selection</span></div>${grid([
     m("Total profiles", a.totalUsers), m("New today", a.newToday), m("New 7d", a.new7), m("New 30d", a.new30),
-    m("Active today", a.dau), m("Active 7d", a.wau), m("Active 30d", a.mau),
+    m("Active today", a.dau), m("Active 7d (rolling)", a.wau), m("Active 30d (rolling)", a.mau),
   ])}</div>` + `<div class="two"><div class="card"><div class="card-h">Cumulative growth</div>${growth}</div><div class="card"><div class="card-h">Daily trend <span class="muted">— last 14 charted days, Central</span></div>${trend}</div></div>
   <div class="note-block">${badge("NOT_TRACKED")} ${esc(a.attributionNote)}</div>`);
 }
@@ -144,20 +156,20 @@ function renderActivation(x: any): string {
     m("Activation rate", x.activationRate), m("Never scanned", x.neverScanned), m("Onboarding completed (event)", x.onboardingCompleted),
     m("Median account → first scan", x.hoursToFirstScanMedian, { fmt: "hrs" }), m("Mean account → first scan", x.hoursToFirstScanMean, { fmt: "hrs" }),
   ]) + `<div class="card"><div class="card-h">Lifecycle (nested — each stage is a subset of the one above)</div>${funnel(x.lifecycle)}</div>`,
-  "first scan from the scans table, not events");
+  "scans are scan_completed events, not saved items");
 }
 
 function renderMonetization(mo: any): string {
   if (isErr(mo)) return errorCard("Monetization", mo);
   return section("mon", "4 · Monetization", grid([
     m("Current Free", mo.currentFree), m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Total paying", mo.totalPaying),
-    m("Holding pack scans (ledger)", mo.scanPackHolders), m("Pack purchases Apple-approved", mo.scanPackApproved), m("Paywall viewers (all time)", mo.paywallViewers),
+    m("Holding pack scans (ledger)", mo.scanPackHolders), m("Pack purchases Apple-approved", mo.scanPackApproved), m("Paywall viewers (in range)", mo.paywallViewers),
     m("Purchase starts", mo.purchaseStarts), m("Purchase completions", mo.purchaseCompletions),
     m("Cancellations", mo.purchaseCancellations), m("Failures", mo.purchaseFailures),
     m("Viewer → purchase", mo.viewToPurchase),
     m("Monthly purchases", mo.monthlyPurchases), m("Annual purchases", mo.annualPurchases), m("Scan-pack purchases", mo.scanPackPurchases),
     m("Known revenue", mo.revenue), m("MRR", mo.mrr),
-  ]) + `<div class="card"><div class="card-h">Plan selection (all paywalls)</div>${buckets({ Monthly: mo.planSelection.monthly, Annual: mo.planSelection.annual })}</div>`);
+  ]) + `<div class="card"><div class="card-h">Plan selections in range (all paywalls)</div>${buckets({ Monthly: mo.planSelection.monthly, Annual: mo.planSelection.annual }, undefined, "Selections")}</div>`);
 }
 
 function renderPaywalls(pw: any): string {
@@ -180,7 +192,7 @@ function renderPaywalls(pw: any): string {
     ? na("Post-cutover outcomes (Continue Free, close, backgrounded, balance and entitlement at impression)")
     : `<div class="card"><div class="card-h">Post-cutover outcomes</div>${table(["Paywall", "Continue Free", "Closed", "Backgrounded w/ paywall", "Avg scans left", "Entitlement F/M/A/?"], v4)}</div>`;
   return section("pw", "5 · Paywalls", grid([
-    m("Most shown", { value: null, trust: "EXACT", note: pw.mostShown ?? "—" }), m("Unique viewers (all time)", pw.totalViewers),
+    textCard("Most shown (in range)", pw.mostShown), m("Unique viewers (in range)", pw.totalViewers),
     m("Viewers 7d", pw.viewers7), m("Purchases 7d", pw.purchases7), m("Legacy dismissed rows", pw.legacyDismissed),
   ]) + `<div class="card"><div class="card-h">Per-paywall comparison (sorted by impressions)</div>${table(["Paywall", "Impr.", "Uniq", "Impr/viewer", "Monthly sel.", "Annual sel.", "Starts", "Purchases", "Cancel", "Fail", "Impr→purchase", "Start→complete"], rows)}</div>
   <div class="two"><div class="card"><div class="card-h">Repeat exposure (impressions per viewer)</div>${buckets(pw.repeatExposure)}</div>${v4Block}</div>`,
@@ -229,7 +241,7 @@ function renderPaidJourneys(pj: any): string {
   ]);
   const attribution = table(["Converting paywall", "Purchases"], pj.byConvertingPaywall.map((r: any) => [r.source === "UNKNOWN" ? `<span class="muted">UNKNOWN</span>` : `<code>${esc(r.source)}</code>`, num(r.purchases)]));
   return section("paid", "7 · Paid User Journeys", agg +
-    `<div class="two"><div class="card"><div class="card-h">Time to pay (mutually exclusive)</div>${buckets(pj.timeBuckets)}<div class="muted">Placed by first match: same session → same UTC day → &lt;24h → 1–3d → 4–7d → 8–14d → 15+d.</div></div>
+    `<div class="two"><div class="card"><div class="card-h">Time to pay (mutually exclusive)</div>${buckets(pj.timeBuckets)}<div class="muted">Placed by first match: same session → same Central day → &lt;24h → 1–3d → 4–7d → 8–14d → 15+d.</div></div>
      <div class="card"><div class="card-h">Scans before first payment</div>${buckets(pj.scanBuckets)}</div></div>
      <div class="card"><div class="card-h">Purchases by converting paywall</div>${attribution}<div class="muted">Direct attribution = source on purchase_completed, confirmed by the preceding purchase_started. Disagreement → UNKNOWN.</div></div>
      <div class="card wide"><div class="card-h">Every paying user (newest first, up to 200) — founder-only, contains email</div>
@@ -317,8 +329,8 @@ function renderFeatureUsage(f: any): string {
 function renderUnitEconomics(u: any): string {
   if (isErr(u)) return errorCard("Unit economics", u);
   return section("cost", "14 · Cost / Unit Economics", grid([
-    m("Est. API spend (all time)", u.estimatedSpend, { dp: 2 }), m("Est. cost / scan", u.costPerScan, { dp: 3 }), m("Est. cost / user", u.costPerUser, { dp: 3 }),
-    m("Est. cost / active user (30d)", u.costPerActiveUser30, { dp: 3 }), m("Scans 30d", u.scans30),
+    m("Est. API spend (in range)", u.estimatedSpend, { dp: 2 }), m("Est. cost / scan", u.costPerScan, { dp: 3 }), m("Est. cost / user in scope", u.costPerUser, { dp: 3 }),
+    m("Est. cost / active user (in range)", u.costPerActiveUser, { dp: 3 }), m("Scans in range", u.scansInRange), m("Scans 30d", u.scans30),
   ]) + `<div class="note-block">${badge("ESTIMATED")} ${esc(u.marginNote)}</div>` + (u.v3 && !isErr(u.v3) ? renderCost(u.v3).replace(/<h2>[\s\S]*?<\/h2>/, `<h3>V3 cost detail</h3>`) : ""));
 }
 
@@ -334,6 +346,21 @@ function renderDataQualityV4(q: any): string {
     m("Events in window", wq.eventsInWindow), m("Events all time", wq.eventsAllTime),
     m("Scans in window", wq.scansInWindow), m("Scans all time", wq.scansAllTime),
   ])}${wq.warning ? `<div class="warnline">${esc(wq.warning)}</div>` : ""}</div>` : "";
+  /**
+   * Loader integrity first: if it fails, nothing else on the page is
+   * trustworthy, so it is the first thing to read in this section.
+   */
+  const li = q.loader;
+  const loaderBlock = li ? `<div class="card"><div class="card-h">Loader integrity <span class="muted">— checked on every page load</span></div>${grid([
+    m("Events loaded", li.loaded), m("Events in database", li.inDatabase),
+    textCard("Status", li.status === "ok" ? "OK" : li.status === "unverified" ? "Unverified" : li.status === "duplicated" ? "Duplicated rows" : "Skipped rows",
+      li.status === "ok" ? "EXACT" : "LEGACY", li.note),
+  ])}</div>` : "";
+  const ss = q.scanSources;
+  const scanBlock = ss ? `<div class="card"><div class="card-h">Scan sources</div>${grid([
+    m("Scans completed", ss.scansCompleted), m("Saved items", ss.savedItems), m("Save rate", ss.saveRate),
+    m("Unattributable scans", ss.anonymousScans),
+  ])}<div class="muted">Scans are <code>scan_completed</code> events. Saved items are rows in the <code>scans</code> table — the user's collection, which earlier versions of this dashboard counted as scans.</div></div>` : "";
   const sc = q.scope;
   const scopeBlock = sc ? `<div class="card"><div class="card-h">Acquisition scope</div>${grid([
     m("Scope", { value: null, trust: "EXACT", note: sc.scope === "all" ? "All time" : `Post launch · ${sc.launchAt ?? "—"}` }),
@@ -342,9 +369,9 @@ function renderDataQualityV4(q: any): string {
     m("Anonymous events excluded", sc.anonymousExcluded),
   ])}<div class="muted">${esc(sc.note)}${sc.assumed ? " · Launch time-of-day assumed 00:00 UTC; set FLIPSTART_GLOBAL_LAUNCH_AT to correct." : ""}</div>
   <div class="note-block">${badge("LEGACY")} ${esc(sc.scanPackWarning)}</div></div>` : "";
-  return section("dq", "23 · Data Quality", `<div class="banner ${c.configured ? "ok" : "warn"}">${esc(c.status)}</div>` + winBlock + scopeBlock + grid([
+  return section("dq", "23 · Data Quality", `<div class="banner ${c.configured ? "ok" : "warn"}">${esc(c.status)}</div>` + loaderBlock + winBlock + scanBlock + scopeBlock + grid([
     m("Analytics events", q.totalEvents), m("Authenticated", q.authenticated), m("Anonymous", q.anonymous), m("Missing session_id", q.missingSession),
-    m("Latest event", { value: null, trust: "EXACT", note: q.latestEvent ?? "—" }),
+    textCard("Latest event", q.latestEvent ? formatCentralDateTime(q.latestEvent) : null, "EXACT", "Central Time"),
     m("Post-cutover events", q.postCutoverEvents), m("Snapshot coverage", q.snapshotCoverage), m("Unknown snapshot %", q.unknownSnapshotPct),
     m("Legacy paywall_dismissed", q.legacyDismissed), m("Continue Free (post)", q.continueFreePost), m("paywall_closed (post)", q.closedPost),
     m("scan_completed (post)", q.scanCompletedPost), m("scan_completed (legacy)", q.scanCompletedLegacy),
@@ -433,6 +460,7 @@ section{margin:0 0 26px}section h2{font-size:15px;margin:0 0 10px;padding-top:6p
 h3{font-size:12.5px;color:var(--muted);margin:14px 0 6px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:10px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:9px 11px}.stat-v{font-size:19px;font-weight:600;line-height:1.2}.stat-l{color:var(--muted);font-size:11px;margin-top:2px}.stat-s{color:var(--muted);font-size:10.5px;margin-top:2px}
+.stat-v.stat-text{font-size:15px}
 .stat.na .stat-v{font-size:12px;color:var(--muted);font-weight:500}
 .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:10px}.card-h{font-weight:600;font-size:12px;margin-bottom:8px}.card.na{color:var(--muted)}.card.wide{overflow-x:auto}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:900px){.two{grid-template-columns:1fr}}

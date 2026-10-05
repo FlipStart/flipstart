@@ -139,3 +139,24 @@ export function centralDaysBetween(fromDay: string, toDay: string): number {
   if (!r) return 0;
   return Math.max(0, Math.round((r.endMs - r.startMs) / 86_400_000));
 }
+/**
+ * "2026-10-04 12:00" in Central, for timestamps shown in tables.
+ *
+ * Tables previously sliced the raw ISO string, which is UTC — so an evening
+ * purchase inside an "Oct 4" window displayed as "2026-10-05 02:37". The
+ * whole dashboard reads in Central; its timestamps have to as well.
+ */
+const dateTimeFmt = new Intl.DateTimeFormat("en-CA", {
+  timeZone: DASHBOARD_TZ, hour12: false,
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+});
+export function formatCentralDateTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const t = Date.parse(value);
+  if (!Number.isFinite(t)) return "";
+  const p = dateTimeFmt.formatToParts(new Date(t));
+  const g = (type: string) => p.find(x => x.type === type)?.value ?? "";
+  // Some engines render midnight as "24"; normalise to "00".
+  const hour = g("hour") === "24" ? "00" : g("hour");
+  return `${g("year")}-${g("month")}-${g("day")} ${hour}:${g("minute")}`;
+}

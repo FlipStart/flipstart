@@ -50,21 +50,43 @@ function pct(part: number, whole: number): number {
 export async function fetchAll<T = any>(
   table: string,
   columns: string,
-  opts: { gte?: { col: string; val: string }; maxRows?: number } = {},
+  opts: { gte?: { col: string; val: string }; maxRows?: number; order?: string[] } = {},
 ): Promise<T[]> {
   const sb = getSupabaseAdmin();
   if (!sb) throw new Error("Supabase not configured");
   const pageSize = 1000;
-  const maxRows  = opts.maxRows ?? 50000;
+  const maxRows  = opts.maxRows ?? 250000;
   const out: T[] = [];
+  let pages = 0;
   for (let from = 0; from < maxRows; from += pageSize) {
-    let q = sb.from(table).select(columns).range(from, from + pageSize - 1);
+    let q = sb.from(table).select(columns);
     if (opts.gte) q = q.gte(opts.gte.col, opts.gte.val);
+    /**
+     * A stable ORDER BY is what makes offset paging correct.
+     *
+     * Without one, Postgres is free to return rows in a different order on
+     * each page request, so rows can be skipped or returned twice across page
+     * boundaries. Ordering by created_at first means rows inserted DURING the
+     * fetch land at the end rather than shifting earlier pages; the unique id
+     * breaks ties so no two rows ever compare equal.
+     */
+    for (const col of opts.order ?? []) q = q.order(col, { ascending: true });
+    q = q.range(from, from + pageSize - 1);
     const { data, error } = await q;
     if (error) throw new Error(`${table}: ${error.message}`);
     if (!data || data.length === 0) break;
     out.push(...(data as T[]));
+    pages++;
     if (data.length < pageSize) break;
+  }
+  // A multi-page read with no order is the case that can skip or duplicate
+  // rows. Callers order the tables known to exceed one page; this flags any
+  // other table the day it grows past 1,000 rows, instead of failing quietly.
+  if (pages > 1 && !(opts.order && opts.order.length)) {
+    console.warn(`[founder] fetchAll(${table}) read ${pages} pages without an ORDER BY — rows may be skipped or duplicated`);
+  }
+  if (out.length >= maxRows) {
+    console.warn(`[founder] fetchAll(${table}) hit the ${maxRows}-row cap — results are truncated`);
   }
   return out;
 }
@@ -96,6 +118,13 @@ export interface BaseData {
   profileIds: Set<string>;
   /** Count of excluded ghost profiles, surfaced in Data Quality. */
   ghostProfiles: number;
+  /**
+   * analytics_events rows in the DATABASE, from an exact count query. Compared
+   * against events.length in Data Quality: if they differ, the loader dropped
+   * or duplicated rows and every event-based number on the page is suspect.
+   * Undefined if the count query failed — never guessed.
+   */
+  eventsInDatabase?: number;
   // analytics events, lightweight projection
   events: Array<{
     user_id: string | null;
@@ -120,6 +149,28 @@ export interface BaseData {
 // mid-signup (created seconds ago, currently on username-setup) counted as real.
 const GHOST_GRACE_MS = 60 * 60 * 1000; // 1 hour
 
+/**
+ * A ghost is a profile that never finished signup, is past the grace window,
+ * AND has no activity at all. Pure, so the rule is testable without a
+ * database. See loadBaseData for why activity overrides the flag.
+ */
+export function filterGhostProfiles<P extends { id: string; created_at: string; onboarding_complete?: boolean }>(
+  profiles: P[],
+  events: Array<{ user_id: string | null }>,
+  now: number = Date.now(),
+): P[] {
+  const activeIds = new Set<string>();
+  for (const e of events) if (e.user_id) activeIds.add(e.user_id);
+  const ghostCutoff = now - GHOST_GRACE_MS;
+  return profiles.filter(p => {
+    if (p.onboarding_complete === true) return true;         // username saved
+    if (activeIds.has(p.id)) return true;                    // did something — real
+    const created = Date.parse(p.created_at);
+    if (!Number.isFinite(created)) return true;              // unparseable — keep
+    return created >= ghostCutoff;                           // still in grace window
+  });
+}
+
 export async function loadBaseData(): Promise<BaseData> {
   type ProfileRow = {
     id: string; created_at: string; onboarding_complete?: boolean; is_internal?: boolean;
@@ -136,12 +187,12 @@ export async function loadBaseData(): Promise<BaseData> {
   let hasInternalColumn = true;
   try {
     allProfiles = await fetchAll<ProfileRow>(
-      "profiles", "id, created_at, onboarding_complete, is_internal",
+      "profiles", "id, created_at, onboarding_complete, is_internal", { order: ["id"] },
     );
   } catch {
     hasInternalColumn = false;
     allProfiles = await fetchAll<ProfileRow>(
-      "profiles", "id, created_at, onboarding_complete",
+      "profiles", "id, created_at, onboarding_complete", { order: ["id"] },
     );
   }
 
@@ -161,16 +212,6 @@ export async function loadBaseData(): Promise<BaseData> {
   const realProfiles = allProfiles.filter(p => p.is_internal !== true);
   const internalProfiles = allProfiles.length - realProfiles.length;
 
-  const ghostCutoff = Date.now() - GHOST_GRACE_MS;
-  const profiles = realProfiles.filter(p => {
-    if (p.onboarding_complete === true) return true;         // real, completed
-    const created = Date.parse(p.created_at);
-    if (!Number.isFinite(created)) return true;              // unparseable — keep
-    return created >= ghostCutoff;                           // still in grace window
-  });
-  const ghostProfiles = realProfiles.length - profiles.length;
-
-  const profileIds = new Set(profiles.map(p => p.id));
   /**
    * The V4 snapshot column is selected when present. Same fallback shape as
    * is_internal: a missing column is a query ERROR, so an environment without
@@ -180,14 +221,40 @@ export async function loadBaseData(): Promise<BaseData> {
   try {
     events = await fetchAll<BaseData["events"][number]>(
       "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata, entitlement_state_snapshot",
+      { order: ["created_at", "id"] },
     );
   } catch {
     events = await fetchAll<BaseData["events"][number]>(
       "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata",
+      { order: ["created_at", "id"] },
     );
   }
+
+  /**
+   * The exact row count, so a loader that drops or duplicates rows is caught
+   * on every page load rather than assumed away. A failed count stays
+   * undefined; the dashboard then says "unverified" instead of inventing one.
+   */
+  let eventsInDatabase: number | undefined;
+  try { eventsInDatabase = await countRows("analytics_events"); } catch { eventsInDatabase = undefined; }
+
+  /**
+   * Ghost = never finished signup, older than the grace window, AND no
+   * activity at all.
+   *
+   * `onboarding_complete` is written when a USERNAME is saved, not when the
+   * app is first used — so a Google or Apple user who skipped username setup
+   * has it false forever. The previous rule dropped those users after an hour
+   * even if they had scanned, hit paywalls or paid; every one of their events
+   * then vanished from every section. Activity is the evidence a profile is a
+   * real person, so it overrides the flag.
+   */
+  const profiles = filterGhostProfiles(realProfiles, events);
+  const ghostProfiles = realProfiles.length - profiles.length;
+
+  const profileIds = new Set(profiles.map(p => p.id));
   return {
-    profiles, profileIds, events, ghostProfiles,
+    profiles, profileIds, events, ghostProfiles, eventsInDatabase,
     // undefined (not 0) when the migration has not run, so the dashboard can
     // say "not yet available" rather than claiming zero internal accounts.
     internalProfiles: hasInternalColumn ? internalProfiles : undefined,
@@ -1083,13 +1150,20 @@ export async function getSoldMetrics(_base: BaseData): Promise<Maybe<any>> {
   }
 }
 
-export async function getFounderDashboardV3Metrics(): Promise<any> {
+/**
+ * `preloaded` lets the dashboard route load the base data ONCE and hand the
+ * same rows to V3 and V4. Loading twice doubled the cost of every page view
+ * and, worse, let the two halves of one page read different snapshots of
+ * analytics_events. Optional, so the JSON endpoint and any other caller that
+ * passes nothing behaves exactly as before.
+ */
+export async function getFounderDashboardV3Metrics(preloaded?: BaseData): Promise<any> {
   if (!getSupabaseAdmin()) {
     return { configured: false };
   }
   let base: BaseData;
   try {
-    base = await loadBaseData();
+    base = preloaded ?? await loadBaseData();
   } catch (e: any) {
     return { configured: true, fatal: e?.message ?? "failed to load base data" };
   }

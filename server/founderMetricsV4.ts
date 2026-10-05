@@ -323,6 +323,19 @@ export interface V4Data {
    */
   allEvents: BaseData["events"];
   allScans: ScanRow[];
+  /**
+   * SAVED items — rows in the `scans` table, which is the user's collection
+   * (it has item_name, thrift_price, sold_price and a status lifecycle), not a
+   * log of scans performed. Kept for save-rate and Data Quality only; nothing
+   * that claims to count scans reads this.
+   */
+  allSaved: ScanRow[];
+  /** scan_completed events with no user_id: real scans, attributable to nobody. */
+  anonymousScans: number;
+  /** Every analytics row the loader returned, before any scope or window. */
+  eventsLoaded: number;
+  /** Exact database count, for the loader-integrity check. Undefined = unverified. */
+  eventsInDatabase?: number;
   cohort: LaunchCohort;
   /** Profiles excluded by the scope. 0 in `all`. */
   preLaunchProfiles: number;
@@ -358,8 +371,8 @@ export async function loadV4Data(
 ): Promise<V4Data> {
   const cohort = getLaunchCohort(scope, env);
   const b = base ?? await loadBaseData();
-  const [scans, usageRows, authUsers, profileRows] = await Promise.all([
-    fetchAll<ScanRow>("scans", "user_id, created_at"),
+  const [savedRows, usageRows, authUsers, profileRows] = await Promise.all([
+    fetchAll<ScanRow>("scans", "user_id, created_at"),   // saved items — see V4Data.allSaved
     fetchAll<UsageRow>("account_usage", "*"),
     fetchAuthUsers().catch(() => [] as AuthUser[]),
     fetchAll<ProfileRow>("profiles", "id, display_name, username, created_at"),
@@ -404,12 +417,32 @@ export async function loadV4Data(
    * their activity is being examined. Reversing it would let a pre-launch
    * user back in whenever they were active during the selected dates.
    */
-  const cohortScans = scans.filter(sc => !!sc.user_id && keep.has(sc.user_id));
+  /**
+   * SCANS come from scan_completed events — one per successful analysis,
+   * timestamped, with the user attached.
+   *
+   * This previously read the `scans` table, which holds SAVED items. Anyone
+   * who scanned, hit a paywall and paid before saving anything showed 0 scans
+   * before paying — including people converted by generate_listings and
+   * deep_analysis, which cannot be reached without scanning. Checked against
+   * production before this change: every such converter has 1+ completed
+   * scans before paying on this source, and 0 on the old one for three of
+   * the four.
+   *
+   * Derived from the events already loaded: no extra query, and the cohort
+   * filter (which runs on `events` above) applies automatically.
+   */
+  const cohortScans: ScanRow[] = events
+    .filter(e => e.event_name === "scan_completed" && !!e.user_id)
+    .map(e => ({ user_id: e.user_id, created_at: e.created_at }));
+  const anonymousScans = b.events.filter(e => e.event_name === "scan_completed" && !e.user_id).length;
+  const cohortSaved = savedRows.filter(sc => !!sc.user_id && keep.has(sc.user_id));
   const windowedEvents = events.filter(e => inWindow(window, e.created_at));
   const windowedScans = cohortScans.filter(sc => inWindow(window, sc.created_at));
 
   return {
-    window, allEvents: events, allScans: cohortScans,
+    window, allEvents: events, allScans: cohortScans, allSaved: cohortSaved, anonymousScans,
+    eventsLoaded: b.events.length, eventsInDatabase: b.eventsInDatabase,
     cohort, preLaunchProfiles, anonymousExcluded,
     base: { ...b, profiles: cohortProfiles, profileIds: keep, events: windowedEvents },
     scans: windowedScans,
@@ -483,6 +516,10 @@ export function getAcquisition(d: V4Data) {
     : profiles.filter(p => inWindow(w, p.created_at));
 
   const newSince = (days: number) => profiles.filter(p => p.created_at >= iso(ago(now, days))).length;
+  const todayDay = dayOf(iso(now));
+  const activeToday = new Set(
+    d.allEvents.filter(e => e.user_id && dayOf(e.created_at) === todayDay).map(e => e.user_id!),
+  ).size;
   const activeSince = (days: number) => new Set(
     d.allEvents.filter(e => e.user_id && e.created_at >= iso(ago(now, days))).map(e => e.user_id!),
   ).size;
@@ -552,8 +589,23 @@ export function getAcquisition(d: V4Data) {
     // ── Fixed windows, independent of the selection ──────────────────────
     newToday: exact(profiles.filter(p => dayOf(p.created_at) === dayOf(iso(now))).length),
     new7: exact(newSince(7)), new30: exact(newSince(30)),
-    dau: exact(activeSince(1)), wau: exact(activeSince(7)), mau: exact(activeSince(30)),
-    dauMau: derived(activeSince(1), activeSince(30)),
+    /**
+     * "Today" means the Central calendar day, as it does for "New today"
+     * beside it. activeSince(1) is a rolling 24 hours — at 9am that counts
+     * last night's users as "today", which put two definitions of the same
+     * word in one grid. 7d and 30d stay rolling, and are labelled as such.
+     */
+    dau: exact(activeToday), wau: exact(activeSince(7)), mau: exact(activeSince(30)),
+    dauMau: derived(activeToday, activeSince(30)),
+
+    /**
+     * Scan volume from scan_completed. The Executive "Scans 7d" card read a
+     * V3 field (scans7 / last7) that V3 never returned, so it was always "—".
+     */
+    scansToday: exact(d.allScans.filter(sc => dayOf(sc.created_at) === todayDay).length),
+    scans7: exact(d.allScans.filter(sc => sc.created_at >= iso(ago(now, 7))).length),
+    scans30: exact(d.allScans.filter(sc => sc.created_at >= iso(ago(now, 30))).length),
+    scansInRange: exact(d.scans.length, "scan_completed inside the selected window"),
 
     trend: days.map(day => ({ day, newUsers: newByDay.get(day) ?? 0, active: activeByDay.get(day)?.size ?? 0 })),
     cumulative,
@@ -809,12 +861,22 @@ export interface PaidJourney {
 
 /** Every user with any confirmed purchase, with the full pre-purchase story. */
 export function getPaidJourneys(d: V4Data) {
+  /**
+   * The range picks WHICH conversions are shown; it never limits how far back
+   * each one's story goes.
+   *
+   * History is therefore built from the UNWINDOWED, cohort-filtered events and
+   * scans. Building it from the windowed set (as this did before) cut every
+   * journey off at the range start: scans before pay, paywalls seen, sessions
+   * and the first paywall all silently lost whatever happened earlier.
+   */
   const evsByUser = new Map<string, Ev[]>();
-  for (const e of d.base.events) { if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e); }
+  for (const e of d.allEvents) { if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e); }
   for (const l of evsByUser.values()) l.sort((a, b) => a.created_at < b.created_at ? -1 : 1);
   const scansByUser = new Map<string, string[]>();
-  for (const s of d.scans) { if (s.user_id) (scansByUser.get(s.user_id) ?? scansByUser.set(s.user_id, []).get(s.user_id)!).push(s.created_at); }
+  for (const s of d.allScans) { if (s.user_id) (scansByUser.get(s.user_id) ?? scansByUser.set(s.user_id, []).get(s.user_id)!).push(s.created_at); }
   for (const l of scansByUser.values()) l.sort();
+  const bounded = d.window.startMs !== null;
 
   const isPaid = (e: Ev) => e.event_name === PW_EVENTS.completed || e.event_name === "scan_pack_purchase_completed";
 
@@ -834,6 +896,17 @@ export function getPaidJourneys(d: V4Data) {
 
     const first = paidEvents[0] ?? null;
     const firstAt = first?.created_at ?? null;
+
+    /**
+     * Selection by FIRST purchase date.
+     *
+     * In a bounded range, a row appears only if this user's first purchase
+     * falls inside it. Users who bought earlier are current subscribers, not
+     * conversions in this period — listing them here (as before) filled
+     * narrow ranges with blank-history rows. A payer with no purchase event at
+     * all cannot be dated, so they appear only when the range is unbounded.
+     */
+    if (bounded && (!firstAt || !inWindow(d.window, firstAt))) continue;
     // "Before" is inclusive of the purchase instant but never the paid event
     // itself: the paywall that opened and the purchase_started that preceded a
     // completion often share its second, and a strict `<` dropped the
@@ -1043,12 +1116,20 @@ export function getScanStore(d: V4Data, c: Cutover) {
 // ── Cohorts (CURRENT plan) + Free behaviour ─────────────────────────────────
 
 export function getCohorts(d: V4Data) {
-  const { counts } = scanStats(d);
+  /**
+   * Current-plan cohorts describe users AS THEY ARE NOW: lifetime totals plus
+   * fixed today / 7d / 30d windows measured from the present. All of that
+   * must read the full timeline. Reading the date-windowed set (as before)
+   * made "active 7d" zero whenever a past range was selected, and labelled a
+   * week's scans as a lifetime total. Range-based cohort activity is a
+   * separate, explicitly-labelled metric, not a side effect of these.
+   */
+  const { counts } = scanStatsAll(d);
   const evsByUser = new Map<string, Ev[]>();
-  for (const e of d.base.events) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
   const scans7 = new Map<string, number>(), scans30 = new Map<string, number>();
   const t7 = iso(ago(d.now, 7)), t30 = iso(ago(d.now, 30));
-  for (const s of d.scans) { if (!s.user_id) continue; if (s.created_at >= t7) scans7.set(s.user_id, (scans7.get(s.user_id) ?? 0) + 1); if (s.created_at >= t30) scans30.set(s.user_id, (scans30.get(s.user_id) ?? 0) + 1); }
+  for (const s of d.allScans) { if (!s.user_id) continue; if (s.created_at >= t7) scans7.set(s.user_id, (scans7.get(s.user_id) ?? 0) + 1); if (s.created_at >= t30) scans30.set(s.user_id, (scans30.get(s.user_id) ?? 0) + 1); }
 
   const build = (plan: PlanState) => {
     const users = d.base.profiles.filter(p => currentPlan(d, p.id) === plan);
@@ -1083,15 +1164,34 @@ export function getCohorts(d: V4Data) {
 }
 
 export function getFreeBehaviour(d: V4Data) {
-  const { counts, first } = scanStats(d);
+  /**
+   * LIFETIME, so all of the cohort's scans — never the date window. These
+   * cards describe where current Free users stand overall ("how many free
+   * scans do people actually use"); restricting them to a week would label a
+   * week's count as a lifetime one.
+   */
+  const { counts, first } = scanStatsAll(d);
   const free = d.base.profiles.filter(p => currentPlan(d, p.id) === "free");
   const lifetime = free.map(p => counts.get(p.id) ?? 0);
   const b = { "0": 0, "1": 0, "2–5": 0, "6–10": 0, "11–14": 0, "15+": 0 };
   for (const n of lifetime) { if (n === 0) b["0"]++; else if (n === 1) b["1"]++; else if (n <= 5) b["2–5"]++; else if (n <= 10) b["6–10"]++; else if (n <= 14) b["11–14"]++; else b["15+"]++; }
   const evsByUser = new Map<string, Set<string>>();
-  for (const e of d.base.events) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, new Set()).get(e.user_id)!).add(dayOf(e.created_at));
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, new Set()).get(e.user_id)!).add(dayOf(e.created_at));
   const activeDays = free.map(p => evsByUser.get(p.id)?.size ?? 0);
-  const hrsToFirst = free.map(p => first.get(p.id)).filter((f): f is string => !!f).map((f, i) => (Date.parse(f) - Date.parse(free[i].created_at)) / 3_600_000).filter(h => Number.isFinite(h) && h >= 0);
+  /**
+   * Pair each user's first scan with THAT user's signup.
+   *
+   * The previous version filtered out users who never scanned and then
+   * indexed back into the unfiltered list, so after the first gap every scan
+   * was matched to someone else's signup date and the median was meaningless.
+   */
+  const hrsToFirst: number[] = [];
+  for (const p of free) {
+    const f = first.get(p.id);
+    if (!f) continue;
+    const h = (Date.parse(f) - Date.parse(p.created_at)) / 3_600_000;
+    if (Number.isFinite(h) && h >= 0) hrsToFirst.push(h);
+  }
   // "Exhausted": free_scans_used >= 15 from account_usage, the ledger's own field.
   const exhausted = free.filter(p => (d.usage.get(p.id)?.free_scans_used ?? 0) >= 15).length;
   return {
@@ -1230,9 +1330,26 @@ export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: n
       eligibleUsers: exact(inScope, "users passing the scope filter"),
       eventsInWindow: exact(d.base.events.length, "events inside the activity window"),
       eventsAllTime: exact((d.allEvents ?? d.base.events).length),
-      scansInWindow: exact(d.scans.length, "scans inside the activity window"),
+      scansInWindow: exact(d.scans.length, "scan_completed inside the activity window"),
       scansAllTime: exact((d.allScans ?? d.scans).length),
     },
+    /**
+     * Where the scan numbers come from, and the gaps that remain. Scans are
+     * scan_completed events; saved items are rows in the `scans` table, which
+     * the dashboard counted as scans until this was corrected.
+     */
+    scanSources: {
+      scansCompleted: exact((d.allScans ?? []).length, "scan_completed events, users in scope — the scan count"),
+      savedItems: exact((d.allSaved ?? []).length, "rows in the scans table — the user's saved collection, NOT scans performed"),
+      saveRate: derived((d.allSaved ?? []).length, (d.allScans ?? []).length, "saved items per completed scan"),
+      anonymousScans: exact(d.anonymousScans ?? 0, "scan_completed with no user_id — real scans, attributable to no one, excluded from per-user metrics"),
+    },
+    /**
+     * Loader integrity, checked on every page load. If the rows loaded differ
+     * from the exact count in the database, the loader skipped or duplicated
+     * rows and every event-based number on this page is suspect.
+     */
+    loader: loaderIntegrity(d.eventsLoaded, d.eventsInDatabase),
     scope: {
       scope: cohort.scope,
       launchAt: cohort.at,
@@ -1259,6 +1376,8 @@ export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: n
     scanCompletedPost: c.configured ? exact(post.filter(e => e.event_name === "scan_completed").length) : unavailable(),
     scanCompletedLegacy: { value: all.filter(e => e.event_name === "scan_completed" && (!c.at || e.created_at < c.at)).length, trust: "LEGACY" as Trust, note: "Pre-cutover scan_completed had no emitter — expect 0. Scans table is authoritative historically." },
     anomalies: [
+      ...(() => { const l = loaderIntegrity(d.eventsLoaded, d.eventsInDatabase);
+                  return l.status === "duplicated" || l.status === "skipped" ? [`Loader integrity: ${l.note}`] : []; })(),
       ...(all.some(e => e.event_name === PW_EVENTS.completed && !e.user_id) ? ["purchase_completed rows with no user_id"] : []),
       ...(c.configured && post.length > 0 && withSnap.length === 0 ? ["Cutover configured but no events carry a snapshot — client build may not be live"] : []),
     ],
@@ -1269,19 +1388,75 @@ export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: n
 // ── Cost (carried from V3, relabelled) ──────────────────────────────────────
 
 export function getUnitEconomics(d: V4Data, v3Cost: any) {
-  const active30 = new Set(d.base.events.filter(e => e.user_id && e.created_at >= iso(ago(d.now, 30))).map(e => e.user_id!)).size;
-  const scans30 = d.scans.filter(s => s.created_at >= iso(ago(d.now, 30))).length;
-  const spend = typeof v3Cost?.estimatedSpend === "number" ? v3Cost.estimatedSpend : (typeof v3Cost?.totalEstimatedUsd === "number" ? v3Cost.totalEstimatedUsd : null);
+  /**
+   * Spend in the SELECTED RANGE, for the users in SCOPE, estimated from their
+   * own activity at V3's published per-action rates.
+   *
+   * This read `v3Cost.estimatedSpend` / `totalEstimatedUsd` — fields V3 has
+   * never returned (it returns cost30 / cost7 / costToday) — so the card was
+   * always blank. Computing it here instead of renaming the read also means
+   * it follows the scope and the dates like everything around it; V3's own
+   * figure covers every user regardless of selection and stays visible below
+   * as the platform-wide view.
+   *
+   * Rates come from V3 (which reads the ESTIMATED_*_COST_USD env vars), so the
+   * two can never disagree about what a scan costs. No rates, no estimate —
+   * never a guessed default.
+   */
+  const rates = v3Cost && !isErrLike(v3Cost) ? v3Cost.rates : null;
+  const rate = (k: string) => (rates && typeof rates[k] === "number" ? rates[k] : null);
+  const NORMAL = rate("NORMAL"), HUNT = rate("HUNT"), LISTING = rate("LISTING");
+
+  const evs = d.base.events;                       // windowed + cohort
+  const count = (name: string) => evs.filter(e => e.event_name === name).length;
+  const scansInRange = d.scans.length;             // scan_completed, windowed
+  const huntInRange = count("hunt_scan_started");
+  const listingsInRange = count("listing_generated");
+  const spend = NORMAL !== null && HUNT !== null && LISTING !== null
+    ? scansInRange * NORMAL + huntInRange * HUNT + listingsInRange * LISTING
+    : null;
+  const activeInRange = new Set(evs.filter(e => e.user_id).map(e => e.user_id!)).size;
+  const scans30 = d.allScans.filter(s => s.created_at >= iso(ago(d.now, 30))).length;
+
   return {
-    estimatedSpend: { value: spend, trust: "ESTIMATED" as Trust, note: "from V3 cost model" },
-    costPerScan: { value: spend !== null && d.scans.length ? spend / d.scans.length : null, trust: "ESTIMATED" as Trust, d: d.scans.length },
+    estimatedSpend: { value: spend, trust: "ESTIMATED" as Trust,
+      note: spend === null ? "cost rates unavailable" : "in range, users in scope" },
+    costPerScan: { value: spend !== null && scansInRange ? spend / scansInRange : null, trust: "ESTIMATED" as Trust, d: scansInRange },
     costPerUser: { value: spend !== null && d.base.profiles.length ? spend / d.base.profiles.length : null, trust: "ESTIMATED" as Trust, d: d.base.profiles.length },
-    costPerActiveUser30: { value: spend !== null && active30 ? spend / active30 : null, trust: "ESTIMATED" as Trust, d: active30 },
+    costPerActiveUser: { value: spend !== null && activeInRange ? spend / activeInRange : null, trust: "ESTIMATED" as Trust, d: activeInRange },
+    scansInRange: exact(scansInRange),
     scans30: exact(scans30),
     marginNote: "Contribution margin not calculated: Apple proceeds and exact revenue are not available server-side.",
     v3: v3Cost,
   };
 }
+
+/**
+ * Rows loaded vs rows in the database.
+ *
+ * The count is taken AFTER the load, and the app writes events continuously,
+ * so the database may be a few rows ahead of what was loaded — that is new
+ * activity, not loss. Anything beyond that is flagged:
+ *   loaded > database      → rows were DUPLICATED (impossible otherwise)
+ *   database ahead by > 5  → rows were SKIPPED
+ */
+export const LOADER_TOLERANCE = 5;
+export function loaderIntegrity(loaded: number | undefined, inDb: number | undefined) {
+  if (loaded === undefined || inDb === undefined) {
+    return { loaded: exact(loaded ?? null), inDatabase: { value: null, trust: "NOT_TRACKED" as Trust, available: false, note: "count query failed — unverified" },
+             status: "unverified" as const, note: "Could not verify: the exact-count query failed." };
+  }
+  const gap = inDb - loaded;
+  const status = loaded > inDb ? "duplicated" as const : gap > LOADER_TOLERANCE ? "skipped" as const : "ok" as const;
+  const note = status === "ok"
+    ? (gap === 0 ? "Every row loaded." : `${gap} row(s) written during the load — new activity, not loss.`)
+    : status === "duplicated"
+      ? `${loaded - inDb} more row(s) loaded than exist — rows were counted twice.`
+      : `${gap} row(s) missing from the load — rows were skipped.`;
+  return { loaded: exact(loaded), inDatabase: exact(inDb), gap, status, note };
+}
+
+const isErrLike = (x: any) => !!x && typeof x === "object" && typeof x.error === "string";
 
 // ── Entry point ─────────────────────────────────────────────────────────────
 
@@ -1290,12 +1465,14 @@ export async function getFounderDashboardV4Metrics(
   scope: Scope = "post_launch",
   env: NodeJS.ProcessEnv = process.env,
   rangeParams: { preset?: unknown; from?: unknown; to?: unknown } = {},
+  /** The route's single load, shared with V3. Loaded here only if absent. */
+  preloaded?: BaseData,
 ) {
   const cutover = getCutover(env);
   const cohort = getLaunchCohort(scope, env);
   const window = resolveAnalysisWindow(rangeParams, scope, new Date(), env);
   let d: V4Data;
-  try { d = await loadV4Data(undefined, scope, env, window); }
+  try { d = await loadV4Data(preloaded, scope, env, window); }
   catch (e: any) { return { ...v3Metrics, v4: null, v4Error: e?.message ?? "failed to load V4 data", cutover, cohort, window }; }
 
   const safe = <T,>(name: string, fn: () => T): T | { error: string } => { try { return fn(); } catch (e: any) { return { error: `${name}: ${e?.message ?? e}` }; } };

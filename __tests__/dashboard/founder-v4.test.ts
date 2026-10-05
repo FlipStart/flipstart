@@ -197,10 +197,13 @@ describe("paid user journeys", () => {
     expect(payer.convertingPaywall).toBe("deep_analysis");
     // Disagreement: started on scan_limit, completed tagged deep_analysis.
     const d2 = fixture();
-    d2.base.events.push(
+    // Journeys read the FULL timeline (d.allEvents); the window only selects
+    // which conversions appear. Add to both, as the loader would.
+    const extra = [
       ev("u-free", "paywall_purchase_started", t(4, 9), { paywall_source: "scan_limit", selected_plan: "monthly" }, "s-z"),
       ev("u-free", "paywall_purchase_completed", t(4, 9), { paywall_source: "deep_analysis", selected_plan: "monthly" }, "s-z"),
-    );
+    ];
+    d2.allEvents.push(...extra); d2.base.events.push(...extra);
     const j2 = M.getPaidJourneys(d2).journeys.find(j => j.userId === "u-free")!;
     expect(j2.convertingPaywall).toBeNull();
     // Two UNKNOWNs: this disagreement, plus u-annual who has no purchase event
@@ -434,7 +437,9 @@ describe("route and PII surface", () => {
     // The secret rides along so the scope tabs keep the session.
     expect(idx).toMatch(/generateFounderDashboardV4\(metrics, String\(req\.query\.secret/);
     expect(idx).toMatch(/const scope = parseScope\(req\.query\.scope\);/);
-    expect(idx).toMatch(/getFounderDashboardV4Metrics\(v3, scope, process\.env, range\)/);
+    expect(idx).toMatch(/getFounderDashboardV4Metrics\(v3, scope, process\.env, range, base\)/);
+    // One load, shared by both halves of the page.
+    expect(idx).toMatch(/const v3 = await getFounderDashboardV3Metrics\(base\);/);
     // Range params come from the query string, alongside scope.
     expect(idx).toMatch(/const range = \{ preset: req\.query\.preset, from: req\.query\.from, to: req\.query\.to \};/);
   });
@@ -482,6 +487,10 @@ describe("global launch cohort", () => {
       ev("u-new", "paywall_opened", "2026-09-11T10:00:00Z", { paywall_source: "onboarding_offer" }, "s-new"),
       // Anonymous, unattributable.
       ev(null, "app_session_started", "2026-09-11T11:00:00Z", {}, "s-anon"),
+      // Scans, as the dashboard now counts them: scan_completed events.
+      ev("u-old", "scan_completed", "2026-09-12T10:00:00Z", {}, "s-old"),   // after launch, pre-launch user
+      ev("u-old", "scan_completed", "2026-09-13T10:00:00Z", {}, "s-old"),
+      ev("u-new", "scan_completed", "2026-09-11T10:30:00Z", {}, "s-new"),
     ];
     d.scans = [
       { user_id: "u-old", created_at: "2026-09-12T10:00:00Z" },   // after launch, pre-launch user
@@ -626,7 +635,8 @@ describe("global launch cohort", () => {
     // Scope "all" must reproduce pre-change behaviour exactly.
     const all = await scoped("all");
     expect(all.cohort.at).toBeNull();
-    expect(all.base.events.length).toBe(8);
+    // 8 activity events + the 3 scans, which are now events too.
+    expect(all.base.events.length).toBe(11);
     expect(all.scans.length).toBe(3);
     expect(all.usage.size).toBe(2);
   });
