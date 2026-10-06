@@ -134,6 +134,17 @@ export function getLatestAnalysis(ownerId: string): StoredAnalysis | null {
 }
 
 
+/**
+ * Every unexpired analysis, all owners. FOUNDER-ONLY: the only caller is the
+ * secret-gated confidence report. Never expose this through tRPC — it ignores
+ * ownership on purpose.
+ */
+export function listAnalysesForFounder(): StoredAnalysis[] {
+  load();
+  const now = Date.now();
+  return Object.values(entries).filter(v => now - v.savedAt <= TTL_MS);
+}
+
 export function analysisStoreStats() {
   load();
   return { stored: Object.keys(entries).length, durable: Boolean(process.env.DATA_DIR), file: FILE };

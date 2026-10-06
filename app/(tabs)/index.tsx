@@ -39,7 +39,7 @@ import { FONTS } from '@/constants/typography';
 import { type CapturedPhotoSet } from '@/lib/capture';
 import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
-import { logEvent } from '@/lib/analytics';
+import { logEvent, useScreenFocus } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { needsOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
@@ -137,6 +137,17 @@ const REVIEW_SETTLE_MS = 1200;
 export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+
+  /**
+   * home_viewed — the Founder Dashboard's "Home reached" funnel step.
+   *
+   * Fires when Home gains focus (with the standard 30-second cooldown, so
+   * switching tabs does not flood the table). The dashboard only needs the
+   * first one per user. Called before any early return so hook order never
+   * changes, and useScreenFocus never throws, so analytics cannot affect the
+   * screen. The name must match HOME_EVENT in server/founderMetricsV4.ts.
+   */
+  useScreenFocus('home_viewed');
 
   // ── Onboarding ──────────────────────────────────────────────────────────────
   const { user, profile, loading: authLoading, profileChecked, profileError } = useAuth();

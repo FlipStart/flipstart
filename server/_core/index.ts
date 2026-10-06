@@ -305,6 +305,32 @@ async function startServer() {
   app.get("/api/dev/founder-dashboard-v3", founderDashboard);
   app.post("/api/dev/founder-dashboard-v3", founderDashboard);
 
+  /**
+   * Confidence report — why scans land on the low-confidence screens.
+   * Read-only: reads the analysis store, writes nothing. Same secret as the
+   * founder dashboard. ?format=json returns the raw report.
+   */
+  app.get("/api/dev/confidence-report", (req, res) => {
+    if (!secretOk(req.query.secret, process.env.FOUNDER_DASHBOARD_SECRET)) {
+      return res.status(401).send("<h1>401 Unauthorized</h1>");
+    }
+    try {
+      const { listAnalysesForFounder, analysisStoreStats } = require("../analysisStore");
+      const { buildConfidenceReport, renderConfidenceReport } = require("../confidenceReport");
+      const stats = analysisStoreStats();
+      const report = buildConfidenceReport(listAnalysesForFounder(), {
+        stored: stats.stored, durable: stats.durable,
+      });
+      res.setHeader("Cache-Control", "no-store");
+      if (req.query.format === "json") return res.json(report);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(renderConfidenceReport(report));
+    } catch (e: any) {
+      res.status(500).send("<pre>Confidence report error</pre>");
+      console.error("[confidence-report] failed:", e?.message ?? e);
+    }
+  });
+
   // JSON variant for programmatic access / debugging.
   app.get("/api/dev/founder-dashboard-v3.json", async (req, res) => {
     if (!secretOk(req.query.secret, process.env.FOUNDER_DASHBOARD_SECRET)) {

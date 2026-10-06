@@ -35,6 +35,7 @@
  * auth users) and everything else is maps in memory. No per-user queries.
  */
 import { loadBaseData, fetchAll, countRows, type BaseData } from "./founderMetrics";
+import { getPricingEras, getAppleFeeRate, eraAt, currentEra, eraPrice, ERA_NOTES, type PricingEra } from "./pricingEras";
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { derivePlan, type AccountUsage, type PlanState,
   FREE_LIFETIME_SCANS, MONTHLY_SCANS, ANNUAL_SCANS } from "./monetization/policy";
@@ -1333,6 +1334,58 @@ export function getCohorts(d: V4Data) {
   return { free: build("free"), monthly: build("monthly"), annual: build("annual") };
 }
 
+/**
+ * Activity, speed to first scan, and delayed activation for current Free
+ * users.
+ *
+ * Every timed window counts only users old enough for it to have passed —
+ * someone who signed up an hour ago is not a "no" for "first scan within 7
+ * days". Day 0 is the signup's Central calendar day.
+ */
+function freeTiming(d: V4Data, free: Array<{ id: string; created_at: string }>, first: Map<string, string>) {
+  const now = d.now.getTime();
+  const today = dayOf(iso(d.now));
+  const active = (days: number) => {
+    const since = iso(ago(d.now, days));
+    const ids = new Set(d.allEvents.filter(e => e.user_id && e.created_at >= since).map(e => e.user_id!));
+    return free.filter(p => ids.has(p.id)).length;
+  };
+  const within = (ms: number, label: string) => {
+    let eligible = 0, hit = 0;
+    for (const p of free) {
+      const start = Date.parse(p.created_at);
+      if (!Number.isFinite(start) || start + ms > now) continue;
+      eligible++;
+      const f = first.get(p.id);
+      if (f && Date.parse(f) - start <= ms && Date.parse(f) >= start) hit++;
+    }
+    return derived(hit, eligible, label);
+  };
+  let sameDayEligible = 0, sameDay = 0, missedDay0 = 0, delayed = 0;
+  for (const p of free) {
+    const signupDay = dayOf(p.created_at);
+    if (signupDay >= today) continue;                       // day 0 not over yet
+    sameDayEligible++;
+    const f = first.get(p.id);
+    if (f && dayOf(f) === signupDay) { sameDay++; continue; }
+    missedDay0++;
+    if (f && dayOf(f) > signupDay) delayed++;
+  }
+  return {
+    active7: exact(active(7)), active30: exact(active(30)),
+    firstScanWithin10m: within(10 * 60_000, "first scan within 10 minutes of signup"),
+    firstScanSameDay: derived(sameDay, sameDayEligible, "first scan on the signup day (Central)"),
+    firstScanWithin24h: within(DAY, "first scan within 24 hours"),
+    firstScanWithin7d: within(7 * DAY, "first scan within 7 days"),
+    /**
+     * "Never activated" and "activated late" look identical on day 0. Of the
+     * users who did not scan on their signup day, how many came back and did.
+     */
+    delayedActivation: derived(delayed, missedDay0, "did not scan on day 0, scanned later"),
+    stillNotActivated: exact(missedDay0 - delayed, "did not scan on day 0, and still have not"),
+  };
+}
+
 export function getFreeBehaviour(d: V4Data) {
   /**
    * LIFETIME, so all of the cohort's scans — never the date window. These
@@ -1377,68 +1430,109 @@ export function getFreeBehaviour(d: V4Data) {
     reached3Plus: derived(lifetime.filter(n => n >= 3).length, free.length),
     reached5Plus: derived(lifetime.filter(n => n >= 5).length, free.length),
     reached10Plus: derived(lifetime.filter(n => n >= 10).length, free.length),
+    reached2Plus: derived(lifetime.filter(n => n >= 2).length, free.length),
+    lifetimeP75: percentile(lifetime, 0.75), lifetimeP90: percentile(lifetime, 0.9),
+    lifetimeMax: lifetime.length ? Math.max(...lifetime) : null,
+    ...freeTiming(d, free, first),
     balanceHistoryNote: "Historical free-scan balance is not stored; only the current ledger state is known. Post-cutover, balances are captured on each paywall impression.",
   };
 }
 
 // ── Retention (anchored on first ACTIVITY) ──────────────────────────────────
 
-export function getRetentionV2(d: V4Data) {
-  /**
-   * Anchor: the user's first analytics event, NOT profiles.created_at. A user
-   * who signs up and first opens the app three days later is day-0 on that
-   * third day. UTC calendar days throughout. Returned on day N = any event on
-   * UTC day (anchor + N). Eligible for DN only if the anchor is ≥ N+1 days
-   * old, so the window has actually elapsed.
-   */
-  /**
-   * COHORT semantics. The window selects users whose FIRST activity fell
-   * inside it; their return events are then read from the unwindowed set, so
-   * D7 can be observed even when a three-day range is selected. Filtering
-   * returns to the window would make long windows the only measurable ones.
-   */
-  const firstDay = new Map<string, string>(), days = new Map<string, Set<string>>();
+/**
+ * The retention cohort, built in ONE pass: each user's anchor (first active
+ * Central day), every day they were active, and their earliest event — which
+ * the date-range filter needs. The earliest event used to be found by
+ * rescanning every event for every user, which grows quadratically.
+ */
+function retentionBase(d: V4Data) {
+  const firstDay = new Map<string, string>(), days = new Map<string, Set<string>>(), earliest = new Map<string, string>();
   for (const e of d.allEvents) {
     if (!e.user_id) continue;
     const day = dayOf(e.created_at);
     const f = firstDay.get(e.user_id); if (!f || day < f) firstDay.set(e.user_id, day);
     (days.get(e.user_id) ?? days.set(e.user_id, new Set()).get(e.user_id)!).add(day);
+    const x = earliest.get(e.user_id); if (!x || e.created_at < x) earliest.set(e.user_id, e.created_at);
   }
   // Restrict the COHORT (not the returns) to users who first appeared in range.
   if (d.window.startMs !== null) {
-    for (const [uid, f] of [...firstDay]) {
-      /**
-       * The EARLIEST event, not the first in array order. `find()` returns
-       * whatever the query happened to return first, which silently excluded
-       * users whose earliest event sat later in the array.
-       */
-      let earliest: string | null = null;
-      for (const e of d.allEvents) {
-        if (e.user_id !== uid) continue;
-        if (!earliest || e.created_at < earliest) earliest = e.created_at;
-      }
-      if (!earliest || !inWindow(d.window, earliest)) { firstDay.delete(uid); days.delete(uid); }
+    for (const uid of [...firstDay.keys()]) {
+      const x = earliest.get(uid);
+      if (!x || !inWindow(d.window, x)) { firstDay.delete(uid); days.delete(uid); }
     }
   }
-  const today = dayOf(iso(d.now));
+  return { firstDay, days, today: dayOf(iso(d.now)) };
+}
+
+/** Day-N retention over a cohort, optionally narrowed to a segment. */
+function retentionCalc(b: ReturnType<typeof retentionBase>, n: number, include: (uid: string) => boolean = () => true) {
   // DST-safe: Central days are not all 24h, so stepping by milliseconds from
   // a UTC midnight would drift by an hour twice a year and mis-bucket a return.
-  const addDays = (day: string, n: number) => addCentralDays(day, n) ?? day;
-  const calc = (n: number) => {
-    let eligible = 0, returned = 0;
-    for (const [uid, f] of firstDay) {
-      if (addDays(f, n + 1) > today) continue;
-      eligible++;
-      if (days.get(uid)!.has(addDays(f, n))) returned++;
-    }
-    return { ...derived(returned, eligible), smallSample: eligible < SMALL_SAMPLE };
-  };
+  const addDays = (day: string, k: number) => addCentralDays(day, k) ?? day;
+  let eligible = 0, returned = 0;
+  for (const [uid, f] of b.firstDay) {
+    if (!include(uid)) continue;
+    if (addDays(f, n + 1) > b.today) continue;
+    eligible++;
+    if (b.days.get(uid)!.has(addDays(f, n))) returned++;
+  }
+  return { ...derived(returned, eligible), smallSample: eligible < SMALL_SAMPLE };
+}
+
+export function getRetentionV2(d: V4Data) {
+  /**
+   * COHORT semantics. The window selects users whose FIRST activity fell
+   * inside it; their return events are then read from the unwindowed set, so
+   * D7 can be observed even when a three-day range is selected.
+   */
+  const b = retentionBase(d);
+  const calc = (n: number) => retentionCalc(b, n);
   return {
     anchor: "first analytics event (Central calendar day)",
     timezone: DASHBOARD_TZ_LABEL,
     cohortWindow: d.window.startMs === null ? null : { from: d.window.fromDay, to: d.window.toDay, label: d.window.label },
     semantics: "Retention cohort: users first active during the selected range. Follow-up activity extends beyond the range end.",
-    d1: calc(1), d3: calc(3), d7: calc(7), d14: calc(14), d30: calc(30), cohortUsers: firstDay.size,
+    d1: calc(1), d3: calc(3), d7: calc(7), d14: calc(14), d30: calc(30), cohortUsers: b.firstDay.size,
+  };
+}
+
+/**
+ * Retention by segment — with every segment defined by FIRST-DAY behaviour.
+ *
+ * Segmenting by lifetime totals would be circular: coming back is how people
+ * pile up scans and decide to pay, so "users with 5+ scans retain better"
+ * would be true by construction and say nothing. Asking what someone did on
+ * their first day, then whether they returned, is a real question.
+ */
+export function getRetentionSegments(d: V4Data) {
+  const b = retentionBase(d);
+  const day0Scans = new Map<string, number>(), paidDay0 = new Set<string>();
+  for (const e of d.allEvents) {
+    if (!e.user_id) continue;
+    const f = b.firstDay.get(e.user_id); if (!f) continue;
+    const day = dayOf(e.created_at);
+    if (e.event_name === "scan_completed" && day === f) day0Scans.set(e.user_id, (day0Scans.get(e.user_id) ?? 0) + 1);
+    if (e.event_name === "paywall_purchase_completed" && day <= f) paidDay0.add(e.user_id);
+  }
+  const scans0 = (u: string) => day0Scans.get(u) ?? 0;
+  const segments: Array<{ key: string; label: string; include: (u: string) => boolean }> = [
+    { key: "all", label: "Everyone", include: () => true },
+    { key: "scanned0", label: "Scanned on day 0", include: u => scans0(u) >= 1 },
+    { key: "noscan0", label: "No scan on day 0", include: u => scans0(u) === 0 },
+    { key: "scans3", label: "3+ scans on day 0", include: u => scans0(u) >= 3 },
+    { key: "scans5", label: "5+ scans on day 0", include: u => scans0(u) >= 5 },
+    { key: "paid0", label: "Paid by end of day 0", include: u => paidDay0.has(u) },
+    { key: "free0", label: "Not paid by end of day 0", include: u => !paidDay0.has(u) },
+  ];
+  return {
+    rows: segments.map(sg => ({
+      key: sg.key, label: sg.label,
+      users: [...b.firstDay.keys()].filter(sg.include).length,
+      d1: retentionCalc(b, 1, sg.include), d3: retentionCalc(b, 3, sg.include), d7: retentionCalc(b, 7, sg.include),
+      d14: retentionCalc(b, 14, sg.include), d30: retentionCalc(b, 30, sg.include),
+    })),
+    note: "Segments use first-day behaviour only. Segmenting by lifetime totals would be circular — returning is how people accumulate scans and purchases.",
   };
 }
 
@@ -1627,6 +1721,859 @@ export function loaderIntegrity(loaded: number | undefined, inDb: number | undef
 }
 
 const isErrLike = (x: any) => !!x && typeof x === "object" && typeof x.error === "string";
+
+// ── First-session funnel ────────────────────────────────────────────────────
+
+/** Event names the app will emit for the two untracked funnel steps. */
+export const HOME_EVENT = "home_viewed";
+export const CAMERA_EVENT = "camera_opened";
+
+export interface FunnelStage {
+  key: string; label: string;
+  /** Users (or devices) who reached this stage — directly, or implied by a later one. */
+  reached: number;
+  /** Of those, how many have the stage's own event. The gap is implied. */
+  observed: number;
+  conversion: Metric | null;           // reached ÷ previous reached
+  medianMinutesFromPrev: number | null; // first occurrence → first occurrence
+  tracked: boolean;
+  note?: string;
+}
+
+/**
+ * Build a strictly nested funnel from per-entity stage timestamps.
+ *
+ * "Reached" is monotone by construction: anyone seen at a later stage
+ * necessarily got past every earlier one (you cannot complete a scan you
+ * never started), so a missing earlier event is IMPLIED rather than counted
+ * as a drop-off. The observed count beside it shows how often the event is
+ * actually there — the difference is missing instrumentation, not lost users.
+ */
+function nestedFunnel(
+  stages: Array<{ key: string; label: string; tracked: boolean; note?: string }>,
+  entities: Array<Record<string, string | null>>,   // stage key → first timestamp
+): FunnelStage[] {
+  const tracked = stages.filter(st => st.tracked);
+  const furthest = entities.map(en => {
+    let f = -1;
+    tracked.forEach((st, i) => { if (en[st.key]) f = i; });
+    return f;
+  });
+  const out: FunnelStage[] = [];
+  let prevReached: number | null = null, prevKey: string | null = null;
+  let ti = 0;
+  for (const st of stages) {
+    if (!st.tracked) {
+      out.push({ key: st.key, label: st.label, reached: 0, observed: 0, conversion: null, medianMinutesFromPrev: null, tracked: false, note: st.note });
+      continue;
+    }
+    const idx = ti++;
+    const reached = furthest.filter(f => f >= idx).length;
+    const observed = entities.filter(en => !!en[st.key]).length;
+    const gaps: number[] = [];
+    if (prevKey) for (const en of entities) {
+      const a = en[prevKey], b = en[st.key];
+      if (a && b && b >= a) gaps.push((Date.parse(b) - Date.parse(a)) / 60_000);
+    }
+    out.push({ key: st.key, label: st.label, reached, observed,
+      conversion: prevReached === null ? null : derived(reached, prevReached),
+      medianMinutesFromPrev: median(gaps), tracked: true, note: st.note });
+    prevReached = reached; prevKey = st.key;
+  }
+  return out;
+}
+
+const firstOf = (evs: Ev[], pred: (e: Ev) => boolean): string | null => {
+  let t: string | null = null;
+  for (const e of evs) if (pred(e) && (!t || e.created_at < t)) t = e.created_at;
+  return t;
+};
+
+/**
+ * WHERE new users stop, in the order the app actually runs:
+ *
+ *   BEFORE the account (by device — there is no user yet)
+ *     onboarding started → quiz finished → create account tapped → account
+ *   AFTER the account (by user, acquired in the selected range)
+ *     account → offer shown → onboarding finished (offer answered) →
+ *     [home] → [camera] → photo → analysis → scan completed → 2nd → 3rd
+ *
+ * The offer comes BEFORE onboarding_completed: that event fires on the
+ * offer's outcome and carries it (pro / free / activation_pending), which is
+ * an exact Continue Free count for the onboarding offer in every era.
+ *
+ * Home and camera have no events; they are shown, and labelled, rather than
+ * skipped. Saving a scan is reported beside the funnel, not in it — scanning
+ * without saving is normal, and a nested "saved" stage would wrongly drop
+ * people who simply scan.
+ */
+export function getFirstSessionFunnel(d: V4Data) {
+  // ── Before the account: devices ──────────────────────────────────────
+  const launchAt = d.cohort?.at ?? null;
+  const devices = new Map<string, Ev[]>();
+  for (const e of d.rawEvents ?? []) {
+    if (!e.anonymous_id) continue;
+    (devices.get(e.anonymous_id) ?? devices.set(e.anonymous_id, []).get(e.anonymous_id)!).push(e);
+  }
+  const deviceRows: Array<Record<string, string | null>> = [];
+  for (const evs of devices.values()) {
+    const started = firstOf(evs, e => e.event_name === "onboarding_started");
+    if (!started) continue;
+    if (launchAt && started < launchAt) continue;           // scope: post-launch devices only
+    if (d.window.startMs !== null && !inWindow(d.window, started)) continue;
+    deviceRows.push({
+      started,
+      quiz: firstOf(evs, e => e.event_name === "onboarding_quiz_completed"),
+      tapped: firstOf(evs, e => e.event_name === "onboarding_create_account_tapped" || e.event_name === "onboarding_login_tapped"),
+      account: firstOf(evs, e => !!e.user_id),
+    });
+  }
+  const before = nestedFunnel([
+    { key: "started", label: "Onboarding started", tracked: true },
+    { key: "quiz", label: "Quiz finished", tracked: true },
+    { key: "tapped", label: "Create account / log in tapped", tracked: true },
+    { key: "account", label: "Signed in to an account", tracked: true, note: "the device later wrote an event as a signed-in user" },
+  ], deviceRows);
+
+  // ── After the account: users acquired in range ───────────────────────
+  const cohort = d.window.startMs === null ? d.base.profiles : d.base.profiles.filter(p => inWindow(d.window, p.created_at));
+  const evsByUser = new Map<string, Ev[]>();
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+  const outcomes = { pro: 0, free: 0, activation_pending: 0, unknown: 0 };
+  let savedAny = 0, completedAny = 0, failedNoScan = 0, submittedNoScan = 0;
+  const userRows: Array<Record<string, string | null>> = cohort.map(p => {
+    const evs = [...(evsByUser.get(p.id) ?? []), ...(d.link?.byUser.get(p.id) ?? [])];
+    const scans = evs.filter(e => e.event_name === "scan_completed").map(e => e.created_at).sort();
+    const done = evs.filter(e => e.event_name === "onboarding_completed").sort((a, b) => a.created_at < b.created_at ? -1 : 1)[0];
+    if (done) {
+      const o = metaStr(done, "outcome");
+      if (o === "pro" || o === "free" || o === "activation_pending") outcomes[o]++; else outcomes.unknown++;
+    }
+    const submitted = firstOf(evs, e => e.event_name === "scan_submitted");
+    if (scans.length) { completedAny++; if (evs.some(e => e.event_name === "scan_saved")) savedAny++; }
+    else if (submitted) { submittedNoScan++; if (evs.some(e => e.event_name === "scan_failed")) failedNoScan++; }
+    return {
+      account: d.auth.get(p.id)?.created_at ?? p.created_at,
+      offer: firstOf(evs, e => e.event_name === "paywall_opened" && metaStr(e, "paywall_source") === "onboarding_offer"),
+      onboarded: done?.created_at ?? null,
+      photo: firstOf(evs, e => e.event_name === "scan_started"),
+      analysis: submitted,
+      scan1: scans[0] ?? null, scan2: scans[1] ?? null, scan3: scans[2] ?? null,
+    };
+  });
+  /**
+   * Home and camera have no events YET. Their names are fixed here so the
+   * app can emit them; once any row with that name exists, the stage turns
+   * on by itself — users who reached a later stage still imply it, so older
+   * users without the event are not counted as drop-offs.
+   */
+  const raw = d.rawEvents ?? [];
+  const homeTracked = raw.some(e => e.event_name === HOME_EVENT);
+  const cameraTracked = raw.some(e => e.event_name === CAMERA_EVENT);
+  for (let i = 0; i < userRows.length; i++) {
+    const p = cohort[i];
+    const evs = [...(evsByUser.get(p.id) ?? []), ...(d.link?.byUser.get(p.id) ?? [])];
+    userRows[i].home = firstOf(evs, e => e.event_name === HOME_EVENT);
+    userRows[i].camera = firstOf(evs, e => e.event_name === CAMERA_EVENT);
+  }
+  const after = nestedFunnel([
+    { key: "account", label: "Account created", tracked: true },
+    { key: "offer", label: "Onboarding offer shown", tracked: true },
+    { key: "onboarded", label: "Onboarding finished (offer answered)", tracked: true },
+    { key: "home", label: "Home reached", tracked: homeTracked, note: homeTracked ? HOME_EVENT : `no event yet — will read ${HOME_EVENT}` },
+    // The app emits camera_opened on the camera SCREEN, which shows the
+    // permission prompt until access is granted — so this step includes
+    // people who reached the prompt and declined.
+    { key: "camera", label: "Camera opened", tracked: cameraTracked, note: cameraTracked ? `${CAMERA_EVENT} — camera screen, permission prompt included` : `no event yet — will read ${CAMERA_EVENT}` },
+    { key: "photo", label: "Photo captured", tracked: true, note: "scan_started" },
+    { key: "analysis", label: "Analysis started", tracked: true, note: "scan_submitted" },
+    { key: "scan1", label: "Scan completed", tracked: true },
+    { key: "scan2", label: "Second scan", tracked: true },
+    { key: "scan3", label: "Third scan", tracked: true },
+  ], userRows);
+
+  return {
+    before, after, devices: deviceRows.length, users: cohort.length,
+    offerOutcomes: outcomes,
+    side: {
+      saved: derived(savedAny, completedAny, "users who completed a scan and saved at least one"),
+      analysisNoScan: exact(submittedNoScan, "started an analysis but never completed a scan"),
+      failedNoScan: exact(failedNoScan, "…of whom at least one analysis failed"),
+    },
+    gaps: [...(homeTracked ? [] : ["Home reached"]), ...(cameraTracked ? [] : ["Camera opened"])],
+    note: "Before the account is counted by device; after it, by user acquired in the selected range, followed forward. A missing earlier event is implied by a later one rather than counted as a drop-off.",
+  };
+}
+
+// ── Feature adoption & conversion ───────────────────────────────────────────
+
+/**
+ * Do payers use features more than non-payers? OBSERVED ASSOCIATION ONLY.
+ *
+ * The trap this avoids: Generate Listings and Deep Analysis are Pro features,
+ * so payers use them BECAUSE they paid. Counting their use after payment
+ * would "show" Pro features driving conversion by construction. So for
+ * payers, only use BEFORE their first subscription purchase counts; for
+ * everyone else, use so far.
+ *
+ * Gated features are split into "hit the paywall" (an attempt) and "used" —
+ * the paywall is not usage. Payers known only from their plan have no
+ * purchase moment and are left out, with their count shown.
+ */
+export function getFeatureAdoption(d: V4Data) {
+  const journeys = new Map(allJourneys(d).map(j => [j.userId, j]));
+  const evsByUser = new Map<string, Ev[]>();
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+
+  const pw = (src: string) => (e: Ev) => e.event_name === "paywall_opened" && metaStr(e, "paywall_source") === src;
+  const named = (...names: string[]) => (e: Ev) => names.includes(e.event_name);
+  const features: Array<{ key: string; label: string; test: (evs: Ev[]) => boolean }> = [
+    { key: "scan1", label: "1+ scan", test: evs => evs.filter(named("scan_completed")).length >= 1 },
+    { key: "scan3", label: "3+ scans", test: evs => evs.filter(named("scan_completed")).length >= 3 },
+    { key: "scan5", label: "5+ scans", test: evs => evs.filter(named("scan_completed")).length >= 5 },
+    { key: "listings_paywall", label: "Generate Listings — hit the paywall", test: evs => evs.some(pw("generate_listings")) },
+    { key: "listings", label: "Generate Listings — generated", test: evs => evs.some(named("listing_generated")) },
+    { key: "deep_paywall", label: "Deep Analysis — hit the paywall", test: evs => evs.some(pw("deep_analysis")) },
+    { key: "hunt", label: "Hunt Mode", test: evs => evs.some(named("hunt_mode_opened", "hunt_started")) },
+    { key: "saved", label: "Saved a scan", test: evs => evs.some(named("scan_saved")) },
+    { key: "progress", label: "Progress tab", test: evs => evs.some(named("progress_tab_opened")) },
+    { key: "brands", label: "Brand Compendium", test: evs => evs.some(named("brand_compendium_opened", "brand_detail_opened")) },
+    { key: "diamonds", label: "Diamonds", test: evs => evs.some(named("diamonds_opened", "diamond_detail_opened")) },
+    { key: "achievements", label: "Achievements", test: evs => evs.some(named("achievements_opened")) },
+    { key: "sold", label: "Logged a sale", test: evs => evs.some(e => e.event_name === "flip_status_changed" && metaStr(e, "status") === "sold") },
+    { key: "store", label: "Opened the Scan Store", test: evs => evs.some(named("scan_store_opened")) },
+  ];
+
+  let paid = 0, unpaid = 0, undated = 0;
+  const people: Array<{ paid: boolean; evs: Ev[] }> = [];
+  for (const p of d.base.profiles) {
+    const j = journeys.get(p.id);
+    if (j && !j.firstPurchaseAt) { undated++; continue; }
+    const isPaid = !!j?.firstPurchaseAt && j.firstPaidKind !== "scan_pack";
+    const all = evsByUser.get(p.id) ?? [];
+    const evs = isPaid ? all.filter(e => e.created_at < j!.firstPurchaseAt!) : all;
+    people.push({ paid: isPaid, evs });
+    if (isPaid) paid++; else unpaid++;
+  }
+  return {
+    rows: features.map(f => {
+      let pu = 0, nu = 0;
+      for (const x of people) if (f.test(x.evs)) { if (x.paid) pu++; else nu++; }
+      return { key: f.key, label: f.label,
+        paidUsed: derived(pu, paid, "of paid users, before paying"), unpaidUsed: derived(nu, unpaid, "of non-paid users"),
+        paidRateUsers: derived(pu, pu + nu, "paid rate among users of this"),
+        paidRateNonUsers: derived(paid - pu, (paid - pu) + (unpaid - nu), "paid rate among non-users") };
+    }),
+    paid, unpaid, undated,
+    label: "Observed association — not causation.",
+    note: "Paid users' activity counts only BEFORE their first subscription purchase, so Pro features used after paying cannot inflate the association.",
+  };
+}
+
+// ── Paywall intelligence ────────────────────────────────────────────────────
+
+/**
+ * Per-paywall value, on top of the existing per-paywall table: repeat
+ * viewers, selection → purchase, what it takes before someone buys there,
+ * purchases by pricing era with an ESTIMATED revenue, and where each paywall
+ * sits in buyers' journeys (first seen / converting / last before paying).
+ */
+export function getPaywallIntelligence(d: V4Data, env: NodeJS.ProcessEnv = process.env) {
+  const eras = getPricingEras(env);
+  const evs = d.base.events;                         // windowed + cohort
+  const journeys = getPaidJourneys(d).journeys;      // selected by first purchase in range
+  const evsByUser = new Map<string, Ev[]>();
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+  const sources = PAYWALL_SOURCES.filter(x => x !== "dev_preview");
+  const role = new Map<string, { first: number; converting: number; last: number }>();
+  for (const src of sources) role.set(src, { first: 0, converting: 0, last: 0 });
+  for (const j of journeys) {
+    if (j.firstPaywallSource && role.has(j.firstPaywallSource)) role.get(j.firstPaywallSource)!.first++;
+    if (j.convertingPaywall && role.has(j.convertingPaywall)) role.get(j.convertingPaywall)!.converting++;
+    if (j.lastPaywallBeforePay && role.has(j.lastPaywallBeforePay)) role.get(j.lastPaywallBeforePay)!.last++;
+  }
+  const rows = sources.map(src => {
+    const opens = evs.filter(e => e.event_name === "paywall_opened" && metaStr(e, "paywall_source") === src);
+    const perViewer = new Map<string, number>();
+    for (const e of opens) { const k = e.user_id ?? e.anonymous_id ?? ""; if (k) perViewer.set(k, (perViewer.get(k) ?? 0) + 1); }
+    const selections = evs.filter(e => e.event_name === "paywall_plan_selected" && metaStr(e, "paywall_source") === src).length;
+    const buys = evs.filter(e => e.event_name === "paywall_purchase_completed" && metaStr(e, "paywall_source") === src);
+    const byEra = { v1: 0, v2: 0 } as Record<string, number>;
+    let revenue = 0;
+    for (const b of buys) {
+      const era = eraAt(eras, b.created_at); if (!era) continue;
+      byEra[era.id] = (byEra[era.id] ?? 0) + 1;
+      revenue += eraPrice(era, metaStr(b, "selected_plan")) ?? 0;
+    }
+    const convertedHere = journeys.filter(j => j.convertingPaywall === src && j.firstPurchaseAt);
+    const imprBefore: number[] = [], hrsFromFirst: number[] = [];
+    for (const j of convertedHere) {
+      const mine = (evsByUser.get(j.userId) ?? []).filter(e => e.event_name === "paywall_opened" && metaStr(e, "paywall_source") === src && e.created_at <= j.firstPurchaseAt!);
+      imprBefore.push(mine.length);
+      const first = mine.reduce<string | null>((a, e) => !a || e.created_at < a ? e.created_at : a, null);
+      if (first) hrsFromFirst.push((Date.parse(j.firstPurchaseAt!) - Date.parse(first)) / 3_600_000);
+    }
+    const r = role.get(src)!;
+    return {
+      source: src, impressions: opens.length, uniqueViewers: perViewer.size,
+      repeatViewers: [...perViewer.values()].filter(n => n > 1).length,
+      selections, purchases: buys.length,
+      selectionToPurchase: derived(buys.length, selections),
+      medianImpressionsBeforePurchase: median(imprBefore),
+      medianHoursFirstImpressionToPurchase: median(hrsFromFirst),
+      purchasesByEra: byEra,
+      revenueEstimate: { value: revenue, trust: "ESTIMATED" as Trust, note: "list price, USD, first period" },
+      firstSeenFor: r.first, convertingFor: r.converting, lastBeforeFor: r.last,
+    };
+  }).sort((a, b) => b.revenueEstimate.value! - a.revenueEstimate.value! || b.purchases - a.purchases || b.impressions - a.impressions);
+  return { rows, buyers: journeys.length, currentEra: currentEra(eras, d.now)?.label ?? null,
+    note: "Revenue is ESTIMATED at each era's list price. First / converting / last count paying users selected by first purchase in range." };
+}
+
+// ── Distributions ───────────────────────────────────────────────────────────
+
+/**
+ * Percentile by linear interpolation between closest ranks (the method
+ * Excel's PERCENTILE.INC and numpy's default use). P50 equals median() above,
+ * so the two can never disagree on the same page.
+ */
+export function percentile(xs: number[], p: number): number | null {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  if (s.length === 1) return s[0];
+  const h = (s.length - 1) * p;
+  const lo = Math.floor(h), hi = Math.ceil(h);
+  return s[lo] + (s[hi] - s[lo]) * (h - lo);
+}
+
+export function distribution(xs: number[]) {
+  return {
+    n: xs.length, mean: mean(xs), median: percentile(xs, 0.5),
+    p25: percentile(xs, 0.25), p75: percentile(xs, 0.75), p90: percentile(xs, 0.9), p95: percentile(xs, 0.95),
+    max: xs.length ? Math.max(...xs) : null,
+  };
+}
+
+/** Per-user activity, computed once and shared by distributions and power users. */
+function perUserActivity(d: V4Data, rates: { NORMAL: number; HUNT: number; LISTING: number } | null) {
+  const t7 = iso(ago(d.now, 7)), t30 = iso(ago(d.now, 30));
+  const by = new Map<string, { lifetime: number; s7: number; s30: number; sessions: Set<string>; days: Set<string>;
+    listings: number; hunts: number; huntScans: number; last: string | null }>();
+  const row = (uid: string) => by.get(uid) ?? by.set(uid, { lifetime: 0, s7: 0, s30: 0, sessions: new Set(), days: new Set(),
+    listings: 0, hunts: 0, huntScans: 0, last: null }).get(uid)!;
+  for (const p of d.base.profiles) row(p.id);
+  for (const sc of d.allScans) {
+    if (!sc.user_id || !by.has(sc.user_id)) continue;
+    const r = row(sc.user_id); r.lifetime++; if (sc.created_at >= t7) r.s7++; if (sc.created_at >= t30) r.s30++;
+  }
+  for (const e of d.allEvents) {
+    if (!e.user_id || !by.has(e.user_id)) continue;
+    const r = row(e.user_id);
+    if (e.session_id) r.sessions.add(e.session_id);
+    r.days.add(dayOf(e.created_at));
+    if (e.event_name === "listing_generated") r.listings++;
+    if (e.event_name === "hunt_started") r.hunts++;
+    if (e.event_name === "hunt_scan_started") r.huntScans++;
+    if (!r.last || e.created_at > r.last) r.last = e.created_at;
+  }
+  const cost = (r: { lifetime: number; huntScans: number; listings: number }) =>
+    rates ? r.lifetime * rates.NORMAL + r.huntScans * rates.HUNT + r.listings * rates.LISTING : null;
+  return { by, cost };
+}
+
+/**
+ * Distributions by CURRENT plan. Means alone mislead here: one heavy Annual
+ * user can carry the whole Annual mean, so every figure comes with its
+ * median and upper percentiles. Free users' lifetime scans are capped by the
+ * free allowance, which shapes their distribution on its own.
+ */
+export function getUsageDistributions(d: V4Data, rates: { NORMAL: number; HUNT: number; LISTING: number } | null) {
+  const { by, cost } = perUserActivity(d, rates);
+  const build = (plan: PlanState) => {
+    const rows = d.base.profiles.filter(p => currentPlan(d, p.id) === plan).map(p => by.get(p.id)!);
+    return {
+      users: rows.length,
+      lifetime: distribution(rows.map(r => r.lifetime)),
+      scans7: distribution(rows.map(r => r.s7)),
+      scans30: distribution(rows.map(r => r.s30)),
+      sessions: distribution(rows.map(r => r.sessions.size)),
+      activeDays: distribution(rows.map(r => r.days.size)),
+      listings: distribution(rows.map(r => r.listings)),
+      hunts: distribution(rows.map(r => r.hunts)),
+      cost: rates ? distribution(rows.map(r => cost(r)!)) : null,
+    };
+  };
+  // Typed keys, so callers can read .free / .monthly / .annual directly.
+  return {
+    free: build("free"), monthly: build("monthly"), annual: build("annual"),
+    method: "Percentiles by linear interpolation between ranks (as Excel PERCENTILE.INC). P50 = median.",
+    note: `CURRENT plan. Free users' lifetime scans are capped by the ${FREE_LIFETIME_SCANS}-scan free allowance.`,
+  };
+}
+
+// ── Power users ─────────────────────────────────────────────────────────────
+
+export const POWER_THRESHOLDS = [10, 25, 50, 100];
+export const POWER_TABLE_SIZE = 20;
+
+export function getPowerUsers(d: V4Data, rates: { NORMAL: number; HUNT: number; LISTING: number } | null) {
+  const { by, cost } = perUserActivity(d, rates);
+  const total = d.base.profiles.length;
+  const rows = d.base.profiles.map(p => {
+    const r = by.get(p.id)!; const prof = d.profiles.get(p.id);
+    return { userId: p.id, user: prof?.display_name ?? prof?.username ?? null, plan: currentPlan(d, p.id),
+      scans7: r.s7, scans30: r.s30, lifetime: r.lifetime, sessions: r.sessions.size, activeDays: r.days.size,
+      listings: r.listings, hunts: r.hunts, lastActive: r.last, cost: cost(r) };
+  });
+  // Most active recently first; lifetime breaks ties, then ID so the order is stable.
+  rows.sort((a, b) => b.scans30 - a.scans30 || b.lifetime - a.lifetime || a.userId.localeCompare(b.userId));
+  const tiers = POWER_THRESHOLDS.map(t => {
+    const inTier = rows.filter(r => r.lifetime >= t);
+    const mix = { free: 0, monthly: 0, annual: 0 } as Record<PlanState, number>;
+    for (const r of inTier) mix[r.plan]++;
+    return { threshold: t, users: derived(inTier.length, total, `${t}+ lifetime scans`), mix };
+  });
+  return { top: rows.filter(r => r.lifetime > 0).slice(0, POWER_TABLE_SIZE), tiers, total };
+}
+
+// ── Free → Paid ─────────────────────────────────────────────────────────────
+
+export const FREE_TO_PAID_BUCKETS: Array<{ label: string; min: number; max: number }> = [
+  { label: "0", min: 0, max: 0 }, { label: "1", min: 1, max: 1 }, { label: "2–3", min: 2, max: 3 },
+  { label: "4–5", min: 4, max: 5 }, { label: "6–10", min: 6, max: 10 }, { label: "11–14", min: 11, max: 14 },
+  { label: `${FREE_LIFETIME_SCANS}+ (exhausted)`, min: FREE_LIFETIME_SCANS, max: Infinity },
+];
+
+/** The journey builder over a user's FULL history, with no date-range selection. */
+function allJourneys(d: V4Data): PaidJourney[] {
+  const unbounded = { ...d, window: resolveAnalysisWindow({ preset: "all" }, d.cohort?.scope ?? "post_launch", d.now) } as V4Data;
+  return getPaidJourneys(unbounded).journeys;
+}
+
+/**
+ * Does using free scans go with paying?
+ *
+ * For payers: scans BEFORE their first subscription purchase — scans after
+ * paying are never counted here. For everyone else: scans so far. Both come
+ * straight from scan_completed, so the counts are exact; no historical
+ * balance has to be reconstructed.
+ *
+ * Point-in-time: someone at 3 scans today who will pay at scan 6 counts as an
+ * unpaid "2–3" for now. Payers known only from their current plan have no
+ * purchase moment to measure against and are left out, with their count shown.
+ */
+export function getFreeToPaid(d: V4Data) {
+  const journeys = new Map(allJourneys(d).map(j => [j.userId, j]));
+  const scanCounts = new Map<string, number>();
+  for (const sc of d.allScans) if (sc.user_id) scanCounts.set(sc.user_id, (scanCounts.get(sc.user_id) ?? 0) + 1);
+  const paywallViews = new Map<string, number>();
+  for (const e of d.allEvents) if (e.user_id && e.event_name === "paywall_opened") paywallViews.set(e.user_id, (paywallViews.get(e.user_id) ?? 0) + 1);
+
+  type Acc = { users: number; paid: number; monthly: number; annual: number; hrs: number[]; views: number[]; conv: Map<string, number> };
+  const acc: Acc[] = FREE_TO_PAID_BUCKETS.map(() => ({ users: 0, paid: 0, monthly: 0, annual: 0, hrs: [], views: [], conv: new Map() }));
+  let undatedPayers = 0;
+  for (const p of d.base.profiles) {
+    const j = journeys.get(p.id);
+    const paidSub = !!j && !!j.firstPurchaseAt && j.firstPaidKind !== "scan_pack";
+    if (j && !j.firstPurchaseAt) { undatedPayers++; continue; }
+    const n = paidSub ? j!.scansBeforePay : (scanCounts.get(p.id) ?? 0);
+    const i = FREE_TO_PAID_BUCKETS.findIndex(b => n >= b.min && n <= b.max);
+    const a = acc[i];
+    a.users++;
+    if (paidSub) {
+      a.paid++;
+      if (j!.firstPaidKind === "monthly") a.monthly++;
+      if (j!.firstPaidKind === "annual") a.annual++;
+      if (j!.hoursAccountToPay !== null) a.hrs.push(j!.hoursAccountToPay);
+      a.views.push(j!.paywallImpressionsBeforePay);
+      const c = j!.convertingPaywall ?? "UNKNOWN"; a.conv.set(c, (a.conv.get(c) ?? 0) + 1);
+    } else {
+      a.views.push(paywallViews.get(p.id) ?? 0);
+    }
+  }
+  return {
+    buckets: FREE_TO_PAID_BUCKETS.map((b, i) => {
+      const a = acc[i];
+      const top = [...a.conv.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0];
+      return { label: b.label, users: a.users, paid: a.paid, conversion: derived(a.paid, a.users),
+        monthly: a.monthly, annual: a.annual, medianHoursToPay: median(a.hrs), meanPaywallViews: mean(a.views),
+        topConvertingPaywall: top ? top[0] : null };
+    }),
+    undatedPayers,
+    note: "Scans BEFORE the first subscription purchase for payers; scans so far for everyone else. Point-in-time, users in scope, full history.",
+  };
+}
+
+// ── Pricing experiments ─────────────────────────────────────────────────────
+
+/**
+ * Days after signup within which a conversion counts. Fixed, so an era whose
+ * users are newer is not penalised for having had less time. Most FlipStart
+ * conversions happen at the onboarding offer on day 0, so seven days loses
+ * little and removes the bias.
+ */
+export const PRICING_CONVERSION_DAYS = 7;
+
+/**
+ * Observational comparison of pricing eras — association, never causation:
+ * the eras also differ in season, traffic, app version and everything else
+ * that changed over time.
+ *
+ * Two kinds of number, kept apart:
+ *   COHORT — users who signed up in the era and whose whole 7-day window
+ *            also lies inside it. Activation, paid conversion and revenue per
+ *            user. Users whose week straddles the boundary are excluded from
+ *            both eras and counted.
+ *   FLOW   — everything that HAPPENED in the era: paywall views, purchase
+ *            starts and completions, plan mix, estimated gross.
+ *
+ * Revenue is ESTIMATED from list prices in USD: first-period gross, before
+ * refunds, renewals and non-US storefront pricing. Subscription purchases
+ * only — scan-pack purchase events are test-contaminated.
+ */
+export function getPricingExperiments(d: V4Data, env: NodeJS.ProcessEnv = process.env) {
+  const eras = getPricingEras(env);
+  const fee = getAppleFeeRate(env);
+  const now = d.now.getTime();
+  const windowMs = PRICING_CONVERSION_DAYS * DAY;
+  const journeys = new Map(allJourneys(d).map(j => [j.userId, j]));
+  const scanTimes = new Map<string, string[]>();
+  for (const sc of d.allScans) if (sc.user_id) (scanTimes.get(sc.user_id) ?? scanTimes.set(sc.user_id, []).get(sc.user_id)!).push(sc.created_at);
+
+  const purchases = d.allEvents.filter(e => e.event_name === "paywall_purchase_completed");
+  const inEra = (era: PricingEra, t: string) => eraAt(eras, t)?.id === era.id;
+
+  const rows = eras.map(era => {
+    const endMs = era.endsAt ? Date.parse(era.endsAt) : Infinity;
+    let acquired = 0, eligible = 0, straddling = 0, tooNew = 0, activated7 = 0, paid7 = 0, revenue7 = 0, everScanned = 0;
+    for (const p of d.base.profiles) {
+      const acquiredAt = d.auth.get(p.id)?.created_at ?? p.created_at;
+      if (!inEra(era, acquiredAt)) continue;
+      acquired++;
+      const scans = scanTimes.get(p.id) ?? [];
+      if (scans.length) everScanned++;
+      const startMs = Date.parse(acquiredAt), stopMs = startMs + windowMs;
+      if (stopMs > now) { tooNew++; continue; }
+      if (stopMs > endMs) { straddling++; continue; }
+      eligible++;
+      if (scans.some(t => Date.parse(t) < stopMs)) activated7++;
+      const j = journeys.get(p.id);
+      if (j?.firstPurchaseAt && j.firstPaidKind !== "scan_pack" && Date.parse(j.firstPurchaseAt) < stopMs) {
+        paid7++;
+        const priceEra = eraAt(eras, j.firstPurchaseAt);
+        const price = priceEra ? eraPrice(priceEra, j.firstPaidKind) : null;
+        if (price !== null) revenue7 += price;
+      }
+    }
+
+    const evs = d.allEvents.filter(e => inEra(era, e.created_at));
+    const viewers = new Set(evs.filter(e => e.event_name === "paywall_opened" && e.user_id).map(e => e.user_id!));
+    const eraPurchases = purchases.filter(e => inEra(era, e.created_at));
+    const purchasers = new Set(eraPurchases.map(e => e.user_id).filter(Boolean) as string[]);
+    const viewerBuyers = [...purchasers].filter(u => viewers.has(u)).length;
+    const monthly = eraPurchases.filter(e => metaStr(e, "selected_plan") === "monthly").length;
+    const annual = eraPurchases.filter(e => metaStr(e, "selected_plan") === "annual").length;
+    const gross = monthly * era.monthlyUsd + annual * era.annualUsd;
+    const firstBuys = [...journeys.values()].filter(j => j.firstPurchaseAt && j.firstPaidKind !== "scan_pack" && inEra(era, j.firstPurchaseAt));
+    const hrs = firstBuys.map(j => j.hoursAccountToPay).filter((h): h is number => h !== null);
+
+    return {
+      era,
+      // cohort
+      acquired: exact(acquired, "signups in the era"),
+      eligible, straddling, tooNew,
+      activation7: derived(activated7, eligible, `scanned within ${PRICING_CONVERSION_DAYS} days of signup`),
+      paid7: derived(paid7, eligible, `subscribed within ${PRICING_CONVERSION_DAYS} days of signup`),
+      revenuePerUser7: { value: eligible ? revenue7 / eligible : null, trust: "ESTIMATED" as Trust, d: eligible },
+      revenuePer100: { value: eligible ? (revenue7 / eligible) * 100 : null, trust: "ESTIMATED" as Trust, d: eligible },
+      everScanned: derived(everScanned, acquired, "ever scanned — not time-adjusted"),
+      // flow
+      activeUsers: exact(new Set(evs.filter(e => e.user_id).map(e => e.user_id!)).size),
+      paywallViewers: exact(viewers.size),
+      purchaseStarts: exact(evs.filter(e => e.event_name === "paywall_purchase_started").length),
+      purchases: exact(eraPurchases.length),
+      viewerToPaid: derived(viewerBuyers, viewers.size, "paywall viewers in the era who bought in the era"),
+      startToPurchase: derived(eraPurchases.length, evs.filter(e => e.event_name === "paywall_purchase_started").length),
+      monthly: exact(monthly), annual: exact(annual),
+      annualShare: derived(annual, monthly + annual, "annual share of purchases"),
+      grossEstimate: { value: gross, trust: "ESTIMATED" as Trust, note: "list price, USD, first period" },
+      netEstimate: { value: gross * (1 - fee), trust: "ESTIMATED" as Trust, note: `after Apple's ${Math.round(fee * 100)}%` },
+      revenuePerViewer: { value: viewers.size ? gross / viewers.size : null, trust: "ESTIMATED" as Trust, d: viewers.size },
+      timeToPay: { mean: mean(hrs), median: median(hrs), d: hrs.length },
+      scansBeforePay: { mean: mean(firstBuys.map(j => j.scansBeforePay)), median: median(firstBuys.map(j => j.scansBeforePay)), d: firstBuys.length },
+      paywallsBeforePay: { mean: mean(firstBuys.map(j => j.paywallImpressionsBeforePay)), d: firstBuys.length },
+    };
+  });
+
+  const [v1, v2] = rows;
+  const pts = (a: Metric, b: Metric) => a.value !== null && b.value !== null ? (b.value - a.value) * 100 : null;
+  const cur = currentEra(eras, d.now);
+  return {
+    eras: rows,
+    comparison: {
+      activationPts: pts(v1.activation7, v2.activation7),
+      paidPts: pts(v1.paid7, v2.paid7),
+      viewerToPaidPts: pts(v1.viewerToPaid, v2.viewerToPaid),
+      revenuePer100Delta: v1.revenuePer100.value !== null && v2.revenuePer100.value !== null ? v2.revenuePer100.value - v1.revenuePer100.value : null,
+    },
+    currentEraId: cur?.id ?? null,
+    appleFeeRate: fee,
+    conversionDays: PRICING_CONVERSION_DAYS,
+    boundaryAssumed: eras.some(e => e.assumed),
+    notes: ERA_NOTES,
+    caveat: "Observational association, not causation: the eras also differ in season, traffic and app version.",
+  };
+}
+
+// ── App versions ────────────────────────────────────────────────────────────
+
+/** "2.10.0" sorts above "2.9.3". Anything that is not a version sorts last. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  const okA = pa.every(Number.isFinite), okB = pb.every(Number.isFinite);
+  if (okA !== okB) return okA ? -1 : 1;
+  if (!okA) return a.localeCompare(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0, y = pb[i] ?? 0;
+    if (x !== y) return y - x;          // newest first
+  }
+  return 0;
+}
+
+/**
+ * Releases compared, using each EVENT's own app_version — never today's
+ * version applied backwards.
+ *
+ * Two views:
+ *   ACTIVITY — what happened on each version: users, scans per user, failure
+ *              rate, paywall → purchase, feature use.
+ *   COHORT   — users whose FIRST version was this one: 7-day activation and
+ *              paid conversion (full window only, as in pricing), D1 and D7.
+ * Versions are marketing versions (e.g. 2.1.1); two builds that share one
+ * cannot be told apart. The date range does not apply — versions are their
+ * own time periods.
+ */
+export function getAppVersions(d: V4Data) {
+  const unbounded = { ...d, window: resolveAnalysisWindow({ preset: "all" }, d.cohort?.scope ?? "post_launch", d.now) } as V4Data;
+  const ver = (e: Ev) => (e.app_version && e.app_version.trim()) || null;
+  const evs = d.allEvents;
+  const missing = evs.filter(e => !ver(e)).length;
+
+  // First version per user, from their earliest versioned event.
+  const firstVer = new Map<string, { v: string; at: string }>();
+  for (const e of evs) {
+    const v = ver(e); if (!e.user_id || !v) continue;
+    const cur = firstVer.get(e.user_id);
+    if (!cur || e.created_at < cur.at) firstVer.set(e.user_id, { v, at: e.created_at });
+  }
+  const versions = [...new Set(evs.map(ver).filter((v): v is string => !!v))].sort(compareVersions);
+  const windowMs = 7 * DAY, now = d.now.getTime();
+  const scanTimes = new Map<string, number[]>();
+  for (const sc of d.allScans) if (sc.user_id) (scanTimes.get(sc.user_id) ?? scanTimes.set(sc.user_id, []).get(sc.user_id)!).push(Date.parse(sc.created_at));
+  const firstBuy = new Map<string, number>();
+  for (const e of evs) if (e.user_id && e.event_name === "paywall_purchase_completed") {
+    const t = Date.parse(e.created_at); const c = firstBuy.get(e.user_id); if (c === undefined || t < c) firstBuy.set(e.user_id, t);
+  }
+  const rb = retentionBase(unbounded);
+  // Map lookups, not list scans — this runs once per user.
+  const created = new Map(d.base.profiles.map(p => [p.id, p.created_at]));
+  const acctAt = (uid: string) => Date.parse(d.auth.get(uid)?.created_at ?? created.get(uid) ?? "");
+
+  const rows = versions.map(v => {
+    const on = evs.filter(e => ver(e) === v);
+    const users = new Set(on.filter(e => e.user_id).map(e => e.user_id!));
+    const active = new Set(on.filter(e => e.user_id && inWindow(d.window, e.created_at)).map(e => e.user_id!));
+    const completed = on.filter(e => e.event_name === "scan_completed").length;
+    const failed = on.filter(e => e.event_name === "scan_failed").length;
+    const viewers = new Set(on.filter(e => e.event_name === "paywall_opened" && e.user_id).map(e => e.user_id!));
+    const buyers = new Set(on.filter(e => e.event_name === "paywall_purchase_completed" && e.user_id).map(e => e.user_id!));
+    const cohort = [...firstVer.entries()].filter(([, x]) => x.v === v).map(([u]) => u);
+    let eligible = 0, act7 = 0, paid7 = 0;
+    for (const u of cohort) {
+      const start = acctAt(u); if (!Number.isFinite(start) || start + windowMs > now) continue;
+      eligible++;
+      if ((scanTimes.get(u) ?? []).some(t => t < start + windowMs)) act7++;
+      const b = firstBuy.get(u); if (b !== undefined && b < start + windowMs) paid7++;
+    }
+    const inCohort = (u: string) => firstVer.get(u)?.v === v;
+    return {
+      version: v,
+      users: exact(users.size), activeInRange: exact(active.size),
+      scansPerUser: { value: users.size ? completed / users.size : null, trust: "DERIVED" as Trust, d: users.size },
+      failedScanRate: derived(failed, completed + failed, "failed ÷ (completed + failed) on this version"),
+      paywallToPurchase: derived([...buyers].filter(u => viewers.has(u)).length, viewers.size),
+      listingsPerUser: { value: users.size ? on.filter(e => e.event_name === "listing_generated").length / users.size : null, trust: "DERIVED" as Trust, d: users.size },
+      huntsPerUser: { value: users.size ? on.filter(e => e.event_name === "hunt_started").length / users.size : null, trust: "DERIVED" as Trust, d: users.size },
+      newUsers: exact(cohort.length, "users whose first version this was"),
+      activation7: derived(act7, eligible), paid7: derived(paid7, eligible),
+      d1: retentionCalc(rb, 1, inCohort), d7: retentionCalc(rb, 7, inCohort),
+    };
+  });
+  const withEvents = new Set(evs.filter(e => e.user_id).map(e => e.user_id!));
+  const usersWithoutVersion = d.base.profiles.filter(p => !firstVer.has(p.id) && withEvents.has(p.id)).length;
+  return {
+    rows,
+    missingEvents: derived(missing, evs.length, "events with no app_version"),
+    usersWithoutVersion: exact(usersWithoutVersion),
+    note: "Each event is counted under the version it was written on. Marketing versions only — builds sharing a version are indistinguishable.",
+  };
+}
+
+// ── Acquisition source ──────────────────────────────────────────────────────
+
+/**
+ * Metadata keys read as an acquisition source if the app ever writes them.
+ * Explicit names only — "source" alone already means paywall_source and
+ * entry_source elsewhere, so it is never guessed at.
+ */
+export const ACQUISITION_KEYS = ["acquisition_source", "utm_source", "utm_campaign", "utm_medium", "creator", "referrer"];
+
+/**
+ * Where users came from — to the extent the data says so, and no further.
+ *
+ * Today no event carries a source, so this reports the gap and is ready to
+ * parse one the day it appears. Nothing is inferred from usernames or
+ * timing. Cost per acquisition needs spend data the dashboard does not
+ * have, so CAC stays not tracked.
+ *
+ * What IS real: the onboarding quiz. People state their goal and experience
+ * level, which segments activation and conversion by self-reported intent —
+ * clearly labelled as intent, not as channel.
+ */
+export function getAcquisitionSource(d: V4Data, env: NodeJS.ProcessEnv = process.env) {
+  const eras = getPricingEras(env);
+  const journeys = new Map(allJourneys(d).map(j => [j.userId, j]));
+  const evsByUser = new Map<string, Ev[]>();
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+  for (const l of evsByUser.values()) l.sort((a, b) => a.created_at < b.created_at ? -1 : 1);
+  const now = d.now.getTime(), windowMs = 7 * DAY;
+  const created = new Map(d.base.profiles.map(p => [p.id, p.created_at]));
+
+  // Per user: 7-day eligibility, activation, conversion, estimated revenue.
+  const outcome = (uid: string, createdAt: string) => {
+    const start = Date.parse(d.auth.get(uid)?.created_at ?? createdAt);
+    const eligible = Number.isFinite(start) && start + windowMs <= now;
+    const evs = evsByUser.get(uid) ?? [];
+    const act = evs.some(e => e.event_name === "scan_completed" && Date.parse(e.created_at) < start + windowMs);
+    const j = journeys.get(uid);
+    const paid = !!j?.firstPurchaseAt && j.firstPaidKind !== "scan_pack" && Date.parse(j.firstPurchaseAt) < start + windowMs;
+    const era = paid ? eraAt(eras, j!.firstPurchaseAt) : null;
+    return { eligible, act, paid, revenue: era ? eraPrice(era, j!.firstPaidKind) ?? 0 : 0 };
+  };
+  type Agg = { users: number; eligible: number; act: number; paid: number; revenue: number };
+  const tally = (groups: Map<string, string[]>) => [...groups.entries()].map(([key, uids]) => {
+    const a: Agg = { users: uids.length, eligible: 0, act: 0, paid: 0, revenue: 0 };
+    for (const u of uids) {
+      const o = outcome(u, created.get(u) ?? "");
+      if (!o.eligible) continue;
+      a.eligible++; if (o.act) a.act++; if (o.paid) { a.paid++; a.revenue += o.revenue; }
+    }
+    return { key, users: a.users, activation7: derived(a.act, a.eligible), paid7: derived(a.paid, a.eligible),
+      revenue: { value: a.revenue, trust: "ESTIMATED" as Trust },
+      revenuePerUser: { value: a.eligible ? a.revenue / a.eligible : null, trust: "ESTIMATED" as Trust, d: a.eligible },
+      revenuePerPaidUser: { value: a.paid ? a.revenue / a.paid : null, trust: "ESTIMATED" as Trust, d: a.paid } };
+  }).sort((x, y) => y.users - x.users || x.key.localeCompare(y.key));
+
+  // Acquisition source — only if the data carries one.
+  const bySource = new Map<string, string[]>();
+  let sourceEvents = 0;
+  for (const p of d.base.profiles) {
+    for (const e of evsByUser.get(p.id) ?? []) {
+      const k = ACQUISITION_KEYS.find(k => metaStr(e, k));
+      if (!k) continue;
+      sourceEvents++;
+      const v = metaStr(e, k)!.trim().toLowerCase();
+      (bySource.get(v) ?? bySource.set(v, []).get(v)!).push(p.id);
+      break;
+    }
+  }
+  // Self-reported intent from the onboarding quiz.
+  const answer = (uid: string, key: string) => {
+    for (const e of evsByUser.get(uid) ?? []) if (e.event_name === "onboarding_completed") { const v = metaStr(e, key); if (v) return v; }
+    for (const e of d.link?.byUser.get(uid) ?? []) if (e.event_name === "onboarding_quiz_completed") { const v = metaStr(e, key); if (v) return v; }
+    return null;
+  };
+  const group = (key: string) => {
+    const m = new Map<string, string[]>();
+    for (const p of d.base.profiles) { const v = answer(p.id, key) ?? "(not answered)"; (m.get(v) ?? m.set(v, []).get(v)!).push(p.id); }
+    return m;
+  };
+  return {
+    tracked: bySource.size > 0,
+    sources: bySource.size ? tally(bySource) : [],
+    sourceEvents,
+    keysRead: ACQUISITION_KEYS,
+    cac: { value: null, trust: "NOT_TRACKED" as Trust, available: false, note: "needs marketing spend, which the dashboard does not have" },
+    byGoal: tally(group("primary_goal")),
+    byExperience: tally(group("experience_level")),
+    note: "Intent segments are self-reported onboarding answers — who people say they are, not where they came from. 7-day windows, full window only.",
+  };
+}
+
+// ── Cost by plan ────────────────────────────────────────────────────────────
+
+/**
+ * Estimated AI cost by CURRENT plan, and — for subscribers — an estimated
+ * monthly contribution: what they pay per month after Apple's fee, minus
+ * their estimated AI cost over the last 30 days.
+ *
+ * Price is the list price of the era of the user's FIRST purchase (what they
+ * signed up at). Annual is spread over 12 months. Subscribers with no
+ * purchase event cannot be priced and are left out, counted. This is a
+ * contribution estimate, never profit: it ignores refunds, taxes, renewals
+ * at a different price and every cost but AI.
+ */
+export function getCostByPlan(d: V4Data, rates: { NORMAL: number; HUNT: number; LISTING: number } | null, env: NodeJS.ProcessEnv = process.env) {
+  if (!rates) return { available: false, note: "Cost rates unavailable — no estimate is made without them." };
+  const eras = getPricingEras(env), fee = getAppleFeeRate(env);
+  const t30 = iso(ago(d.now, 30));
+  const life = new Map<string, number>(), last30 = new Map<string, number>(), scans = new Map<string, number>();
+  const unit = (e: Ev) => e.event_name === "scan_completed" ? rates.NORMAL : e.event_name === "hunt_scan_started" ? rates.HUNT
+    : e.event_name === "listing_generated" ? rates.LISTING : 0;
+  for (const e of d.allEvents) {
+    if (!e.user_id) continue;
+    const c = unit(e); if (!c) continue;
+    life.set(e.user_id, (life.get(e.user_id) ?? 0) + c);
+    if (e.created_at >= t30) last30.set(e.user_id, (last30.get(e.user_id) ?? 0) + c);
+    if (e.event_name === "scan_completed") scans.set(e.user_id, (scans.get(e.user_id) ?? 0) + 1);
+  }
+  const journeys = new Map(allJourneys(d).map(j => [j.userId, j]));
+  const plans: PlanState[] = ["free", "monthly", "annual"];
+  const out: Record<string, any> = {};
+  let unpriced = 0;
+  for (const plan of plans) {
+    const ids = d.base.profiles.filter(p => currentPlan(d, p.id) === plan).map(p => p.id);
+    const costs = ids.map(u => life.get(u) ?? 0);
+    const totalScans = ids.reduce((a, u) => a + (scans.get(u) ?? 0), 0);
+    const total = costs.reduce((a, b) => a + b, 0);
+    let contribution: any = null;
+    if (plan !== "free") {
+      const per: number[] = [];
+      for (const u of ids) {
+        const j = journeys.get(u);
+        const era = j?.firstPurchaseAt ? eraAt(eras, j.firstPurchaseAt) : null;
+        if (!era) { unpriced++; continue; }
+        const price = plan === "monthly" ? era.monthlyUsd : era.annualUsd / 12;
+        per.push(price * (1 - fee) - (last30.get(u) ?? 0));
+      }
+      contribution = {
+        users: per.length, mean: mean(per), median: median(per), total: per.reduce((a, b) => a + b, 0),
+        negative: per.filter(x => x < 0).length, trust: "ESTIMATED" as Trust,
+      };
+    }
+    out[plan] = {
+      users: ids.length, totalCost: { value: total, trust: "ESTIMATED" as Trust },
+      perUser: distribution(costs), scans: exact(totalScans),
+      costPerScan: { value: totalScans ? total / totalScans : null, trust: "ESTIMATED" as Trust, d: totalScans },
+      cost30Total: { value: ids.reduce((a, u) => a + (last30.get(u) ?? 0), 0), trust: "ESTIMATED" as Trust },
+      contribution,
+    };
+  }
+  return {
+    available: true, free: out.free, monthly: out.monthly, annual: out.annual, unpriced, appleFeeRate: fee, rates,
+    note: `Estimated monthly contribution = list price at the user's purchase era × (1 − ${Math.round(fee * 100)}%), annual ÷ 12, minus estimated AI cost over the last 30 days. Not profit.`,
+  };
+}
 
 // ── Data Integrity ──────────────────────────────────────────────────────────
 
@@ -2022,6 +2969,8 @@ export const ATTENTION_RULES = {
   activationBelow: 0.5,      // fewer than half have scanned
   activationMinUsers: 10,    // below this, a rate is too noisy to call out
   powerUserScans30d: 25,
+  funnelMinEntrants: 10,     // a stage needs this many entrants before its drop counts
+  funnelDropAtLeast: 0.3,    // and must lose at least this share
 };
 
 export function getFounderAttention(m: any): AttentionItem[] {
@@ -2052,12 +3001,75 @@ export function getFounderAttention(m: any): AttentionItem[] {
         detail: "They paid — mostly at the onboarding offer — but have not used the core feature yet.", anchor: "paid" });
     }
   }
+  const fs = m.firstSession;
+  if (ok(fs)) {
+    // The single worst step after the account, among stages with enough entrants.
+    let worst: { from: string; to: string; lost: number; of: number; share: number } | null = null;
+    const tracked = (fs.after ?? []).filter((st: FunnelStage) => st.tracked);
+    for (let i = 1; i < tracked.length; i++) {
+      const prev = tracked[i - 1].reached, cur = tracked[i].reached;
+      if (prev < ATTENTION_RULES.funnelMinEntrants) continue;
+      const share = (prev - cur) / prev;
+      if (share >= ATTENTION_RULES.funnelDropAtLeast && (!worst || share > worst.share)) {
+        worst = { from: tracked[i - 1].label, to: tracked[i].label, lost: prev - cur, of: prev, share };
+      }
+    }
+    if (worst) {
+      out.push({ level: "warning", icon: "📉", title: `Biggest drop-off: ${worst.from} → ${worst.to}`,
+        detail: `${worst.lost} of ${worst.of} users (${(worst.share * 100).toFixed(0)}%) stop here.`, anchor: "funnel" });
+    }
+    const b = fs.before ?? [];
+    const started = b[0]?.reached ?? 0, signedIn = b.at(-1)?.reached ?? 0;
+    if (started >= ATTENTION_RULES.funnelMinEntrants && (started - signedIn) / started >= ATTENTION_RULES.funnelDropAtLeast) {
+      out.push({ level: "warning", icon: "🚪", title: "Onboarding loses people before sign-up",
+        detail: `${started - signedIn} of ${started} devices started onboarding and never signed in.`, anchor: "funnel" });
+    }
+  }
+  const cb = m.costByPlan;
+  if (ok(cb) && cb.available) {
+    const neg = (cb.monthly?.contribution?.negative ?? 0) + (cb.annual?.contribution?.negative ?? 0);
+    if (neg > 0) {
+      out.push({ level: "info", icon: "💸", title: `${neg} subscriber${neg === 1 ? "" : "s"} cost more in AI than they pay per month`,
+        detail: "Estimated: list price after Apple's fee, minus estimated AI cost over the last 30 days.", anchor: "costplan" });
+    }
+  }
+  const pr = m.pricing;
+  if (ok(pr)) {
+    const cur = pr.eras?.find((e: any) => e.era.id === pr.currentEraId);
+    if (cur && cur.paid7.d > 0) {
+      const small = cur.paid7.d < 20 ? `, n=${cur.paid7.d} — small sample` : `, n=${cur.paid7.d}`;
+      out.push({ level: "info", icon: "📈", title: `${cur.era.label}: ${cur.paid7.n} of ${cur.paid7.d} subscribed within ${pr.conversionDays} days`,
+        detail: `${((cur.paid7.value ?? 0) * 100).toFixed(1)}% 7-day paid conversion${small}. Observational, not causal.`, anchor: "pricing" });
+    }
+  }
   if (pu && pu.scans30 >= ATTENTION_RULES.powerUserScans30d) {
     out.push({ level: "opportunity", icon: "🔥", title: "Power user",
       detail: `${pu.user ?? "One user"} (${pu.plan}) completed ${pu.scans30} scans in the last 30 days.`, anchor: "explorer" });
   }
   const order = { critical: 0, warning: 1, opportunity: 2, info: 3 } as const;
   return out.sort((a, b) => order[a.level] - order[b.level]).slice(0, 5);
+}
+
+/**
+ * The Executive section's headline set — one number per question, each
+ * saying which window it uses, taken from the sections that own them.
+ */
+export function getExecutiveCore(m: any) {
+  const ok = (x: any) => x && typeof x === "object" && !(typeof x.error === "string");
+  const pick = (x: any, f: (x: any) => any) => ok(x) ? f(x) ?? null : null;
+  const pr = ok(m.pricing) ? m.pricing : null;
+  const cur = pr?.eras?.find((e: any) => e.era.id === pr.currentEraId) ?? null;
+  return {
+    newUsers7: pick(m.acquisition, a => a.new7),
+    activation: pick(m.activation, a => a.activationRate),
+    wau: pick(m.acquisition, a => a.wau),
+    payingUsers: pick(m.monetization, mo => mo.totalPaying),
+    viewerToPurchase: pick(m.monetization, mo => mo.viewToPurchase),
+    d7: pick(m.retentionV2, r => r.d7),
+    pricingEraLabel: cur?.era.label ?? null,
+    pricingConversion: cur ? cur.paid7 : null,
+    topUserScans30: ok(m.powerUserPeak) && m.powerUserPeak ? m.powerUserPeak.scans30 : null,
+  };
 }
 
 /** The single most active user in scope over the last 30 days. */
@@ -2100,6 +3112,17 @@ export async function getFounderDashboardV4Metrics(
     cutover, cohort, window,
     dataIntegrity: safe("dataIntegrity", () => getDataIntegrity(d)),
     powerUserPeak: safe("powerUserPeak", () => getPowerUserPeak(d)),
+    pricing: safe("pricing", () => getPricingExperiments(d, env)),
+    freeToPaid: safe("freeToPaid", () => getFreeToPaid(d)),
+    distributions: safe("distributions", () => getUsageDistributions(d, rates)),
+    powerUsers: safe("powerUsers", () => getPowerUsers(d, rates)),
+    firstSession: safe("firstSession", () => getFirstSessionFunnel(d)),
+    featureAdoption: safe("featureAdoption", () => getFeatureAdoption(d)),
+    paywallIntel: safe("paywallIntel", () => getPaywallIntelligence(d, env)),
+    retentionSegments: safe("retentionSegments", () => getRetentionSegments(d)),
+    appVersions: safe("appVersions", () => getAppVersions(d)),
+    acquisitionSource: safe("acquisitionSource", () => getAcquisitionSource(d, env)),
+    costByPlan: safe("costByPlan", () => getCostByPlan(d, rates, env)),
     userExplorer: explorer,
     acquisition: safe("acquisition", () => getAcquisition(d)),
     activation:  safe("activation", () => getActivation(d)),
@@ -2116,8 +3139,9 @@ export async function getFounderDashboardV4Metrics(
     dataQualityV4: safe("dataQualityV4", () => getDataQualityV4(d, cutover)),
     preLaunchProfiles: d.preLaunchProfiles,
   };
-  // Last: Founder Attention reads the finished metrics, never raw data, so it
-  // can only ever restate what the page itself shows.
+  // Last: these read the finished metrics, never raw data, so they can only
+  // ever restate what the page itself shows.
+  out.executiveCore = safe("executiveCore", () => getExecutiveCore(out));
   out.founderAttention = safe("founderAttention", () => getFounderAttention(out));
   return out;
 }

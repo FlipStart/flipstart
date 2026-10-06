@@ -245,6 +245,234 @@ function renderExplorer(ex: any): string {
   return section("explorer", "1c · User Explorer", `<div class="card">${form}<div class="muted">Founder-only. Shows any account — pre-launch and internal included — with its whole history; scope and date range do not apply here.</div></div>` + body);
 }
 
+const usd = (v: number | null | undefined, dp = 2) => v === null || v === undefined || !Number.isFinite(v) ? "—" : `$${v.toFixed(dp)}`;
+const signed = (v: number | null, unit: string, dp = 1) => v === null ? "—" : `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(dp)}${unit}`;
+const absent = (label: string, x: any) => !x || typeof x !== "object" ? `<div class="card muted">${esc(label)} is unavailable for this load.</div>` : "";
+
+function renderPricing(pr: any): string {
+  if (!pr || typeof pr !== "object") return section("pricing", "4b · Pricing Experiments", absent("Pricing Experiments", pr));
+  if (isErr(pr)) return errorCard("Pricing Experiments", pr);
+  const [v1, v2] = pr.eras;
+  const col = (r: any) => {
+    const e = r.era;
+    const span = `${e.startsAt ? when(e.startsAt) : "start"} → ${e.endsAt ? when(e.endsAt) : "now"}`;
+    return `<div class="card"><div class="card-h">${esc(e.label)} · ${usd(e.monthlyUsd)}/mo · ${usd(e.annualUsd)}/yr ${pr.currentEraId === e.id ? `<span class="sev sev-info">current</span>` : ""}<br><span class="muted">${esc(span)} Central</span></div>
+      <div class="muted">Cohort — signed up in this era, full ${pr.conversionDays}-day window inside it</div>
+      ${grid([
+        m("Signed up", r.acquired), m(`Activation · ${pr.conversionDays}d`, r.activation7), m(`Paid · ${pr.conversionDays}d`, r.paid7),
+        m("Est. revenue / 100 users", r.revenuePer100, { dp: 2 }),
+      ])}
+      <div class="muted">${num(r.eligible)} eligible · ${num(r.straddling)} excluded (week crosses the era boundary) · ${num(r.tooNew)} too new to judge</div>
+      <div class="muted" style="margin-top:8px">Flow — everything that happened in this era</div>
+      ${grid([
+        m("Active users", r.activeUsers), m("Paywall viewers", r.paywallViewers), m("Purchase starts", r.purchaseStarts),
+        m("Purchases", r.purchases), m("Viewer → paid", r.viewerToPaid), m("Start → purchase", r.startToPurchase),
+        m("Monthly", r.monthly), m("Annual", r.annual), m("Annual share", r.annualShare),
+        m("Est. gross", r.grossEstimate, { dp: 2 }), m("Est. net", r.netEstimate, { dp: 2 }), m("Est. gross / viewer", r.revenuePerViewer, { dp: 2 }),
+        m("Median time to pay", { value: r.timeToPay.median, trust: "DERIVED", d: r.timeToPay.d }, { fmt: "hrs" }),
+        m("Mean time to pay", { value: r.timeToPay.mean, trust: "DERIVED", d: r.timeToPay.d }, { fmt: "hrs" }),
+        m("Median scans before pay", { value: r.scansBeforePay.median, trust: "DERIVED", d: r.scansBeforePay.d }, { dp: 1 }),
+        m("Mean paywall views before pay", { value: r.paywallsBeforePay.mean, trust: "DERIVED", d: r.paywallsBeforePay.d }, { dp: 1 }),
+      ])}</div>`;
+  };
+  const c = pr.comparison;
+  const cmp = `<div class="card"><div class="card-h">V2 vs V1 <span class="muted">— observational, not causal</span></div>${table(["Measure", "Change"], [
+    [`Activation (${pr.conversionDays}-day)`, esc(signed(c.activationPts, " pts"))],
+    [`Paid conversion (${pr.conversionDays}-day)`, esc(signed(c.paidPts, " pts"))],
+    ["Paywall viewer → paid", esc(signed(c.viewerToPaidPts, " pts"))],
+    ["Est. revenue per 100 users", c.revenuePer100Delta === null ? "—" : esc(`${c.revenuePer100Delta >= 0 ? "+" : "−"}$${Math.abs(c.revenuePer100Delta).toFixed(2)}`)],
+  ], "compact")}<div class="muted">${esc(pr.caveat)} Small samples are flagged on each card above.</div></div>`;
+  const notes = [
+    pr.boundaryAssumed ? `V2 start is a date-only assumption (midnight Central). Set FLIPSTART_PRICING_V2_AT to the exact moment if known.` : "",
+    `Revenue is ESTIMATED: list price in USD, first period only — before refunds, renewals and non-US storefront pricing. Net applies Apple's ${Math.round(pr.appleFeeRate * 100)}%. Subscriptions only; scan-pack events are test activity.`,
+    ...pr.notes.map((n: any) => `${n.at ? when(n.at) + " — " : ""}${n.note}`),
+  ].filter(Boolean).map(t => `<div class="note-block">${esc(t)}</div>`).join("");
+  return section("pricing", "4b · Pricing Experiments", `<div class="two">${col(v1)}${col(v2)}</div>` + cmp + notes,
+    "eras define their own windows; the date range does not apply");
+}
+
+function renderFreeToPaid(fp: any): string {
+  if (!fp || typeof fp !== "object") return section("freepaid", "4c · Free → Paid", absent("Free → Paid", fp));
+  if (isErr(fp)) return errorCard("Free → Paid", fp);
+  const top = Math.max(0, ...fp.buckets.map((b: any) => b.conversion.value ?? 0));
+  const rows = fp.buckets.map((b: any) => [
+    esc(b.label), num(b.users), num(b.paid),
+    b.conversion.d ? `${rate(b.conversion.n, b.conversion.d)}` : "—",
+    `<div class="w">${bar(top ? ((b.conversion.value ?? 0) / top) * 100 : 0)}</div>`,
+    b.paid ? `${num(b.monthly)} / ${num(b.annual)}` : "—",
+    hrs(b.medianHoursToPay), num(b.meanPaywallViews, 1), b.topConvertingPaywall ? `<code>${esc(b.topConvertingPaywall)}</code>` : "—",
+  ]);
+  return section("freepaid", "4c · Free → Paid",
+    `<div class="card"><div class="card-h">Probability of paying, by free scans used before paying</div>
+     ${table(["Free scans", "Users", "Paid", "Conversion", "", "Monthly / Annual", "Median time to pay", "Mean paywall views", "Top converting paywall"], rows, "compact")}
+     <div class="muted">${esc(fp.note)} Counts are exact — straight from scan events, no balance reconstruction.${fp.undatedPayers ? ` ${num(fp.undatedPayers)} payer(s) with no purchase event are left out: there is no purchase moment to count scans against.` : ""}</div></div>`,
+    "observed association, not causation");
+}
+
+function renderPowerUsers(pu: any): string {
+  if (!pu || typeof pu !== "object") return section("power", "7b · Power Users", absent("Power Users", pu));
+  if (isErr(pu)) return errorCard("Power Users", pu);
+  const tiers = table(["Lifetime scans", "Users", "Free / Monthly / Annual"], pu.tiers.map((t: any) => [
+    `${num(t.threshold)}+`, rate(t.users.n, t.users.d), `${num(t.mix.free)} / ${num(t.mix.monthly)} / ${num(t.mix.annual)}`]), "compact");
+  const rows = pu.top.map((r: any, i: number) => [
+    num(i + 1), userLink(r.userId, r.user ?? r.userId.slice(0, 8) + "…"), esc(r.plan), num(r.scans7), num(r.scans30), num(r.lifetime),
+    num(r.sessions), num(r.activeDays), num(r.listings), num(r.hunts), when(r.lastActive), r.cost === null ? "—" : usd(r.cost, 3),
+  ]);
+  return section("power", "7b · Power Users",
+    `<div class="two"><div class="card"><div class="card-h">Thresholds</div>${tiers}</div>
+     <div class="card"><div class="card-h">How this is ranked</div><div class="muted">Scans in the last 30 days, then lifetime scans. Internal accounts are excluded by the scope. Cost is ESTIMATED at the dashboard's per-action rates.</div></div></div>
+     <div class="card wide"><div class="card-h">Top ${num(pu.top.length)}</div>${rows.length ? table(["#", "User", "Plan", "7d", "30d", "Lifetime", "Sessions", "Active days", "Listings", "Hunts", "Last active", "Est. cost"], rows, "compact") : `<div class="muted">No scans yet.</div>`}</div>`);
+}
+
+function renderDistributions(ds: any): string {
+  if (!ds || typeof ds !== "object") return section("dist", "9b · Usage Distribution", absent("Usage Distribution", ds));
+  if (isErr(ds)) return errorCard("Usage Distribution", ds);
+  const f = (v: number | null, dp = 1) => v === null ? "—" : num(v, dp);
+  const line = (label: string, x: any, full: boolean) => x ? [esc(label), num(x.n), f(x.mean), f(x.median),
+    ...(full ? [f(x.p25)] : []), f(x.p75), f(x.p90), ...(full ? [f(x.p95)] : []), f(x.max, 0)] : null;
+  const card = (plan: string) => {
+    const d = ds[plan]; if (!d) return "";
+    const full = [line("Lifetime scans", d.lifetime, true)].filter(Boolean) as string[][];
+    const short = [line("Scans 7d", d.scans7, false), line("Scans 30d", d.scans30, false), line("Sessions", d.sessions, false),
+      line("Active days", d.activeDays, false), line("Listings", d.listings, false), line("Hunts", d.hunts, false),
+      d.cost ? [esc("Est. API cost ($)"), num(d.cost.n), f(d.cost.mean, 3), f(d.cost.median, 3), f(d.cost.p75, 3), f(d.cost.p90, 3), f(d.cost.max, 3)] : null,
+    ].filter(Boolean) as string[][];
+    return `<div class="card"><div class="card-h">Current ${esc(plan)} · ${num(d.users)} users ${small(d.users)}</div>
+      ${table(["", "n", "Mean", "Median", "P25", "P75", "P90", "P95", "Max"], full, "compact")}
+      ${table(["", "n", "Mean", "Median", "P75", "P90", "Max"], short, "compact")}</div>`;
+  };
+  return section("dist", "9b · Usage Distribution", card("free") + card("monthly") + card("annual") +
+    `<div class="muted">${esc(ds.note)} ${esc(ds.method)}</div>`, "per user, current plan");
+}
+
+const mins = (v: number | null) => v === null ? "—" : v < 60 ? `${Math.round(v)}m` : hrs(v / 60);
+
+function funnelTable(stages: any[], unit: string): string {
+  const top = stages.find((st: any) => st.tracked)?.reached || 0;
+  const rows = stages.map((st: any) => st.tracked ? [
+    esc(st.label) + (st.note ? ` <span class="muted">${esc(st.note)}</span>` : ""),
+    num(st.reached), top ? pct(st.reached / top) : "—", `<div class="w">${bar(top ? (st.reached / top) * 100 : 0)}</div>`,
+    st.conversion ? `${rate(st.conversion.n, st.conversion.d)}` : "—",
+    st.conversion?.value !== null && st.conversion?.value !== undefined ? pct(1 - st.conversion.value) : "—",
+    st.observed < st.reached ? `${num(st.observed)} <span class="muted" title="Reached this stage per a later event, but its own event is missing">(+${num(st.reached - st.observed)} implied)</span>` : num(st.observed),
+    mins(st.medianMinutesFromPrev),
+  ] : [`<span class="muted">${esc(st.label)}</span>`, `<span class="tb tb-not_tracked" title="No event exists for this step">n/t</span>`, "", "", "", "", `<span class="muted">${esc(st.note ?? "")}</span>`, ""]);
+  return table(["Stage", unit, "Of first", "", "From previous", "Drop-off", "Own event seen", "Median time from previous"], rows, "compact");
+}
+
+function renderFunnel(fs: any): string {
+  if (!fs || typeof fs !== "object") return section("funnel", "3b · First-Session Funnel", absent("First-Session Funnel", fs));
+  if (isErr(fs)) return errorCard("First-Session Funnel", fs);
+  const o = fs.offerOutcomes, totalO = o.pro + o.free + o.activation_pending + o.unknown;
+  return section("funnel", "3b · First-Session Funnel",
+    `<div class="card"><div class="card-h">Before the account <span class="muted">— by device, ${num(fs.devices)} that started onboarding</span></div>${funnelTable(fs.before, "Devices")}</div>
+     <div class="card"><div class="card-h">After the account <span class="muted">— by user, ${num(fs.users)} acquired in range, followed forward</span></div>${funnelTable(fs.after, "Users")}</div>
+     <div class="two"><div class="card"><div class="card-h">How the onboarding offer was answered</div>${table(["Outcome", "Users", "Share"], [
+        ["Continue Free", num(o.free), totalO ? pct(o.free / totalO) : "—"], ["Subscribed", num(o.pro), totalO ? pct(o.pro / totalO) : "—"],
+        ["Activation pending", num(o.activation_pending), totalO ? pct(o.activation_pending / totalO) : "—"],
+        ...(o.unknown ? [["Outcome not recorded", num(o.unknown), pct(o.unknown / totalO)]] : []),
+      ], "compact")}<div class="muted">From <code>onboarding_completed</code>, which records the offer's outcome — exact in every era, unlike the generic Continue Free event that starts at the V4 cutover.</div></div>
+     <div class="card"><div class="card-h">Beside the funnel</div>${grid([m("Saved a scan", fs.side.saved), m("Started an analysis, no completed scan", fs.side.analysisNoScan), m("…with a failed analysis", fs.side.failedNoScan)])}
+     <div class="muted">Saving is shown here, not as a stage: scanning without saving is normal, and a nested "saved" stage would drop people who simply scan.</div></div></div>
+     <div class="note-block">${badge("NOT_TRACKED")} ${esc(fs.gaps.join(" and "))} have no events, so the funnel cannot split the step between finishing onboarding and capturing a photo. ${esc(fs.note)}</div>`,
+    "where new users stop");
+}
+
+function renderPaywallIntel(pi: any): string {
+  if (!pi || typeof pi !== "object") return section("pwintel", "5b · Paywall Intelligence", absent("Paywall Intelligence", pi));
+  if (isErr(pi)) return errorCard("Paywall Intelligence", pi);
+  const rows = pi.rows.map((r: any) => [
+    `<code>${esc(r.source)}</code>`, num(r.impressions), num(r.uniqueViewers), num(r.repeatViewers),
+    num(r.selections), num(r.purchases), r.selectionToPurchase.d ? rate(r.selectionToPurchase.n, r.selectionToPurchase.d) : "—",
+    `${num(r.purchasesByEra.v1 ?? 0)} / ${num(r.purchasesByEra.v2 ?? 0)}`, usd(r.revenueEstimate.value),
+    num(r.medianImpressionsBeforePurchase, 1), hrs(r.medianHoursFirstImpressionToPurchase),
+    `${num(r.firstSeenFor)} / ${num(r.convertingFor)} / ${num(r.lastBeforeFor)}`,
+  ]);
+  return section("pwintel", "5b · Paywall Intelligence",
+    `<div class="card wide"><div class="card-h">Which paywalls create value <span class="muted">— sorted by estimated revenue in range</span></div>
+     ${table(["Paywall", "Impr.", "Viewers", "Repeat viewers", "Selections", "Purchases", "Selection → purchase", "Purchases V1 / V2", "Est. revenue", "Median views before buying", "First view → purchase", "First / converting / last"], rows, "compact")}
+     <div class="muted">${esc(pi.note)} "First / converting / last": for buyers, how often this paywall was the first they saw, the one they bought on, and the last before buying. ${num(pi.buyers)} buyer(s). Current era: ${esc(pi.currentEra ?? "—")}.</div></div>`,
+    "ESTIMATED revenue");
+}
+
+function renderFeatureAdoption(fa: any): string {
+  if (!fa || typeof fa !== "object") return section("adopt", "13b · Feature Adoption & Conversion", absent("Feature Adoption", fa));
+  if (isErr(fa)) return errorCard("Feature Adoption", fa);
+  const r = (x: any) => x.d ? rate(x.n, x.d) : "—";
+  const rows = fa.rows.map((x: any) => [esc(x.label), r(x.paidUsed), r(x.unpaidUsed), r(x.paidRateUsers), r(x.paidRateNonUsers)]);
+  return section("adopt", "13b · Feature Adoption & Conversion",
+    `<div class="card wide"><div class="card-h">${esc(fa.label)}</div>
+     ${table(["Feature", `Paid users who used it (${num(fa.paid)})`, `Non-paid users who used it (${num(fa.unpaid)})`, "Paid rate · users", "Paid rate · non-users"], rows, "compact")}
+     <div class="muted">${esc(fa.note)} "Hit the paywall" is an attempt, not usage.${fa.undated ? ` ${num(fa.undated)} payer(s) with no purchase event are left out.` : ""}</div></div>`,
+    "observed association, not causation");
+}
+
+function renderRetentionSegments(rs: any): string {
+  if (!rs || typeof rs !== "object") return section("retseg", "11b · Retention by Segment", absent("Retention by Segment", rs));
+  if (isErr(rs)) return errorCard("Retention by Segment", rs);
+  const c = (x: any) => x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : "—";
+  return section("retseg", "11b · Retention by Segment",
+    `<div class="card wide">${table(["Segment", "Users", "D1", "D3", "D7", "D14", "D30"],
+      rs.rows.map((x: any) => [esc(x.label), num(x.users), c(x.d1), c(x.d3), c(x.d7), c(x.d14), c(x.d30)]), "compact")}
+     <div class="muted">${esc(rs.note)}</div></div>`, "first-day segments");
+}
+
+const cell = (x: any) => x && x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : "—";
+
+function renderAppVersions(av: any): string {
+  if (!av || typeof av !== "object") return section("versions", "12b · App Versions", absent("App Versions", av));
+  if (isErr(av)) return errorCard("App Versions", av);
+  const rows = av.rows.map((r: any) => [
+    `<code>${esc(r.version)}</code>`, num(r.users.value), num(r.activeInRange.value), num(r.newUsers.value),
+    cell(r.activation7), cell(r.paid7), cell(r.d1), cell(r.d7),
+    num(r.scansPerUser.value, 1), cell(r.failedScanRate), cell(r.paywallToPurchase),
+    num(r.listingsPerUser.value, 2), num(r.huntsPerUser.value, 2),
+  ]);
+  return section("versions", "12b · App Versions",
+    `<div class="card wide">${rows.length ? table(["Version", "Users", "Active in range", "First-version users", "Activation 7d", "Paid 7d", "D1", "D7",
+      "Scans / user", "Failed scans", "Paywall → purchase", "Listings / user", "Hunts / user"], rows, "compact") : `<div class="muted">No versioned events yet.</div>`}
+     <div class="muted">Activity columns count events written on that version; the first-version columns follow the users who started on it. ${esc(av.note)}</div>
+     <div class="muted">Events with no version: ${cell(av.missingEvents)} · users with no versioned event: ${num(av.usersWithoutVersion.value)}</div></div>`,
+    "event-time version");
+}
+
+function renderAcquisitionSource(as: any): string {
+  if (!as || typeof as !== "object") return section("source", "2b · Acquisition Source", absent("Acquisition Source", as));
+  if (isErr(as)) return errorCard("Acquisition Source", as);
+  const seg = (rows: any[], head: string) => table([head, "Users", "Activation 7d", "Paid 7d", "Est. revenue", "Est. revenue / user", "Est. revenue / paid user"],
+    rows.map((r: any) => [esc(r.key), num(r.users), cell(r.activation7), cell(r.paid7), usd(r.revenue.value), usd(r.revenuePerUser.value), usd(r.revenuePerPaidUser.value)]), "compact");
+  const sourceBlock = as.tracked
+    ? `<div class="card"><div class="card-h">By source</div>${seg(as.sources, "Source")}<div class="muted">CAC: ${esc(as.cac.note)}.</div></div>`
+    : `<div class="card"><div class="card-h">By source ${badge("NOT_TRACKED")}</div><div class="muted">No event carries an acquisition source, so TikTok, Instagram, creators and campaigns cannot be told apart. Nothing is inferred to fill the gap. The day the app writes any of <code>${esc(as.keysRead.join(", "))}</code> into event metadata, this table fills itself in. CAC also needs marketing spend, which the dashboard does not have.</div></div>`;
+  return section("source", "2b · Acquisition Source", sourceBlock +
+    `<div class="two"><div class="card"><div class="card-h">By stated goal <span class="muted">— self-reported intent, not channel</span></div>${seg(as.byGoal, "Goal")}</div>
+     <div class="card"><div class="card-h">By stated experience</div>${seg(as.byExperience, "Experience")}</div></div>
+     <div class="muted">${esc(as.note)}</div>`);
+}
+
+function renderCostByPlan(cb: any): string {
+  if (!cb || typeof cb !== "object") return section("costplan", "14b · Cost by Plan", absent("Cost by Plan", cb));
+  if (isErr(cb)) return errorCard("Cost by Plan", cb);
+  if (!cb.available) return section("costplan", "14b · Cost by Plan", `<div class="card muted">${esc(cb.note)}</div>`);
+  const plan = (k: string) => {
+    const x = cb[k]; if (!x) return "";
+    const c = x.contribution;
+    return `<div class="card"><div class="card-h">Current ${esc(k)} · ${num(x.users)} users ${small(x.users)}</div>${grid([
+      m("Est. AI cost, lifetime", x.totalCost, { dp: 2 }), m("Est. cost / scan", x.costPerScan, { dp: 3 }),
+      m("Mean / user", { value: x.perUser.mean, trust: "ESTIMATED" }, { dp: 3 }), m("Median / user", { value: x.perUser.median, trust: "ESTIMATED" }, { dp: 3 }),
+      m("P90 / user", { value: x.perUser.p90, trust: "ESTIMATED" }, { dp: 3 }), m("Max / user", { value: x.perUser.max, trust: "ESTIMATED" }, { dp: 3 }),
+      m("Scans", x.scans), m("Est. AI cost, last 30d", x.cost30Total, { dp: 2 }),
+      ...(c ? [m("Est. contribution / user / month", { value: c.mean, trust: "ESTIMATED", d: c.users }, { dp: 2 }),
+               m("…median", { value: c.median, trust: "ESTIMATED", d: c.users }, { dp: 2 }),
+               m("…total per month", { value: c.total, trust: "ESTIMATED" }, { dp: 2 }),
+               m("Costing more than they pay", { value: c.negative, trust: "ESTIMATED" })] : []),
+    ])}</div>`;
+  };
+  return section("costplan", "14b · Cost by Plan", plan("free") + plan("monthly") + plan("annual") +
+    `<div class="note-block">${badge("ESTIMATED")} ${esc(cb.note)}${cb.unpriced ? ` ${num(cb.unpriced)} subscriber(s) have no purchase event and cannot be priced.` : ""} Rates: scan ${usd(cb.rates.NORMAL, 3)}, hunt scan ${usd(cb.rates.HUNT, 3)}, listing ${usd(cb.rates.LISTING, 3)}.</div>`,
+    "ESTIMATED — not profit");
+}
+
 function renderExecutive(x: any): string {
   const a = x.acquisition, mo = x.monetization, pw = x.paywalls, ret = x.retentionV2, ue = x.unitEconomics, sc = x.scans;
   if (isErr(a) || isErr(mo)) return errorCard("Executive", isErr(a) ? a : mo);
@@ -257,18 +485,37 @@ function renderExecutive(x: any): string {
   const banner = c?.configured
     ? `<div class="banner ok">Analytics V4 active since ${esc(c.at)}</div>`
     : `<div class="banner warn"><strong>Awaiting Analytics V4 client release.</strong> ${esc(c?.status ?? "")} — V4-only metrics show “Not yet available” until then.</div>`;
-  return section("exec", "1 · Executive", renderAttention(x.founderAttention) + scopeNote + banner + legend() + grid([
+  /**
+   * One headline number per question, each naming its own window, so the
+   * section answers "how are we doing" at a glance. Everything that used to
+   * be here is still one click away under "More metrics".
+   */
+  const ec = x.executiveCore && !isErr(x.executiveCore) ? x.executiveCore : {};
+  const core = grid([
+    m("New users · 7d", ec.newUsers7 ?? a.new7),
+    m("Activation · acquired in range", ec.activation ?? null),
+    m("WAU · rolling 7d", ec.wau ?? a.wau),
+    m("Paying users · now", ec.payingUsers ?? mo.totalPaying),
+    m("Paywall viewer → purchase · in range", ec.viewerToPurchase ?? mo.viewToPurchase),
+    m("D7 retention · cohort in range", ec.d7 ?? null),
+    ec.pricingConversion
+      ? m(`${ec.pricingEraLabel ?? "Current era"} · 7-day paid conversion`, ec.pricingConversion)
+      : m("Pricing era conversion", { value: null, trust: "NOT_TRACKED", available: false, note: "no users with a complete 7-day window yet" }),
+    m("Top user · scans 30d", ec.topUserScans30 === null || ec.topUserScans30 === undefined ? null : { value: ec.topUserScans30, trust: "EXACT", note: "highest in scope" }),
+  ]);
+  return section("exec", "1 · Executive", renderAttention(x.founderAttention) + scopeNote + banner + legend() + core +
+    `<details class="more"><summary>More metrics</summary>` + grid([
     m("Total users", a.totalUsers), m("New users in range", a.newInRange), m("New users 7d", a.new7), m("New users 30d", a.new30),
     m("DAU", a.dau), m("WAU", a.wau), m("MAU", a.mau), m("DAU / MAU", a.dauMau, { fmt: "pct" }),
     m("Scans 7d", a && !isErr(a) ? a.scans7 : null),
     m("Activated (1+ scan)", x.activation && !isErr(x.activation) ? x.activation.activationRate : null),
     m("Paywall viewers 7d", pw && !isErr(pw) ? pw.viewers7 : null), m("Purchases 7d", pw && !isErr(pw) ? pw.purchases7 : null),
     m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Holding pack scans", mo.scanPackHolders),
-    m("Total purchases", { value: (mo.purchaseCompletions?.value ?? 0) + (mo.scanPackPurchases?.value ?? 0), trust: "EXACT" }),
+    m("Subscription purchases · in range", mo.purchaseCompletions),
     m("Revenue", mo.revenue), m("MRR", mo.mrr),
     m("Est. API spend (in range)", ue && !isErr(ue) ? ue.estimatedSpend : null, { dp: 2 }),
     m("D7 retention", ret && !isErr(ret) ? ret.d7 : null),
-  ]));
+  ]) + `</details>`);
 }
 
 function renderAcquisition(a: any): string {
@@ -446,7 +693,13 @@ function renderFree(f: any): string {
     m("Lifetime scans (mean)", { value: f.lifetimeMean, trust: "DERIVED" }, { dp: 1 }), m("Lifetime scans (median)", { value: f.lifetimeMedian, trust: "DERIVED" }, { dp: 1 }),
     m("Active days (mean)", { value: f.activeDaysMean, trust: "DERIVED" }, { dp: 1 }), m("Active days (median)", { value: f.activeDaysMedian, trust: "DERIVED" }, { dp: 1 }),
     m("Median time to first scan", { value: f.hoursToFirstScanMedian.value, trust: "DERIVED", d: f.hoursToFirstScanMedian.d }, { fmt: "hrs" }),
-    m("Ever scanned", f.everScanned), m("Reached 3+", f.reached3Plus), m("Reached 5+", f.reached5Plus), m("Reached 10+", f.reached10Plus),
+    m("Ever scanned", f.everScanned), m("Reached 2+", f.reached2Plus), m("Reached 3+", f.reached3Plus), m("Reached 5+", f.reached5Plus), m("Reached 10+", f.reached10Plus),
+    m("Active 7d", f.active7), m("Active 30d", f.active30),
+    m("Lifetime P75", { value: f.lifetimeP75 ?? null, trust: "DERIVED" }, { dp: 1 }), m("Lifetime P90", { value: f.lifetimeP90 ?? null, trust: "DERIVED" }, { dp: 1 }),
+    m("Lifetime max", { value: f.lifetimeMax ?? null, trust: "EXACT" }),
+    m("First scan ≤ 10 min", f.firstScanWithin10m), m("First scan same day", f.firstScanSameDay),
+    m("First scan ≤ 24h", f.firstScanWithin24h), m("First scan ≤ 7d", f.firstScanWithin7d),
+    m("Activated late", f.delayedActivation), m("Still not activated", f.stillNotActivated),
   ]) + `<div class="two"><div class="card"><div class="card-h">Lifetime scans consumed</div>${buckets(f.buckets)}</div>
   <div class="card"><div class="card-h">Post-cutover</div>${na("Paywall views and conversion by scans consumed; outcome by scans remaining")}<div class="muted">${esc(f.balanceHistoryNote)}</div></div></div>`);
 }
@@ -526,9 +779,9 @@ function renderDataQualityV4(q: any): string {
 // ── Composer ─────────────────────────────────────────────────────────────────
 
 const TOC: Array<[string, string]> = [
-  ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["act", "Activation"], ["mon", "Monetization"], ["pw", "Paywalls"], ["offer", "Onboarding offer"],
-  ["paid", "Paid journeys"], ["store", "Scan Store"], ["cohorts", "Cohorts"], ["free", "Free users"], ["ret", "Retention"], ["sess", "Sessions"],
-  ["scans", "Scans"], ["feat", "Features"], ["cost", "Cost"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
+  ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
+  ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"],
+  ["scans", "Scans"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
 ];
 
@@ -547,11 +800,13 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
   }
   const body = [
     renderExecutive(metrics), renderIntegrity(metrics.dataIntegrity), renderExplorer(metrics.userExplorer),
-    renderAcquisition(metrics.acquisition), renderActivation(metrics.activation),
-    renderMonetization(metrics.monetization), renderPaywalls(metrics.paywalls), renderOnboardingOffer(metrics.onboardingOffer),
-    renderPaidJourneys(metrics.paidJourneys), renderScanStore(metrics.scanStore), renderCohorts(metrics.cohorts),
-    renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderSessionsV2(metrics.sessionsV2),
-    renderScans(metrics.scans), renderFeatureUsage(metrics.featureUsage), renderUnitEconomics(metrics.unitEconomics),
+    renderAcquisition(metrics.acquisition), renderAcquisitionSource(metrics.acquisitionSource), renderActivation(metrics.activation), renderFunnel(metrics.firstSession),
+    renderMonetization(metrics.monetization), renderPricing(metrics.pricing), renderFreeToPaid(metrics.freeToPaid),
+    renderPaywalls(metrics.paywalls), renderPaywallIntel(metrics.paywallIntel), renderOnboardingOffer(metrics.onboardingOffer),
+    renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore),
+    renderCohorts(metrics.cohorts), renderDistributions(metrics.distributions),
+    renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderRetentionSegments(metrics.retentionSegments), renderSessionsV2(metrics.sessionsV2), renderAppVersions(metrics.appVersions),
+    renderScans(metrics.scans), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
     // V3 product analytics, preserved and demoted below the business funnel.
     renderTrust(metrics.trust), renderHunt(metrics.hunt), renderProgress(metrics.progress), renderAchievements(metrics.achievements),
     renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold),
@@ -618,6 +873,8 @@ table.funnel td.stg{width:30%}table.funnel td.w{width:30%}
 .tb-exact{background:#1f3b2a;color:#7bd394}.tb-derived{background:#1f2f3b;color:#7fb8e8}.tb-estimated{background:#3b331f;color:#e8c77f}.tb-not_tracked{background:#2a2a2a;color:#9a9a9a}.tb-legacy{background:#3b1f1f;color:#e88f7f}
 .tb-partial{background:#33291a;color:#e0b46a}.tb-conflict{background:#4a1d1d;color:#ff9b8a}
 .ss-vs{color:#ff9b8a;border-color:#ff9b8a}
+details.more{margin-top:4px}details.more>summary{cursor:pointer;color:var(--muted);font-size:12px;padding:4px 0}
+details.more[open]>summary{margin-bottom:8px}
 .attn{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:12px}
 .attn-none{color:var(--muted);font-size:12px}
 .attn-h{font-weight:600;font-size:12px;margin-bottom:8px}
