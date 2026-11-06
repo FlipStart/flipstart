@@ -1998,7 +1998,7 @@ export function getPaywallIntelligence(d: V4Data, env: NodeJS.ProcessEnv = proce
     for (const e of opens) { const k = e.user_id ?? e.anonymous_id ?? ""; if (k) perViewer.set(k, (perViewer.get(k) ?? 0) + 1); }
     const selections = evs.filter(e => e.event_name === "paywall_plan_selected" && metaStr(e, "paywall_source") === src).length;
     const buys = evs.filter(e => e.event_name === "paywall_purchase_completed" && metaStr(e, "paywall_source") === src);
-    const byEra = { v1: 0, v2: 0 } as Record<string, number>;
+    const byEra = Object.fromEntries(eras.map(e => [e.id, 0])) as Record<string, number>;
     let revenue = 0;
     for (const b of buys) {
       const era = eraAt(eras, b.created_at); if (!era) continue;
@@ -2027,6 +2027,7 @@ export function getPaywallIntelligence(d: V4Data, env: NodeJS.ProcessEnv = proce
     };
   }).sort((a, b) => b.revenueEstimate.value! - a.revenueEstimate.value! || b.purchases - a.purchases || b.impressions - a.impressions);
   return { rows, buyers: journeys.length, currentEra: currentEra(eras, d.now)?.label ?? null,
+    eras: eras.map(e => ({ id: e.id, label: e.label })),
     note: "Revenue is ESTIMATED at each era's list price. First / converting / last count paying users selected by first purchase in range." };
 }
 
@@ -2305,21 +2306,30 @@ export function getPricingExperiments(d: V4Data, env: NodeJS.ProcessEnv = proces
     };
   });
 
-  const [v1, v2] = rows;
+  // Each era against the one before it (V2 vs V1, V3 vs V2, …), oldest first.
   const pts = (a: Metric, b: Metric) => a.value !== null && b.value !== null ? (b.value - a.value) * 100 : null;
+  const comparisons = rows.slice(1).map((to, i) => {
+    const from = rows[i];
+    return {
+      fromId: from.era.id, toId: to.era.id, fromLabel: from.era.label, toLabel: to.era.label,
+      activationPts: pts(from.activation7, to.activation7),
+      paidPts: pts(from.paid7, to.paid7),
+      viewerToPaidPts: pts(from.viewerToPaid, to.viewerToPaid),
+      revenuePer100Delta: from.revenuePer100.value !== null && to.revenuePer100.value !== null ? to.revenuePer100.value - from.revenuePer100.value : null,
+    };
+  });
   const cur = currentEra(eras, d.now);
   return {
     eras: rows,
-    comparison: {
-      activationPts: pts(v1.activation7, v2.activation7),
-      paidPts: pts(v1.paid7, v2.paid7),
-      viewerToPaidPts: pts(v1.viewerToPaid, v2.viewerToPaid),
-      revenuePer100Delta: v1.revenuePer100.value !== null && v2.revenuePer100.value !== null ? v2.revenuePer100.value - v1.revenuePer100.value : null,
-    },
+    comparisons,
+    /** The current era against the one before it (the newest pair if the current era is the first). */
+    comparison: comparisons.find(c => c.toId === cur?.id) ?? comparisons[comparisons.length - 1] ?? null,
     currentEraId: cur?.id ?? null,
     appleFeeRate: fee,
     conversionDays: PRICING_CONVERSION_DAYS,
     boundaryAssumed: eras.some(e => e.assumed),
+    /** Era starts that are date-only assumptions, with the env variable that pins each one. */
+    assumedStarts: eras.filter(e => e.startAssumed).map(e => ({ id: e.id, label: e.label, startsAt: e.startsAt, env: e.startEnv })),
     notes: ERA_NOTES,
     caveat: "Observational association, not causation: the eras also differ in season, traffic and app version.",
   };

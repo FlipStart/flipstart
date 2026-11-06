@@ -31,6 +31,7 @@ import { huntItemToFlip } from '@/utils/huntItemToFlip';
 import { FONTS } from '@/constants/typography';
 import { normalizeBuyRating, type CanonicalRating } from '@/utils/recommendation';
 import { computeFlipCalc, calculateFees } from '@/utils/flipCalculations';
+import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { trpc } from '@/lib/trpc';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
@@ -569,13 +570,27 @@ export default function ScanDetailScreen() {
               {!!flip.brand && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{flip.brand}</Text></View>}
               {!!flip.category && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{flip.category}</Text></View>}
               {!!flip.era && flip.era.toLowerCase() !== 'unknown' && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{flip.era}</Text></View>}
-              {flip.matchConfidence > 0 && (
-                <View style={[s.chip, s.chipConf]}>
-                  <MaterialIcons name="verified" size={11} color={FOREST} />
-                  <Text style={[s.chipText, { color: FOREST, fontWeight: '700' }]} numberOfLines={1}>{flip.matchConfidence}%</Text>
-                </View>
-              )}
+              {(() => {
+                // Words, not a percentage: matchConfidence is ordinal, not a
+                // probability. The tier is the server's when the scan has one.
+                const conf = getConfidenceDisplay(flip.structured?.v1, flip.matchConfidence);
+                if (!conf) return null;
+                return (
+                  <View style={[s.chip, { borderColor: conf.border, backgroundColor: conf.bg }]}>
+                    <MaterialIcons name={conf.tone === 'high' ? 'verified' : conf.tone === 'problem' ? 'error-outline' : 'help-outline'} size={11} color={conf.color} />
+                    <Text style={[s.chipText, { color: conf.color, fontWeight: '700' }]} numberOfLines={1}>{conf.short}</Text>
+                  </View>
+                );
+              })()}
             </View>
+            {/* Authenticity is its own question: a suspected fake can be
+                confidently identified, so the concern gets its own line. */}
+            {(() => {
+              const conf = getConfidenceDisplay(flip.structured?.v1, flip.matchConfidence);
+              return conf?.authenticity
+                ? <Text style={s.authNote} numberOfLines={2}>Authenticity not verified — {conf.authenticity}</Text>
+                : null;
+            })()}
             <View style={s.dateRow}>
               <MaterialIcons name="history" size={13} color={MUTED} />
               <Text style={s.dateText}>Scanned {formatWhen(flip.timestamp)}</Text>
@@ -905,6 +920,7 @@ const s = StyleSheet.create({
   chip:        { flexDirection: 'row', alignItems: 'center', gap: 3, maxWidth: '100%', backgroundColor: '#F8F7F0', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 8, paddingVertical: 4 },
   chipConf:    { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
   chipText:    { fontSize: 10.5, fontWeight: '600', color: BROWN, flexShrink: 1 },
+  authNote:    { fontSize: 11.5, color: '#8A3A2A', fontWeight: '600', lineHeight: 15 },
   dateRow:     { flexDirection: 'row', alignItems: 'center', gap: 5 },
   dateText:    { fontSize: 12, color: MUTED, fontWeight: '600' },
 

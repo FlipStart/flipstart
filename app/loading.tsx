@@ -38,6 +38,12 @@ import { FailStateScreen, type FailType } from "@/components/scan/FailStateScree
 import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
 import { isHuntActive } from "@/lib/hunt-context";
 import { useAuth } from "@/lib/auth-context";
+import {
+  SCAN_BUDGET_MS, MIN_ATTEMPT_MS, MAX_ATTEMPTS, CANCEL_WAIT_MS,
+  ATTEMPT_TIMEOUT, SCAN_DEADLINE,
+  classifyScanError, attemptTimeoutMs, planRetry, deadlineForServer, tookTooLongMessage,
+  type ClassifiedScanError,
+} from "@/lib/scanAttempt";
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
@@ -70,7 +76,8 @@ const MESSAGE_INTERVAL_MS = 3000; // 3 seconds — premium, unhurried feel
 const CONFIDENCE_TICK_MS   = 250;   // how often confidence updates
 const CONFIDENCE_CRUISE_MS = 6000;  // time to reach 95%
 const CONFIDENCE_HOLD      = 95;    // max before backend responds
-const HARD_TIMEOUT_MS      = 30000; // 30s — generous but not infinite
+// The scan's own time limit is SCAN_BUDGET_MS (45 s, retries included) in
+// lib/scanAttempt.ts. It replaced a 30 s limit per try with three retries.
 const CONFIDENCE_HAPTIC_AT = [25, 50, 75]; // subtle haptics at these milestones
 
 function shuffleArray<T>(arr: T[]): T[] {
@@ -96,8 +103,8 @@ export default function LoadingScreen() {
   const [msgIndex,     setMsgIndex]     = useState(0);
   const [confidence,   setConfidence]   = useState(0);
   const [finalizing,   setFinalizing]   = useState(false);
-  const [scanKey,  setScanKey]   = useState(0);   // increment to re-trigger doScan
-  const [retryCount, setRetryCount] = useState(0); // auto-retry attempts made
+  const [scanKey,  setScanKey]   = useState(0);   // increment to re-trigger doScan (manual retry)
+  const [retryCount, setRetryCount] = useState(0); // automatic retries made in the last scan
   const [failState, setFailState] = useState<{
     type:        FailType;
     message:     string;
@@ -115,15 +122,49 @@ export default function LoadingScreen() {
   const hasStartedRef   = useRef(false);
   const scanStartTime   = useRef(Date.now());
   const lastHapticAt    = useRef(0);
-  const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);   // the 45 s clock
+  const tryAbortRef     = useRef<AbortController | null>(null);  // the request in flight
   const lastPendingScan = useRef<import('@/lib/pending-scan').PendingScan | null>(null);
-  const retryAttemptRef = useRef(0);   // tracks auto-retry attempts for exponential backoff
+  const scanRunRef      = useRef(0);       // numbers each run of the pipeline; see below
+  const scanActiveRef   = useRef(false);   // a run may have work going on the server
 
   // ── Audio ─────────────────────────────────────────────────────────────────
   const player       = useAudioPlayer(COIN_SOUND);
   const soundStarted = useRef(false);
 
-  const analyzeFastMutation = trpc.scan.analyzeFast.useMutation();
+  const trpcUtils           = trpc.useUtils();
+
+  /**
+   * Abandon the request in flight. If its photos are still uploading, the
+   * server never starts it, so an abandoned try can't start a scan (and a
+   * charge) after the app has moved on. Work the server already started is
+   * stopped with cancel instead.
+   */
+  const abandonTry = useCallback(() => {
+    try { tryAbortRef.current?.abort(); } catch { /* ignore */ }
+    tryAbortRef.current = null;
+  }, []);
+
+  /**
+   * Ask the server to stop this scan. Answers "cancelled" (stopped, nothing
+   * charged), "completed" with the result (it had already finished),
+   * "stopping" (told to stop, outcome not known yet) or "not_running". Null
+   * when there was no answer within CANCEL_WAIT_MS. Never throws.
+   */
+  const stopOnServer = useCallback(async (): Promise<{ status: string; result?: unknown } | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        trpcUtils.client.scan.cancelAnalysis.mutate({ scanAttemptId }),
+        new Promise<null>(res => { timer = setTimeout(() => res(null), CANCEL_WAIT_MS); }),
+      ]);
+    } catch (e: any) {
+      console.warn("[loading] cancel request failed:", String(e?.message ?? e).slice(0, 80));
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }, [trpcUtils, scanAttemptId]);
 
   // ── Rotating messages (every 3s) ─────────────────────────────────────────
   useEffect(() => {
@@ -215,13 +256,28 @@ export default function LoadingScreen() {
   }));
 
   // ── Scan pipeline ─────────────────────────────────────────────────────────
+  //
+  // One 45 s clock for the whole scan, retries included (the rules live in
+  // lib/scanAttempt.ts). Every try tells the server how much of the clock is
+  // left, so the server stops 5 s before it runs out and refunds the scan.
+  // At 45 s the app asks the server to stop (cancelAnalysis): a scan still
+  // running is refunded, and one that already finished is handed back and
+  // shown, so nobody is charged for a result they never see.
+  //
+  // scanRunRef numbers each run of the pipeline. Cancel and manual retry move
+  // it on, so an answer that belongs to an abandoned run is ignored.
   useEffect(() => {
     if (hasStartedRef.current || hasNavigated.current) return;
     hasStartedRef.current = true;
 
+    const run  = ++scanRunRef.current;
+    const live = () => scanRunRef.current === run && !hasNavigated.current;
+
     const doScan = async () => {
       console.log("[loading] pipeline start");
       scanStartTime.current = Date.now();
+      const expiresAt = scanStartTime.current + SCAN_BUDGET_MS;
+      const remaining = () => expiresAt - Date.now();
 
       // Start coin sound
       if (!soundStarted.current) {
@@ -233,23 +289,24 @@ export default function LoadingScreen() {
         } catch { /* never block analysis */ }
       }
 
-      const pending = consumePendingScan();
+      // The first run takes the photos from the camera; a manual retry reuses
+      // them (consumePendingScan() clears the module store).
+      const pending = lastPendingScan.current ?? consumePendingScan();
       if (!pending?.front?.base64) {
         console.error("[loading] no pending scan data — aborting");
         setFailState({ type: "bad_input", message: "We couldn't load the selected image. Please go back and try again." });
         return;
       }
-
-      // Cache for retry — consumePendingScan() clears the module store
       lastPendingScan.current = pending;
 
       const { front, tag, detail, userContext } = pending;
       const imageBase64 = front.base64;
       const mimeType    = front.mimeType;
       console.log(`[loading] images ready — front✓ tag:${!!tag} detail:${!!detail}`);
-      console.log("[loading] analysis request start — timeout in", HARD_TIMEOUT_MS / 1000, "s");
+      console.log("[loading] analysis request start — scan clock", SCAN_BUDGET_MS / 1000, "s");
 
-      // Analytics: scan submitted
+      // Analytics: scan submitted. Once per scan: automatic retries no longer
+      // re-run this, so they no longer count as extra submissions.
       try {
         // Telemetry records PRESENCE and LENGTH only. Users type personal
         // details into this field; the raw text must never reach analytics.
@@ -262,50 +319,9 @@ export default function LoadingScreen() {
         incrementSessionCount("scanCount");
       } catch { /* never block analysis */ }
 
-      try {
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutIdRef.current = setTimeout(() => {
-            console.log("[loading] hard timeout triggered after", HARD_TIMEOUT_MS / 1000, "s");
-            reject(new Error("__TIMEOUT__"));
-          }, HARD_TIMEOUT_MS);
-        });
-
-        // Scan-limit identity. Prefer the signed-in account id: it is the same
-        // value getScannerId() returns for authenticated users (so the Home
-        // pill reads the identical bucket), but it can't degrade to a SHARED
-        // bucket. The analytics fallback can return the literal "anon_unknown"
-        // when AsyncStorage fails, and an undefined id makes the server use
-        // "_legacy" — either way every affected device would share one quota.
-        let scannerId: string | undefined = user?.id ?? undefined;
-        if (!scannerId) {
-          const fallback = await getScannerId().catch(() => undefined);
-          scannerId = fallback && fallback !== 'anon_unknown' ? fallback : undefined;
-        }
-
-        const result = await Promise.race([
-          analyzeFastMutation.mutateAsync({
-            imageBase64,
-            mimeType:           mimeType || "image/jpeg",
-            tagImageBase64:     tag?.base64,
-            tagMimeType:        tag?.mimeType,
-            detailImageBase64:  detail?.base64,
-            detailMimeType:     detail?.mimeType,
-            scannerId,
-            scanAttemptId,
-            // Confirmed camera context. Undefined for context-free scans, and
-            // for retries it comes from lastPendingScan.current, so an internal
-            // retry reuses the identical value rather than dropping it.
-            userContext,
-          }),
-          timeoutPromise,
-        ]);
-
-        // Backend responded — cancel timeout immediately
-        if (timeoutIdRef.current !== null) {
-          clearTimeout(timeoutIdRef.current);
-          timeoutIdRef.current = null;
-        }
-
+      // ── A result arrived (from a try, or handed back by cancel) ────────────
+      const finishWithResult = (result: any) => {
+        scanActiveRef.current = false;
         console.log("[loading] analysis response received");
         if (hasNavigated.current) return;
 
@@ -472,143 +488,171 @@ export default function LoadingScreen() {
             router.replace("/results" as any);
           }
         }, 600);
+      };
 
-      } catch (err: any) {
+      // Scan-limit identity. Prefer the signed-in account id: it is the same
+      // value getScannerId() returns for authenticated users (so the Home
+      // pill reads the identical bucket), but it can't degrade to a SHARED
+      // bucket. The analytics fallback can return the literal "anon_unknown"
+      // when AsyncStorage fails, and an undefined id makes the server use
+      // "_legacy" — either way every affected device would share one quota.
+      let scannerId: string | undefined = user?.id ?? undefined;
+      if (!scannerId) {
+        const fallback = await getScannerId().catch(() => undefined);
+        scannerId = fallback && fallback !== 'anon_unknown' ? fallback : undefined;
+      }
+      if (!live()) return;
+
+      // ── The 45 s clock ──────────────────────────────────────────────────
+      const deadline = new Promise<never>((_, reject) => {
+        timeoutIdRef.current = setTimeout(() => {
+          console.log("[loading] scan clock ran out after", SCAN_BUDGET_MS / 1000, "s");
+          reject(new Error(SCAN_DEADLINE));
+        }, Math.max(0, remaining()));
+      });
+      deadline.catch(() => {});   // raced below; never an unhandled rejection
+      scanActiveRef.current = true;
+
+      let attempts = 0;
+      let lastTry: AbortController | null = null;
+      let lastRaw  = "";
+      let last: ClassifiedScanError | null = null;
+
+      try {
+        while (true) {
+          const left = remaining();
+          if (left < MIN_ATTEMPT_MS && attempts > 0) { lastRaw = SCAN_DEADLINE; break; }
+          attempts += 1;
+          let patienceTimer: ReturnType<typeof setTimeout> | undefined;
+          abandonTry();   // a try that ran out of patience; the server keeps its scan for this one to join
+          const tryAbort = new AbortController();
+          tryAbortRef.current = tryAbort;
+          lastTry = tryAbort;
+          try {
+            const result = await Promise.race([
+              trpcUtils.client.scan.analyzeFast.mutate({
+                imageBase64,
+                mimeType:           mimeType || "image/jpeg",
+                tagImageBase64:     tag?.base64,
+                tagMimeType:        tag?.mimeType,
+                detailImageBase64:  detail?.base64,
+                detailMimeType:     detail?.mimeType,
+                scannerId,
+                // Same id on every try: the server joins a scan that is still
+                // running, hands back one that finished, or runs it once.
+                scanAttemptId,
+                // Confirmed camera context. Undefined for context-free scans;
+                // every try sends the identical value.
+                userContext,
+                deadlineMs:         deadlineForServer(left),
+              }, { signal: tryAbort.signal }),
+              deadline,
+              new Promise<never>((_, reject) => {
+                patienceTimer = setTimeout(
+                  () => reject(new Error(ATTEMPT_TIMEOUT)),
+                  attemptTimeoutMs(attempts - 1, left),
+                );
+              }),
+            ]);
+            if (!live()) return;
+            finishWithResult(result);
+            return;
+          } catch (err: any) {
+            if (!live()) return;
+            lastRaw = String(err?.message ?? "");
+            if (lastRaw === SCAN_DEADLINE) break;
+            last = classifyScanError(lastRaw);
+            if (last.kind === "server_timeout") break;
+
+            // Retry only a request that failed or got no answer, and only
+            // while there is time left. Refusals and unusable photos: never.
+            const plan = planRetry({ attemptsMade: attempts, remainingMs: remaining(), kind: last.kind });
+            if (!plan.retry) break;
+
+            console.log(`[loading] auto-retry ${attempts}/${MAX_ATTEMPTS - 1} in ${plan.delayMs}ms — type: ${last.failType}`);
+            try {
+              logEvent("scan_auto_retry", {
+                attempt:     attempts,
+                failType:    last.failType,
+                delayMs:     plan.delayMs,
+                errorRaw:    lastRaw.slice(0, 80),
+              });
+            } catch { /* never block */ }
+
+            if (plan.delayMs > 0) {
+              await Promise.race([
+                new Promise(res => setTimeout(res, plan.delayMs)),
+                deadline,
+              ]).catch(() => {});
+            }
+            if (!live()) return;
+          } finally {
+            if (patienceTimer) clearTimeout(patienceTimer);
+          }
+        }
+      } finally {
         if (timeoutIdRef.current !== null) {
           clearTimeout(timeoutIdRef.current);
           timeoutIdRef.current = null;
         }
-        try { player.pause(); } catch { /* ignore */ }
+        // Giving up (or done): drop this run's request if it is still going.
+        if (lastTry && tryAbortRef.current === lastTry) abandonTry();
+      }
 
-        const raw: string = err?.message ?? "";
-        const durationMs  = Date.now() - scanStartTime.current;
+      // ── Giving up ─────────────────────────────────────────────────────────
+      try { player.pause(); } catch { /* ignore */ }
+      const failType: FailType = last?.failType ?? "timeout";
+      const outOfTime = lastRaw === SCAN_DEADLINE
+        || last?.kind === "server_timeout"
+        || (failType === "timeout" && remaining() < MIN_ATTEMPT_MS);
 
-        // ── Classify error type ────────────────────────────────────────────
-        let failType: FailType;
-
-        if (raw === "__TIMEOUT__" || raw.toLowerCase().includes("timed out")) {
-          failType = "timeout";
-        } else if (raw.includes("SCANNER_ID_MISSING")) {
-          // The server refused because this build didn't identify itself. Never
-          // auto-retry (it will fail identically) and never call it a scan
-          // limit — the user has scans left, the app just couldn't prove who
-          // they are. Surfaced as a server fault since that's the honest cause.
-          try { player.pause(); } catch {}
-          setFailState({
-            type: "server",
-            message: "FlipStart couldn't verify your scan balance. Please make sure you're signed in and running the latest version, then try again.",
-          });
-          if (Platform.OS !== "web") {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-          }
-          return;
-        } else if (
-          raw.includes("GLOBAL_SCAN_LIMIT_REACHED") ||
-          raw.toLowerCase().includes("scan limit")
-        ) {
-          // Scan limit — show immediately, do not auto-retry.
-          // Uses the dedicated scan_limit variant (correct title + no retry
-          // button). This previously passed type:"timeout", which showed
-          // "This hunt is taking longer than expected" plus a retry button that
-          // could never succeed.
-          try { player.pause(); } catch {}
-          setFailState({ type: "scan_limit", message: "" });   // "" → screen uses its own copy
-          if (Platform.OS !== "web") {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-          }
-          return;
-        } else if (
-          raw.toLowerCase().includes("network request failed") ||
-          raw.toLowerCase().includes("network error") ||
-          raw.toLowerCase().includes("failed to fetch") ||
-          raw.toLowerCase().includes("connection refused") ||
-          raw.toLowerCase().includes("no internet") ||
-          raw.toLowerCase().includes("offline")
-        ) {
-          failType = "offline";
-        } else if (
-          raw.toLowerCase().includes("unsupported image") ||
-          raw.toLowerCase().includes("image format") ||
-          raw.toLowerCase().includes("heic")
-        ) {
-          failType = "bad_input";
-        } else if (
-          raw.toLowerCase().includes("transform") ||
-          raw.toLowerCase().includes("trpc") ||
-          raw.toLowerCase().includes("internal server error") ||
-          raw.toLowerCase().includes("500") ||
-          raw.toLowerCase().includes("502") ||
-          raw.toLowerCase().includes("503") ||
-          raw.toLowerCase().includes("504") ||
-          raw.toLowerCase().includes("service unavailable") ||
-          raw.toLowerCase().includes("bad gateway") ||
-          raw.toLowerCase().includes("railway")
-        ) {
-          failType = "server";
-        } else {
-          failType = "server"; // default unknown → server, most recoverable
-        }
-
-        // ── Exponential auto-retry (server/offline/timeout only) ───────────
-        // Attempt 1 → immediate, Attempt 2 → +2s, Attempt 3 → +5s
-        // Bad input / low confidence → never auto-retry (user action needed)
-        const shouldAutoRetry = (failType === "server" || failType === "timeout" || failType === "offline")
-          && retryAttemptRef.current < 3;
-
-        if (shouldAutoRetry) {
-          const attempt = retryAttemptRef.current;
-          retryAttemptRef.current += 1;
-          const delayMs = attempt === 0 ? 0 : attempt === 1 ? 2000 : 5000;
-
-          console.log(`[loading] auto-retry ${attempt + 1}/3 in ${delayMs}ms — type: ${failType}`);
-          try {
-            logEvent("scan_auto_retry", {
-              attempt:     attempt + 1,
-              failType,
-              delayMs,
-              errorRaw:    raw.slice(0, 80),
-            });
-          } catch { /* never block */ }
-
-          await new Promise(res => setTimeout(res, delayMs));
-
-          // Restore pending scan for retry and re-run doScan
-          if (lastPendingScan.current) {
-            const { setPendingScan } = require("@/lib/pending-scan");
-            setPendingScan(lastPendingScan.current);
-          }
-          hasStartedRef.current = false;
-          setScanKey(k => k + 1);
+      // Anything but a refusal or an unusable photo may have left work on the
+      // server. Ask it to stop: a running scan is refunded; a finished one is
+      // handed back and shown instead of an error.
+      let noCharge = last?.kind === "server_timeout";
+      let cancelStatus = "skipped";
+      if (outOfTime || last?.kind === "transient") {
+        const reply = await stopOnServer();
+        if (!live()) return;
+        cancelStatus = reply?.status ?? "no_answer";
+        if (reply?.status === "completed" && reply.result) {
+          console.log("[loading] scan finished as the clock ran out — showing it");
+          finishWithResult(reply.result);
           return;
         }
+        if (reply?.status === "cancelled") noCharge = true;
+      }
+      scanActiveRef.current = false;
 
-        // ── All retries exhausted — show fail screen ────────────────────────
-        const totalAttempts = retryAttemptRef.current;
-        console.error(`[loading] all retries exhausted (${totalAttempts} auto + manual) — showing fail screen. type: ${failType} raw: ${raw.substring(0, 80)}`);
+      const shownType: FailType = outOfTime ? "timeout" : failType;
+      const message = outOfTime ? tookTooLongMessage(noCharge) : (last?.message ?? "");
+      const durationMs = Date.now() - scanStartTime.current;
+      console.error(`[loading] giving up after ${attempts} tr${attempts === 1 ? "y" : "ies"} — type: ${shownType} cancel: ${cancelStatus} raw: ${lastRaw.substring(0, 80)}`);
 
+      // A scan limit is a paywall moment, and a missing scanner id a build
+      // problem; neither was ever counted as a failed scan.
+      if (shownType !== "scan_limit" && !lastRaw.includes("SCANNER_ID_MISSING")) {
         try {
           logEvent("scan_failed", {
-            errorType:     failType,
-            autoRetries:   totalAttempts,
+            errorType:     shownType,
+            autoRetries:   attempts - 1,
             durationMs,
-            errorRaw:      raw.slice(0, 80),
+            errorRaw:      lastRaw.slice(0, 80),
           });
           incrementSessionCount("failedScanCount");
         } catch { /* never block */ }
+      }
 
-        const safeMsg = (raw.length > 0 && raw.length < 120 && !raw.startsWith("{") && raw !== "__TIMEOUT__")
-          ? raw : "";
-        setRetryCount(totalAttempts);
-        setFailState({ type: failType, message: safeMsg });
+      setRetryCount(attempts - 1);
+      setFailState({ type: shownType, message });
 
-        if (Platform.OS !== "web") {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-        }
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
       }
     };
 
     doScan();
-  // scanKey increments on retry — re-runs this effect so doScan fires again
+  // scanKey increments on a manual retry — re-runs this effect so doScan fires again
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanKey]);
 
@@ -632,6 +676,14 @@ export default function LoadingScreen() {
     }
     try { player.pause(); } catch { /* ignore */ }
     hasNavigated.current = true;
+    // Stop the scan on the server too, so a scan the user walked away from
+    // is refunded rather than charged. Fire-and-forget: leaving never waits.
+    if (scanActiveRef.current) {
+      scanActiveRef.current = false;
+      scanRunRef.current += 1;
+      abandonTry();
+      void stopOnServer();
+    }
     router.back();
   };
 
@@ -650,12 +702,9 @@ export default function LoadingScreen() {
         clearTimeout(timeoutIdRef.current);
         timeoutIdRef.current = null;
       }
-      if (lastPendingScan.current) {
-        const { setPendingScan } = require("@/lib/pending-scan");
-        setPendingScan(lastPendingScan.current);
-      }
-      // Reset all state for a clean retry
-      retryAttemptRef.current = 0;
+      // A fresh 45 s clock. The photos come from lastPendingScan, and the
+      // same scanAttemptId means a scan that finished meanwhile is handed back
+      // free rather than run (and charged) again.
       hasStartedRef.current = false;
       hasNavigated.current  = false;
       soundStarted.current  = false;

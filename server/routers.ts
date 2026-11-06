@@ -25,6 +25,10 @@ import { renderUserContextBlock } from "../shared/userContext.js";
 import { saveScanContext, getScanContext } from "./scanContextStore.js";
 import { randomUUID } from "node:crypto";
 import { uploadScanImage, analyzeItemFast, generateItemListings } from "./scan";
+import {
+  scanBudgetMs, beginRun, findRun, joinRun, ledgerKey, completedResult, cancelScan, ScanStopped,
+} from "./scanRuntime.js";
+import { isDraining } from "./shutdown.js";
 
 // ─── Successful-analysis cache (keyed by scanAttemptId) ──────────────────────
 // A retry re-sends the SAME scanAttemptId. Without this, every retry re-runs
@@ -99,6 +103,9 @@ const appRouter_scan = router({
           // by normalization; a modified client cannot smuggle a longer string
           // past USER_CONTEXT_MAX_LEN because the server re-normalizes.
           userContext:     z.string().max(2000).optional(),
+          // Milliseconds left on the app's 45 s scan clock when this request
+          // was sent. Absent from app 2.1, which gets the 40 s server cap.
+          deadlineMs:      z.number().int().positive().max(120_000).optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -247,6 +254,44 @@ const appRouter_scan = router({
           }
         }
 
+        // ── PHASE 2: ONE SCAN, ONE BUDGET ───────────────────────────────────
+        //
+        // See server/scanRuntime.ts. A retry of a scan that is still running
+        // waits for it instead of being told "already being processed" — even
+        // during a redeploy, since that scan is already being waited for. A
+        // new scan is refused while the server drains. Everything else runs
+        // inside a run with a deadline, so the AI call is aborted and the
+        // reservation refunded once the app's 45 s can no longer be met.
+        const budgetMs = scanBudgetMs(input.deadlineMs);
+        const attemptId = (input.scanAttemptId ?? "").trim();
+        if (attemptId) {
+          const running = findRun(muid, attemptId, rawCtx.hash);
+          if (running) {
+            console.log("[analyze] retry joined the scan that is still running");
+            return await joinRun(running, budgetMs);
+          }
+        }
+        if (isDraining()) {
+          throw Object.assign(new Error("FlipStart is restarting. Try again in a moment."), {
+            code: "SERVER_RESTARTING",
+          });
+        }
+        if (budgetMs === 0) throw new ScanStopped("timeout");   // nothing reserved, nothing spent
+        // The app already dropped this request (an abandoned try, or Cancel
+        // tapped while the photos were in flight, so cancel may have arrived
+        // first): don't start a scan nobody will receive. res, not req —
+        // Node marks req destroyed as soon as the body has been read.
+        if ((ctx?.res as { destroyed?: boolean } | undefined)?.destroyed === true) {
+          throw new ScanStopped("cancelled");
+        }
+
+        const run = beginRun({ owner: muid, attemptId: attemptId || randomUUID(), ctxHash: rawCtx.hash, budgetMs });
+        let charged  = false;   // a scan was consumed for this result
+        let refunded = false;   // this run's reservation was handed back
+        try {
+          // (The scan body below keeps its original indentation, so this
+          // change reads as a small diff.)
+          const payload = await (async () => {
         // Non-null ONLY when this request created a NEW reservation. A replay
         // leaves it null, which is what stops a retry committing twice.
         let reservationId: string | null = null;
@@ -273,7 +318,9 @@ const appRouter_scan = router({
            * in the same statement, so the balance read here cannot be stale —
            * an async sweep could still have been running.
            */
-          const r = await reserveScan(muid as string, input.scanAttemptId.trim());
+          // ledgerKey: the attempt id, or a fresh key if this process already
+          // refunded that reservation (a retry after a timeout or AI failure).
+          const r = await reserveScan(muid as string, ledgerKey(muid, attemptId));
           if (!r.ok) {
             console.warn(`[analyze] V1 refused — ${r.reason} (plan ${r.plan ?? "?"})`);
             throw Object.assign(
@@ -295,6 +342,10 @@ const appRouter_scan = router({
            * result for free, which is the behaviour the cache exists for.
            */
           if (r.replayed) {
+            // Already finished and charged (the answer was slow to arrive):
+            // hand it over rather than refusing.
+            const done = completedResult(muid, attemptId);
+            if (done) return done;
             console.warn("[analyze] duplicate attempt while original is pending — refusing to re-run AI");
             throw Object.assign(
               new Error("This scan is already being processed. One moment."),
@@ -350,14 +401,18 @@ const appRouter_scan = router({
             // Persist first so meta.photo_refs is populated on the stored
             // analysis. A failed upload leaves a null ref but never fails the
             // scan — the analysis is still valid.
-            const photoRefs = await persistScanPhotos({
-              userId: sid,
-              analysisId,
-              scanAttemptId: input.scanAttemptId ?? analysisId,
-              images,
-              mimeType: input.mimeType,
-            });
+            const photoRefs = await Promise.race([
+              persistScanPhotos({
+                userId: sid,
+                analysisId,
+                scanAttemptId: input.scanAttemptId ?? analysisId,
+                images,
+                mimeType: input.mimeType,
+              }),
+              run.stopped,
+            ]);
 
+            run.assertLive();
             const v1Start = Date.now();
             const { canonical, telemetry } = await analyzeItemV1({
               images,
@@ -368,6 +423,7 @@ const appRouter_scan = router({
               planAtScan: "free",
               photoRefs,
               userContext: userCtx,
+              signal: run.signal,
             });
 
             // Stored so comps (and later, anything else) can be run against
@@ -449,16 +505,19 @@ const appRouter_scan = router({
             // Only NOW is the scan consumed. Skipped while V1 is allow-list
             // only, so founder testing does not burn the 7/day quota on
             // results that are still being validated.
+            // Never charge a scan the app has stopped waiting for. Past this
+            // line the result is delivered or handed over on cancel.
+            run.assertLive();
             if (useV1) {
               // Exactly once. A replay left reservationId null, so a retried
               // attempt cannot consume a second scan.
               if (reservationId) {
-                await commitScan(reservationId);
+                charged = await commitScan(reservationId);
                 console.log("[analyzeV1] V1 scan COMMITTED");
               }
             } else {
               const testingOnly = !ENV.canonicalV1Enabled;
-              if (!testingOnly) commitScanCount(sid, input.scanAttemptId);
+              if (!testingOnly) { commitScanCount(sid, input.scanAttemptId); charged = true; }
               else console.log("[analyzeV1] allow-list scan — quota NOT consumed");
             }
 
@@ -477,13 +536,13 @@ const appRouter_scan = router({
             const kind = err instanceof ScanV1Error ? err.kind : "transport_error";
             const diag = err instanceof ScanV1Error ? err.diagnostics : {};
             console.error(
-              `[analyzeV1] FAILED kind=${kind} analysis=${analysisId} —`,
+              `[analyzeV1] FAILED kind=${kind}${run.stopReason ? ` stopped=${run.stopReason}` : ""} analysis=${analysisId} —`,
               err instanceof Error ? err.message : String(err),
               JSON.stringify(diag).slice(0, 800),
             );
             // Refund to the SAME bucket. Only a reservation THIS request made.
             if (useV1 && reservationId) {
-              await refundScan(reservationId).catch(() => {});
+              refunded = await refundScan(reservationId).catch(() => false);
               console.log("[analyzeV1] V1 scan REFUNDED after failure");
             }
             // Fail closed. No scan consumed, nothing saved, nothing unlocked.
@@ -503,7 +562,10 @@ const appRouter_scan = router({
           console.log("[analyze] AI request start");
 
           // Run S3 upload and AI analysis in PARALLEL
-          const [imageUrl, analysisResult] = await Promise.all([
+          // The legacy AI call takes no abort signal, so the deadline is
+          // enforced by racing it: past the budget the answer is discarded and
+          // the scan refunded rather than charged.
+          const [imageUrl, analysisResult] = await Promise.race([run.stopped, Promise.all([
             uploadScanImage(input.imageBase64, input.mimeType),
             analyzeItemFast(
               input.imageBase64,
@@ -511,7 +573,7 @@ const appRouter_scan = router({
               input.detailImageBase64 ? { base64: input.detailImageBase64, mimeType: input.detailMimeType ?? 'image/jpeg' } : undefined,
               input.tagImageBase64    ? { base64: input.tagImageBase64,    mimeType: input.tagMimeType    ?? 'image/jpeg' } : undefined,
             ),
-          ]);
+          ])]);
 
           const durationMs = Date.now() - callStart;
           console.log(`[analyze] complete — ${durationMs}ms | confidence:${analysisResult?.risk_analysis?.match_confidence ?? '?'} | value:$${analysisResult?.market_data?.adjusted_estimated_value ?? '?'}`);
@@ -522,13 +584,15 @@ const appRouter_scan = router({
           // failed scans cost nothing.
           // Legacy AI path. A V1 user still commits through the ledger, so
           // success is never recorded in two systems.
+          run.assertLive();
           if (useV1) {
             if (reservationId) {
-              await commitScan(reservationId);
+              charged = await commitScan(reservationId);
               console.log("[analyze] V1 scan COMMITTED (legacy AI path)");
             }
           } else {
             commitScanCount(sid, input.scanAttemptId);
+            charged = true;
           }
 
           const payload = {
@@ -544,12 +608,40 @@ const appRouter_scan = router({
           // Refund to the SAME bucket. Guarded on reservationId, so a replay —
           // which never reserved — cannot credit a scan it did not spend.
           if (useV1 && reservationId) {
-            await refundScan(reservationId).catch(() => {});
+            refunded = await refundScan(reservationId).catch(() => false);
             console.log("[analyze] V1 scan REFUNDED after failure");
           }
           throw err;
         }
+          })();
+          run.succeed(payload, charged);
+          return payload;
+        } catch (err) {
+          // Out of time or cancelled: one clear answer, whatever the abort
+          // surfaced as inside the AI call — for this request and for every
+          // retry that joined it.
+          // (Never claimed once a scan was charged: then the real error stands.)
+          const out = run.stopReason && !charged ? new ScanStopped(run.stopReason) : err;
+          run.fail(out, refunded, charged);
+          throw out;
+        }
       }),
+    /**
+     * The app's 45 s scan clock ran out (Phase 2). Stops this user's scan if it
+     * is still running — refunded, never charged — or, if it already finished
+     * and was charged while the answer was on its way, hands the result back
+     * so the user is never charged for nothing. Only the owner can cancel.
+     */
+    cancelAnalysis: publicProcedure
+      .input(z.object({ scanAttemptId: z.string().min(1).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const muid = await resolveSupabaseUserId(ctx?.req as never, "cancel");
+        if (!muid) return { status: "not_running" as const };
+        const outcome = await cancelScan(muid, input.scanAttemptId.trim());
+        console.log(`[analyze] cancel → ${outcome.status} — attempt ${input.scanAttemptId.slice(0, 16)}`);
+        return outcome;
+      }),
+
     /**
      * Returns global scan stats — used by the ScanBalancePill on Home screen.
      */

@@ -113,12 +113,29 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
 
   // Legacy screens show risk_flags directly. Fold in the reasons a user would
   // want to see, without duplicating anything already flagged.
-  const flags = [...ai.risks.risk_flags];
+  //
+  // Other items in frame goes FIRST: only three flags are shown, and a user who
+  // photographed a pile needs to know which item the result describes. Absent
+  // on analyses made before the computed confidence model.
+  const conf = d.confidence;
+  const flags: string[] = [];
+  if (conf?.items_in_frame === "multiple_main_clear") {
+    flags.push("More than one item in the photo — this result is for the main one");
+  }
+  flags.push(...ai.risks.risk_flags);
   for (const f of d.condition_summary.obvious_findings) {
     const line = `${f.type.replace(/_/g, " ")} — ${f.location}`;
     if (!flags.some(x => x.toLowerCase().includes(f.type.replace(/_/g, " ")))) flags.push(line);
   }
   if (d.pricing.estimate_unavailable) flags.push("No reliable resale estimate for this item");
+  const visualProblems = (conf?.photo_problems ?? []).filter(p => p !== "no_item");
+  if (conf && !conf.issue && visualProblems.length) {
+    const words: Record<string, string> = {
+      blurry: "blurry", too_dark: "too dark", too_far: "taken from too far away",
+      glare: "affected by glare", cut_off: "cut off at the edge",
+    };
+    flags.push(`Photo was ${visualProblems.map(p => words[p] ?? p).join(" and ")} — some details may be off`);
+  }
 
   return {
     identification: {
@@ -245,6 +262,26 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
         missingEvidence:  ai.photo_evidence.missing_or_unreadable_evidence,
         rescanAdvice:     ai.photo_evidence.recommended_rescan_photo,
         authenticityConcerns: ai.risks.authenticity_concerns,
+
+        // What the app shows instead of a percentage: HIGH / MEDIUM / LOW, or
+        // null for a problem state, plus one line on what was observed.
+        // Additive — app 2.1 ignores both and keeps reading match_confidence.
+        // Left out (undefined) when the analysis predates the tier, so the app
+        // can tell "no tier sent" (work it out from the score) from "null"
+        // (a problem state).
+        confidenceTier:       conf && conf.tier !== undefined ? conf.tier : undefined,
+        confidenceTierReason: conf?.tier_reason,
+
+        // How the identity confidence was built (levels-v1). The rebuilt fail
+        // screens will read `scanIssue` to say WHY a scan didn't work:
+        // no_item, multiple_items, photo_problem or cannot_identify. All
+        // null/empty on analyses made before the computed confidence model.
+        identificationLevel: conf?.level ?? null,
+        itemsInFrame:        conf?.items_in_frame ?? null,
+        photoProblems:       conf?.photo_problems ?? [],
+        scanIssue:           conf?.issue ?? null,
+        confidenceReasons:   conf?.reasons ?? [],
+        aiSelfConfidence:    conf?.ai_self_score ?? null,
 
         displayName:      itemName,
         eraPrefix:        d.identification.era_prefix_applied,

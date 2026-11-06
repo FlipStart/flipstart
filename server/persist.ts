@@ -17,6 +17,7 @@
  */
 
 import { activeGrantFor } from "./devGrants.js";
+import { onShutdownFlush } from "./shutdown.js";
 import * as fs   from "fs";
 import * as path from "path";
 
@@ -274,22 +275,15 @@ function scheduleSave(): void {
   }
 }
 
-// Railway sends SIGTERM on redeploy. Without these hooks, anything still
-// coalesced at that moment is lost. Node's default SIGTERM/SIGINT behaviour is
-// to exit immediately, so flushing first is strictly safer than the status quo.
+// Railway sends SIGTERM on redeploy. Without a flush, anything still
+// coalesced at that moment is lost. server/shutdown.ts runs this straight away
+// on SIGTERM (as before), lets running scans finish, runs it again, then exits.
 let _exitHooksInstalled = false;
 function installExitFlush(): void {
   if (_exitHooksInstalled) return;
   _exitHooksInstalled = true;
-
-  const onSignal = (signal: string) => {
-    if (_pendingWrites > 0) flushNow(signal);
-    process.exit(0);
-  };
-  process.once("SIGTERM", () => onSignal("SIGTERM"));
-  process.once("SIGINT",  () => onSignal("SIGINT"));
-  process.once("beforeExit", () => {
-    if (_pendingWrites > 0) flushNow("beforeExit");
+  onShutdownFlush("persist", (reason) => {
+    if (_pendingWrites > 0) flushNow(reason);
   });
 }
 installExitFlush();

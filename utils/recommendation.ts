@@ -8,6 +8,8 @@
  * Pure function: input → output, no side effects, no React deps.
  */
 
+import { resolveConfidenceTier, type ConfidenceTier } from '@shared/confidenceTier';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type RecLabel = 'STRONG_BUY' | 'BUY' | 'RISKY_BUY' | 'SKIP';
@@ -17,7 +19,9 @@ export interface RecommendationInput {
   resaleValue:      number;
   thriftPrice:      number;
   roi:              number;
-  matchConfidence:  number;   // 0–100
+  /** The compatibility identification score, 0–100. Ordinal, not a
+   *  probability — the thresholds below are this engine's own rules. */
+  matchConfidence:  number;
   competitionLevel: string;   // 'High' | 'Moderate' | 'Low' | ''
   demandLevel:      string;   // 'High' | 'Medium' | 'Low' | ''
   sellSpeed:        string;   // 'Fast' | 'Moderate' | 'Slow' | ''
@@ -29,6 +33,10 @@ export interface RecommendationInput {
   /** ai.pricing.price_confidence, 0-100. Gates STRONG_BUY: a resale estimate
    *  the model is unsure of cannot support the app's strongest verdict. */
   priceConfidence?: number;
+  /** The server's identification tier (HIGH / MEDIUM / LOW, null = problem
+   *  state). Wording only — it never changes the rating. Absent on older
+   *  scans, which work it out from matchConfidence. */
+  confidenceTier?: ConfidenceTier | null;
 }
 
 export interface Recommendation {
@@ -70,6 +78,21 @@ const RISK_LABELS: Record<RiskFactorCode, string> = {
  *  estimate is a guess, and the app's strongest verdict should not rest on a
  *  guess however good the margin looks. */
 const STRONG_BUY_MIN_PRICE_CONFIDENCE = 75;
+
+/**
+ * STRONG_BUY also needs this identification score. A rule of THIS engine, not
+ * a property of confidence: the confidence system neither knows about nor
+ * aims at it.
+ *
+ * What it means today, with the server's score bands: HIGH-tier items (exact
+ * product or confirmed brand, 74+) can reach STRONG_BUY; MEDIUM-tier items
+ * (item type only, 60-68) cannot; and a suspected fake, whose score the server
+ * holds at 60 because this engine has no authenticity input, cannot either.
+ * Whether MEDIUM identification should block STRONG_BUY is an open product
+ * decision — when it is made, change this rule (ideally to read the tier and
+ * authenticity directly), not the confidence bands.
+ */
+export const STRONG_BUY_MIN_IDENTIFICATION_SCORE = 70;
 
 /** Ranked by how much each should worry a reseller. The card shows the top few,
  *  so ordering decides what the user actually reads. */
@@ -143,7 +166,7 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   // ── Base tier from profit and confidence ────────────────────────────────────
   let base: number;
   if (netProfit < 0)                                   base = 0;
-  else if (netProfit >= 25 && matchConfidence >= 70)   base = 3;
+  else if (netProfit >= 25 && matchConfidence >= STRONG_BUY_MIN_IDENTIFICATION_SCORE) base = 3;
   else if (netProfit >= 15 && matchConfidence >= 55)   base = 2;
   else if (netProfit >= 11 && matchConfidence >= 40)   base = 2;
   else if (netProfit >= 8)                             base = 1;
@@ -313,17 +336,20 @@ function buildBullets(
     bullets.push(`Strong estimated profit of $${netProfit} after fees.`);
   }
 
-  // ── Confidence statement ───────────────────────────────────────────────────
-  if (matchConfidence > 0) {
-    if (matchConfidence >= 80) {
-      bullets.push(`Confidence is high (${matchConfidence}%) — the item identification is likely reliable.`);
-    } else if (matchConfidence >= 60) {
-      bullets.push(`Match confidence is solid at ${matchConfidence}%.`);
-    } else if (matchConfidence >= 40) {
-      bullets.push(`Low confidence (${matchConfidence}%) means the item should be verified before buying.`);
-    } else {
-      bullets.push(`Very low confidence (${matchConfidence}%) — the AI may have misidentified the item.`);
-    }
+  // ── Identification statement ───────────────────────────────────────────────
+  // Words, never a percentage: the score is ordinal, not a probability. The
+  // tier is the server's when the scan has one, so a suspected fake (score
+  // held at 60, still confidently identified) reads as identified here and
+  // its authenticity concern is shown separately.
+  const tier = resolveConfidenceTier(input.confidenceTier, matchConfidence);
+  if (tier === 'high') {
+    bullets.push(`High identification confidence — FlipStart is confident what this item is.`);
+  } else if (tier === 'medium') {
+    bullets.push(`Medium identification confidence — verify the brand and details before buying.`);
+  } else if (tier === 'low') {
+    bullets.push(`Low identification confidence — only part of the item could be identified, so verify before buying.`);
+  } else if (matchConfidence > 0 || input.confidenceTier === null) {
+    bullets.push(`FlipStart couldn't confirm what this item is — verify it in person before buying.`);
   }
 
   // ── Competition statement ──────────────────────────────────────────────────

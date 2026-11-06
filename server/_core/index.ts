@@ -8,6 +8,7 @@ import * as crypto from "crypto";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
+import { trackResponse } from "../shutdown";
 import { createContext } from "./context";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -534,6 +535,15 @@ async function startServer() {
       console.error("[reset] Failed:", e);
       return res.status(500).json({ ok: false, error: e?.message ?? "Reset failed" });
     }
+  });
+
+  // Phase 2: a scan (or cancel) request counts as running work until its
+  // answer has been sent, so a redeploy never exits between charging a scan
+  // and delivering it — directly, or handed back by cancel
+  // (server/shutdown.ts). Batched URLs list every procedure in the path.
+  app.use("/api/trpc", (req, res, next) => {
+    if (req.path.includes("scan.analyzeFast") || req.path.includes("scan.cancelAnalysis")) trackResponse(res);
+    next();
   });
 
   app.use(

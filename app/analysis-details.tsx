@@ -22,6 +22,7 @@ import { FONTS } from '@/constants/typography';
 import { computeFlipCalc, resolveEffectiveThriftPrice,
          findMaxBuyPriceForRating, findBuyThresholdPrice } from '@/utils/flipCalculations';
 import { REC_THEMES, normalizeBuyRating } from '@/utils/recommendation';
+import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import {
   buildDeepInputs, whyThisRating, ratingQuestion, priceLogicText,
   riskAssessment, confidenceBreakdown, platformStrategy, listingStrategy,
@@ -234,13 +235,6 @@ function PriceStat({ label, value, color }: { label: string; value: string; colo
   );
 }
 
-function confidenceLabel(conf: number) {
-  if (conf >= 85) return { text: 'Strong Match',   color: '#2A5A2A' };
-  if (conf >= 60) return { text: 'Good Match',     color: '#7A5C1E' };
-  if (conf >= 35) return { text: 'Low Confidence', color: '#8A4A1A' };
-  return           { text: 'Uncertain',            color: '#6A2A2A' };
-}
-
 function platformName(p: string): string {
   const pl = (p || '').toLowerCase();
   if (pl === 'ebay')  return 'eBay';
@@ -353,7 +347,6 @@ export default function AnalysisDetailsScreen() {
      baseFlip.demand, baseFlip.sellSpeed],
   );
 
-  const confBadge   = confidenceLabel(baseFlip.matchConfidence);
   const profitColor = calc.profit >= 15 ? '#2A5A2A' : calc.profit >= 0 ? '#7A5C1E' : '#8A3A2A';
   const rec   = calc.recommendation;
   const theme = REC_THEMES[rec.colorKey];
@@ -503,6 +496,9 @@ export default function AnalysisDetailsScreen() {
   // Canonical V1 values, absent on older scans. Every section below treats a
   // missing block as "nothing to show" rather than rendering empty scaffolding.
   const v1: any = (baseFlip.structured as any)?.v1;
+  // HIGH / MEDIUM / LOW CONFIDENCE with the server's reason — never a
+  // percentage (matchConfidence is ordinal, not a probability).
+  const confidence = getConfidenceDisplay(v1, baseFlip.matchConfidence);
   const [sawOpen, setSawOpen] = useState(false);
   const risk         = riskAssessment(di);
   const confB        = confidenceBreakdown(di);
@@ -559,8 +555,8 @@ export default function AnalysisDetailsScreen() {
                 {!isUnknownStr(baseFlip.brand) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.brand}</Text></View>}
                 {!isUnknownStr(baseFlip.category) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.category}</Text></View>}
                 {!isUnknownStr(baseFlip.era) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.era}</Text></View>}
-                {baseFlip.matchConfidence > 0 && (
-                  <View style={[d.recapChip, d.recapChipConf]}><Text style={[d.recapChipText, { color: FOREST }]} numberOfLines={1}>{baseFlip.matchConfidence}% Conf</Text></View>
+                {confidence && (
+                  <View style={[d.recapChip, { borderColor: confidence.border, backgroundColor: confidence.bg }]}><Text style={[d.recapChipText, { color: confidence.color }]} numberOfLines={1}>{confidence.short}</Text></View>
                 )}
               </View>
               <View style={d.recapRatingRow}>
@@ -702,8 +698,9 @@ export default function AnalysisDetailsScreen() {
           <View style={d.card}>
             <View style={d.riskHeadRow}>
               <View style={d.riskHeadLeft}><DeepHead icon="insights" title="Confidence Breakdown" /></View>
-              <Text style={d.confBig} numberOfLines={1}>{confB.pct > 0 ? `${confB.pct}%` : '—'}</Text>
+              <Text style={[d.confTier, confidence && { color: confidence.color }]} numberOfLines={1}>{confidence ? confidence.label : '—'}</Text>
             </View>
+            {!!confidence?.reason && <Text style={d.confReason}>{confidence.reason}</Text>}
             <Text style={d.confSubHead}>Confident because</Text>
             {confB.confident.map((c, i) => (
               <View key={`c${i}`} style={d.bulletRow}>
@@ -722,10 +719,13 @@ export default function AnalysisDetailsScreen() {
 
           {/* Per-area confidence. The single headline number hid that the model
               can be sure of the brand and unsure of the condition — very
-              different situations for someone standing in a shop. */}
+              different situations for someone standing in a shop.
+              No Brand row: what the item is (brand included) is the
+              identification confidence above, and the model's own brand
+              number could contradict it — e.g. a brand only guessed from
+              styling, which the tier above does not count. */}
           {(() => {
             const rows = ([
-              ['Brand',       v1?.brandConfidence],
               ['Era',         v1?.eraConfidence],
               ['Condition',   v1?.conditionConfidence],
               ['Market read', v1?.marketConfidence],
@@ -1245,6 +1245,8 @@ const d = StyleSheet.create({
   riskLevelText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
 
   confBig:     { flexShrink: 0, fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: GOLD, marginBottom: 4 },
+  confTier:    { flexShrink: 0, fontSize: 12, fontWeight: '800', letterSpacing: 0.5, color: GOLD, marginBottom: 4 },
+  confReason:  { fontSize: 12.5, color: BROWN, lineHeight: 17, marginBottom: 10 },
   confSubHead: { fontSize: 11, fontWeight: '800', color: FOREST, letterSpacing: 0.4, textTransform: 'uppercase', marginBottom: 6 },
 
   platRow:          { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 },

@@ -58,6 +58,7 @@ import { trackAnalyticsEvent } from '@/lib/analytics';
 import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice, findBuyThresholdPrice } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
+import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
@@ -84,32 +85,9 @@ const CREAM  = '#F4EED8';
 
 
 
-function confidenceLabel(conf: number): { text: string; color: string } {
-  if (conf >= 85) return { text: 'Strong Match',   color: '#2A5A2A' };
-  if (conf >= 60) return { text: 'Good Match',     color: '#7A5C1E' };
-  if (conf >= 35) return { text: 'Low Confidence', color: '#8A4A1A' };
-  return           { text: 'Uncertain',            color: '#6A2A2A' };
-}
-
-function buildWhyBullets(calc: ReturnType<typeof computeFlipCalc>, md: any, ra: any): string[] {
-  const bullets: string[] = [];
-  const demand = (md.demand ?? '').toLowerCase();
-  const comp   = (md.competition_level ?? '').toLowerCase();
-  const speed  = (md.sell_speed ?? '').toLowerCase();
-
-  if (calc.profit < 0)               bullets.push('Costs exceed estimated resale value at this price');
-  if (calc.profit >= 0 && calc.profit < 10) bullets.push(`Thin profit margin ($${calc.profit}) — low reward for risk`);
-  if (calc.profit >= 10)             bullets.push(`Est. $${calc.profit} profit after platform fees`);
-  if (md.average_sold_price)         bullets.push(`Average sold price is $${md.average_sold_price} on eBay`);
-  if (comp === 'high')               bullets.push('High seller competition makes it harder to stand out');
-  if (demand === 'low')              bullets.push('Buyer demand is currently low for this item type');
-  if (demand === 'high')             bullets.push('High buyer demand — good chance of a fast sale');
-  if (speed === 'slow')              bullets.push('Items like this tend to sit listed for a while');
-  if (ra.match_confidence < 60 && ra.match_confidence > 0)
-    bullets.push(`Confidence ${ra.match_confidence}% — estimate may vary from actual result`);
-
-  return bullets.slice(0, 3);
-}
+// Identification confidence is shown as HIGH / MEDIUM / LOW CONFIDENCE with
+// the server's reason (utils/confidenceDisplay.ts), never as a percentage:
+// match_confidence is an ordinal compatibility score, not a probability.
 
 const SUMMARY_ICONS: Record<string, string> = {
   'Est. Profit': 'attach-money',
@@ -393,6 +371,7 @@ export default function ResultsScreen() {
         hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
         eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
         priceConfidence:  (_id as any)?.v1?.priceConfidence,
+        confidenceTier:   (_id as any)?.v1?.confidenceTier,
       },
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -496,7 +475,7 @@ export default function ResultsScreen() {
 
   const rec          = calc.recommendation;
   const theme        = REC_THEMES[rec.colorKey];
-  const confBadge    = confidenceLabel(ra.match_confidence);
+  const confidence   = getConfidenceDisplay((id as any).v1, ra.match_confidence);
   const whyBullets   = rec.bullets;
   const profitColor = calc.profit >= 15 ? '#2A5A2A' : calc.profit >= 0 ? '#7A5C1E' : '#8A3A2A';
 
@@ -1201,19 +1180,32 @@ export default function ResultsScreen() {
                       </View>
                     );
                   })()}
-                  {ra.match_confidence > 0 && (
-                    <View style={[s.chip, s.chipConf]}>
-                      <MaterialIcons name="verified" size={12} color={FOREST} />
-                      <Text style={[s.chipText, s.chipConfText]} numberOfLines={1}>{ra.match_confidence}% Confidence</Text>
+                  {confidence && (
+                    <View style={[s.chip, { borderColor: confidence.border, backgroundColor: confidence.bg }]}>
+                      <MaterialIcons
+                        name={confidence.tone === 'high' ? 'verified' : confidence.tone === 'problem' ? 'error-outline' : 'help-outline'}
+                        size={12} color={confidence.color}
+                      />
+                      <Text style={[s.chipText, s.chipConfText, { color: confidence.color }]} numberOfLines={1}>{confidence.label}</Text>
                     </View>
                   )}
                 </View>
 
+                {/* What the confidence rests on, in one line from the server.
+                    Authenticity is a separate question from identification, so
+                    a concern gets its own line instead of lowering the tier. */}
+                {!!confidence?.reason && (
+                  <Text style={s.confReason} numberOfLines={2}>{confidence.reason}</Text>
+                )}
+                {!!confidence?.authenticity && (
+                  <Text style={s.confAuth} numberOfLines={2}>Authenticity not verified — {confidence.authenticity}</Text>
+                )}
+
                 {/* ── Front-only limitation ──────────────────────────────────
-                    A one-photo scan is capped at 75% identity and 55% era, but
-                    "75% Confidence" reads as HIGH to a casual eye. The cap is
-                    honest in the data and invisible on the screen, so this
-                    names what specifically could not be checked.
+                    One photo does not lower identification confidence — a
+                    clear front photo can be HIGH. What it can leave unchecked
+                    is era and size, so this names exactly what could not be
+                    checked.
 
                     Names only what is ACTUALLY unknown rather than a fixed
                     sentence. If the user typed "Size XL, vintage 1990s" in the
@@ -1738,6 +1730,8 @@ const s = StyleSheet.create({
   chipText:  { fontSize: 10.5, fontWeight: '600', color: BROWN, flexShrink: 1 },
   chipConf:  { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
   chipConfText: { color: FOREST, fontWeight: '700' },
+  confReason: { fontSize: 11.5, color: BROWN, marginTop: 6, lineHeight: 15 },
+  confAuth:   { fontSize: 11.5, color: '#8A3A2A', fontWeight: '600', marginTop: 4, lineHeight: 15 },
   // Deep Analysis coach-mark (thought bubble)
   deepTip: {
     position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 8, zIndex: 20,

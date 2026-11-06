@@ -63,6 +63,17 @@ export interface CanonicalV1Passthrough {
   authenticityConcerns?: string[];
   displayName?: string;
   eraPrefix?: string | null;
+  /**
+   * Identification confidence as shown to the user: HIGH / MEDIUM / LOW, or
+   * null for a problem state (couldn't identify, no item, several items).
+   * Undefined on scans saved before the server sent it — the app then works
+   * it out from matchConfidence (shared/confidenceTier.ts).
+   */
+  confidenceTier?: 'high' | 'medium' | 'low' | null;
+  /** One line on what was observed, e.g. "Nike confirmed from the tag". */
+  confidenceTierReason?: string;
+  /** exact / brand / type / partial / none, after the server's check. */
+  identificationLevel?: string | null;
 }
 
 export interface StructuredId {

@@ -13,6 +13,7 @@ import type {
   FlipCalc, GlobalStats, FlipResult,
 } from '@/types/flip';
 import { getRecommendation, type Recommendation } from '@/utils/recommendation';
+import { tierFromScore } from '@shared/confidenceTier';
 
 // ─── Rank gate constants ──────────────────────────────────────────────────────
 import { WIN_LABELS } from '@/types/flip';
@@ -158,9 +159,12 @@ export function getStarRationale(
   else if (profit >= 0)   reasons.push('Thin profit margin (under $10)');
   else                    reasons.push('Negative profit — costs exceed resale value');
 
-  if (matchConfidence >= 80)       reasons.push(`High match confidence (${matchConfidence}%)`);
-  else if (matchConfidence >= 55)  reasons.push(`Moderate match confidence (${matchConfidence}%)`);
-  else                             reasons.push(`Low match confidence (${matchConfidence}%) — estimate may be off`);
+  // Words, never a percentage: matchConfidence is ordinal, not a probability.
+  const tier = tierFromScore(matchConfidence);
+  if (tier === 'high')        reasons.push('High identification confidence');
+  else if (tier === 'medium') reasons.push('Medium identification confidence — verify before buying');
+  else if (tier === 'low')    reasons.push('Low identification confidence — estimate may be off');
+  else                        reasons.push("Identification not confirmed — estimate may be off");
 
   const comp = competitionLevel.toLowerCase();
   if (comp === 'low')      reasons.push('Low seller competition — easier to sell');
@@ -344,6 +348,8 @@ export function computeFlipCalc(
     hasObviousDamage?: boolean;
     eraUnconfirmed?: boolean;
     priceConfidence?: number;
+    /** Server identification tier. Wording of the reasons only. */
+    confidenceTier?: 'high' | 'medium' | 'low' | null;
   } = {},
 ): FlipCalc {
   const fees        = calculateFees(resaleValue);
@@ -368,6 +374,7 @@ export function computeFlipCalc(
     hasObviousDamage: v1Signals.hasObviousDamage,
     eraUnconfirmed:   v1Signals.eraUnconfirmed,
     priceConfidence:  v1Signals.priceConfidence,
+    confidenceTier:   v1Signals.confidenceTier,
   });
 
   return {

@@ -307,7 +307,7 @@ export function generateDashboard({ entries, summary, scanStats, analytics, secr
       return td([esc(tsStr(e.timestamp)),esc(e.prediction.itemName),esc(e.prediction.brand),esc(e.prediction.category),
         esc(fmt(d.aiVal)),esc(fmt(d.userVal)),diffStr,accuracyBadge(e.feedback.accuracyRating),
         decisionBadge(e.feedback.buyDecision),recBadge(e.prediction.recommendation),
-        esc(e.prediction.confidenceScore+"%"),esc(e.prediction.bestPlatform),esc(e.feedback.notes??"—")]);
+        esc(String(e.prediction.confidenceScore)),esc(e.prediction.bestPlatform),esc(e.feedback.notes??"—")]);
     });
 
   const recGroups: Record<string,{bought:number;passed:number;unsure:number;total:number}> = {
@@ -368,7 +368,9 @@ export function generateDashboard({ entries, summary, scanStats, analytics, secr
     .map(([cat,es])=>({cat,bad:es.filter(e=>e.feedback.accuracyRating==="bad").length,total:es.length}))
     .filter(x=>x.total>=3).sort((a,b)=>b.bad/b.total-a.bad/a.total)[0]?.cat??"—";
 
-  const confBuckets = [{label:"0–39%",min:0,max:39},{label:"40–59%",min:40,max:59},{label:"60–79%",min:60,max:79},{label:"80–100%",min:80,max:100}];
+  // confidenceScore is the compatibility identification score: ordinal, not a
+  // probability, so buckets are score ranges, not percentages.
+  const confBuckets = [{label:"0–39",min:0,max:39},{label:"40–59",min:40,max:59},{label:"60–79",min:60,max:79},{label:"80–100",min:80,max:100}];
   const confRows = confBuckets.map(b => {
     const es=entries.filter(e=>e.prediction.confidenceScore>=b.min&&e.prediction.confidenceScore<=b.max);
     if(es.length===0) return td([b.label,"0","—","—","—"]);
@@ -387,7 +389,7 @@ export function generateDashboard({ entries, summary, scanStats, analytics, secr
     const we=es.filter(e=>getDiff(e).diff!=null);
     const avgD=we.length?Math.round(we.reduce((s,e)=>s+(getDiff(e).diff??0),0)/we.length):null;
     const avgAbs=we.length?fmt(Math.round(we.reduce((s,e)=>s+(getDiff(e).absDiff??0),0)/we.length)):"—";
-    return td([esc(plat),String(es.length),avgConf+"%",avgD==null?"—":((avgD>=0?"+":"−")+"$"+Math.abs(avgD)),avgAbs]);
+    return td([esc(plat),String(es.length),String(avgConf),avgD==null?"—":((avgD>=0?"+":"−")+"$"+Math.abs(avgD)),avgAbs]);
   });
 
   // ── Brand analytics ────────────────────────────────────────────────────────

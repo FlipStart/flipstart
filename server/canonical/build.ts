@@ -2,7 +2,7 @@
  * CanonicalAnalysisV1 assembly.
  *
  * Runs the whole judgement pipeline in dependency order:
- *   validate -> era -> recognition -> display name -> pricing -> progress
+ *   validate -> era -> recognition -> confidence -> display name -> pricing -> progress
  *
  * `ai` is the parsed model response, cloned once by the validator and never
  * mutated afterwards. Everything the server concludes lands in `derived`, so a
@@ -20,6 +20,7 @@ import {
   conditionAdjustments, isCommonModernBasic, commonBasicCeiling,
 } from "./priceAdjust.js";
 import { evaluateRecognition, evaluateDiamondEligibility } from "../recognition/matcher.js";
+import { computeConfidence } from "./confidence.js";
 
 export interface BuildInput {
   ai: AiAnalysis;
@@ -59,6 +60,21 @@ export function buildCanonicalAnalysis(input: BuildInput): CanonicalAnalysisV1 {
     evidencedFeatureFields,
   });
 
+  // 3b. Identity confidence, COMPUTED from what the model identified (levels-v1).
+  //     Written back onto the validated analysis so every existing reader —
+  //     the legacy match_confidence, Diamonds, the app — gets the computed
+  //     number unchanged. The model's own estimate stays in derived.confidence.
+  const conf = computeConfidence({
+    ai: v.cleaned,
+    aiSelfScore: v.aiSelfConfidence,
+    recognition,
+  });
+  const { normalized, ...confidence } = conf;
+  v.cleaned.identification.identity_confidence = confidence.score;
+  v.cleaned.identification.identification_level = normalized.identification_level;
+  v.cleaned.photo_evidence.items_in_frame = normalized.items_in_frame;
+  v.cleaned.photo_evidence.photo_problems = normalized.photo_problems;
+
   // 4. Display name: resolve the base first, then apply a validated era prefix.
   const identification = buildDisplayName(v.cleaned, recognition, eraRes.effective);
 
@@ -75,11 +91,12 @@ export function buildCanonicalAnalysis(input: BuildInput): CanonicalAnalysisV1 {
     era: eraRes.effective,
     recognition,
     meaningfulPhotoCount: v.meaningfulPhotoCount,
-    identityConfidence: v.identityConfidence,
+    identityConfidence: confidence.score,
     validationPassed,
   });
 
   const derived: DerivedAnalysis = {
+    confidence,
     validation: {
       passed: validationPassed,
       downgrades: [...v.downgrades, ...eraRes.logs],

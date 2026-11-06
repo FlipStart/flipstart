@@ -91,6 +91,8 @@ export type InvokeParams = {
   output_schema?: OutputSchema;
   responseFormat?: ResponseFormat;
   response_format?: ResponseFormat;
+  /** Aborts the HTTP request (the scan's 40 s budget, or a cancel). */
+  signal?: AbortSignal;
 };
 
 export type ToolCall = {
@@ -340,6 +342,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   const response = await fetch(resolveApiUrl(), {
+    signal: params.signal,
     method: "POST",
     headers: {
       "content-type": "application/json",

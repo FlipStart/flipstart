@@ -33,6 +33,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { onShutdownFlush } from "../shutdown.js";
 
 export type BudgetWindow = "daily" | "monthly" | "user";
 
@@ -185,10 +186,8 @@ let hooked = false;
 function hookExit(): void {
   if (hooked) return;
   hooked = true;
-  for (const sig of ["SIGTERM", "SIGINT"] as const) {
-    process.once(sig, () => { flushNow(); process.exit(0); });
-  }
-  process.once("beforeExit", flushNow);
+  // Flushed on SIGTERM, and again after running scans finish (server/shutdown.ts).
+  onShutdownFlush("compsBudget", () => flushNow());
 }
 
 function roll(now: number): void {

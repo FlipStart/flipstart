@@ -46,8 +46,6 @@ const ARTEFACT_PATTERNS = [
 export interface ValidationInput {
   ai: AiAnalysis;
   photoSlotsProvided: PhotoSlot[];
-  /** Non-core categories cap identity confidence unless something is legible. */
-  coreCategories?: Set<string>;
 }
 
 export interface ValidationOutput {
@@ -58,12 +56,16 @@ export interface ValidationOutput {
   confidenceCaps: string[];
   conditionSummary: DerivedConditionSummary;
   photoContributions: PhotoContribution[];
-  identityConfidence: number;
+  /**
+   * The model's own identity_confidence, clamped to 0-100 and otherwise
+   * untouched. Identity confidence is no longer adjusted here: it is COMPUTED
+   * in confidence.ts from what the model identified (see build.ts), and this
+   * raw value is kept only for comparison.
+   */
+  aiSelfConfidence: number;
   eraConfidenceCeiling: number;
   meaningfulPhotoCount: number;
 }
-
-const CORE_CATEGORIES = new Set(["clothing", "shoes", "bags"]);
 
 const clampInt = (n: unknown, lo = 0, hi = 100): number => {
   const v = typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 0;
@@ -146,7 +148,6 @@ function deriveEraCeiling(ai: AiAnalysis, photoCount: number): number {
 export function validateAnalysis(input: ValidationInput): ValidationOutput {
   const ai = structuredClone(input.ai);
   const slots = new Set(input.photoSlotsProvided);
-  const core = input.coreCategories ?? CORE_CATEGORIES;
 
   const downgrades: ValidationDowngrade[] = [];
   const rejectedFields: string[] = [];
@@ -288,17 +289,13 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
     }
   }
 
-  let identityConfidence = ai.identification.identity_confidence;
-  const populated = (["item_type", "subtype", "subject", "team", "artist", "event",
-                      "character_or_license"] as const)
-    .filter(f => ai.identification[f].trim());
-  const unevidenced = populated.filter(f => evForField(f).length === 0);
-  if (unevidenced.length) {
-    const from = identityConfidence;
-    identityConfidence = Math.max(0, identityConfidence - 15 * unevidenced.length);
-    down("IDENTITY_UNEVIDENCED_FIELDS", "identity_confidence", String(from), String(identityConfidence),
-         `unevidenced: ${unevidenced.join(", ")}`);
-  }
+  // Identity confidence is no longer adjusted here. The old −15-per-field
+  // penalty for identified fields without an evidence object (removed in
+  // prompt v1.10.0 / confidence levels-v1) lowered 30% of all scores — mostly
+  // for not citing evidence that a tee is a tee — and pushed clear photos onto
+  // the low-confidence screens. Evidence now only ever RAISES the computed
+  // score; see confidence.ts.
+  const aiSelfConfidence = ai.identification.identity_confidence;
 
   // ── F. Observable-field evidence ────────────────────────────────────────────
   const obsFields = new Set(ai.photo_evidence.observable_field_evidence.map(e => e.field));
@@ -463,10 +460,9 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   }
 
   // ── I. Authenticity ─────────────────────────────────────────────────────────
-  if (ai.risks.authenticity_concerns.length) {
-    cap("identity_confidence -> 60 (authenticity concerns present)");
-    identityConfidence = Math.min(identityConfidence, 60);
-  }
+  // The 60 cap for authenticity concerns moved to confidence.ts with the rest
+  // of identity scoring. The concerns themselves still block Diamonds in
+  // recognition/matcher.ts.
 
   // ── J. Meaningful photos ────────────────────────────────────────────────────
   // A slot is meaningful only when it contributed evidence to an actual
@@ -542,8 +538,11 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   }
 
   // ── K. Confidence ceilings ──────────────────────────────────────────────────
+  // Era only. The identity ceilings that lived here — 75 for one photo, 70 for
+  // non-clothing without a legible marking, 50 with no identification
+  // evidence — were removed with the computed confidence model: photo count
+  // and category never set the score on their own any more.
   const n = input.photoSlotsProvided.length;
-  const identityCeiling = n <= 1 ? 75 : 100;
 
   // ── Era ceiling: evidence-based, not photo-count-based ──────────────────────
   //
@@ -561,23 +560,6 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   // Confidence now scales with what the evidence actually supports. Photo count
   // still contributes, but as one input rather than a hard gate.
   const eraCeiling = deriveEraCeiling(ai, n);
-  if (identityConfidence > identityCeiling) {
-    cap(`identity_confidence ${identityConfidence} -> ${identityCeiling} (${n} photo${n === 1 ? "" : "s"})`);
-    identityConfidence = identityCeiling;
-  }
-  // Non-core categories cap at 70 unless something identifying is legible.
-  const legible = Boolean(ai.identification.model_or_product_number.trim() ||
-                          ai.identification.product_line.trim());
-  if (!core.has(ai.identification.broad_category) && !legible && identityConfidence > 70) {
-    cap(`identity_confidence -> 70 (non-core category, no legible identification)`);
-    identityConfidence = 70;
-  }
-  if (!ai.identification.identification_evidence.length && identityConfidence > 50) {
-    cap("identity_confidence -> 50 (no identification evidence)");
-    identityConfidence = 50;
-  }
-
-  ai.identification.identity_confidence = identityConfidence;
 
   return {
     cleaned: ai,
@@ -586,7 +568,7 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
     confidenceCaps,
     conditionSummary,
     photoContributions: contributions,
-    identityConfidence,
+    aiSelfConfidence,
     eraConfidenceCeiling: eraCeiling,
     meaningfulPhotoCount,
   };

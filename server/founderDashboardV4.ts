@@ -252,7 +252,6 @@ const absent = (label: string, x: any) => !x || typeof x !== "object" ? `<div cl
 function renderPricing(pr: any): string {
   if (!pr || typeof pr !== "object") return section("pricing", "4b · Pricing Experiments", absent("Pricing Experiments", pr));
   if (isErr(pr)) return errorCard("Pricing Experiments", pr);
-  const [v1, v2] = pr.eras;
   const col = (r: any) => {
     const e = r.era;
     const span = `${e.startsAt ? when(e.startsAt) : "start"} → ${e.endsAt ? when(e.endsAt) : "now"}`;
@@ -275,19 +274,27 @@ function renderPricing(pr: any): string {
         m("Mean paywall views before pay", { value: r.paywallsBeforePay.mean, trust: "DERIVED", d: r.paywallsBeforePay.d }, { dp: 1 }),
       ])}</div>`;
   };
-  const c = pr.comparison;
-  const cmp = `<div class="card"><div class="card-h">V2 vs V1 <span class="muted">— observational, not causal</span></div>${table(["Measure", "Change"], [
+  // Each era against the one before it, newest first. "—" until an era has
+  // users whose whole conversion window has closed.
+  const short = (label: string) => String(label ?? "").replace(/^Pricing /, "");
+  const cmpRows = (c: any) => [
     [`Activation (${pr.conversionDays}-day)`, esc(signed(c.activationPts, " pts"))],
     [`Paid conversion (${pr.conversionDays}-day)`, esc(signed(c.paidPts, " pts"))],
     ["Paywall viewer → paid", esc(signed(c.viewerToPaidPts, " pts"))],
     ["Est. revenue per 100 users", c.revenuePer100Delta === null ? "—" : esc(`${c.revenuePer100Delta >= 0 ? "+" : "−"}$${Math.abs(c.revenuePer100Delta).toFixed(2)}`)],
-  ], "compact")}<div class="muted">${esc(pr.caveat)} Small samples are flagged on each card above.</div></div>`;
+  ];
+  const pairs: any[] = Array.isArray(pr.comparisons) ? [...pr.comparisons].reverse() : [];
+  const cmp = pairs.length ? `<div class="card"><div class="card-h">Each era vs the one before <span class="muted">— observational, not causal</span></div>${table(
+    ["Measure", ...pairs.map(c => `${short(c.toLabel)} vs ${short(c.fromLabel)}`)],   // table() escapes headers
+    cmpRows(pairs[0]).map((_, i) => [cmpRows(pairs[0])[i][0], ...pairs.map(c => cmpRows(c)[i][1])]),
+    "compact")}<div class="muted">${esc(pr.caveat)} Small samples are flagged on each card above. An era's 7-day numbers fill in once its first signups are a week old.</div></div>` : "";
+  const assumed: any[] = Array.isArray(pr.assumedStarts) ? pr.assumedStarts : [];
   const notes = [
-    pr.boundaryAssumed ? `V2 start is a date-only assumption (midnight Central). Set FLIPSTART_PRICING_V2_AT to the exact moment if known.` : "",
+    ...assumed.map(a => `${short(a.label)} start is a date-only assumption (midnight Central${a.startsAt ? `, ${when(a.startsAt)}` : ""}). Set ${a.env} to the exact moment if known.`),
     `Revenue is ESTIMATED: list price in USD, first period only — before refunds, renewals and non-US storefront pricing. Net applies Apple's ${Math.round(pr.appleFeeRate * 100)}%. Subscriptions only; scan-pack events are test activity.`,
     ...pr.notes.map((n: any) => `${n.at ? when(n.at) + " — " : ""}${n.note}`),
   ].filter(Boolean).map(t => `<div class="note-block">${esc(t)}</div>`).join("");
-  return section("pricing", "4b · Pricing Experiments", `<div class="two">${col(v1)}${col(v2)}</div>` + cmp + notes,
+  return section("pricing", "4b · Pricing Experiments", `<div class="eras">${pr.eras.map(col).join("")}</div>` + cmp + notes,
     "eras define their own windows; the date range does not apply");
 }
 
@@ -381,16 +388,19 @@ function renderFunnel(fs: any): string {
 function renderPaywallIntel(pi: any): string {
   if (!pi || typeof pi !== "object") return section("pwintel", "5b · Paywall Intelligence", absent("Paywall Intelligence", pi));
   if (isErr(pi)) return errorCard("Paywall Intelligence", pi);
+  const eraList: Array<{ id: string; label: string }> = Array.isArray(pi.eras) ? pi.eras : [{ id: "v1", label: "Pricing V1" }, { id: "v2", label: "Pricing V2" }];
+  const eraIds = eraList.map(e => e.id);
+  const eraHead = `Purchases ${eraList.map(e => String(e.label).replace(/^Pricing /, "")).join(" / ")}`;
   const rows = pi.rows.map((r: any) => [
     `<code>${esc(r.source)}</code>`, num(r.impressions), num(r.uniqueViewers), num(r.repeatViewers),
     num(r.selections), num(r.purchases), r.selectionToPurchase.d ? rate(r.selectionToPurchase.n, r.selectionToPurchase.d) : "—",
-    `${num(r.purchasesByEra.v1 ?? 0)} / ${num(r.purchasesByEra.v2 ?? 0)}`, usd(r.revenueEstimate.value),
+    eraIds.map((id: string) => num(r.purchasesByEra?.[id] ?? 0)).join(" / "), usd(r.revenueEstimate.value),
     num(r.medianImpressionsBeforePurchase, 1), hrs(r.medianHoursFirstImpressionToPurchase),
     `${num(r.firstSeenFor)} / ${num(r.convertingFor)} / ${num(r.lastBeforeFor)}`,
   ]);
   return section("pwintel", "5b · Paywall Intelligence",
     `<div class="card wide"><div class="card-h">Which paywalls create value <span class="muted">— sorted by estimated revenue in range</span></div>
-     ${table(["Paywall", "Impr.", "Viewers", "Repeat viewers", "Selections", "Purchases", "Selection → purchase", "Purchases V1 / V2", "Est. revenue", "Median views before buying", "First view → purchase", "First / converting / last"], rows, "compact")}
+     ${table(["Paywall", "Impr.", "Viewers", "Repeat viewers", "Selections", "Purchases", "Selection → purchase", eraHead, "Est. revenue", "Median views before buying", "First view → purchase", "First / converting / last"], rows, "compact")}
      <div class="muted">${esc(pi.note)} "First / converting / last": for buyers, how often this paywall was the first they saw, the one they bought on, and the last before buying. ${num(pi.buyers)} buyer(s). Current era: ${esc(pi.currentEra ?? "—")}.</div></div>`,
     "ESTIMATED revenue");
 }
@@ -865,6 +875,7 @@ h3{font-size:12.5px;color:var(--muted);margin:14px 0 6px}
 .stat.na .stat-v{font-size:12px;color:var(--muted);font-weight:500}
 .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:10px}.card-h{font-weight:600;font-size:12px;margin-bottom:8px}.card.na{color:var(--muted)}.card.wide{overflow-x:auto}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:900px){.two{grid-template-columns:1fr}}
+.eras{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
 table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:11px}td.r,th.r{text-align:right}
 table.compact th,table.compact td{padding:3px 6px;font-size:11.5px}table.wrap{min-width:1800px}
 table.funnel td.stg{width:30%}table.funnel td.w{width:30%}

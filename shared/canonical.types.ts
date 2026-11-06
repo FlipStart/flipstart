@@ -64,6 +64,28 @@ export type IdentificationField =
   | 'canonical_brand' | 'item_type' | 'subtype' | 'subject' | 'team' | 'artist'
   | 'event' | 'character_or_license' | 'product_line' | 'model_or_product_number' | 'other';
 
+/**
+ * How far the model got identifying the item — a FACT it reports, not a
+ * feeling. The confidence the user sees is computed from this in
+ * server/canonical/confidence.ts; the model's own number no longer decides it.
+ *
+ *   exact   — a specific product read off the item (model/style number,
+ *             product line, title, named edition)
+ *   brand   — a brand or maker, or the team / artist / event / character it
+ *             is official merchandise for — plus the item type
+ *   type    — the item type, but not who made it (a printed place, slogan or
+ *             graphic alone stays type)
+ *   partial — only a rough category
+ *   none    — cannot tell what the item is
+ */
+export type IdentificationLevel = 'exact' | 'brand' | 'type' | 'partial' | 'none';
+
+/** Whether the photo shows one item, or several with or without a clear main one. */
+export type ItemsInFrame = 'one' | 'multiple_main_clear' | 'multiple_unclear';
+
+/** Problems that actually limited what the model could see. */
+export type PhotoProblem = 'blurry' | 'too_dark' | 'too_far' | 'glare' | 'cut_off' | 'no_item';
+
 export type ConditionFindingType =
   | 'possible_stain' | 'hole' | 'tear' | 'cracking' | 'peeling' | 'broken_hardware'
   | 'missing_component' | 'repair' | 'heavy_wear' | 'other';
@@ -149,7 +171,15 @@ export interface AiIdentification {
   /** Transcribed from a legible marking ONLY. Never inferred from resemblance. */
   product_line: string;
   model_or_product_number: string;
+  /**
+   * After validation this holds the COMPUTED confidence (derived.confidence.score),
+   * so every existing reader — the legacy adapter's match_confidence, Diamonds,
+   * the app — gets the computed number with no change. The model's own estimate
+   * is kept in derived.confidence.ai_self_score for comparison.
+   */
   identity_confidence: Confidence;
+  /** Absent on analyses made before prompt v1.10.0 — readers must tolerate that. */
+  identification_level?: IdentificationLevel;
   identification_evidence: IdentificationEvidence[];
 }
 
@@ -185,6 +215,10 @@ export interface AiPhotoEvidence {
   missing_or_unreadable_evidence: string[];
   /** Advisory for a FUTURE scan. There is no add-a-photo flow. */
   recommended_rescan_photo: string;
+  /** Absent on analyses made before prompt v1.10.0. */
+  items_in_frame?: ItemsInFrame;
+  /** Absent on analyses made before prompt v1.10.0. */
+  photo_problems?: PhotoProblem[];
 }
 
 export interface AiEraEvidence {
@@ -578,7 +612,59 @@ export interface DerivedComps {
   };
 }
 
+/**
+ * Why a scan can't produce a trustworthy result, when it can't; null when the
+ * result is usable. For the dedicated fail screens (not read by the app yet).
+ */
+export type ScanIssue = 'no_item' | 'multiple_items' | 'photo_problem' | 'cannot_identify';
+
+/**
+ * How the identity confidence was built. Present on every analysis made with
+ * the computed-confidence model (prompt v1.10.0+); absent before it.
+ *
+ * Identification only: nothing in it reads or represents price confidence,
+ * sold comps, profit, Buy / Strong Buy, demand, sell speed or authenticity.
+ */
+export interface DerivedConfidence {
+  /** Scoring model id. Bump when the scoring rules change. */
+  model: 'levels-v1';
+  /** The level the model reported (when it reported none, the level worked
+   *  out from the fields). */
+  level_reported: IdentificationLevel;
+  /** The level after checking it against the validated fields — lowered when
+   *  the fields don't support the claim, raised when a brand was read off the
+   *  item or recognition confirmed a product — and after the no-item /
+   *  several-items overrides. */
+  level: IdentificationLevel;
+  /**
+   * What the user sees: HIGH (exact, brand), MEDIUM (type), LOW (partial), or
+   * null for a problem state (couldn't identify, no item, several items with
+   * none clear). From the level only — never the score, photo count or
+   * authenticity. Absent on analyses scored before the tier existed; readers
+   * fall back to shared/confidenceTier.ts tierFromScore.
+   */
+  tier?: 'high' | 'medium' | 'low' | null;
+  /** One line on what was actually observed, e.g. "Nike confirmed from the tag". */
+  tier_reason?: string;
+  items_in_frame: ItemsInFrame;
+  photo_problems: PhotoProblem[];
+  /** The model's own 0-100 estimate. Recorded for comparison only. */
+  ai_self_score: number;
+  /**
+   * Final compatibility score. Always equal to ai.identification.
+   * identity_confidence and the legacy match_confidence. Ordinal, 0-100: a
+   * position app 2.1's screens and labels read, not a probability.
+   */
+  score: number;
+  /** What built the score, in order, in plain words. */
+  reasons: string[];
+  /** Why the result can't be trusted, or null when it can. */
+  issue: ScanIssue | null;
+}
+
 export interface DerivedAnalysis {
+  /** Absent on analyses made before the computed-confidence model. */
+  confidence?: DerivedConfidence;
   validation: DerivedValidation;
   identification: DerivedIdentification;
   era_effective: DerivedEraEffective;

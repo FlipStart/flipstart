@@ -11,6 +11,7 @@
 
 import type { FlipResult } from '@/types/flip';
 import { normalizeBuyRating, type CanonicalRating } from '@/utils/recommendation';
+import { resolveConfidenceTier, type ConfidenceTier } from '@shared/confidenceTier';
 
 export interface DeepInputs {
   flip: FlipResult;
@@ -37,6 +38,28 @@ const isUnknown = (v?: string) =>
 
 const lc = (v?: string) => (v ?? '').trim().toLowerCase();
 
+// ─── Identification confidence, in words ─────────────────────────────────────
+// HIGH / MEDIUM / LOW from the server's identification level, or worked out
+// from matchConfidence on older scans. Never shown as a percentage: the score
+// is an ordinal compatibility number, not a probability.
+
+/** The identification tier for this scan. Null = problem state or no score. */
+export function identificationTier(flip: FlipResult): ConfidenceTier | null {
+  return resolveConfidenceTier(flip.structured?.v1?.confidenceTier, flip.matchConfidence);
+}
+
+/** The caveat for anything short of HIGH. Null when HIGH or nothing to say. */
+export function identificationCaveat(flip: FlipResult): string | null {
+  const tier = identificationTier(flip);
+  if (tier === 'high') return null;
+  if (tier === 'medium') return 'Identification confidence is medium — verify brand, size, and condition in person.';
+  if (tier === 'low') return 'Identification confidence is low — only part of the item could be identified; verify in person.';
+  if (flip.matchConfidence > 0 || flip.structured?.v1?.confidenceTier === null) {
+    return "FlipStart couldn't confirm what this item is — verify it in person.";
+  }
+  return null;
+}
+
 // ─── 1. Why this rating? ──────────────────────────────────────────────────────
 
 /**
@@ -55,7 +78,6 @@ export function whyThisRating(i: DeepInputs): string[] {
   const comp   = lc(flip.competitionLevel);
   const demand = lc(flip.demand);
   const speed  = lc(flip.sellSpeed);
-  const conf   = flip.matchConfidence;
   const brandKnown = !isUnknown(flip.brand);
 
   // ── Reason pools ───────────────────────────────────────────────────────────
@@ -84,9 +106,10 @@ export function whyThisRating(i: DeepInputs): string[] {
     if (profit > 0 && profit < 11) {
       r.push(`Margin is thin at ~$${profit} — one return or a price cut erases it.`);
     }
-    if (conf > 0 && conf < 70) {
-      r.push(`Identification confidence is ${conf}% — verify brand, size, and condition in person.`);
-    }
+    // Short of HIGH identification. Authenticity concerns are separate and
+    // arrive through aiReasons, never as lowered identification confidence.
+    const caveat = identificationCaveat(flip);
+    if (caveat) r.push(caveat);
     if (v1?.buyerPool === 'narrow' || v1?.buyerPool === 'very_narrow') {
       r.push(`Narrow buyer pool — it may be worth the money, but only to the right person.`);
     }
@@ -181,8 +204,12 @@ export function whyThisRating(i: DeepInputs): string[] {
   }
   if (comp === 'low')   out.push(`Low competition means less price pressure and a better shot at your asking price.`);
   if (speed === 'fast') out.push(`Items like this tend to sell quickly, which lowers your holding risk.`);
-  // Caveats still belong here, just not leading.
-  if (conf > 0 && conf < 70) out.push(`Confidence is ${conf}% — verify size and condition in person before committing.`);
+  // Caveats still belong here, just not leading. Authenticity is its own
+  // caveat: a suspected fake can be confidently identified and still a Buy.
+  const caveat = identificationCaveat(flip);
+  if (caveat) out.push(caveat);
+  const authConcern = (v1?.authenticityConcerns ?? []).map(a => (a ?? '').trim()).find(Boolean);
+  if (authConcern) out.push(`Authenticity isn't verified — ${authConcern}. Check it before you buy.`);
   return dedupe(out).slice(0, 6);
 }
 
@@ -235,9 +262,23 @@ export function riskAssessment(i: DeepInputs): { level: RiskLevel; color: string
   const bullets: string[] = [];
   let score = 0; // higher = riskier
 
-  // Confidence-driven risk
-  if (conf > 0 && conf < 55) { score += 2; bullets.push('Match confidence is low — the identification may be off; verify in person.'); }
-  else if (conf > 0 && conf < 70) { score += 1; bullets.push('Confidence is moderate — double-check brand, size, and condition before buying.'); }
+  // Identification-driven risk, from the tier (same cut points as before on
+  // older scans: under 55 low, under 70 medium).
+  const tier = identificationTier(flip);
+  if (tier === 'low' || (tier === null && conf > 0)) {
+    score += 2; bullets.push('Identification confidence is low — the identification may be off; verify in person.');
+  } else if (tier === 'medium') {
+    score += 1; bullets.push('Identification confidence is medium — double-check brand, size, and condition before buying.');
+  }
+  // Authenticity is its own risk, not lowered identification confidence, so
+  // it is stated here whenever there is a concern. It adds a point only where
+  // the held score of 60 used to add one — a HIGH identification — so every
+  // risk level stays exactly what it was before the tier change.
+  const auth = (flip.structured?.v1?.authenticityConcerns ?? []).map(a => (a ?? '').trim()).filter(Boolean);
+  if (auth.length) {
+    if (tier === 'high') score += 1;
+    bullets.push(`Authenticity isn't verified — ${auth[0]}`);
+  }
 
   // Scan-provided risk flags (real signals from the AI)
   if (flip.riskFlags?.length) {
@@ -272,16 +313,23 @@ export function riskAssessment(i: DeepInputs): { level: RiskLevel; color: string
 
 // ─── 4. Confidence breakdown ──────────────────────────────────────────────────
 
-export function confidenceBreakdown(i: DeepInputs): { pct: number; confident: string[]; uncertain: string[] } {
+export function confidenceBreakdown(i: DeepInputs): { tier: ConfidenceTier | null; confident: string[]; uncertain: string[] } {
   const { flip } = i;
   const confident: string[] = [];
   const uncertain: string[] = [];
 
-  if (!isUnknown(flip.brand)) confident.push('Brand is visible and recognizable.');
+  // The brand lines follow the server's checked level when the scan has one,
+  // so this card never calls a brand "visible" that the tier says wasn't
+  // confirmed (a brand guessed from styling stays on the scan but doesn't count).
+  const level = flip.structured?.v1?.identificationLevel;
+  const brandConfirmed = level ? (level === 'exact' || level === 'brand') : !isUnknown(flip.brand);
+
+  if (brandConfirmed && !isUnknown(flip.brand)) confident.push('Brand is visible and recognizable.');
   if (!isUnknown(flip.category)) confident.push('Item category is clear.');
   if (flip.styleLabels?.length) confident.push('Style can be identified from the photo.');
   if (!isUnknown(flip.era)) confident.push('Era estimate is supported by visible cues.');
 
+  if (!brandConfirmed && !isUnknown(flip.brand)) uncertain.push("Brand couldn't be confirmed from what's visible.");
   if (isUnknown(flip.brand)) uncertain.push('Brand tag is not clearly visible.');
   if (isUnknown(flip.material)) uncertain.push('Material tag is not visible.');
   if (isUnknown(flip.era)) uncertain.push('Era could not be confirmed from the photo.');
@@ -291,7 +339,7 @@ export function confidenceBreakdown(i: DeepInputs): { pct: number; confident: st
   if (confident.length === 0) confident.push('Not enough clear signals to list what raised confidence.');
   if (uncertain.length === 0) uncertain.push('Add tag/detail photos to push confidence even higher.');
 
-  return { pct: flip.matchConfidence, confident: confident.slice(0, 4), uncertain: uncertain.slice(0, 4) };
+  return { tier: identificationTier(flip), confident: confident.slice(0, 4), uncertain: uncertain.slice(0, 4) };
 }
 
 // ─── 5. Platform strategy ─────────────────────────────────────────────────────

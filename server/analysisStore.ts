@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { CanonicalAnalysisV1 } from "../shared/canonical.types.js";
+import { onShutdownFlush } from "./shutdown.js";
 
 export interface StoredAnalysis {
   analysisId: string;
@@ -85,10 +86,8 @@ let hooked = false;
 function hookExit(): void {
   if (hooked) return;
   hooked = true;
-  for (const sig of ["SIGTERM", "SIGINT"] as const) {
-    process.once(sig, () => { flushNow(String(sig)); process.exit(0); });
-  }
-  process.once("beforeExit", () => flushNow("beforeExit"));
+  // Flushed on SIGTERM, and again after running scans finish (server/shutdown.ts).
+  onShutdownFlush("analysisStore", (reason) => flushNow(reason));
 }
 
 function prune(): void {

@@ -47,6 +47,7 @@ import { useFlipStore }         from '@/lib/useFlipStore';
 import { isHuntBundle }         from '@/types/flip';
 import { FONTS }                from '@/constants/typography';
 import { computeFlipCalc }      from '@/utils/flipCalculations';
+import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { logHuntItemSaved, logHuntItemRemoved } from '@/lib/analytics';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -454,12 +455,27 @@ export default function HuntItemDetailScreen() {
             <Text style={s.marketValue}>{value}</Text>
           </View>
         ))}
-        {ra.match_confidence > 0 && (
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 8 }}>
-            <MaterialIcons name="verified-user" size={12} color={MUTED} />
-            <Text style={s.confidence}>{ra.match_confidence}% match confidence</Text>
-          </View>
-        )}
+        {(() => {
+          // Words, not a percentage: match_confidence is ordinal, not a
+          // probability. The tier is the server's when the scan has one.
+          const conf = getConfidenceDisplay((id as any)?.v1, ra.match_confidence);
+          if (!conf) return null;
+          return (
+            <View style={{ alignItems: 'center', paddingVertical: 8, gap: 2 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
+                <MaterialIcons name="verified-user" size={12} color={conf.color} />
+                <Text style={[s.confidence, { color: conf.color, fontWeight: '700' }]}>{conf.short}</Text>
+              </View>
+              {!!conf.reason && <Text style={s.confidence} numberOfLines={2}>{conf.reason}</Text>}
+              {/* Authenticity is its own question, never folded into the tier. */}
+              {!!conf.authenticity && (
+                <Text style={[s.confidence, { color: '#8A3A2A', fontWeight: '600' }]} numberOfLines={2}>
+                  Authenticity not verified — {conf.authenticity}
+                </Text>
+              )}
+            </View>
+          );
+        })()}
       </View>
 
       <View style={{ flex: 1 }} />

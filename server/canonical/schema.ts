@@ -21,6 +21,13 @@
 import crypto from "node:crypto";
 
 export const CANONICAL_SCHEMA_NAME = "flipstart_canonical_v1";
+/**
+ * Stays "1" on purpose. The shipped app's isCanonicalV1() checks for exactly
+ * "1", so bumping it would make every new scan unreadable as canonical on the
+ * current App Store build. Additive changes (prompt v1.10.0 added
+ * identification_level, items_in_frame and photo_problems) are recorded by the
+ * schema HASH stamped on every analysis instead.
+ */
 export const SCHEMA_VERSION = "1" as const;
 
 export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
@@ -56,6 +63,7 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
           "product_line",
           "model_or_product_number",
           "identity_confidence",
+          "identification_level",
           "identification_evidence"
         ],
         "properties": {
@@ -117,6 +125,16 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
           },
           "identity_confidence": {
             "type": "integer"
+          },
+          "identification_level": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "brand",
+              "type",
+              "partial",
+              "none"
+            ]
           },
           "identification_evidence": {
             "type": "array",
@@ -271,7 +289,9 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
         "required": [
           "observable_field_evidence",
           "missing_or_unreadable_evidence",
-          "recommended_rescan_photo"
+          "recommended_rescan_photo",
+          "items_in_frame",
+          "photo_problems"
         ],
         "properties": {
           "observable_field_evidence": {
@@ -332,6 +352,28 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
           },
           "recommended_rescan_photo": {
             "type": "string"
+          },
+          "items_in_frame": {
+            "type": "string",
+            "enum": [
+              "one",
+              "multiple_main_clear",
+              "multiple_unclear"
+            ]
+          },
+          "photo_problems": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "blurry",
+                "too_dark",
+                "too_far",
+                "glare",
+                "cut_off",
+                "no_item"
+              ]
+            }
           }
         }
       },

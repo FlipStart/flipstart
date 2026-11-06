@@ -10,7 +10,7 @@ import { invokeLLM } from "./_core/llm.js";
 import { ENV } from "./_core/env.js";
 import {
   SCAN_PROMPT_VERSION, buildSystemMessage, vintageCutoffYear,
-} from "./prompts/scanPromptV1_9_1.js";
+} from "./prompts/scanPromptV1_10_0.js";
 import {
   canonicalResponseFormat, canonicalSchemaHash, SCHEMA_VERSION,
 } from "./canonical/schema.js";
@@ -85,6 +85,8 @@ export interface ScanV1Input {
    *  cache hit for those scans. */
   userContext?: UserContextInput;
   now?: Date;
+  /** Aborts the AI call when the scan runs out of time or is cancelled. */
+  signal?: AbortSignal;
 }
 
 export interface ScanV1Success {
@@ -141,6 +143,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
       // matcher discards — about 1.6s of generation on every scan.
       response_format: canonicalResponseFormat(includeFeatures) as never,
       max_tokens: MAX_OUTPUT_TOKENS,
+      signal: input.signal,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

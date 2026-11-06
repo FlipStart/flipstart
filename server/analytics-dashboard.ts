@@ -88,6 +88,10 @@ interface ScanRecord {
   aiPlatform:       string;
   aiSellSpeed:      string;
   aiDemand:         string;
+  /** The compatibility identification score (match_confidence), 0-100.
+   *  Ordinal, not a probability, so it is shown without a % sign. Named before
+   *  prompt v1.10.0, when it was the AI's own number; since then the server
+   *  computes it. Name kept so history stays comparable. */
   aiConfidence:     number;
 }
 
@@ -414,7 +418,7 @@ export function generateAnalyticsDashboard({ summary: a, events, sessions, scanR
       esc(r.aiBrand   || "—"),
       esc(r.aiCategory|| "—"),
       badge(r.aiRecommendation || "—", recColor),
-      '<span style="color:#f0c040">' + esc(r.aiConfidence ? r.aiConfidence + "%" : "—") + "</span>",
+      '<span style="color:#f0c040">' + esc(r.aiConfidence ? String(r.aiConfidence) : "—") + "</span>",
       esc(r.aiEstimatedValue ? "$" + r.aiEstimatedValue : "—"),
       esc(r.aiPlatform || "—"),
       esc(photoIcons),
