@@ -1054,6 +1054,9 @@ export default function ResultsScreen() {
           {/* ── 1. Item Identity Card ── */}
           <View style={s.idCard}>
             <View style={s.idCardRow}>
+              {/* Photo with the confidence pill directly under it, so the
+                  long info column on the right stays short. */}
+              <View style={s.idThumbCol}>
               <Pressable
                 onPress={() => currentScan.imageUri && setImageModalOpen(true)}
                 style={({ pressed }) => [s.idThumbWrap, pressed && { opacity: 0.9 }]}
@@ -1065,6 +1068,19 @@ export default function ResultsScreen() {
                   <View style={s.idThumbHint}><MaterialIcons name="zoom-in" size={11} color={CREAM} /></View>
                 )}
               </Pressable>
+              {confidence && (
+                <View style={[s.chip, s.idConfPill, { borderColor: confidence.border, backgroundColor: confidence.bg }]}>
+                  <MaterialIcons
+                    name={confidence.tone === 'high' ? 'verified' : confidence.tone === 'problem' ? 'error-outline' : 'help-outline'}
+                    size={12} color={confidence.color}
+                  />
+                  <Text
+                    style={[s.chipText, s.chipConfText, { color: confidence.color }]}
+                    numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}
+                  >{confidence.label}</Text>
+                </View>
+              )}
+              </View>
 
               <View style={s.idInfo}>
                 <View style={s.idTitleWrap}>
@@ -1180,15 +1196,6 @@ export default function ResultsScreen() {
                       </View>
                     );
                   })()}
-                  {confidence && (
-                    <View style={[s.chip, { borderColor: confidence.border, backgroundColor: confidence.bg }]}>
-                      <MaterialIcons
-                        name={confidence.tone === 'high' ? 'verified' : confidence.tone === 'problem' ? 'error-outline' : 'help-outline'}
-                        size={12} color={confidence.color}
-                      />
-                      <Text style={[s.chipText, s.chipConfText, { color: confidence.color }]} numberOfLines={1}>{confidence.label}</Text>
-                    </View>
-                  )}
                 </View>
 
                 {/* What the confidence rests on, in one line from the server.
@@ -1716,6 +1723,8 @@ const s = StyleSheet.create({
     shadowColor: '#2A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6,
   },
   idCardRow: { flexDirection: 'row', gap: 14, alignItems: 'center' },
+  idThumbCol:  { width: 138, gap: 7, alignItems: 'center' },
+  idConfPill:  { alignSelf: 'stretch', justifyContent: 'center' },
   idThumbWrap: { width: 138, height: 138, borderRadius: 14, overflow: 'hidden', position: 'relative' },
   idThumb:     { width: '100%', height: '100%', backgroundColor: '#FFFEFA' },
   idThumbFallback: { alignItems: 'center', justifyContent: 'center' },
