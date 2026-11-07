@@ -27,8 +27,39 @@ import { randomUUID } from "node:crypto";
 import { uploadScanImage, analyzeItemFast, generateItemListings } from "./scan";
 import {
   scanBudgetMs, beginRun, findRun, joinRun, ledgerKey, completedResult, cancelScan, ScanStopped,
+  holdCharge, confirmHeldCharge, releaseHeldCharge, mayHoldCharge, noteUnchargedSoftFail,
 } from "./scanRuntime.js";
 import { isDraining } from "./shutdown.js";
+import { scanSoftFail, type ScanFailReason } from "../shared/scanFailure.js";
+
+/**
+ * A scan failure the app can route on. The message is what app 2.1 already
+ * matches on and must not change; `scanReason` reaches the new app through
+ * the tRPC error formatter (server/_core/trpc.ts) as `error.data.scanReason`.
+ */
+function scanError(reason: ScanFailReason, message: string, fields: Record<string, unknown> = {}): Error {
+  return Object.assign(new Error(message), fields, { scanReason: reason });
+}
+
+/**
+ * Which reason a failure inside the AI step is.
+ *   ai_busy   — the provider answered 429 / 5xx, or couldn't be reached.
+ *               Worth another try.
+ *   ai_failed — it answered, but not with a usable analysis (a refusal, a
+ *               truncated or unparseable answer, a rejected request).
+ *   server_error — something else in that step (e.g. the photo upload on the
+ *               legacy route).
+ */
+export function aiFailureReason(err: unknown): ScanFailReason {
+  const kind = (err as { kind?: unknown } | null)?.kind;
+  const msg = String((err as { message?: unknown } | null)?.message ?? err ?? "");
+  if (/LLM invoke failed: (429|5\d\d)\b/.test(msg)) return "ai_busy";
+  if (/fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(msg)) return "ai_busy";
+  if (/LLM invoke failed: 4\d\d\b/.test(msg)) return "ai_failed";
+  if (kind === "transport_error") return "ai_busy";
+  if (typeof kind === "string") return "ai_failed";
+  return "server_error";
+}
 
 // ─── Successful-analysis cache (keyed by scanAttemptId) ──────────────────────
 // A retry re-sends the SAME scanAttemptId. Without this, every retry re-runs
@@ -83,6 +114,13 @@ function cacheAnalysis(
   }
   analysisCache.set(cacheKey(attemptId, contextHash), { at: Date.now(), result });
 }
+
+/** Drop every cached result for an attempt (each camera note has its own key). */
+function forgetCachedAnalysis(attemptId: string): void {
+  for (const k of [...analysisCache.keys()]) {
+    if (k === attemptId || k.startsWith(`${attemptId}::`)) analysisCache.delete(k);
+  }
+}
 const appRouter_scan = router({
     /**
      * Fast single-call analysis: image → AI → full results (identification + pricing + listings).
@@ -106,6 +144,10 @@ const appRouter_scan = router({
           // Milliseconds left on the app's 45 s scan clock when this request
           // was sent. Absent from app 2.1, which gets the 40 s server cap.
           deadlineMs:      z.number().int().positive().max(120_000).optional(),
+          // The app shows a soft-fail screen and charges only on "Continue
+          // anyway" (shared/scanFailure.ts). App 2.1 doesn't send this and is
+          // charged as before.
+          chargeOnContinue: z.boolean().optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -144,8 +186,8 @@ const appRouter_scan = router({
         const sid = (input.scannerId ?? "").trim();
         if (!sid) {
           console.warn("[analyze] rejected — no scannerId supplied (outdated client?)");
-          throw Object.assign(
-            new Error("SCANNER_ID_MISSING: cannot identify this device's scan quota."),
+          throw scanError("app_outdated",
+            "SCANNER_ID_MISSING: cannot identify this device's scan quota.",
             { code: "SCANNER_ID_MISSING" },
           );
         }
@@ -194,7 +236,7 @@ const appRouter_scan = router({
          * live getSession() on every request.
          */
         if (!muid) {
-          throw Object.assign(new Error("Please sign in to scan."), {
+          throw scanError("sign_in", "Please sign in to scan.", {
             code: "NOT_AUTHENTICATED",
           });
         }
@@ -225,9 +267,20 @@ const appRouter_scan = router({
 
           const photoCheck = await requirePhotoCount(muid, photoCount);
           if (!photoCheck.allowed && !photoCheck.bypassed) {
+            // An unreadable account is NOT "you're on Free". Saying "a third
+            // photo is Pro" here is the Aug 30 – Sep 7 sign-in bug.
+            if (photoCheck.reason === "USAGE_UNAVAILABLE") {
+              console.error("[analyze] REJECTED — account unreadable during the photo check");
+              throw scanError("account_check_failed",
+                "We couldn't check your account right now. You weren't charged.",
+                { code: "USAGE_UNAVAILABLE" });
+            }
+            if (photoCheck.reason === "NOT_AUTHENTICATED") {
+              throw scanError("sign_in", "Please sign in to scan.", { code: "NOT_AUTHENTICATED" });
+            }
             console.warn(`[analyze] REJECTED — ${photoCount} photos on plan ${photoCheck.plan}`);
-            throw Object.assign(
-              new Error("A third photo is available with FlipStart Pro."),
+            throw scanError("pro_third_photo",
+              "A third photo is available with FlipStart Pro.",
               { code: "PHOTO_LIMIT_EXCEEDED" },
             );
           }
@@ -245,9 +298,18 @@ const appRouter_scan = router({
           if (sentContext) {
             const ctxCheck = await requireFeature(muid, "camera_context");
             if (!ctxCheck.allowed && !ctxCheck.bypassed) {
+              if (ctxCheck.reason === "USAGE_UNAVAILABLE") {
+                console.error("[analyze] REJECTED — account unreadable during the AI Context check");
+                throw scanError("account_check_failed",
+                  "We couldn't check your account right now. You weren't charged.",
+                  { code: "USAGE_UNAVAILABLE" });
+              }
+              if (ctxCheck.reason === "NOT_AUTHENTICATED") {
+                throw scanError("sign_in", "Please sign in to scan.", { code: "NOT_AUTHENTICATED" });
+              }
               console.warn(`[analyze] REJECTED — camera context on plan ${ctxCheck.plan}`);
-              throw Object.assign(
-                new Error("AI Context is available with FlipStart Pro."),
+              throw scanError("pro_ai_context",
+                "AI Context is available with FlipStart Pro.",
                 { code: "PRO_REQUIRED" },
               );
             }
@@ -272,7 +334,7 @@ const appRouter_scan = router({
           }
         }
         if (isDraining()) {
-          throw Object.assign(new Error("FlipStart is restarting. Try again in a moment."), {
+          throw scanError("server_restarting", "FlipStart is restarting. Try again in a moment.", {
             code: "SERVER_RESTARTING",
           });
         }
@@ -296,6 +358,52 @@ const appRouter_scan = router({
         // leaves it null, which is what stops a retry committing twice.
         let reservationId: string | null = null;
 
+        /**
+         * Charge (or hold the charge for) a finished result. The ONE place a
+         * scan is consumed, for both AI routes.
+         *
+         * `commit` is null when nothing is to be consumed (a replay, or the
+         * allow-list testing route). A soft-fail result from an app that asked
+         * for it is NOT charged here: the scan stays reserved and the app
+         * confirms (Continue anyway) or releases (Back, Retake) — see
+         * shared/scanFailure.ts. Everything else is charged as before.
+         *
+         * assertLive() is still the last thing before charging, so a scan the
+         * app has stopped waiting for is never charged (Phase 2).
+         */
+        const settleCharge = async (payload: any, tag: string, commit: (() => Promise<boolean>) | null): Promise<any> => {
+          run.assertLive();
+          const soft = scanSoftFail(payload);
+          const holdable = soft && input.chargeOnContinue === true && commit && mayHoldCharge(muid);
+          // "No item": nothing to continue to, so nothing to hold — the scan
+          // goes straight back. (Still counts toward the daily cap.)
+          if (holdable && soft === "no_item") {
+            const rid = reservationId;
+            const back = useV1 && rid ? await refundScan(rid).catch(() => false) : true;
+            if (back) refunded = true;
+            noteUnchargedSoftFail(muid);
+            console.log(`[${tag}] no_item — scan handed straight back${back ? "" : " (refund failed; it expires)"}`);
+            return { ...payload, scanUsed: false };
+          }
+          if (holdable) {
+            const rid = reservationId;
+            holdCharge(muid, attemptId || run.attemptId, {
+              commit: commit!,
+              // The legacy counter reserves nothing: there is nothing to hand back.
+              release: async () => (useV1 && rid ? refundScan(rid) : true),
+            });
+            console.log(`[${tag}] ${soft} — charge HELD until the user chooses Continue anyway`);
+            return { ...payload, chargePending: true };
+          }
+          if (commit) {
+            charged = await commit();
+            console.log(`[${tag}] scan ${charged ? "COMMITTED" : "commit returned false"}${soft ? ` (${soft})` : ""}`);
+          }
+          // The new app says "this scan was used" on a soft fail only when one
+          // was. App 2.1 never asked, and gets the payload exactly as before.
+          return input.chargeOnContinue === true ? { ...payload, scanUsed: charged } : payload;
+        };
+
         if (useV1) {
           /**
            * The attempt id is the idempotency key, and the schema marks it
@@ -306,8 +414,8 @@ const appRouter_scan = router({
            */
           if (!input.scanAttemptId?.trim()) {
             console.warn("[analyze] V1 rejected — no scanAttemptId (outdated client?)");
-            throw Object.assign(
-              new Error("Please update FlipStart to continue scanning."),
+            throw scanError("app_outdated",
+              "Please update FlipStart to continue scanning.",
               { code: "SCAN_ATTEMPT_ID_MISSING" },
             );
           }
@@ -323,8 +431,15 @@ const appRouter_scan = router({
           const r = await reserveScan(muid as string, ledgerKey(muid, attemptId));
           if (!r.ok) {
             console.warn(`[analyze] V1 refused — ${r.reason} (plan ${r.plan ?? "?"})`);
-            throw Object.assign(
-              new Error("You're out of scans. Add more to keep going."),
+            // Only an actual empty balance is "out of scans". A ledger that
+            // couldn't be read or reached used to say the same thing.
+            if (r.reason === "DB_ERROR" || r.reason === "NOT_CONFIGURED") {
+              throw scanError("account_check_failed",
+                "We couldn't check your scan balance right now. You weren't charged.",
+                { code: r.reason });
+            }
+            throw scanError("out_of_scans",
+              "You're out of scans. Add more to keep going.",
               { code: r.reason ?? "NO_SCANS_REMAINING" },
             );
           }
@@ -347,8 +462,8 @@ const appRouter_scan = router({
             const done = completedResult(muid, attemptId);
             if (done) return done;
             console.warn("[analyze] duplicate attempt while original is pending — refusing to re-run AI");
-            throw Object.assign(
-              new Error("This scan is already being processed. One moment."),
+            throw scanError("scan_in_progress",
+              "This scan is already being processed. One moment.",
               { code: "SCAN_IN_PROGRESS" },
             );
           }
@@ -362,8 +477,8 @@ const appRouter_scan = router({
         const allowed = useV1 ? true : checkScanAllowed(sid);
         if (!allowed) {
           const stats = getUserScanStats(sid);
-          throw Object.assign(
-            new Error("Daily scan limit reached. Try again tomorrow."),
+          throw scanError("out_of_scans",
+            "Daily scan limit reached. Try again tomorrow.",
             {
               code:                     "GLOBAL_SCAN_LIMIT_REACHED",
               dailyLimit:               stats.dailyLimit,
@@ -502,36 +617,31 @@ const appRouter_scan = router({
               ` | ctx:${userCtx.confirmed ? `${userCtx.char_count}c/${userCtx.hash}` : "none"}`
             );
 
-            // Only NOW is the scan consumed. Skipped while V1 is allow-list
-            // only, so founder testing does not burn the 7/day quota on
-            // results that are still being validated.
-            // Never charge a scan the app has stopped waiting for. Past this
-            // line the result is delivered or handed over on cancel.
-            run.assertLive();
-            if (useV1) {
-              // Exactly once. A replay left reservationId null, so a retried
-              // attempt cannot consume a second scan.
-              if (reservationId) {
-                charged = await commitScan(reservationId);
-                console.log("[analyzeV1] V1 scan COMMITTED");
-              }
-            } else {
-              const testingOnly = !ENV.canonicalV1Enabled;
-              if (!testingOnly) { commitScanCount(sid, input.scanAttemptId); charged = true; }
-              else console.log("[analyzeV1] allow-list scan — quota NOT consumed");
-            }
-
             // Emit BOTH shapes. The shipped app reads the legacy keys and
             // renders normally with no EAS build; `canonical` rides along for
             // the new screens. The adapter is deleted once the client reads
             // canonical directly.
+            //
+            // Built BEFORE charging: whether the result is a soft fail decides
+            // how it is charged, and an adapter error now refunds instead of
+            // landing after a charge.
             const v1Payload = {
               ...toLegacyShape(canonical),
               canonical,
               schemaVersion: "1" as const,
             };
-            cacheAnalysis(input.scanAttemptId, v1Payload, userCtx.hash);
-            return v1Payload;
+
+            // Only NOW is the scan consumed. Exactly once: a replay left
+            // reservationId null. Skipped while V1 is allow-list only, so
+            // founder testing does not burn the quota on results still being
+            // validated.
+            const commit: (() => Promise<boolean>) | null = useV1
+              ? (reservationId ? () => commitScan(reservationId as string) : null)
+              : (ENV.canonicalV1Enabled ? async () => { commitScanCount(sid, input.scanAttemptId); return true; } : null);
+            if (!useV1 && !ENV.canonicalV1Enabled) console.log("[analyzeV1] allow-list scan — quota NOT consumed");
+            const delivered = await settleCharge(v1Payload, "analyzeV1", commit);
+            cacheAnalysis(input.scanAttemptId, delivered, userCtx.hash);
+            return delivered;
           } catch (err) {
             const kind = err instanceof ScanV1Error ? err.kind : "transport_error";
             const diag = err instanceof ScanV1Error ? err.diagnostics : {};
@@ -548,8 +658,8 @@ const appRouter_scan = router({
             // Fail closed. No scan consumed, nothing saved, nothing unlocked.
             // Deliberately NOT silently downgraded to the legacy route: that
             // would hide a broken V1 behind a working-looking response.
-            throw Object.assign(
-              new Error("Scan could not be completed. Please try again."),
+            throw scanError(aiFailureReason(err),
+              "Scan could not be completed. Please try again.",
               { code: "SCAN_V1_FAILED", kind }
             );
           }
@@ -581,27 +691,19 @@ const appRouter_scan = router({
           // ── COMMIT THE SCAN COUNT — only now that analysis succeeded ────────
           // Idempotent per scanAttemptId: retries of the same item won't double
           // count. A failed AI call above throws before reaching this line, so
-          // failed scans cost nothing.
-          // Legacy AI path. A V1 user still commits through the ledger, so
-          // success is never recorded in two systems.
-          run.assertLive();
-          if (useV1) {
-            if (reservationId) {
-              charged = await commitScan(reservationId);
-              console.log("[analyze] V1 scan COMMITTED (legacy AI path)");
-            }
-          } else {
-            commitScanCount(sid, input.scanAttemptId);
-            charged = true;
-          }
-
+          // failed scans cost nothing. A V1 user commits through the ledger,
+          // so success is never recorded in two systems.
           const payload = {
             imageUrl,
             ...analysisResult,
           };
+          const commit: (() => Promise<boolean>) | null = useV1
+            ? (reservationId ? () => commitScan(reservationId as string) : null)
+            : async () => { commitScanCount(sid, input.scanAttemptId); return true; };
+          const delivered = await settleCharge(payload, "analyze", commit);
           // Store so any retry of THIS attempt is free and instant.
-          cacheAnalysis(input.scanAttemptId, payload, rawCtx.hash);
-          return payload;
+          cacheAnalysis(input.scanAttemptId, delivered, rawCtx.hash);
+          return delivered;
         } catch (err: any) {
           console.error("[analyze] ERROR:", err?.message ?? String(err));
           if (err?.stack) console.error("[analyze] STACK:", err.stack);
@@ -610,6 +712,10 @@ const appRouter_scan = router({
           if (useV1 && reservationId) {
             refunded = await refundScan(reservationId).catch(() => false);
             console.log("[analyze] V1 scan REFUNDED after failure");
+          }
+          // The legacy AI call throws plain errors: say which kind it was.
+          if (err && typeof err === "object" && !("scanReason" in err)) {
+            Object.assign(err, { scanReason: aiFailureReason(err) });
           }
           throw err;
         }
@@ -622,6 +728,10 @@ const appRouter_scan = router({
           // retry that joined it.
           // (Never claimed once a scan was charged: then the real error stands.)
           const out = run.stopReason && !charged ? new ScanStopped(run.stopReason) : err;
+          // Every failure carries a reason, so the app never has to guess.
+          if (out && typeof out === "object" && !("scanReason" in out)) {
+            Object.assign(out, { scanReason: "server_error" satisfies ScanFailReason });
+          }
           run.fail(out, refunded, charged);
           throw out;
         }
@@ -639,6 +749,39 @@ const appRouter_scan = router({
         if (!muid) return { status: "not_running" as const };
         const outcome = await cancelScan(muid, input.scanAttemptId.trim());
         console.log(`[analyze] cancel → ${outcome.status} — attempt ${input.scanAttemptId.slice(0, 16)}`);
+        return outcome;
+      }),
+
+    /**
+     * "Continue anyway" on a soft-fail screen: the held scan is used now
+     * (shared/scanFailure.ts). Only the owner's own held charge, exactly once.
+     * "not_held" means there was nothing to charge — already settled, or the
+     * hold expired and the scan went back to the user.
+     */
+    confirmCharge: publicProcedure
+      .input(z.object({ scanAttemptId: z.string().min(1).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const muid = await resolveSupabaseUserId(ctx?.req as never, "confirm-charge");
+        if (!muid) return { status: "not_held" as const };
+        const outcome = await confirmHeldCharge(muid, input.scanAttemptId.trim());
+        console.log(`[analyze] continue anyway → ${outcome.status} — attempt ${input.scanAttemptId.slice(0, 16)}`);
+        return outcome;
+      }),
+
+    /**
+     * Back or Retake on a soft-fail screen: the held scan is handed back, and
+     * the turned-down result is forgotten so nothing serves it again.
+     */
+    releaseCharge: publicProcedure
+      .input(z.object({ scanAttemptId: z.string().min(1).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const muid = await resolveSupabaseUserId(ctx?.req as never, "release-charge");
+        if (!muid) return { status: "not_held" as const };
+        const id = input.scanAttemptId.trim();
+        const outcome = await releaseHeldCharge(muid, id);
+        // Forgotten whenever a hold was taken, refunded or not: the user turned it down.
+        if (outcome.status !== "not_held") forgetCachedAnalysis(id);
+        console.log(`[analyze] soft fail declined → ${outcome.status} — attempt ${id.slice(0, 16)}`);
         return outcome;
       }),
 

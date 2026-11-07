@@ -5,6 +5,18 @@ import type { TrpcContext } from "./context";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
+  /**
+   * A scan failure carries a reason code (shared/scanFailure.ts) so the app
+   * can pick the right screen without guessing from the message. Without
+   * this, only the message text reached the client. Additive: app 2.1 reads
+   * the message, which is unchanged.
+   */
+  errorFormatter({ shape, error }) {
+    const reason = (error.cause as { scanReason?: unknown } | undefined)?.scanReason;
+    return typeof reason === "string" && /^[a-z_]{1,40}$/.test(reason)
+      ? { ...shape, data: { ...shape.data, scanReason: reason } }
+      : shape;
+  },
 });
 
 export const router = t.router;

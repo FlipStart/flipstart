@@ -21,10 +21,13 @@
  * the scan that is already running or finished, or runs it once. A retry can
  * never charge a second scan.
  *
- * Error text is matched because the server sends no reason codes yet; Phase 4
- * replaces this with codes. The phrases are the server's own messages.
+ * ── Which screen (Phase 4) ──────────────────────────────────────────────────
+ * The server attaches a reason code to every failure (shared/scanFailure.ts),
+ * read here first. The message text is matched only as a fallback, for a
+ * server that predates the codes. Server text is never shown on screen: the
+ * screen's copy comes from the screen and cause chosen here.
  */
-import type { FailType } from "@/components/scan/FailStateScreen";
+import { isScanFailReason, type ScanFailReason, type SoftFail } from "@shared/scanFailure";
 
 /** The whole scan, retries included. */
 export const SCAN_BUDGET_MS = 45_000;
@@ -56,59 +59,168 @@ export type ScanErrorKind =
   /** The server stopped the scan at its deadline and refunded it. No time is left to retry. */
   | "server_timeout";
 
+/**
+ * Every fail screen. The five soft fails come from a RESULT (scanSoftFail);
+ * the rest from an error. Out of scans and Pro feature open the paywall over
+ * their screen.
+ */
+export type FailScreen =
+  | SoftFail
+  | "timeout"
+  | "offline"
+  | "server"            // one screen for every problem on our side; `cause` picks the words
+  | "sign_in"
+  | "out_of_scans"
+  | "pro_feature"
+  | "app_outdated"
+  | "photo_load_failed";
+
+/** What went wrong on our side, for the merged "server" screen. */
+export type ServerCause =
+  | "server_down"       // our server can't be reached, or Railway's edge answered for it
+  | "restarting"        // a deploy is in progress
+  | "ai_busy"           // the AI provider is overloaded or unreachable
+  | "ai_failed"         // the AI answered without a usable analysis
+  | "account_check"     // the account or scan balance couldn't be read
+  | "unknown";
+
+/** The paywall a refusal opens. */
+export type FailPaywall = "scan_limit" | "third_photo" | "camera_context";
+
 export interface ClassifiedScanError {
   kind: ScanErrorKind;
-  failType: FailType;
-  /** Text for the fail screen, or "" to use the screen's own copy. */
-  message: string;
+  screen: FailScreen;
+  cause?: ServerCause;
+  paywall?: FailPaywall;
 }
 
-/** The server's text when it isn't JSON, an internal marker or too long; otherwise "". */
-export function safeMessage(raw: string): string {
-  return raw.length > 0 && raw.length < 120 && !raw.startsWith("{") && !raw.startsWith("__") ? raw : "";
+/** Extra facts about a failed request, when the client has them. */
+export interface ScanErrorMeta {
+  /** tRPC `error.data.scanReason`. */
+  reason?: unknown;
+  /** HTTP status of the response, when one arrived. */
+  httpStatus?: number | null;
 }
 
 const has = (s: string, ...needles: string[]) => needles.some(n => s.includes(n));
 
-export function classifyScanError(raw: string): ClassifiedScanError {
+/** A server reason code → screen. Every code the server can send has an entry. */
+const BY_REASON: Record<ScanFailReason, ClassifiedScanError> = {
+  sign_in:              { kind: "refusal",        screen: "sign_in" },
+  out_of_scans:         { kind: "refusal",        screen: "out_of_scans", paywall: "scan_limit" },
+  pro_third_photo:      { kind: "refusal",        screen: "pro_feature",  paywall: "third_photo" },
+  pro_ai_context:       { kind: "refusal",        screen: "pro_feature",  paywall: "camera_context" },
+  app_outdated:         { kind: "refusal",        screen: "app_outdated" },
+  account_check_failed: { kind: "transient",      screen: "server", cause: "account_check" },
+  server_restarting:    { kind: "transient",      screen: "server", cause: "restarting" },
+  scan_in_progress:     { kind: "transient",      screen: "server", cause: "unknown" },
+  ai_busy:              { kind: "transient",      screen: "server", cause: "ai_busy" },
+  ai_failed:            { kind: "transient",      screen: "server", cause: "ai_failed" },
+  server_error:         { kind: "transient",      screen: "server", cause: "unknown" },
+  timeout:              { kind: "server_timeout", screen: "timeout" },
+  // A retry stopped waiting for a scan still running. Not "server_timeout":
+  // nothing was stopped, so cancel must decide what was charged.
+  join_timeout:         { kind: "transient",      screen: "timeout" },
+  cancelled:            { kind: "server_timeout", screen: "timeout" },
+};
+
+/**
+ * Which screen a failed request ends on, and whether it is worth another try.
+ * The reason code wins; the HTTP status and the message are fallbacks.
+ */
+export function classifyScanError(raw: string, meta: ScanErrorMeta = {}): ClassifiedScanError {
+  if (isScanFailReason(meta.reason)) return { ...BY_REASON[meta.reason] };
+
   const text = String(raw ?? "");
   const s = text.toLowerCase();
 
-  if (text === ATTEMPT_TIMEOUT) return { kind: "transient", failType: "timeout", message: "" };
+  if (text === ATTEMPT_TIMEOUT) return { kind: "transient", screen: "timeout" };
 
-  // The server's deadline (server/scanRuntime.ts): stopped and refunded.
+  // Railway's edge answering for a server that is down or crashed: a 502 /
+  // 503 / 504, or an HTML page where JSON was expected.
+  const status = typeof meta.httpStatus === "number" ? meta.httpStatus : 0;
+  if (status === 502 || status === 503 || status === 504
+      || has(s, "unexpected token '<'", "unexpected token <", "json parse error", "<html", "<!doctype",
+             "application failed to respond", "bad gateway", "service unavailable", "gateway time")) {
+    return { kind: "transient", screen: "server", cause: "server_down" };
+  }
+
+  // ── A server without reason codes: its exact messages ─────────────────────
   if (s.includes("you weren't charged") && has(s, "timed out", "cancelled")) {
-    return { kind: "server_timeout", failType: "timeout", message: "" };
+    return { kind: "server_timeout", screen: "timeout" };
   }
-
-  // ── Refusals ──────────────────────────────────────────────────────────────
-  if (s.includes("scanner_id_missing")) {
-    return {
-      kind: "refusal", failType: "server",
-      message: "FlipStart couldn't verify your scan balance. Please make sure you're signed in and running the latest version, then try again.",
-    };
+  if (s.includes("scanner_id_missing") || s.includes("please update flipstart")) {
+    return { kind: "refusal", screen: "app_outdated" };
   }
-  if (has(s, "global_scan_limit_reached", "scan limit")) {
-    return { kind: "refusal", failType: "scan_limit", message: "" };
+  if (has(s, "global_scan_limit_reached", "scan limit", "out of scans")) {
+    return { kind: "refusal", screen: "out_of_scans", paywall: "scan_limit" };
   }
-  if (has(s, "please sign in", "out of scans", "available with flipstart pro", "please update flipstart")) {
-    return { kind: "refusal", failType: "server", message: safeMessage(text) };
+  if (s.includes("please sign in")) return { kind: "refusal", screen: "sign_in" };
+  if (s.includes("available with flipstart pro")) {
+    return s.includes("ai context")
+      ? { kind: "refusal", screen: "pro_feature", paywall: "camera_context" }
+      : { kind: "refusal", screen: "pro_feature", paywall: "third_photo" };
   }
   if (has(s, "unsupported image", "image format", "heic", "image data is required")) {
-    return { kind: "bad_input", failType: "bad_input", message: safeMessage(text) };
+    return { kind: "bad_input", screen: "photo_load_failed" };
   }
 
   // ── Transient ─────────────────────────────────────────────────────────────
   if (has(s, "network request failed", "network error", "failed to fetch",
-               "connection refused", "no internet", "offline")) {
-    return { kind: "transient", failType: "offline", message: safeMessage(text) };
+               "connection refused", "no internet", "offline", "internet connection appears to be offline")) {
+    // Offline, or our server unreachable: checkConnection() tells which when
+    // the scan gives up.
+    return { kind: "transient", screen: "offline" };
   }
-  if (has(s, "timed out", "timeout")) {
-    return { kind: "transient", failType: "timeout", message: "" };
+  if (has(s, "timed out", "timeout")) return { kind: "transient", screen: "timeout" };
+  if (s.includes("restarting")) return { kind: "transient", screen: "server", cause: "restarting" };
+  if (s.includes("couldn't check your")) return { kind: "transient", screen: "server", cause: "account_check" };
+  return { kind: "transient", screen: "server", cause: "unknown" };
+}
+
+/**
+ * The scan_failed `errorType` the dashboard already groups by. New screens map
+ * onto the old names so October's numbers stay comparable; the precise screen
+ * travels alongside as `reason`.
+ */
+export function legacyErrorType(screen: FailScreen): "server" | "offline" | "timeout" | "low_confidence" | "bad_input" | "scan_limit" {
+  switch (screen) {
+    case "low_confidence": return "low_confidence";
+    case "cannot_identify": case "multiple_items": case "photo_problem": case "no_item": case "photo_load_failed":
+      return "bad_input";
+    case "timeout": return "timeout";
+    case "offline": return "offline";
+    case "out_of_scans": return "scan_limit";
+    default: return "server";
   }
-  // Server errors, "already being processed", "restarting", and anything
-  // unknown: worth another try while time is left.
-  return { kind: "transient", failType: "server", message: safeMessage(text) };
+}
+
+/** Where to ask "is the internet up?" when a request never reached us. */
+export const CONNECTIVITY_PROBE_URL = "https://captive.apple.com/hotspot-detect.html";
+export const CONNECTIVITY_PROBE_MS = 3_000;
+
+/**
+ * A request that never reached the server means either the phone is offline
+ * or our server is down. Ask a well-known site: if it answers, the internet
+ * is fine and the problem is ours. If the check itself can't tell (it timed
+ * out or threw), say offline — the honest, more likely answer in a thrift
+ * store.
+ */
+export async function checkConnection(
+  fetcher: (url: string, init: { signal: AbortSignal; method: string; cache?: string }) => Promise<{ ok: boolean; status: number }> =
+    (url, init) => fetch(url, init as RequestInit),
+  timeoutMs = CONNECTIVITY_PROBE_MS,
+): Promise<"online" | "offline"> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetcher(CONNECTIVITY_PROBE_URL, { signal: ctrl.signal, method: "GET", cache: "no-store" });
+    return res.status > 0 && res.status < 500 ? "online" : "offline";
+  } catch {
+    return "offline";
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** How long to wait for one try. The first gets ATTEMPT_PATIENCE_MS; later ones get whatever is left. */
@@ -131,11 +243,4 @@ export function planRetry(opts: { attemptsMade: number; remainingMs: number; kin
 /** The deadline sent to the server with each try: what's left of the 45 s, in whole ms. */
 export function deadlineForServer(remainingMs: number): number {
   return Math.max(1, Math.round(remainingMs));
-}
-
-/** Copy for the "took too long" screen. Says "you weren't charged" only when the server confirmed it. */
-export function tookTooLongMessage(cancelConfirmed: boolean): string {
-  return cancelConfirmed
-    ? "This scan took longer than 45 seconds, so FlipStart stopped it. You weren't charged."
-    : "This scan took longer than 45 seconds, so FlipStart stopped it.";
 }

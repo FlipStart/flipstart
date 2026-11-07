@@ -50,8 +50,9 @@ export class ScanStopped extends Error {
       : "Scan cancelled. You weren't charged.");
     this.name = "ScanStopped";
   }
-  /** Read by the client today through the message; Phase 4 adds real codes. */
   get code(): string { return this.reason === "timeout" ? "SCAN_TIMEOUT" : "SCAN_CANCELLED"; }
+  /** The reason code the app routes on (shared/scanFailure.ts). */
+  get scanReason(): "timeout" | "cancelled" { return this.reason; }
 }
 
 /**
@@ -65,6 +66,8 @@ export class JoinTimeout extends Error {
     this.name = "JoinTimeout";
   }
   get code(): string { return "SCAN_JOIN_TIMEOUT"; }
+  /** Not "timeout": that one promises the scan was stopped and refunded, and this stopped nothing. */
+  get scanReason(): "join_timeout" { return "join_timeout"; }
 }
 
 /**
@@ -299,10 +302,142 @@ export async function cancelScan(owner: string, attemptId: string, waitMs = 4_00
   return mine.every(r => r.settled && !r.chargedThenFailed) ? { status: "cancelled" } : { status: "stopping" };
 }
 
+// ── Held charges ────────────────────────────────────────────────────────────
+//
+// A soft-fail result (couldn't identify, low confidence, several items, photo
+// problem — shared/scanFailure.ts) is charged only if the user taps "Continue
+// anyway". Until then the scan stays RESERVED and this map holds what to do
+// either way. Exactly once: the entry is removed before anything is awaited,
+// so a double tap, or Continue racing Back, can only act once.
+//
+// Memory only, like everything here. Lost on restart, the reservation simply
+// expires and the scan returns to the user — the failure mode is "free", never
+// "charged twice".
+
+/** Kept a little under the ledger's 600 s reservation TTL. */
+const HELD_CHARGE_TTL_MS = 9 * 60_000;
+
+/**
+ * Uncharged soft fails allowed per user per day.
+ *
+ * The result is on the phone before the charge is decided, so a modified
+ * client could read it and never pay — by declining, or just by never
+ * answering and letting the hold expire. So every hold counts from the moment
+ * it is CREATED, and only a confirmed Continue takes it back off. Past the cap
+ * a soft fail is charged straight away (and the app says "This scan was
+ * used"). 25 a day is well beyond an honest reseller's run of blurry or
+ * cluttered shots in one thrift trip.
+ */
+export const MAX_UNCHARGED_SOFT_FAILS_PER_DAY = 25;
+const DAY_MS = 24 * 60 * 60_000;
+const unchargedByOwner = new Map<string, number[]>();
+
+function recentUncharged(owner: string): number[] {
+  const cutoff = Date.now() - DAY_MS;
+  const list = (unchargedByOwner.get(owner) ?? []).filter(t => t > cutoff);
+  if (list.length) unchargedByOwner.set(owner, list); else unchargedByOwner.delete(owner);
+  return list;
+}
+
+/** Whether this user may still get a soft fail without being charged for it. */
+export function mayHoldCharge(owner: string): boolean {
+  return recentUncharged(owner).length < MAX_UNCHARGED_SOFT_FAILS_PER_DAY;
+}
+
+/** Count one uncharged soft fail (a hold just created, or a "no item" handed straight back). */
+export function noteUnchargedSoftFail(owner: string): void {
+  const list = recentUncharged(owner);
+  list.push(Date.now());
+  unchargedByOwner.set(owner, list);
+}
+
+function unnoteUnchargedSoftFail(owner: string): void {
+  const list = recentUncharged(owner);
+  list.pop();
+  if (list.length) unchargedByOwner.set(owner, list); else unchargedByOwner.delete(owner);
+}
+
+interface HeldCharge {
+  at: number;
+  commit: () => Promise<boolean>;
+  release: () => Promise<boolean>;
+}
+const held = new Map<string, HeldCharge>();
+
+/** Hold this attempt's charge until the user decides. Replaces an earlier hold. */
+export function holdCharge(owner: string, attemptId: string, h: { commit: () => Promise<boolean>; release: () => Promise<boolean> }): void {
+  const k = attemptKey(owner, attemptId);
+  if (!liveHeld(k)) noteUnchargedSoftFail(owner);
+  remember(held, k, { at: Date.now(), ...h });
+}
+
+function liveHeld(k: string): HeldCharge | null {
+  const h = held.get(k);
+  if (!h) return null;
+  if (Date.now() - h.at > HELD_CHARGE_TTL_MS) { held.delete(k); return null; }
+  return h;
+}
+
+function takeHeld(owner: string, attemptId: string): HeldCharge | null {
+  const k = attemptKey(owner, attemptId);
+  const h = liveHeld(k);
+  held.delete(k);
+  return h;
+}
+
+export type HeldChargeOutcome =
+  /** Continue: the scan was used. */
+  | { status: "charged" }
+  /** Back / Retake: the scan was handed back. */
+  | { status: "released" }
+  /** Nothing held — already settled, expired (the scan returned on its own), or never held. */
+  | { status: "not_held" }
+  /** The ledger call failed. Nothing changed; the reservation expires on its own. */
+  | { status: "failed" };
+
+export async function confirmHeldCharge(owner: string, attemptId: string): Promise<HeldChargeOutcome> {
+  const h = takeHeld(owner, attemptId);
+  if (!h) return { status: "not_held" };
+  try {
+    // false = the ledger call didn't commit (a database error, or the
+    // reservation already expired). Either way nothing was charged.
+    if (await h.commit()) {
+      unnoteUnchargedSoftFail(owner);   // paid for: it no longer counts toward the cap
+      return { status: "charged" };
+    }
+    return { status: "failed" };
+  } catch {
+    return { status: "failed" };
+  }
+}
+
+export async function releaseHeldCharge(owner: string, attemptId: string): Promise<HeldChargeOutcome> {
+  const h = takeHeld(owner, attemptId);
+  if (!h) return { status: "not_held" };
+  let ok = false;
+  try { ok = await h.release(); } catch { ok = false; }
+  // The user turned this result down, whether or not the refund call went
+  // through (if it didn't, the reservation expires and the scan returns):
+  // a late retry or cancel must not hand the result back, and a new try
+  // reserves under a fresh key rather than replaying this one.
+  const k = attemptKey(owner, attemptId);
+  completed.delete(k);
+  remember(refunds, k, { at: Date.now(), count: (fresh(refunds, k)?.count ?? 0) + 1 });
+  // Already counted toward the cap when the hold was created.
+  return ok ? { status: "released" } : { status: "failed" };
+}
+
+/** Whether a charge is being held for this attempt. */
+export function isChargeHeld(owner: string, attemptId: string): boolean {
+  return liveHeld(attemptKey(owner, attemptId)) !== null;
+}
+
 /** Tests only. */
 export function __resetScanRuntimeForTests(): void {
   for (const r of runs.values()) r.stop("cancelled");
   runs.clear();
   completed.clear();
   refunds.clear();
+  held.clear();
+  unchargedByOwner.clear();
 }

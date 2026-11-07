@@ -3,7 +3,12 @@
  *
  * Background image: green ribbon banner, clock face, treasure chest.
  * Overlays: banner text, pulsing gold dot, rotating status message,
- *           estimated confidence bar, cancel button.
+ *           progress bar, cancel button.
+ *
+ * When a scan can't end on a normal result it ends on FailStateScreen, chosen
+ * by reason (Phase 4/5 of the scan-failure plan): the server's reason code for
+ * an error, scanSoftFail() for a result FlipStart can't stand behind. A soft
+ * fail is charged only if the user taps "Continue anyway".
  *
  * No fake countdown. No fake eBay/Depop claims.
  * Navigation fires IMMEDIATELY when the API responds.
@@ -14,7 +19,7 @@ import {
 } from "react";
 import {
   Text, View, StyleSheet, Platform, Pressable,
-  ImageBackground, useWindowDimensions,
+  ImageBackground, useWindowDimensions, Linking,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import Animated, {
@@ -34,16 +39,40 @@ import { ScanResult } from "@/lib/types";
 import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
 import { useAudioPlayer } from "expo-audio";
-import { FailStateScreen, type FailType } from "@/components/scan/FailStateScreen";
+import { FailStateScreen, type FailAction, type ChargeState } from "@/components/scan/FailStateScreen";
+import { useProPaywall, ProPaywallHost } from "@/components/monetization/paywall/ProPaywallProvider";
+import { scanSoftFail, softFailCanContinue } from "@shared/scanFailure";
+import { APP_STORE_PRODUCT_URL } from "@/lib/reviewPrompt";
 import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
 import { isHuntActive } from "@/lib/hunt-context";
 import { useAuth } from "@/lib/auth-context";
+import { useEntitlement } from "@/lib/useEntitlement";
 import {
   SCAN_BUDGET_MS, MIN_ATTEMPT_MS, MAX_ATTEMPTS, CANCEL_WAIT_MS,
   ATTEMPT_TIMEOUT, SCAN_DEADLINE,
-  classifyScanError, attemptTimeoutMs, planRetry, deadlineForServer, tookTooLongMessage,
-  type ClassifiedScanError,
+  classifyScanError, attemptTimeoutMs, planRetry, deadlineForServer, checkConnection, legacyErrorType,
+  type ClassifiedScanError, type FailScreen, type ServerCause, type FailPaywall,
 } from "@/lib/scanAttempt";
+
+/** Everything the fail screen needs. */
+interface FailState {
+  screen:         FailScreen;
+  cause?:         ServerCause;
+  paywall?:       FailPaywall;
+  charge:         ChargeState;
+  /** What the AI could tell, for the result-based screens. */
+  seen?:          string | null;
+  photoProblems?: string[];
+}
+
+/** A soft-fail result kept until the user chooses: shown on Continue, dropped on Back / Retake. */
+interface HeldResult {
+  scanResult: ScanResult;
+  chargePending: boolean;
+}
+
+/** How long Continue anyway waits for the server to confirm the charge before showing the result anyway. */
+const CONFIRM_WAIT_MS = 5_000;
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
@@ -105,11 +134,17 @@ export default function LoadingScreen() {
   const [finalizing,   setFinalizing]   = useState(false);
   const [scanKey,  setScanKey]   = useState(0);   // increment to re-trigger doScan (manual retry)
   const [retryCount, setRetryCount] = useState(0); // automatic retries made in the last scan
-  const [failState, setFailState] = useState<{
-    type:        FailType;
-    message:     string;
-    confidence?: number;
-  } | null>(null);
+  const [failState, setFailState] = useState<FailState | null>(null);
+  const [failBusy, setFailBusy]   = useState<FailAction | null>(null);
+  const [autoPaywall, setAutoPaywall] = useState<FailPaywall | null>(null);
+  const actionLockRef             = useRef(false);
+  const heldResultRef             = useRef<HeldResult | null>(null);
+  const { openProPaywall }        = useProPaywall();
+  const entitlement               = useEntitlement();
+  /** Whose scans ran out, for the out-of-scans screen. Null until the plan is known. */
+  const planKind: "free" | "pro" | null = entitlement.status === "ready" ? (entitlement.isPro ? "pro" : "free") : null;
+  const planKindRef               = useRef(planKind);
+  planKindRef.current             = planKind;
 
   const { user }        = useAuth();
   const hasNavigated    = useRef(false);
@@ -164,6 +199,71 @@ export default function LoadingScreen() {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }, [trpcUtils, scanAttemptId]);
+
+  /**
+   * Run the scan again from the start with a fresh 45 s clock and the same
+   * photos. Used after the paywall unlocks Pro on an out-of-scans or Pro-
+   * feature screen. Same scanAttemptId: those refusals happened before
+   * anything was reserved, so nothing can be charged twice.
+   */
+  const restartScan = useCallback(() => {
+    console.log("[loading] restarting the scan with a fresh clock");
+    if (timeoutIdRef.current !== null) {
+      clearTimeout(timeoutIdRef.current);
+      timeoutIdRef.current = null;
+    }
+    hasStartedRef.current = false;
+    hasNavigated.current  = false;
+    soundStarted.current  = false;
+    lastHapticAt.current  = 0;
+    heldResultRef.current = null;
+    actionLockRef.current = false;
+    setAutoPaywall(null);
+    setRetryCount(0);
+    setFailBusy(null);
+    setFailState(null);
+    setConfidence(0);
+    setFinalizing(false);
+    setScanKey(k => k + 1);
+  }, []);
+
+  /** Out of scans / a Pro feature in this scan: the matching paywall, over the fail screen. */
+  const openPaywallForScan = useCallback((source: FailPaywall) => {
+    openProPaywall(source, { onUnlocked: restartScan });
+  }, [openProPaywall, restartScan]);
+
+  /**
+   * Opened from an effect, not in the same tick as the fail state: the
+   * screen-level <ProPaywallHost/> claims itself in its own effect, which
+   * runs first (children before parents). Opened earlier, the root host would
+   * render the modal underneath this fullScreenModal for a frame.
+   */
+  useEffect(() => {
+    if (!autoPaywall || !failState) return;
+    openPaywallForScan(autoPaywall);
+    setAutoPaywall(null);
+  }, [autoPaywall, failState, openPaywallForScan]);
+
+  /**
+   * Hand a held soft-fail scan back. Retried when the request doesn't get
+   * through, because it usually runs right as the user leaves — often in a
+   * thrift-store dead zone — and a release that never lands blocks that scan
+   * until the reservation expires (10 min). A release the server received
+   * but couldn't complete isn't retried: the hold is gone by then, and the
+   * reservation expires back to the user on its own.
+   * Fire-and-forget: leaving never waits for it.
+   */
+  const releaseOnServer = useCallback(() => {
+    void (async () => {
+      for (const delay of [0, 2_000, 5_000]) {
+        if (delay) await new Promise(res => setTimeout(res, delay));
+        try {
+          const r = await trpcUtils.client.scan.releaseCharge.mutate({ scanAttemptId });
+          if (r?.status !== "failed") return;
+        } catch { /* try again */ }
+      }
+    })();
   }, [trpcUtils, scanAttemptId]);
 
   // ── Rotating messages (every 3s) ─────────────────────────────────────────
@@ -294,7 +394,7 @@ export default function LoadingScreen() {
       const pending = lastPendingScan.current ?? consumePendingScan();
       if (!pending?.front?.base64) {
         console.error("[loading] no pending scan data — aborting");
-        setFailState({ type: "bad_input", message: "We couldn't load the selected image. Please go back and try again." });
+        setFailState({ screen: "photo_load_failed", charge: "not_used" });
         return;
       }
       lastPendingScan.current = pending;
@@ -335,9 +435,11 @@ export default function LoadingScreen() {
          * Fire-and-forget: the counter must never delay or fail navigation.
          * Nothing is shown here; eligibility is consumed later from Home.
          */
-        void import("@/lib/reviewPrompt")
-          .then(m => m.recordCompletedScan())
-          .catch(() => {});
+        const recordForReview = () => {
+          void import("@/lib/reviewPrompt")
+            .then(m => m.recordCompletedScan())
+            .catch(() => {});
+        };
 
         const scanId = `scan_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
@@ -402,40 +504,49 @@ export default function LoadingScreen() {
           // listings intentionally omitted — undefined until user generates them
         };
 
-        // Low-confidence detection
+        // ── A result FlipStart can't stand behind ─────────────────────────
+        // Decided by the server's own scan issue and confidence tier (the
+        // same scanSoftFail() the server uses to hold the charge), not by
+        // the 35 / 55 score. Nothing is saved until the user taps Continue
+        // anyway; Back or Retake drop it, and the held scan goes back.
         const matchConf = safeRiskAnalysis.match_confidence ?? 0;
         console.log("[loading] match_confidence:", matchConf);
-
-        if (matchConf > 0 && matchConf < 35) {
-          console.log("[loading] bad_input: confidence too low to use:", matchConf);
-          addScan(scanResult);
+        const soft = scanSoftFail(result);
+        if (soft) {
+          const v1 = (result?.identification?.v1 ?? {}) as {
+            confidenceTierReason?: unknown; photoProblems?: unknown;
+          };
+          const chargePending = result?.chargePending === true;
+          heldResultRef.current = { scanResult, chargePending };
+          console.log(`[loading] soft fail: ${soft} — charge ${chargePending ? "held" : "already taken"}`);
           try { player.pause(); } catch { /* ignore */ }
           try {
-            logEvent("scan_failed", { errorType: "bad_input", confidence: matchConf });
+            logEvent("scan_failed", {
+              errorType: legacyErrorType(soft), reason: soft, confidence: matchConf,
+              chargeHeld: chargePending,
+            });
             incrementSessionCount("failedScanCount");
           } catch { /* never block */ }
-          setFailState({ type: "bad_input", message: "", confidence: matchConf });
-          if (Platform.OS !== "web") {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-          }
-          return;
-        }
-
-        if (matchConf > 0 && matchConf < 55) {
-          console.log("[loading] low_confidence: showing warning screen:", matchConf);
-          addScan(scanResult);
-          try { player.pause(); } catch { /* ignore */ }
-          try {
-            logEvent("scan_failed", { errorType: "low_confidence", confidence: matchConf });
-            incrementSessionCount("failedScanCount");
-          } catch { /* never block */ }
-          setFailState({ type: "low_confidence", message: "", confidence: matchConf });
+          setFailState({
+            screen: soft,
+            // scanUsed comes from a server that holds charges; a server that
+            // doesn't send it charged the scan, as before.
+            charge: chargePending && softFailCanContinue(soft) ? "pending"
+              : result?.scanUsed === false ? "not_used"
+              : result?.scanUsed === true ? "used"
+              // A server that predates scanUsed charged every result, except
+              // "no item" which there was nothing to charge for.
+              : softFailCanContinue(soft) ? "used" : "not_used",
+            seen: typeof v1.confidenceTierReason === "string" ? v1.confidenceTierReason : null,
+            photoProblems: Array.isArray(v1.photoProblems) ? v1.photoProblems.map(String) : [],
+          });
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
           }
           return;
         }
 
+        recordForReview();
         addScan(scanResult);
 
         if (Platform.OS !== "web") {
@@ -545,6 +656,8 @@ export default function LoadingScreen() {
                 // every try sends the identical value.
                 userContext,
                 deadlineMs:         deadlineForServer(left),
+                // Hold the charge on a soft fail until the user chooses.
+                chargeOnContinue:   true,
               }, { signal: tryAbort.signal }),
               deadline,
               new Promise<never>((_, reject) => {
@@ -561,7 +674,11 @@ export default function LoadingScreen() {
             if (!live()) return;
             lastRaw = String(err?.message ?? "");
             if (lastRaw === SCAN_DEADLINE) break;
-            last = classifyScanError(lastRaw);
+            // The server's reason code first; status and wording as fallbacks.
+            last = classifyScanError(lastRaw, {
+              reason:     err?.data?.scanReason,
+              httpStatus: err?.data?.httpStatus ?? err?.meta?.response?.status ?? null,
+            });
             if (last.kind === "server_timeout") break;
 
             // Retry only a request that failed or got no answer, and only
@@ -569,11 +686,12 @@ export default function LoadingScreen() {
             const plan = planRetry({ attemptsMade: attempts, remainingMs: remaining(), kind: last.kind });
             if (!plan.retry) break;
 
-            console.log(`[loading] auto-retry ${attempts}/${MAX_ATTEMPTS - 1} in ${plan.delayMs}ms — type: ${last.failType}`);
+            console.log(`[loading] auto-retry ${attempts}/${MAX_ATTEMPTS - 1} in ${plan.delayMs}ms — ${last.screen}${last.cause ? `/${last.cause}` : ""}`);
             try {
               logEvent("scan_auto_retry", {
                 attempt:     attempts,
-                failType:    last.failType,
+                failType:    legacyErrorType(last.screen),
+                reason:      last.cause ?? last.screen,
                 delayMs:     plan.delayMs,
                 errorRaw:    lastRaw.slice(0, 80),
               });
@@ -601,10 +719,10 @@ export default function LoadingScreen() {
 
       // ── Giving up ─────────────────────────────────────────────────────────
       try { player.pause(); } catch { /* ignore */ }
-      const failType: FailType = last?.failType ?? "timeout";
+      const lastScreen: FailScreen = last?.screen ?? "timeout";
       const outOfTime = lastRaw === SCAN_DEADLINE
         || last?.kind === "server_timeout"
-        || (failType === "timeout" && remaining() < MIN_ATTEMPT_MS);
+        || (lastScreen === "timeout" && remaining() < MIN_ATTEMPT_MS);
 
       // Anything but a refusal or an unusable photo may have left work on the
       // server. Ask it to stop: a running scan is refunded; a finished one is
@@ -624,17 +742,30 @@ export default function LoadingScreen() {
       }
       scanActiveRef.current = false;
 
-      const shownType: FailType = outOfTime ? "timeout" : failType;
-      const message = outOfTime ? tookTooLongMessage(noCharge) : (last?.message ?? "");
+      let screen: FailScreen = outOfTime ? "timeout" : lastScreen;
+      let cause: ServerCause | undefined = outOfTime ? undefined : last?.cause;
+      // The request never reached us: is the phone offline, or is our server
+      // down? Ask a well-known site — if it answers, the problem is ours.
+      if (screen === "offline") {
+        const net = await checkConnection();
+        if (!live()) return;
+        if (net === "online") { screen = "server"; cause = "server_down"; }
+      }
+      // "No scan used" only when it's certain: a refusal (nothing was ever
+      // reserved), the server's own stop, or cancel confirming that nothing
+      // ran or that it stopped it. Otherwise the screen makes no claim.
+      const charge: ChargeState =
+        last?.kind === "refusal" || noCharge || cancelStatus === "not_running" ? "not_used" : "unknown";
       const durationMs = Date.now() - scanStartTime.current;
-      console.error(`[loading] giving up after ${attempts} tr${attempts === 1 ? "y" : "ies"} — type: ${shownType} cancel: ${cancelStatus} raw: ${lastRaw.substring(0, 80)}`);
+      console.error(`[loading] giving up after ${attempts} tr${attempts === 1 ? "y" : "ies"} — ${screen}${cause ? `/${cause}` : ""} cancel: ${cancelStatus} raw: ${lastRaw.substring(0, 80)}`);
 
-      // A scan limit is a paywall moment, and a missing scanner id a build
+      // Out of scans is a paywall moment, and an outdated app a build
       // problem; neither was ever counted as a failed scan.
-      if (shownType !== "scan_limit" && !lastRaw.includes("SCANNER_ID_MISSING")) {
+      if (screen !== "out_of_scans" && screen !== "app_outdated") {
         try {
           logEvent("scan_failed", {
-            errorType:     shownType,
+            errorType:     legacyErrorType(screen),
+            reason:        cause ?? screen,
             autoRetries:   attempts - 1,
             durationMs,
             errorRaw:      lastRaw.slice(0, 80),
@@ -644,7 +775,16 @@ export default function LoadingScreen() {
       }
 
       setRetryCount(attempts - 1);
-      setFailState({ type: shownType, message });
+      setFailState({ screen, cause, paywall: last?.paywall, charge });
+      // Out of scans / a Pro feature: straight to the paywall, over this
+      // screen — opened by the effect below once the screen (and its paywall
+      // host) has mounted. Closing it leaves the user here, with Back and
+      // See plans. Out of scans opens it only for a known Free user: a
+      // subscriber gets the Scan Store from the screen, and while the plan
+      // is still loading nobody is offered an upgrade they may already have.
+      if (last?.paywall && (screen === "pro_feature" || (screen === "out_of_scans" && planKindRef.current === "free"))) {
+        setAutoPaywall(last.paywall);
+      }
 
       if (Platform.OS !== "web") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -682,7 +822,12 @@ export default function LoadingScreen() {
       scanActiveRef.current = false;
       scanRunRef.current += 1;
       abandonTry();
-      void stopOnServer();
+      // A soft fail held while the user was leaving is handed back. Sent
+      // whatever cancel answered — including no answer in time — because a
+      // release with nothing held is a harmless no-op.
+      void stopOnServer().then(r => {
+        if (r?.status !== "cancelled" && r?.status !== "not_running") releaseOnServer();
+      });
     }
     router.back();
   };
@@ -694,70 +839,93 @@ export default function LoadingScreen() {
 
   const confidencePct = Math.round(confidence);
 
-  // ── Error state ───────────────────────────────────────────────────────────
+  // ── Fail state ────────────────────────────────────────────────────────────
   if (failState) {
-    const handleRetry = () => {
-      console.log("[loading] manual retry pressed — resetting state machine");
-      if (timeoutIdRef.current !== null) {
-        clearTimeout(timeoutIdRef.current);
-        timeoutIdRef.current = null;
-      }
-      // A fresh 45 s clock. The photos come from lastPendingScan, and the
-      // same scanAttemptId means a scan that finished meanwhile is handed back
-      // free rather than run (and charged) again.
-      hasStartedRef.current = false;
-      hasNavigated.current  = false;
-      soundStarted.current  = false;
-      lastHapticAt.current  = 0;
-      setRetryCount(0);
-      setFailState(null);
-      setConfidence(0);
-      setFinalizing(false);
-      setScanKey(k => k + 1);
+    const inHunt = isHuntActive();
+
+    /** Back / Retake on a soft fail: the held scan goes back to the user. */
+    const releaseHeld = () => {
+      const held = heldResultRef.current;
+      heldResultRef.current = null;
+      if (held?.chargePending) releaseOnServer();
     };
-    const handleRetake = () => {
-      console.log("[loading] retake pressed — navigating to camera screen");
-      if (timeoutIdRef.current !== null) {
-        clearTimeout(timeoutIdRef.current);
-        timeoutIdRef.current = null;
-      }
+
+    const leave = (to: "home" | "camera" | "result") => {
       try { player.pause(); } catch { /* ignore */ }
       hasNavigated.current = true;
-      router.replace("/camera" as any);
+      if (to === "camera") router.replace("/camera" as any);
+      else if (to === "result") router.replace((inHunt ? "/hunt-item-detail" : "/results") as any);
+      // Hunt progress is never lost: Back returns to the live hunt.
+      else router.replace((inHunt ? "/hunt-active" : "/(tabs)") as any);
     };
-    const handleContinueAnyway =
-      (failState.type === "low_confidence" || failState.type === "bad_input")
-        ? () => {
-            hasNavigated.current = true;
-            if (isHuntActive()) {
-              router.replace("/hunt-item-detail" as any);
-            } else {
-              router.replace("/results" as any);
-            }
-          }
-        : undefined;
 
-    // Return to Hunt — preserve all hunt progress, just go back to live hunt
-    const handleReturnToHunt = isHuntActive()
-      ? () => {
-          console.log("[loading] returning to hunt — preserving all hunt progress");
-          try { player.pause(); } catch { /* ignore */ }
-          hasNavigated.current = true;
-          router.replace("/hunt-active" as any);
+    const onAction = async (action: FailAction) => {
+      // One leaving action per screen. A ref, not state: two taps in the same
+      // frame would both read a busy flag that hasn't re-rendered yet.
+      const leaves = action === "continue" || action === "back" || action === "retake" || action === "sign_in";
+      if (leaves) {
+        if (actionLockRef.current) return;
+        actionLockRef.current = true;
+      }
+      switch (action) {
+        case "continue": {
+          const held = heldResultRef.current;
+          if (!held) { leave("home"); return; }
+          // Charge the held scan, then show the result. The result is shown
+          // even if the confirm doesn't answer in time: the user chose it,
+          // and an unconfirmed hold expires in the user's favour.
+          setFailBusy("continue");
+          if (held.chargePending) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const outcome = await Promise.race([
+              trpcUtils.client.scan.confirmCharge.mutate({ scanAttemptId }).catch(() => null),
+              new Promise<null>(res => { timer = setTimeout(() => res(null), CONFIRM_WAIT_MS); }),
+            ]);
+            if (timer) clearTimeout(timer);
+            console.log("[loading] continue anyway — charge:", outcome?.status ?? "no answer");
+          }
+          heldResultRef.current = null;
+          addScan(held.scanResult);
+          void import("@/lib/reviewPrompt").then(m => m.recordCompletedScan()).catch(() => {});
+          leave("result");
+          return;
         }
-      : undefined;
+        case "back":    releaseHeld(); leave("home"); return;
+        case "retake":  releaseHeld(); leave("camera"); return;
+        case "sign_in":
+          hasNavigated.current = true;
+          router.replace({ pathname: "/auth" as any, params: { mode: "login" } });
+          return;
+        case "update":
+          Linking.openURL(APP_STORE_PRODUCT_URL).catch(() => {});
+          return;
+        case "see_plans":
+          openPaywallForScan(failState.paywall ?? "scan_limit");
+          return;
+        case "scan_store":
+          router.push("/scan-store?from=scan_fail" as any);
+          return;
+      }
+    };
 
     return (
-      <FailStateScreen
-        type={failState.type}
-        message={failState.message}
-        confidence={failState.confidence}
-        retryCount={retryCount}
-        onRetry={handleRetry}
-        onRetake={handleRetake}
-        onReturnToHunt={handleReturnToHunt}
-        onContinueAnyway={handleContinueAnyway}
-      />
+      <View style={s.flex}>
+        <FailStateScreen
+          screen={failState.screen}
+          cause={failState.cause}
+          paywall={failState.paywall}
+          photoUri={imageUri ?? null}
+          seen={failState.seen ?? null}
+          photoProblems={failState.photoProblems}
+          charge={failState.charge}
+          inHunt={inHunt}
+          plan={planKind}
+          busy={failBusy}
+          onAction={(a) => { void onAction(a); }}
+        />
+        {/* This screen is a fullScreenModal: the paywall must mount its own host to appear above it. */}
+        <ProPaywallHost />
+      </View>
     );
   }
 
@@ -806,8 +974,10 @@ export default function LoadingScreen() {
           </View>
           <View style={s.confidencePill}>
             <Text style={s.confidenceLabel}>
+              {/* Progress, not confidence: the old "Estimated confidence: 95%" read
+                  as a statement about the item before the AI had answered. */}
               {confidencePct < 100
-                ? `Estimated confidence: ${confidencePct}%`
+                ? `Analyzing · ${confidencePct}%`
                 : "Complete"}
             </Text>
           </View>

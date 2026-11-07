@@ -96,7 +96,8 @@ interface ProPaywallContextValue {
   _consumeUnlock: () => (() => void) | null;
   _dismiss: () => void;
   _claimHost: () => number;
-  _releaseHost: () => void;
+  /** Release the host with this id. Ignored if another host has claimed since. */
+  _releaseHost: (id?: number) => void;
   _topHost: number;
 }
 
@@ -167,9 +168,13 @@ export function ProPaywallProvider({ children }: { children: React.ReactNode }) 
     return id;
   }, []);
 
-  const _releaseHost = useCallback(() => {
-    // Fall back to the root host (id 0) when a screen-level host unmounts.
-    setTopHost(prev => (prev > 0 ? 0 : prev));
+  const _releaseHost = useCallback((id?: number) => {
+    // Fall back to the root host (id 0) when the screen-level host that is on
+    // top unmounts. Only THAT host: when a modal screen replaces another (the
+    // scan fail screen's Retake opens the camera), the new screen's host
+    // claims before the old one unmounts, and the old one's release must not
+    // knock the new one off — its paywall would render under the modal.
+    setTopHost(prev => (id === undefined ? (prev > 0 ? 0 : prev) : prev === id ? 0 : prev));
   }, []);
 
   const value = useMemo(
@@ -213,7 +218,7 @@ export function ProPaywallHost({ rootHost = false }: { rootHost?: boolean }) {
     if (rootHost) return;
     const claimed = _claimHost();
     setId(claimed);
-    return () => _releaseHost();
+    return () => _releaseHost(claimed);
     // Claim once per mount; re-claiming on every render would thrash the id.
   }, [rootHost, _claimHost, _releaseHost]);
 
