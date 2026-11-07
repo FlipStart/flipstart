@@ -28,7 +28,7 @@ import {
 } from "./founderDashboardV3";
 import type { Metric, Trust, PaywallRow, PaidJourney, Scope, AnalysisWindow, RangePreset } from "./founderMetricsV4";
 import { formatCentralDateTime } from "./dashboardDates";
-import { REASON_LABEL } from "./scanReliability";
+import { REASON_LABEL, buildScanReliability } from "./scanReliability";
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -160,7 +160,8 @@ function renderIntegrity(di: any): string {
   // Absent (e.g. the metrics layer was skipped) must degrade like every other
   // section — one missing block can never take the whole page down.
   if (!di || typeof di !== "object") return section("integrity", "1b · Data Integrity", `<div class="card muted">Data Integrity is unavailable for this load.</div>`);
-  if (isErr(di)) return errorCard("Data Integrity", di);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(di)) return section("integrity", "1b · Data Integrity", errorCard("Data Integrity", di));
   const c = di.counts;
   const sevPill = (sv: string) => `<span class="sev sev-${esc(sv.toLowerCase())}">${esc(sv)}</span>`;
   const head = grid([
@@ -252,7 +253,8 @@ const absent = (label: string, x: any) => !x || typeof x !== "object" ? `<div cl
 
 function renderPricing(pr: any): string {
   if (!pr || typeof pr !== "object") return section("pricing", "4b · Pricing Experiments", absent("Pricing Experiments", pr));
-  if (isErr(pr)) return errorCard("Pricing Experiments", pr);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(pr)) return section("pricing", "4b · Pricing Experiments", errorCard("Pricing Experiments", pr));
   const col = (r: any) => {
     const e = r.era;
     const span = `${e.startsAt ? when(e.startsAt) : "start"} → ${e.endsAt ? when(e.endsAt) : "now"}`;
@@ -301,7 +303,8 @@ function renderPricing(pr: any): string {
 
 function renderFreeToPaid(fp: any): string {
   if (!fp || typeof fp !== "object") return section("freepaid", "4c · Free → Paid", absent("Free → Paid", fp));
-  if (isErr(fp)) return errorCard("Free → Paid", fp);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(fp)) return section("freepaid", "4c · Free → Paid", errorCard("Free → Paid", fp));
   const top = Math.max(0, ...fp.buckets.map((b: any) => b.conversion.value ?? 0));
   const rows = fp.buckets.map((b: any) => [
     esc(b.label), num(b.users), num(b.paid),
@@ -319,7 +322,8 @@ function renderFreeToPaid(fp: any): string {
 
 function renderPowerUsers(pu: any): string {
   if (!pu || typeof pu !== "object") return section("power", "7b · Power Users", absent("Power Users", pu));
-  if (isErr(pu)) return errorCard("Power Users", pu);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(pu)) return section("power", "7b · Power Users", errorCard("Power Users", pu));
   const tiers = table(["Lifetime scans", "Users", "Free / Monthly / Annual"], pu.tiers.map((t: any) => [
     `${num(t.threshold)}+`, rate(t.users.n, t.users.d), `${num(t.mix.free)} / ${num(t.mix.monthly)} / ${num(t.mix.annual)}`]), "compact");
   const rows = pu.top.map((r: any, i: number) => [
@@ -334,7 +338,8 @@ function renderPowerUsers(pu: any): string {
 
 function renderDistributions(ds: any): string {
   if (!ds || typeof ds !== "object") return section("dist", "9b · Usage Distribution", absent("Usage Distribution", ds));
-  if (isErr(ds)) return errorCard("Usage Distribution", ds);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(ds)) return section("dist", "9b · Usage Distribution", errorCard("Usage Distribution", ds));
   const f = (v: number | null, dp = 1) => v === null ? "—" : num(v, dp);
   const line = (label: string, x: any, full: boolean) => x ? [esc(label), num(x.n), f(x.mean), f(x.median),
     ...(full ? [f(x.p25)] : []), f(x.p75), f(x.p90), ...(full ? [f(x.p95)] : []), f(x.max, 0)] : null;
@@ -370,7 +375,8 @@ function funnelTable(stages: any[], unit: string): string {
 
 function renderFunnel(fs: any): string {
   if (!fs || typeof fs !== "object") return section("funnel", "3b · First-Session Funnel", absent("First-Session Funnel", fs));
-  if (isErr(fs)) return errorCard("First-Session Funnel", fs);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(fs)) return section("funnel", "3b · First-Session Funnel", errorCard("First-Session Funnel", fs));
   const o = fs.offerOutcomes, totalO = o.pro + o.free + o.activation_pending + o.unknown;
   return section("funnel", "3b · First-Session Funnel",
     `<div class="card"><div class="card-h">Before the account <span class="muted">— by device, ${num(fs.devices)} that started onboarding</span></div>${funnelTable(fs.before, "Devices")}</div>
@@ -388,7 +394,8 @@ function renderFunnel(fs: any): string {
 
 function renderPaywallIntel(pi: any): string {
   if (!pi || typeof pi !== "object") return section("pwintel", "5b · Paywall Intelligence", absent("Paywall Intelligence", pi));
-  if (isErr(pi)) return errorCard("Paywall Intelligence", pi);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(pi)) return section("pwintel", "5b · Paywall Intelligence", errorCard("Paywall Intelligence", pi));
   const eraList: Array<{ id: string; label: string }> = Array.isArray(pi.eras) ? pi.eras : [{ id: "v1", label: "Pricing V1" }, { id: "v2", label: "Pricing V2" }];
   const eraIds = eraList.map(e => e.id);
   const eraHead = `Purchases ${eraList.map(e => String(e.label).replace(/^Pricing /, "")).join(" / ")}`;
@@ -408,7 +415,8 @@ function renderPaywallIntel(pi: any): string {
 
 function renderFeatureAdoption(fa: any): string {
   if (!fa || typeof fa !== "object") return section("adopt", "13b · Feature Adoption & Conversion", absent("Feature Adoption", fa));
-  if (isErr(fa)) return errorCard("Feature Adoption", fa);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(fa)) return section("adopt", "13b · Feature Adoption & Conversion", errorCard("Feature Adoption", fa));
   const r = (x: any) => x.d ? rate(x.n, x.d) : "—";
   const rows = fa.rows.map((x: any) => [esc(x.label), r(x.paidUsed), r(x.unpaidUsed), r(x.paidRateUsers), r(x.paidRateNonUsers)]);
   return section("adopt", "13b · Feature Adoption & Conversion",
@@ -420,7 +428,8 @@ function renderFeatureAdoption(fa: any): string {
 
 function renderRetentionSegments(rs: any): string {
   if (!rs || typeof rs !== "object") return section("retseg", "11b · Retention by Segment", absent("Retention by Segment", rs));
-  if (isErr(rs)) return errorCard("Retention by Segment", rs);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(rs)) return section("retseg", "11b · Retention by Segment", errorCard("Retention by Segment", rs));
   const c = (x: any) => x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : "—";
   return section("retseg", "11b · Retention by Segment",
     `<div class="card wide">${table(["Segment", "Users", "D1", "D3", "D7", "D14", "D30"],
@@ -432,7 +441,8 @@ const cell = (x: any) => x && x.d ? `${pct(x.value)} <span class="muted">${num(x
 
 function renderAppVersions(av: any): string {
   if (!av || typeof av !== "object") return section("versions", "12b · App Versions", absent("App Versions", av));
-  if (isErr(av)) return errorCard("App Versions", av);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(av)) return section("versions", "12b · App Versions", errorCard("App Versions", av));
   const rows = av.rows.map((r: any) => [
     `<code>${esc(r.version)}</code>`, num(r.users.value), num(r.activeInRange.value), num(r.newUsers.value),
     cell(r.activation7), cell(r.paid7), cell(r.d1), cell(r.d7),
@@ -450,7 +460,14 @@ function renderAppVersions(av: any): string {
 // ── Scan reliability (Phase 6) ───────────────────────────────────────────────
 
 const reasonLabel = (k: string) => esc(REASON_LABEL[k] ?? k);
-const r8 = (x: any) => x && x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : "—";
+/** The fail-screen buttons, as the user saw them. */
+const ACTION_LABEL: Record<string, string> = {
+  continue: "Continue anyway", back: "Back to Home / Hunt", retake: "Retake photo", sign_in: "Sign in",
+  see_plans: "See plans / See Pro", scan_store: "Open Scan Store", update: "Update FlipStart",
+};
+const r8 = (x: any) => x && x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : `0% <span class="muted">0/0</span>`;
+/** A rate card that reads 0% (not blank) before there is any data. */
+const rateCard = (label: string, x: any) => m(label, { value: x && x.d ? x.value : 0, trust: "DERIVED", n: x?.n ?? 0, d: x?.d ?? 0 });
 
 /**
  * Every fail screen, most shown first — "what fails most often" at a glance.
@@ -469,7 +486,7 @@ export function renderFailScreenRanking(fs: any): string {
     esc(r.label),
     `<span class="muted">${esc(r.group)}</span>`,
     num(r.shown),
-    r.share === null || r.share === undefined ? "—" : pct(r.share),
+    r.share === null || r.share === undefined ? "0%" : pct(r.share),
     num(r.users),
     `<div style="min-width:100px">${bar(r.shown / maxShown * 100)}</div>`,
     when(r.lastShown),
@@ -480,36 +497,47 @@ export function renderFailScreenRanking(fs: any): string {
   return `<div class="card"><div class="card-h">Fail screens — most hit first ${badge("EXACT")} <span class="muted">— every user, the selected dates</span></div>
     ${headline}
     <div style="overflow-x:auto">${table(["#", "Screen", "Kind", "Times shown", "Share", "Users", "", "Last shown"], rows, "compact")}</div>
-    <div class="muted">One count per screen shown. "Unsure result" screens follow a scan that ran (they show the result as Continue anyway); "Didn't run" means no result; "Account" screens are working as designed.</div>
+    <div class="muted">One count per screen shown. "Unsure result" screens follow a scan that ran (they show the result as Continue anyway); "Didn't run" means no result; "Account" screens are working as designed; "Before the scan" are messages from the scan button and the camera; "After the scan" are results screens that crashed.</div>
     ${older}</div>`;
 }
 
-export function renderScanReliability(sr: any): string {
-  const title = "12c · Scan Reliability";
-  if (!sr || typeof sr !== "object") return section("reliability", title, absent("Scan Reliability", sr));
-  if (isErr(sr)) return errorCard("Scan Reliability", sr);
+/**
+ * The Fail Screens & Scan Reliability section.
+ *
+ * ALWAYS the full layout — every fail screen, every card, every table row —
+ * with zeros where there is no data yet, whatever went wrong behind it: the
+ * metrics not loaded, a load error, or the scan_outcomes table missing. A
+ * banner says which. (Before, a load error replaced the whole section with a
+ * bare error card, so the contents link landed nowhere.)
+ */
+export function renderScanReliability(input: any): string {
+  const title = "12c · Fail Screens & Scan Reliability";
+  let sr = input;
+  if (!sr || typeof sr !== "object" || isErr(sr)) {
+    const why = !sr || typeof sr !== "object"
+      ? "This load didn't include fail-screen data (the server may be running an older version), so everything shows zero."
+      : `Loading fail-screen data failed, so everything shows zero: ${String(sr.error).slice(0, 200)}`;
+    sr = buildScanReliability({ configured: false, note: why }, [], { startMs: null, endMs: null } as any);
+  }
   const app = sr.app ?? {};
-  const appBlock = `<div class="card"><div class="card-h">What the app showed ${badge("EXACT")} <span class="muted">— scan_failed events, every user</span></div>
+  const appBlock = `<div class="card"><div class="card-h">What the app showed ${badge("EXACT")} <span class="muted">— every user</span></div>
     ${grid([card("Fail screens shown", num(app.failedEvents)), card("Phone offline", num(app.offline), "never reached the server"), card("Server down (Railway)", num(app.serverDown), "the app reached the internet but not us")])}
-    ${table(["Screen", "Shown"], (app.byScreen ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}
     <div class="card-h">What users tapped</div>
-    ${table(["Action", "Taps"], (app.actions ?? []).map((x: any) => [esc(x.key), num(x.count)]), "compact")}
+    ${table(["Action", "Taps"], (app.actions ?? []).map((x: any) => [esc(ACTION_LABEL[x.key] ?? x.key), num(x.count)]), "compact")}
     <div class="card-h">Blocked screens shown (out of scans, update needed)</div>
     ${table(["Screen", "Shown"], (app.blocked ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}
     <div class="muted">Taps and blocked screens are recorded from the new app build onward; app 2.1 sends only scan_failed with an errorType.</div></div>`;
   const ranking = renderFailScreenRanking(app.screens);
-  if (!sr.configured) {
-    return section("reliability", title, ranking + `<div class="banner warn">${esc(sr.note)}</div>` + appBlock, "server + app");
-  }
+  const problem = sr.problem ? `<div class="banner warn">${esc(sr.problem)}</div>` : "";
   const t = sr.tiers ?? { high: 0, medium: 0, low: 0, none: 0 };
-  const tierRow = (label: string, n: number) => [esc(label), num(n), sr.results ? pct(n / sr.results) : "—", bar(sr.results ? n / sr.results * 100 : 0)];
+  const tierRow = (label: string, n: number) => [esc(label), num(n), sr.results ? pct(n / sr.results) : "0%", bar(sr.results ? n / sr.results * 100 : 0)];
   const hardBlock = `<div class="card"><div class="card-h">Hard failures — no result ${badge("EXACT")}</div>
-    ${grid([m("Failure rate", { value: sr.failureRate.value, trust: "DERIVED", n: sr.failureRate.n, d: sr.failureRate.d }), card("Failed scans", num(sr.failures)), card("Cancelled by user", num(sr.stopped))])}
+    ${grid([rateCard("Failure rate", sr.failureRate), card("Failed scans", num(sr.failures)), card("Cancelled by user", num(sr.stopped))])}
     ${table(["Reason", "Scans", "Share of attempts"], (sr.failuresByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count), r8(x.share)]), "compact")}
     <div class="card-h">Blocked — working as designed, not counted as failures</div>
     ${table(["Reason", "Scans"], (sr.blockedByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}</div>`;
   const softBlock = `<div class="card"><div class="card-h">Low-confidence results — soft fails ${badge("EXACT")}</div>
-    ${grid([m("Soft-fail rate", { value: sr.softRate.value, trust: "DERIVED", n: sr.softRate.n, d: sr.softRate.d }), m("Continue anyway rate", { value: sr.continueRate.value, trust: "DERIVED", n: sr.continueRate.n, d: sr.continueRate.d }), card("Charged at once", num(sr.chargedAtOnce), "app 2.1, or past the daily cap")])}
+    ${grid([rateCard("Soft-fail rate", sr.softRate), rateCard("Continue anyway rate", sr.continueRate), card("Charged at once", num(sr.chargedAtOnce), "app 2.1, or past the daily cap")])}
     ${table(["Soft fail", "Scans", "Continued", "Back / Retake", "Left without choosing", "Waiting", "Charged at once", "Not charged, no choice", "Continue rate"],
       (sr.softByReason ?? []).map((x: any) => [reasonLabel(x.reason), num(x.count), num(x.continued), num(x.declined), num(x.abandoned), num(x.open), num(x.chargedAtOnce), num(x.noChoice), r8(x.continueRate)]), "compact")}
     <div class="muted">"Left without choosing": the app closed on the screen; after 10 minutes the hold expired and the scan went back to the user. "Charged at once": no choice could be recorded — app 2.1, or a user past the daily cap of uncharged soft fails. "Not charged, no choice": mostly "no item", which goes straight back.</div></div>`;
@@ -517,7 +545,7 @@ export function renderScanReliability(sr: any): string {
     ${table(["Tier", "Results", "Share", ""], [tierRow("HIGH", t.high), tierRow("MEDIUM", t.medium), tierRow("LOW", t.low), tierRow("No tier", t.none)], "compact")}
     <div class="muted">${num(sr.results)} results in range. "No tier": couldn't identify, or an older result without a tier.</div></div>`;
   return section("reliability", title,
-    `${ranking}
+    `${problem}${ranking}
      ${grid([card("Scan attempts", num(sr.attempts), "results + failures"), card("Results", num(sr.results)), card("Hard failures", num(sr.failures)), card("Soft fails", num(sr.soft))])}
      <div class="two">${hardBlock}${softBlock}</div><div class="two">${tierBlock}${appBlock}</div>
      <div class="muted">${esc(sr.note)}</div>`,
@@ -526,7 +554,8 @@ export function renderScanReliability(sr: any): string {
 
 function renderAcquisitionSource(as: any): string {
   if (!as || typeof as !== "object") return section("source", "2b · Acquisition Source", absent("Acquisition Source", as));
-  if (isErr(as)) return errorCard("Acquisition Source", as);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(as)) return section("source", "2b · Acquisition Source", errorCard("Acquisition Source", as));
   const seg = (rows: any[], head: string) => table([head, "Users", "Activation 7d", "Paid 7d", "Est. revenue", "Est. revenue / user", "Est. revenue / paid user"],
     rows.map((r: any) => [esc(r.key), num(r.users), cell(r.activation7), cell(r.paid7), usd(r.revenue.value), usd(r.revenuePerUser.value), usd(r.revenuePerPaidUser.value)]), "compact");
   const sourceBlock = as.tracked
@@ -540,7 +569,8 @@ function renderAcquisitionSource(as: any): string {
 
 function renderCostByPlan(cb: any): string {
   if (!cb || typeof cb !== "object") return section("costplan", "14b · Cost by Plan", absent("Cost by Plan", cb));
-  if (isErr(cb)) return errorCard("Cost by Plan", cb);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(cb)) return section("costplan", "14b · Cost by Plan", errorCard("Cost by Plan", cb));
   if (!cb.available) return section("costplan", "14b · Cost by Plan", `<div class="card muted">${esc(cb.note)}</div>`);
   const plan = (k: string) => {
     const x = cb[k]; if (!x) return "";
@@ -607,7 +637,8 @@ function renderExecutive(x: any): string {
 }
 
 function renderAcquisition(a: any): string {
-  if (isErr(a)) return errorCard("Acquisition", a);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(a)) return section("acq", "2 · Acquisition / Users", errorCard("Acquisition", a));
   /**
    * The selected range comes FIRST and is visually separated from the fixed
    * 7d/30d cards. Those two groups answer different questions — "what did my
@@ -630,7 +661,8 @@ function renderAcquisition(a: any): string {
 }
 
 function renderActivation(x: any): string {
-  if (isErr(x)) return errorCard("Activation", x);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(x)) return section("act", "3 · Activation", errorCard("Activation", x));
   return section("act", "3 · Activation", grid([
     m("Activation rate", x.activationRate), m("Never scanned", x.neverScanned), m("Onboarding completed (event)", x.onboardingCompleted),
     m("Median account → first scan", x.hoursToFirstScanMedian, { fmt: "hrs" }), m("Mean account → first scan", x.hoursToFirstScanMean, { fmt: "hrs" }),
@@ -639,7 +671,8 @@ function renderActivation(x: any): string {
 }
 
 function renderMonetization(mo: any): string {
-  if (isErr(mo)) return errorCard("Monetization", mo);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(mo)) return section("mon", "4 · Monetization", errorCard("Monetization", mo));
   return section("mon", "4 · Monetization", grid([
     m("Current Free", mo.currentFree), m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Total paying", mo.totalPaying),
     m("Holding pack scans (ledger)", mo.scanPackHolders), m("Pack purchases Apple-approved", mo.scanPackApproved), m("Paywall viewers (in range)", mo.paywallViewers),
@@ -652,7 +685,8 @@ function renderMonetization(mo: any): string {
 }
 
 function renderPaywalls(pw: any): string {
-  if (isErr(pw)) return errorCard("Paywalls", pw);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(pw)) return section("pw", "5 · Paywalls", errorCard("Paywalls", pw));
   const rows = (pw.rows as PaywallRow[]).map(r => [
     `<code>${esc(r.source)}</code>`, num(r.impressions), num(r.uniqueViewers), num(r.impressionsPerViewer, 2),
     num(r.monthlySelected), num(r.annualSelected), num(r.purchaseStarts), num(r.purchases), num(r.cancelled), num(r.failed),
@@ -679,7 +713,8 @@ function renderPaywalls(pw: any): string {
 }
 
 function renderOnboardingOffer(o: any): string {
-  if (isErr(o)) return errorCard("Onboarding offer", o);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(o)) return section("offer", "6 · Onboarding Offer", errorCard("Onboarding offer", o));
   const L = o.legacy;
   const legacy = funnel([
     { stage: "Offer shown", users: L.shown.value }, { stage: "Plan selected", users: L.planSelected.value },
@@ -699,7 +734,8 @@ function renderOnboardingOffer(o: any): string {
 }
 
 function renderPaidJourneys(pj: any): string {
-  if (isErr(pj)) return errorCard("Paid user journeys", pj);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(pj)) return section("paid", "7 · Paid User Journeys", errorCard("Paid user journeys", pj));
   const tp = pj.hoursToPay, sb = pj.scansBeforePay;
   const agg = grid([
     m("Paying users", pj.payingUsers), m("With confirmed purchase event", pj.withKnownPurchaseTime),
@@ -730,7 +766,8 @@ function renderPaidJourneys(pj: any): string {
 }
 
 function renderScanStore(s: any): string {
-  if (isErr(s)) return errorCard("Scan Store", s);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(s)) return section("store", "8 · Scan Store", errorCard("Scan Store", s));
   const skus = table(["Pack", "Scans", "Attempts", "Purchases", "Cancels", "Failures", "Attempt → purchase"],
     s.skus.map((k: any) => [`${esc(k.name)} <code>${esc(k.sku)}</code>`, num(k.scans), num(k.attempts), num(k.purchases), num(k.cancels), num(k.failures), k.conversion.d ? rate(k.conversion.n, k.conversion.d) : "—"]));
   const v4 = s.v4.available
@@ -770,12 +807,14 @@ function cohortCard(c: any): string {
     ${allow}<div class="muted">${esc(c.classificationNote)}</div></div>`;
 }
 function renderCohorts(c: any): string {
-  if (isErr(c)) return errorCard("Cohorts", c);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(c)) return section("cohorts", "9 · User Cohorts (current plan)", errorCard("Cohorts", c));
   return section("cohorts", "9 · User Cohorts (current plan)", cohortCard(c.free) + cohortCard(c.monthly) + cohortCard(c.annual));
 }
 
 function renderFree(f: any): string {
-  if (isErr(f)) return errorCard("Free user behaviour", f);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(f)) return section("free", "10 · Free User Behaviour", errorCard("Free user behaviour", f));
   return section("free", "10 · Free User Behaviour", grid([
     m("Current Free users", f.users), m("Never scanned", f.neverScanned), m("Exhausted 15 free scans", f.exhausted), m("Exhaustion rate", f.exhaustedRate),
     m("Lifetime scans (mean)", { value: f.lifetimeMean, trust: "DERIVED" }, { dp: 1 }), m("Lifetime scans (median)", { value: f.lifetimeMedian, trust: "DERIVED" }, { dp: 1 }),
@@ -793,26 +832,30 @@ function renderFree(f: any): string {
 }
 
 function renderRetentionV2(r: any): string {
-  if (isErr(r)) return errorCard("Retention", r);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(r)) return section("ret", "11 · Retention", errorCard("Retention", r));
   return section("ret", "11 · Retention", grid([m("D1", r.d1), m("D3", r.d3), m("D7", r.d7), m("D14", r.d14), m("D30", r.d30)]) +
     `<div class="muted">Anchor: ${esc(r.anchor)} · timezone ${esc(r.timezone)} · ${num(r.cohortUsers)} users with an anchor. Only users old enough for each window are counted in its denominator.</div>`,
     "re-anchored on first activity, not profile creation");
 }
 
 function renderSessionsV2(s: any): string {
-  if (isErr(s)) return errorCard("Sessions", s);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(s)) return section("sess", "12 · Sessions", errorCard("Sessions", s));
   return section("sess", "12 · Sessions", grid([m("Sessions today", s.sessionsToday), m("Sessions 7d", s.sessions7), m("Sessions / user 7d", s.sessionsPerUser7, { dp: 2 })]) +
     `<div class="note-block">${badge("LEGACY")} ${esc(s.durationNote.note)}</div>`);
 }
 
 function renderFeatureUsage(f: any): string {
-  if (isErr(f)) return errorCard("Feature usage", f);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(f)) return section("feat", "13 · Feature Usage", errorCard("Feature usage", f));
   const rows = f.map((r: any) => [esc(r.feature), r.accessed === null ? `<span class="muted">n/t</span>` : num(r.accessed), r.paywallTriggered === null ? `<span class="muted">n/a</span>` : num(r.paywallTriggered), r.completed === null ? `<span class="muted">n/t</span>` : num(r.completed), r.completedUsers === null ? "—" : num(r.completedUsers), `<span class="muted">${esc(r.note)}</span>`]);
   return section("feat", "13 · Feature Usage", `<div class="card">${table(["Feature", "Accessed", "Paywall triggered", "Completed", "Users", "Source"], rows)}<div class="muted">A paywall being triggered is not feature usage; the columns are kept separate on purpose.</div></div>`);
 }
 
 function renderUnitEconomics(u: any): string {
-  if (isErr(u)) return errorCard("Unit economics", u);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(u)) return section("cost", "14 · Cost / Unit Economics", errorCard("Unit economics", u));
   return section("cost", "14 · Cost / Unit Economics", grid([
     m("Est. API spend (in range)", u.estimatedSpend, { dp: 2 }), m("Est. cost / scan", u.costPerScan, { dp: 3 }), m("Est. cost / user in scope", u.costPerUser, { dp: 3 }),
     m("Est. cost / active user (in range)", u.costPerActiveUser, { dp: 3 }), m("Scans in range", u.scansInRange), m("Scans 30d", u.scans30),
@@ -820,7 +863,8 @@ function renderUnitEconomics(u: any): string {
 }
 
 function renderDataQualityV4(q: any): string {
-  if (isErr(q)) return errorCard("Data quality", q);
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(q)) return section("dq", "23 · Data Quality", errorCard("Data quality", q));
   const c = q.cutover;
   const wq = q.window;
   const winBlock = wq ? `<div class="card"><div class="card-h">Analysis window (debug)</div>${grid([
@@ -945,7 +989,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px so
 header h1{font-size:15px;margin:0;color:var(--accent)}header .gen{color:var(--muted);font-size:11px;margin-left:auto}
 nav.toc{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11.5px}nav.toc a{color:var(--muted);text-decoration:none}nav.toc a:hover{color:var(--fg)}
 main{padding:14px 18px 60px;max-width:1500px;margin:0 auto}
-section{margin:0 0 26px}section h2{font-size:15px;margin:0 0 10px;padding-top:6px;border-top:1px solid var(--line)}section h2 .note{font-weight:400;color:var(--muted);font-size:11px;margin-left:10px}
+section{margin:0 0 26px;scroll-margin-top:150px}section h2{font-size:15px;margin:0 0 10px;padding-top:6px;border-top:1px solid var(--line)}section h2 .note{font-weight:400;color:var(--muted);font-size:11px;margin-left:10px}
 h3{font-size:12.5px;color:var(--muted);margin:14px 0 6px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:10px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:9px 11px}.stat-v{font-size:19px;font-weight:600;line-height:1.2}.stat-l{color:var(--muted);font-size:11px;margin-top:2px}.stat-s{color:var(--muted);font-size:10.5px;margin-top:2px}

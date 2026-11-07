@@ -16,7 +16,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View, Text, Pressable, StyleSheet, Alert, Platform, ScrollView,
   Modal, Animated, PanResponder, TouchableWithoutFeedback, Linking,
-  KeyboardAvoidingView, Keyboard,
+  KeyboardAvoidingView, Keyboard, ActivityIndicator,
 } from 'react-native';
 import { InteractionManager } from 'react-native';
 import { Image } from 'expo-image';
@@ -28,6 +28,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { V } from '@/constants/vintage';
 import { FONTS } from '@/constants/typography';
 import { setPendingScan } from '@/lib/pending-scan';
+import { createPhotoPrep, replaceByUri, slotOf, prepFailureMessage, type PrepOutcome, type PrepFailure } from '@/lib/photoPrep';
 import {
   captureMultipleFromGallery,
   pickMultipleFromGallery,
@@ -38,7 +39,7 @@ import {
 import { ProCameraContextInput,
          type ProCameraContextInputHandle } from '@/components/camera/ProCameraContextInput';
 import { useEntitlement } from '@/lib/useEntitlement';
-import { useScreenFocus } from '@/lib/analytics';
+import { useScreenFocus, logEvent } from '@/lib/analytics';
 import { isHuntActive } from '@/lib/hunt-context';
 // ProGateHost stays mounted: harmless, and the camera is the one screen where
 // a fullScreenModal host is genuinely needed if any gate returns here.
@@ -228,6 +229,18 @@ export default function CameraScreen() {
   // ── Keep slotsRef in sync ────────────────────────────────────────────────────
   useEffect(() => { slotsRef.current = slots; }, [slots]);
 
+  // ── Gallery photo preparation (Phase 7) ─────────────────────────────────────
+  // One preparation per photo, keyed by its uri — see lib/photoPrep.ts for the
+  // three bugs this replaces (stuck "One moment", Tag/Graphic silently dropped,
+  // front photos sent at 1440 px).
+  const prepRef = useRef(createPhotoPrep<PickedAsset>(normalizeGalleryAsset));
+  /** Done is waiting for photos to finish preparing. */
+  const [preparing, setPreparing] = useState(false);
+  /** Same, readable synchronously: Library, the shutter, Undo and Done check it. */
+  const preparingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const haptic = (s: Haptics.ImpactFeedbackStyle) => {
     if (Platform.OS !== 'web') Haptics.impactAsync(s).catch(() => {});
   };
@@ -242,7 +255,7 @@ export default function CameraScreen() {
 
   // ── Capture (unchanged) ───────────────────────────────────────────────────
   const handleCapture = async () => {
-    if (isTaking || !cameraRef.current) return;
+    if (isTaking || !cameraRef.current || preparingRef.current) return;
     haptic(Haptics.ImpactFeedbackStyle.Medium);
     setIsTaking(true);
     try {
@@ -285,6 +298,53 @@ export default function CameraScreen() {
   // slots. Now: the picker returns raw asset uris immediately, thumbnails
   // render from those at once, and each photo's AI-ready base64 JPEG is
   // prepared in parallel in the background, swapping in as it finishes.
+  /**
+   * Prepare a library photo in the background and put the ready version into
+   * whichever slot holds it NOW — it may have been dragged, or removed and
+   * undone, while loading. If it can't be prepared it is removed, and the
+   * user is told which photo and why. `slot` sets the size (front = 1024 px).
+   */
+  /**
+   * Take a photo that couldn't be prepared out of its slot and say which and
+   * why — once per photo, however many paths notice it (the background job,
+   * Undo, Done). A photo no longer attached needs no message.
+   */
+  const explainedRef = useRef(new Set<string>());
+  const dropFailed = useCallback((uri: string, reason: PrepFailure) => {
+    const where = slotOf(slotsRef.current, uri);
+    if (!where) return false;
+    slotsRef.current = { ...slotsRef.current };
+    delete slotsRef.current[where];
+    setSlots(prev => {
+      if (prev[where]?.uri !== uri) return prev;
+      const next = { ...prev };
+      delete next[where];
+      return next;
+    });
+    if (!explainedRef.current.has(uri)) {
+      explainedRef.current.add(uri);
+      const m = prepFailureMessage(where, reason);
+      Alert.alert(m.title, m.message);
+      console.warn(`[camera] ${where} photo not prepared: ${reason}`);
+      try { logEvent('photo_prep_failed', { slot: where, reason }); } catch { /* never block */ }
+    }
+    return true;
+  }, []);
+
+  const preparePhoto = useCallback((asset: PickedAsset, slot: PhotoSlot) => {
+    void prepRef.current.start(asset, slot, `gallery-${slot}`).then(out => {
+      if (!mountedRef.current) return;
+      if (out.ok) {
+        setSlots(prev => replaceByUri(prev, asset.uri, out.photo));
+        setUndoData(u => (u && u.photo.uri === asset.uri ? { ...u, photo: out.photo } : u));
+        return;
+      }
+      // Removed (or the account switched) meanwhile: nothing to say now. If it
+      // comes back via Undo, handleUndo and Done check it again.
+      dropFailed(asset.uri, out.reason);
+    });
+  }, [dropFailed]);
+
   /**
    * Promote the pending library image into the third slot.
    *
@@ -331,18 +391,9 @@ export default function CameraScreen() {
       } };
     });
 
-    // Normalize in the background, exactly as the gallery path does.
-    normalizeGalleryAsset(pending.asset, 'gallery-detail')
-      .then(photo => {
-        if (!photo) return;
-        setSlots(prev => {
-          const current = prev[thirdSlot];
-          if (!current || current.uri !== pending.asset.uri) return prev;
-          return { ...prev, [thirdSlot]: photo };
-        });
-      })
-      .catch(() => { /* keeps its preview; handleDone guards on base64 */ });
-  }, [clearPendingThird]);
+    // Prepared in the background, exactly as the gallery path does.
+    preparePhoto(pending.asset, thirdSlot);
+  }, [clearPendingThird, preparePhoto]);
 
   /** Camera origin: reopen the capture flow, nothing more. Never auto-shoot. */
   const openThirdPhotoPaywallForCamera = useCallback(() => {
@@ -405,6 +456,9 @@ export default function CameraScreen() {
   handleCaptureRef.current = handleCapture;
 
   const handleGallery = async () => {
+    // Done is waiting on the photos already attached: adding one now could
+    // slip in unprepared, so Library waits too.
+    if (preparingRef.current) return;
     haptic(Haptics.ImpactFeedbackStyle.Light);
     /**
      * The picker still offers THREE, deliberately.
@@ -459,22 +513,8 @@ export default function CameraScreen() {
       openThirdPhotoPaywallForLibrary();
     }
 
-    // Normalize the ACCEPTED photos in the background; swap each in when ready.
-    // Guarded so we never clobber a slot the user has since changed.
-    plan.assignments.forEach(({ slot, asset }, i) => {
-      const label = ['gallery-front', 'gallery-tag', 'gallery-detail'][SLOT_ORDER.indexOf(slot)]
-        ?? `gallery-${i}`;
-      normalizeGalleryAsset(asset, label)
-        .then(photo => {
-          if (!photo) return;
-          setSlots(prev => {
-            const current = prev[slot];
-            if (!current || current.uri !== asset.uri) return prev; // user changed it
-            return { ...prev, [slot]: photo };
-          });
-        })
-        .catch(() => { /* photo keeps its preview; Done guard catches the miss */ });
-    });
+    // Prepare the ACCEPTED photos in the background, each at its slot's size.
+    plan.assignments.forEach(({ slot, asset }) => preparePhoto(asset, slot));
   };
 
   const handleRemove = (slot: PhotoSlot) => {
@@ -489,10 +529,21 @@ export default function CameraScreen() {
   };
 
   const handleUndo = () => {
-    if (!undoData) return;
-    setSlots(prev => ({ ...prev, [undoData.slot]: undoData.photo }));
+    if (!undoData || preparingRef.current) return;
+    const restored = undoData;
+    setSlots(prev => ({ ...prev, [restored.slot]: restored.photo }));
+    slotsRef.current = { ...slotsRef.current, [restored.slot]: restored.photo };
     setUndoData(null);
     haptic(Haptics.ImpactFeedbackStyle.Light);
+    // A gallery photo restored while it was still loading, or after its
+    // preparation failed, must not sit there with a spinner forever.
+    if (!restored.photo.base64) {
+      void prepRef.current.jobFor(restored.photo.uri, restored.slot)?.then(out => {
+        if (!mountedRef.current) return;
+        if (out.ok) setSlots(prev => replaceByUri(prev, restored.photo.uri, out.photo));
+        else dropFailed(restored.photo.uri, out.reason);
+      });
+    }
   };
 
   // ── Slot tap (unchanged) ──────────────────────────────────────────────────
@@ -505,34 +556,84 @@ export default function CameraScreen() {
     }
   };
 
-  // ── Done → directly to loading (unchanged) ────────────────────────────────
-  const handleDone = () => {
-    if (!slots.front) {
+  // ── Done → directly to loading ─────────────────────────────────────────────
+  /**
+   * Every attached photo goes, or the scan doesn't start. A gallery photo
+   * still loading is WAITED FOR (the button reads "Preparing"), never dropped
+   * and never answered with "One moment". If one can't be prepared, the user
+   * is told which and why (preparePhoto), and nothing is sent.
+   */
+  const handleDone = async () => {
+    if (preparingRef.current) return;
+    if (!slotsRef.current.front) {
       Alert.alert('Front Photo Required', 'Take a Front photo first before analyzing.');
       return;
     }
-    if (!slots.front.base64) {
-      // Gallery import still preparing this photo (background normalization).
-      Alert.alert('One moment', 'Your photo is still being prepared \u2014 try again in a second.');
-      return;
-    }
-    haptic(Haptics.ImpactFeedbackStyle.Heavy);
-    // Only CONFIRMED context travels. contextConfirmed is reset to false by the
-    // onChangeText handler on any edit, so text typed after confirming cannot
-    // ride along unconfirmed.
-    const ctx = contextConfirmed ? normalizeUserContext(contextText) : '';
+    const session = sessionRef.current;
+    const prep = prepRef.current;
+    /** The photo to send from slot k: ready now, or undefined if it must be waited for. */
+    const now = (k: PhotoSlot): CapturedPhoto | undefined => {
+      const p = slotsRef.current[k];
+      if (!p) return undefined;
+      const job = prep.jobFor(p.uri, k);
+      if (!job) return p.base64 ? p : undefined;     // a camera photo: as it is
+      return prep.peek(p.uri, k);
+    };
 
-    setPendingScan({
-      front: { base64: slots.front.base64, mimeType: slots.front.mimeType },
-      ...(slots.detail?.base64 ? { detail: { base64: slots.detail.base64, mimeType: slots.detail.mimeType } } : {}),
-      ...(slots.tag?.base64    ? { tag:    { base64: slots.tag.base64,    mimeType: slots.tag.mimeType    } } : {}),
-      ...(ctx ? { userContext: ctx } : {}),
-    });
-    console.log('[camera] analysis start — front✓ detail:', !!slots.detail, 'tag:', !!slots.tag);
-    router.replace({
-      pathname: '/loading' as any,
-      params: { imageUri: slots.front.uri, mimeType: slots.front.mimeType },
-    });
+    preparingRef.current = true;
+    try {
+      // Decide from the slots AS THEY ARE after each wait: a photo can be
+      // removed, replaced or dragged while we wait. Bounded rounds, because
+      // Library, the shutter and Undo are locked while preparing.
+      for (let round = 0; round < 3; round++) {
+        const attached = SLOT_ORDER.filter(k => slotsRef.current[k]);
+        const pending = attached.filter(k => !now(k));
+        if (!pending.length) break;
+        setPreparing(true);
+        const outcomes = await Promise.all(pending.map(async k => {
+          const uri = slotsRef.current[k]!.uri;
+          const job = prep.jobFor(uri, k);
+          const out: PrepOutcome = job ? await job : { ok: false, reason: 'unreadable' };
+          return { uri, out };
+        }));
+        if (!mountedRef.current) return;
+        if (sessionRef.current !== session) return;
+        // Only photos still attached count; each failed one is removed and explained.
+        let failedAttached = false;
+        for (const { uri, out } of outcomes) {
+          if (out.ok) { setSlots(prev => replaceByUri(prev, uri, out.photo)); continue; }
+          if (dropFailed(uri, out.reason)) failedAttached = true;
+        }
+        if (failedAttached) return;   // the user decides: pick again, or scan without it
+      }
+
+      const front = now('front');
+      const tag = slotsRef.current.tag ? now('tag') : undefined;
+      const detail = slotsRef.current.detail ? now('detail') : undefined;
+      // Every attached photo must be ready — never send without one silently.
+      if (!front || (slotsRef.current.tag && !tag) || (slotsRef.current.detail && !detail)) return;
+
+      haptic(Haptics.ImpactFeedbackStyle.Heavy);
+      // Only CONFIRMED context travels. contextConfirmed is reset to false by the
+      // onChangeText handler on any edit, so text typed after confirming cannot
+      // ride along unconfirmed.
+      const ctx = contextConfirmed ? normalizeUserContext(contextText) : '';
+
+      setPendingScan({
+        front: { base64: front.base64, mimeType: front.mimeType },
+        ...(detail ? { detail: { base64: detail.base64, mimeType: detail.mimeType } } : {}),
+        ...(tag    ? { tag:    { base64: tag.base64,    mimeType: tag.mimeType    } } : {}),
+        ...(ctx ? { userContext: ctx } : {}),
+      });
+      console.log('[camera] analysis start — front✓ detail:', !!detail, 'tag:', !!tag);
+      router.replace({
+        pathname: '/loading' as any,
+        params: { imageUri: front.uri, mimeType: front.mimeType },
+      });
+    } finally {
+      preparingRef.current = false;
+      if (mountedRef.current) setPreparing(false);
+    }
   };
 
   // ── Drag-drop (unchanged) ─────────────────────────────────────────────────
@@ -748,6 +849,12 @@ export default function CameraScreen() {
                       ]}
                       contentFit="cover"
                     />
+                    {!photo.base64 && (
+                      // Still being prepared (a gallery photo) — Done waits for it.
+                      <View style={s.preparingOverlay} pointerEvents="none">
+                        <ActivityIndicator size="small" color={CREAM} />
+                      </View>
+                    )}
                     {/* Always show ✕ when photo is present */}
                     <Pressable onPress={() => handleRemove(slot)} style={s.removeBtn} hitSlop={6}>
                       <View style={s.removeBtnInner}>
@@ -841,16 +948,19 @@ export default function CameraScreen() {
         </Pressable>
 
         <Pressable
-          onPress={handleDone}
-          disabled={!canDone}
+          onPress={() => { void handleDone(); }}
+          disabled={!canDone || preparing}
+          accessibilityLabel={preparing ? 'Preparing photos' : 'Done'}
           style={({ pressed }) => [
             s.sideBtn,
             !canDone && { opacity: 0.3 },
             pressed && canDone && { opacity: 0.8 },
           ]}
         >
-          <MaterialIcons name="check" size={26} color={CREAM} />
-          <Text style={s.sideBtnLabel}>Done</Text>
+          {preparing
+            ? <ActivityIndicator size="small" color={CREAM} style={{ height: 26 }} />
+            : <MaterialIcons name="check" size={26} color={CREAM} />}
+          <Text style={s.sideBtnLabel}>{preparing ? 'Preparing' : 'Done'}</Text>
         </Pressable>
       </View>
 
@@ -1010,6 +1120,10 @@ const s = StyleSheet.create({
   slotEmptyTarget: { borderColor: GOLD, borderWidth: 2, backgroundColor: 'rgba(190,156,44,0.10)' },
 
   removeBtn:      { position: 'absolute', top: -7, right: -7 },
+  preparingOverlay: {
+    position: 'absolute', top: 0, left: 0, width: 58, height: 58, borderRadius: 10,
+    backgroundColor: 'rgba(20,30,20,0.45)', alignItems: 'center', justifyContent: 'center',
+  },
   removeBtnInner: { width: 18, height: 18, borderRadius: 9, backgroundColor: 'rgba(80,20,20,0.88)', borderWidth: 1.5, borderColor: '#FF6B6B', justifyContent: 'center', alignItems: 'center' },
 
   magnifyBtn:      { position: 'absolute', top: -6, left: -6 },

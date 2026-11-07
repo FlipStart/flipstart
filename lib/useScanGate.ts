@@ -18,7 +18,12 @@
  * hook reconstructing one.
  */
 import { useCallback, useRef } from "react";
+import { Alert } from "react-native";
+import { useRouter } from "expo-router";
 import { useAuth } from "@/lib/auth-context";
+import { explainBalanceFailure, isNetworkFailure } from "@/lib/balanceCheck";
+import { checkConnection } from "@/lib/scanAttempt";
+import { logEvent } from "@/lib/analytics";
 import { useEntitlement } from "@/lib/useEntitlement";
 import { useProPaywall } from "@/components/monetization/paywall/ProPaywallProvider";
 import {
@@ -56,12 +61,32 @@ export interface ScanAttempt {
  */
 const ALLOWANCE_ATTEMPTS = 3;
 const ALLOWANCE_BACKOFF_MS = 700;
+/** How long a tap waits for the balance before saying why it can't continue. */
+const BALANCE_CHECK_TIMEOUT_MS = 10_000;
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/**
+ * The scan count in the server's entitlement answer.
+ *
+ * It lives under `balances` (server/monetization/policy.ts, EntitlementReadModel).
+ * This hook used to read `entitlement.totalUsableScans`, which doesn't exist —
+ * so every re-check came back "unknown" and the tap did nothing, even when the
+ * server had answered (Phase 7). The top-level read stays as a fallback.
+ */
+export function usableScansFrom(e: any): number | undefined {
+  const v = e?.balances?.totalUsableScans ?? e?.totalUsableScans;
+  return typeof v === "number" ? v : undefined;
+}
 
 export function useScanGate(): (attempt: ScanAttempt) => void {
   const ent = useEntitlement();
   const { user } = useAuth();
   const { openProPaywall } = useProPaywall();
+  const router = useRouter();
+  /** A balance check is running: further taps wait for it instead of stacking up. */
+  const checkingRef = useRef(false);
+  /** The gate itself, so "Try again" in the message can run it once more. */
+  const gateRef = useRef<((attempt: ScanAttempt) => void) | null>(null);
 
   /**
    * Stable handles for the async paths.
@@ -75,7 +100,7 @@ export function useScanGate(): (attempt: ScanAttempt) => void {
   const uidRef = useRef<string | null>(user?.id ?? null);
   uidRef.current = user?.id ?? null;
 
-  return useCallback(
+  const gate = useCallback(
     (attempt: ScanAttempt) => {
       const { run, goToScanStore } = attempt;
       const openedUid = uidRef.current ?? null;
@@ -109,7 +134,7 @@ export function useScanGate(): (attempt: ScanAttempt) => void {
           try {
             const res: any = await entRef.current.refresh();
             const e = res?.data?.entitlement;
-            if (canResumeScanAfterUnlock(e?.plan, e?.totalUsableScans)) {
+            if (canResumeScanAfterUnlock(e?.plan, usableScansFrom(e))) {
               runOnce();
               return;
             }
@@ -182,21 +207,57 @@ export function useScanGate(): (attempt: ScanAttempt) => void {
        * ── Unknown: resolve once, then decide ───────────────────────────────
        *
        * Never assume scans remain and never assume they are gone. If it still
-       * cannot be resolved, NOTHING happens — no camera, no paywall, no Scan
-       * Store. The next tap tries again; the guess is never cached.
+       * can't be resolved, no camera, no paywall, no Scan Store — but the user
+       * is TOLD why (offline, our server down, signed out, balance unreadable)
+       * and offered Try again. Before Phase 7 this branch did nothing at all.
        */
+      if (checkingRef.current) return;
+      checkingRef.current = true;
       void (async () => {
+        let res: any = null;
+        let thrown: unknown = null;
         try {
-          const res: any = await entRef.current.refresh();
-          const e = res?.data?.entitlement;
+          // Bounded: a request that never answers must not leave the button
+          // ignoring every tap (checkingRef) with nothing on screen.
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          res = await Promise.race([
+            entRef.current.refresh(),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Balance check timed out")), BALANCE_CHECK_TIMEOUT_MS); }),
+          ]).finally(() => { if (timer) clearTimeout(timer); });
+        } catch (e) {
+          thrown = e;
+        }
+        try {
           if ((uidRef.current ?? null) !== openedUid) return;
-          const resolved = decideAfterRefresh(e?.plan, e?.totalUsableScans);
-          if (resolved) act(resolved);
-        } catch {
-          // Fail closed: do nothing rather than guess.
+          const e = res?.data?.entitlement;
+          // A failed refetch still carries the LAST good data — possibly the
+          // previous account's. Never decide from it.
+          const resolved = thrown || res?.error ? null : decideAfterRefresh(e?.plan, usableScansFrom(e));
+          if (resolved) { act(resolved); return; }
+
+          const err = thrown ?? res?.error ?? null;
+          // Only a request that got no answer needs the "is the internet up?" check.
+          const online = err && isNetworkFailure(err) ? await checkConnection() : null;
+          if ((uidRef.current ?? null) !== openedUid) return;
+          const m = explainBalanceFailure({ result: res, thrown, online })
+            ?? explainBalanceFailure({ result: { data: { ok: true, entitlement: null } } })!;
+          try { logEvent("scan_button_blocked", { problem: m.problem, origin: attempt.origin }); } catch { /* never block */ }
+          Alert.alert(m.title, m.message, m.action === "sign_in"
+            ? [
+                { text: "Not now", style: "cancel" },
+                { text: "Sign in", onPress: () => router.push({ pathname: "/auth" as any, params: { mode: "login" } }) },
+              ]
+            : [
+                { text: "OK", style: "cancel" },
+                { text: "Try again", onPress: () => gateRef.current?.(attempt) },
+              ]);
+        } finally {
+          checkingRef.current = false;
         }
       })();
     },
-    [openProPaywall],
+    [openProPaywall, router],
   );
+  gateRef.current = gate;
+  return gate;
 }

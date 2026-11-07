@@ -51,4 +51,4 @@ export const MONETIZATION_HARNESS_VISIBLE = false;
  * account, uses no scans and charges nothing. Set to false before the App
  * Store build; Settings then hides the row and the route needs a dev build.
  */
-export const FAIL_SCREEN_PREVIEW_VISIBLE = true;
+export const FAIL_SCREEN_PREVIEW_VISIBLE = false;

@@ -11,7 +11,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { useRouter } from 'expo-router';
+import { useRouter, type ErrorBoundaryProps } from 'expo-router';
+import { ScreenCrashFallback } from '@/components/scan/ScreenCrashFallback';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -227,6 +228,27 @@ const lm = StyleSheet.create({
 });
 
 // ─── Main Component ───────────────────────────────────────────────────────────
+
+/**
+ * If this screen crashes, show what broke instead of a blank or frozen screen
+ * (Phase 7). expo-router renders this in place of the route; Try again
+ * re-draws the route, Back to Home leaves it. The scan stays saved in memory.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  const router = useRouter();
+  const { currentScan } = useScanContext();
+  return (
+    <ScreenCrashFallback
+      screen="results"
+      error={error}
+      scan={currentScan}
+      onRetry={retry}
+      onBack={() => router.replace('/(tabs)' as any)}
+      backLabel="Back to Home"
+      justScanned
+    />
+  );
+}
 
 export default function ResultsScreen() {
   const router = useRouter();

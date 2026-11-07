@@ -47,7 +47,7 @@ export interface EventLike {
  * The server screen is split by cause, because each cause has its own
  * wording and its own fix.
  */
-export const FAIL_SCREENS: ReadonlyArray<{ key: string; label: string; group: "Unsure result" | "Didn't run" | "Account" }> = [
+export const FAIL_SCREENS: ReadonlyArray<{ key: string; label: string; group: "Unsure result" | "Didn't run" | "Account" | "Before the scan" | "After the scan" }> = [
   { key: "cannot_identify",      label: "Couldn't identify",            group: "Unsure result" },
   { key: "low_confidence",       label: "Low confidence",               group: "Unsure result" },
   { key: "multiple_items",       label: "Several items",                group: "Unsure result" },
@@ -66,11 +66,29 @@ export const FAIL_SCREENS: ReadonlyArray<{ key: string; label: string; group: "U
   { key: "out_of_scans",         label: "Out of scans",                 group: "Account" },
   { key: "pro_feature",          label: "Pro feature",                  group: "Account" },
   { key: "app_outdated",         label: "Update needed",                group: "Account" },
+  // Phase 7: messages shown outside the scan screen itself.
+  { key: "button:offline",            label: "Scan button: offline",                  group: "Before the scan" },
+  { key: "button:server_down",        label: "Scan button: server down",              group: "Before the scan" },
+  { key: "button:server_error",       label: "Scan button: server error",             group: "Before the scan" },
+  { key: "button:signed_out",         label: "Scan button: sign-in expired",          group: "Before the scan" },
+  { key: "button:balance_unreadable", label: "Scan button: balance unreadable",       group: "Before the scan" },
+  { key: "button:incomplete",         label: "Scan button: balance incomplete",       group: "Before the scan" },
+  { key: "photo:too_slow",            label: "Gallery photo didn't load (too slow)",  group: "Before the scan" },
+  { key: "photo:unreadable",          label: "Gallery photo couldn't be read",        group: "Before the scan" },
+  { key: "crash:results",             label: "Results screen crashed",                group: "After the scan" },
+  { key: "crash:hunt_item",           label: "Hunt item screen crashed",              group: "After the scan" },
 ];
+
+/** Events that each mean "the user was shown one of these messages". */
+export const FAIL_SCREEN_EVENTS = ["scan_failed", "scan_blocked", "scan_button_blocked", "photo_prep_failed", "screen_crashed"] as const;
 
 /** Which fail screen an event was for. Null for app 2.1 events, which don't say. */
 export function failScreenKey(e: EventLike): string | null {
   const m = e.metadata ?? {};
+  const s = (k: string) => (typeof m[k] === "string" ? (m[k] as string) : "unknown");
+  if (e.event_name === "scan_button_blocked") return `button:${s("problem")}`;
+  if (e.event_name === "photo_prep_failed") return `photo:${s("reason")}`;
+  if (e.event_name === "screen_crashed") return `crash:${s("screen")}`;
   const screen = typeof m.screen === "string" ? m.screen : null;
   if (!screen) return null;
   if (screen === "server") {
@@ -95,7 +113,7 @@ export interface FailScreenRow {
  * Screens not in FAIL_SCREENS (a newer app) are listed too, under their code.
  */
 export function rankFailScreens(events: EventLike[]): { rows: FailScreenRow[]; total: number; olderApp: Array<{ key: string; count: number }> } {
-  const shown = events.filter(e => e.event_name === "scan_failed" || e.event_name === "scan_blocked");
+  const shown = events.filter(e => (FAIL_SCREEN_EVENTS as readonly string[]).includes(e.event_name));
   const by = new Map<string, { n: number; who: Set<string>; last: string | null }>();
   const olderApp: EventLike[] = [];
   for (const e of shown) {
@@ -172,11 +190,13 @@ export async function loadScanOutcomes(window: AnalysisWindow): Promise<LoadedOu
     });
     return { configured: true, rows };
   } catch (e: any) {
+    // Never thrown on: the section still shows everything the app's own
+    // events can tell, with the server-side numbers at zero and this note.
     const msg = String(e?.message ?? e);
-    if (/scan_outcomes/.test(msg) && /does not exist|could not find|schema cache/i.test(msg)) {
-      return { configured: false, note: "The scan_outcomes table doesn't exist yet. Run drizzle/sql/scan_outcomes.sql in the Supabase SQL editor." };
+    if (/does not exist|could not find|schema cache|42P01|PGRST205/i.test(msg)) {
+      return { configured: false, note: "Server-side scan numbers are at zero because the scan_outcomes table doesn't exist yet. Run drizzle/sql/scan_outcomes.sql in the Supabase SQL editor; numbers start with the next scan." };
     }
-    throw e;
+    return { configured: false, note: `Server-side scan numbers are at zero because scan_outcomes couldn't be read: ${msg.slice(0, 160)}` };
   }
 }
 
@@ -187,6 +207,22 @@ const inRange = (w: AnalysisWindow, iso: string) => {
 };
 
 export interface Rate { n: number; d: number; value: number | null }
+
+/** Every row a table should show, even at zero — so an empty week reads as zero, not as missing. */
+const FAILURE_REASONS = ["timeout", "ai_busy", "ai_failed", "server_error", "server_restarting", "account_check_failed"];
+const BLOCKED_REASONS = ["out_of_scans", "sign_in", "pro_third_photo", "pro_ai_context", "app_outdated"];
+const SOFT_REASONS = ["low_confidence", "cannot_identify", "multiple_items", "photo_problem", "no_item"];
+const ACTIONS = ["continue", "back", "retake", "sign_in", "see_plans", "scan_store", "update"];
+const BLOCKED_SCREENS = ["out_of_scans", "app_outdated"];
+
+/** A tally that lists every seeded key (at 0 if unseen), most first. */
+function seeded(counts: Array<{ key: string; count: number }>, keys: string[]): Array<{ key: string; count: number }> {
+  const m = new Map(counts.map(c => [c.key, c.count]));
+  for (const k of keys) if (!m.has(k)) m.set(k, 0);
+  const order = new Map(keys.map((k, i) => [k, i]));
+  return [...m.entries()].map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count || (order.get(a.key) ?? 99) - (order.get(b.key) ?? 99) || a.key.localeCompare(b.key));
+}
 const rate = (n: number, d: number): Rate => ({ n, d, value: d > 0 ? n / d : null });
 
 function tally<T>(xs: T[], key: (x: T) => string | null | undefined): Array<{ key: string; count: number }> {
@@ -223,15 +259,15 @@ export function buildScanReliability(
     /** Never reached the server, so absent from scan_outcomes. */
     offline: failedEvents.filter(e => screenOf(e) === "offline").length,
     serverDown: failedEvents.filter(e => str(e, "cause") === "server_down").length,
-    actions: tally(evs.filter(e => e.event_name === "scan_fail_action"), e => str(e, "action")),
-    blocked: tally(evs.filter(e => e.event_name === "scan_blocked"), e => str(e, "screen")),
+    actions: seeded(tally(evs.filter(e => e.event_name === "scan_fail_action"), e => str(e, "action")), ACTIONS),
+    blocked: seeded(tally(evs.filter(e => e.event_name === "scan_blocked"), e => str(e, "screen")), BLOCKED_SCREENS),
     /** Every fail screen, most shown first. */
     screens: rankFailScreens(evs),
   };
 
-  if (!loaded.configured) return { configured: false as const, note: loaded.note, app };
-
-  const rows = loaded.rows.filter(r => inRange(window, r.created_at));
+  // Without the table every server number is zero — but the section keeps
+  // its full shape, and `problem` says why.
+  const rows = loaded.configured ? loaded.rows.filter(r => inRange(window, r.created_at)) : [];
   const results = rows.filter(r => r.kind === "ok" || r.kind === "soft");
   const soft = rows.filter(r => r.kind === "soft");
   const hard = rows.filter(r => r.kind === "hard");
@@ -246,7 +282,7 @@ export function buildScanReliability(
     if (t === "high" || t === "medium" || t === "low") tiers[t]++; else tiers.none++;
   }
 
-  const softByReason: SoftRow[] = tally(soft, r => r.reason).map(({ key, count }) => {
+  const softByReason: SoftRow[] = seeded(tally(soft, r => r.reason), SOFT_REASONS).map(({ key, count }) => {
     const of = soft.filter(r => (r.reason || "unknown") === key);
     const held = of.filter(r => r.resolution === null && r.charge === "held");
     const age = (r: OutcomeRow) => now - Date.parse(r.updated_at || r.created_at);
@@ -267,7 +303,9 @@ export function buildScanReliability(
   const continued = sum("continued"), declined = sum("declined"), abandoned = sum("abandoned");
 
   return {
-    configured: true as const,
+    configured: loaded.configured,
+    /** Why the server-side numbers are zero, or null when they are real. */
+    problem: loaded.configured ? null : loaded.note,
     app,
     attempts,
     results: results.length,
@@ -276,8 +314,8 @@ export function buildScanReliability(
     soft: soft.length,
     softRate: rate(soft.length, results.length),
     tiers,
-    failuresByReason: tally(failures, r => r.reason).map(x => ({ ...x, share: rate(x.count, attempts) })),
-    blockedByReason: tally(blocked, r => r.reason),
+    failuresByReason: seeded(tally(failures, r => r.reason), FAILURE_REASONS).map(x => ({ ...x, share: rate(x.count, attempts) })),
+    blockedByReason: seeded(tally(blocked, r => r.reason), BLOCKED_REASONS),
     stopped: stopped.length,
     softByReason,
     continueRate: rate(continued, continued + declined + abandoned),

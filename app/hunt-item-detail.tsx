@@ -31,7 +31,8 @@ import {
   TextInput, Platform, Modal, TouchableWithoutFeedback,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
+import { useRouter, useNavigation, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
+import { ScreenCrashFallback } from '@/components/scan/ScreenCrashFallback';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -86,6 +87,50 @@ const es = StyleSheet.create({
 });
 
 // ─── Component ────────────────────────────────────────────────────────────────
+
+/**
+ * If this screen crashes, show what broke instead of a blank or frozen screen
+ * (Phase 7). Finds the same scan the screen was showing: the current scan, or
+ * — for a saved item opened from a finished hunt — its stored snapshot.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string; huntItemId?: string }>();
+  const { currentScan } = useScanContext();
+  const { flips } = useFlipStore();
+  const readOnly = params.mode === 'readonly';
+  let scan: unknown = currentScan;
+  if (readOnly) {
+    scan = null;
+    try {
+      const id = params.huntItemId ?? '';
+      const fromActive = id ? getHuntItemById(id) : null;
+      if (fromActive) scan = (fromActive as any).scanSnapshot ?? null;
+      else {
+        for (const entry of flips) {
+          if (!isHuntBundle(entry)) continue;
+          const found = [...entry.keptItems, ...entry.removedItems].find((i: any) => i.huntItemId === id);
+          if (found) { scan = (found as any).scanSnapshot ?? null; break; }
+        }
+      }
+    } catch { scan = null; }
+  }
+  const inHunt = isHuntActive();
+  return (
+    <ScreenCrashFallback
+      screen="hunt_item"
+      error={error}
+      scan={scan}
+      onRetry={retry}
+      onBack={() => {
+        if (readOnly && router.canGoBack()) router.back();
+        else router.replace((inHunt ? '/hunt-active' : '/(tabs)') as any);
+      }}
+      backLabel={inHunt ? 'Back to Hunt' : 'Back to Home'}
+      justScanned={!readOnly}
+    />
+  );
+}
 
 export default function HuntItemDetailScreen() {
   const router     = useRouter();

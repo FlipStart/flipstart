@@ -56,7 +56,7 @@ export function bar(pctValue: number | null, colorVar = "--accent"): string {
 // ─── Section renderers ───────────────────────────────────────────────────────
 
 function renderUsers(s: any): string {
-  if (isErr(s)) return errorCard("Core User Metrics", s);
+  if (isErr(s)) return section("users", "1 · Core User Metrics", errorCard("Core User Metrics", s));
   const grid = [
     card("Total profiles", num(s.total)),
     card("New today", num(s.newToday)),
@@ -72,7 +72,7 @@ function renderUsers(s: any): string {
 }
 
 function renderRetention(s: any): string {
-  if (isErr(s)) return errorCard("Retention", s);
+  if (isErr(s)) return section("retention", "2 · Retention", errorCard("Retention", s));
   const row = (label: string, d: any) => {
     if (!d) return "";
     if (d.label) return card(label, `<span class="muted">${esc(d.label)}</span>`, `${num(d.eligible)} eligible`);
@@ -83,7 +83,7 @@ function renderRetention(s: any): string {
 }
 
 function renderFunnel(s: any): string {
-  if (isErr(s)) return errorCard("Activation Funnel", s);
+  if (isErr(s)) return section("funnel", "3 · Activation Funnel", errorCard("Activation Funnel", s));
   const rows = (s.stages ?? []).map((st: any) => `
     <tr>
       <td>${esc(st.label)}</td>
@@ -99,7 +99,7 @@ function renderFunnel(s: any): string {
 }
 
 function renderConversion(s: any): string {
-  if (isErr(s)) return errorCard("Account Funnel", s);
+  if (isErr(s)) return section("conversion", "4 · Account Funnel", errorCard("Account Funnel", s));
   const grid = [
     card("Onboarding starts", num(s.onboardingStarts)),
     card("Account creations", num(s.accountCreated)),
@@ -110,7 +110,7 @@ function renderConversion(s: any): string {
 }
 
 function renderSessions(s: any): string {
-  if (isErr(s)) return errorCard("Session / App Open", s);
+  if (isErr(s)) return section("sessions", "5 · Session / App Open", errorCard("Session / App Open", s));
   const sessLen = s.avgSessionLabel
     ? `<span class="muted">${esc(s.avgSessionLabel)}</span>`
     : `${Math.round((s.avgSessionMs ?? 0) / 1000)}s`;
@@ -127,7 +127,7 @@ function renderSessions(s: any): string {
 }
 
 export function renderScans(s: any): string {
-  if (isErr(s)) return errorCard("Scan Metrics", s);
+  if (isErr(s)) return section("scans", "6 · Scan Metrics", errorCard("Scan Metrics", s));
   const grid = [
     card("Scans started", num(s.started)),
     card("Scans completed", num(s.completed)),
@@ -149,7 +149,7 @@ export function renderScans(s: any): string {
 }
 
 export function renderTrust(s: any): string {
-  if (isErr(s)) return errorCard("Scan Trust / Feedback", s);
+  if (isErr(s)) return section("trust", "7 · Scan Trust / Feedback", errorCard("Scan Trust / Feedback", s));
   if (s.noData) return section("trust", "7 · Scan Trust / Feedback", `<div class="card"><div class="muted">No feedback submitted yet.</div></div>`);
   const grid = [
     card("Total feedback", num(s.total)),
@@ -189,7 +189,7 @@ export function renderTrust(s: any): string {
 }
 
 export function renderCost(s: any): string {
-  if (isErr(s)) return errorCard("Cost / Budget", s);
+  if (isErr(s)) return section("cost", "8 · Cost / Budget", errorCard("Cost / Budget", s));
   const grid = [
     card("Est. cost today", money(s.costToday)),
     card("Est. cost (7d)", money(s.cost7)),
@@ -205,7 +205,7 @@ export function renderCost(s: any): string {
 }
 
 export function renderHunt(s: any): string {
-  if (isErr(s)) return errorCard("Hunt Mode", s);
+  if (isErr(s)) return section("hunt", "9 · Hunt Mode", errorCard("Hunt Mode", s));
   const grid = [
     card("Hunt Mode opens", num(s.opened)),
     card("Hunts started", num(s.started)),
@@ -222,7 +222,7 @@ export function renderHunt(s: any): string {
 }
 
 export function renderProgress(s: any): string {
-  if (isErr(s)) return errorCard("Progress Tab Engagement", s);
+  if (isErr(s)) return section("progress", "10 · Progress Tab Engagement", errorCard("Progress Tab Engagement", s));
   const grid = [
     card("Progress opens", num(s.progress?.total), `${num(s.progress?.uniqueUsers)} users`),
     card("Achievements opens", num(s.ach?.total), `${num(s.ach?.uniqueUsers)} users`),
@@ -250,7 +250,7 @@ function rarityBadge(label: string): string {
 }
 
 export function renderAchievements(s: any): string {
-  if (isErr(s)) return errorCard("Achievement Analytics", s);
+  if (isErr(s)) return section("achievements", "11 · Achievement Analytics", errorCard("Achievement Analytics", s));
   const grid = [
     card("Total unlocked", num(s.totalUnlocked)),
     card("Avg per user", num(s.avgPerUser)),
@@ -270,7 +270,7 @@ export function renderAchievements(s: any): string {
 }
 
 export function renderBrands(s: any): string {
-  if (isErr(s)) return errorCard("Brand Compendium Analytics", s);
+  if (isErr(s)) return section("brands", "12 · Brand Compendium Analytics", errorCard("Brand Compendium Analytics", s));
   const rc = s.rarityCounts ?? {};
   const grid = [
     card("Total discoveries", num(s.totalDiscoveries)),
@@ -313,7 +313,7 @@ export function renderBrands(s: any): string {
 }
 
 export function renderDiamonds(s: any): string {
-  if (isErr(s)) return errorCard("Diamonds in the Rough Analytics", s);
+  if (isErr(s)) return section("diamonds", "13 · Diamonds in the Rough Analytics", errorCard("Diamonds in the Rough Analytics", s));
   const grid = [
     card("Total unlocks", num(s.totalUnlocks)),
     card("Unique diamonds", num(s.uniqueDiamonds), `of ${num(s.totalCatalog)} total`),
@@ -340,7 +340,7 @@ export function renderDiamonds(s: any): string {
 }
 
 export function renderListings(s: any): string {
-  if (isErr(s)) return errorCard("Listing Generation", s);
+  if (isErr(s)) return section("listings", "14 · Listing Generation", errorCard("Listing Generation", s));
   const p = s.platforms ?? {};
   const grid = [
     card("Total generations", num(s.total)),
@@ -362,7 +362,7 @@ export function renderListings(s: any): string {
 }
 
 export function renderDataQuality(s: any): string {
-  if (isErr(s)) return errorCard("Data Quality / Tracking Status", s);
+  if (isErr(s)) return section("dataquality", "15 · Data Quality / Tracking Status", errorCard("Data Quality / Tracking Status", s));
   const grid = [
     card("Total events", num(s.totalEvents)),
     card("Events today", num(s.eventsToday)),
@@ -389,7 +389,7 @@ export function renderDataQuality(s: any): string {
 }
 
 export function renderSold(s: any): string {
-  if (isErr(s)) return errorCard("Sold Items / Realized Profit", s);
+  if (isErr(s)) return section("sold", "16 \u00b7 Sold Items / Realized Profit", errorCard("Sold Items / Realized Profit", s));
   if (!s || !s.itemsSold) {
     return section("sold", "16 \u00b7 Sold Items / Realized Profit",
       `<div class="card"><div class="muted">No items marked sold yet.</div></div>`,
