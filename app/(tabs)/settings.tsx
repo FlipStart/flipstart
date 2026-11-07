@@ -23,7 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { resetOnboarding } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
-import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
+import { MONETIZATION_HARNESS_VISIBLE, FAIL_SCREEN_PREVIEW_VISIBLE } from '@/lib/devFlags';
 import { MembershipStatus } from '@/components/monetization/MembershipStatus';
 import { useEntitlement } from '@/lib/useEntitlement';
 import { useProPaywall } from '@/components/monetization/paywall/ProPaywallProvider';
@@ -688,6 +688,17 @@ export default function SettingsScreen() {
             style={({ pressed }) => [s.row, { marginTop: 8 }, pressed && { opacity: 0.7 }]}
           >
             <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 Monetization Test Harness</Text>
+          </Pressable>
+        )}
+
+        {/* Scan fail-screen preview. Own block so FAIL_SCREEN_PREVIEW_VISIBLE
+            controls it alone; it uses no scans and makes no requests. */}
+        {(__DEV__ || FAIL_SCREEN_PREVIEW_VISIBLE) && (
+          <Pressable
+            onPress={() => router.push('/dev-fail-screens' as any)}
+            style={({ pressed }) => [s.row, { marginTop: 8 }, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={[s.rowLabel, { color: '#8888FF' }]}>🔧 Scan Fail Screens</Text>
           </Pressable>
         )}
 

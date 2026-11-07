@@ -40,7 +40,7 @@ import { ProGateProvider } from '@/components/monetization/ProGate';
 import { ProPaywallProvider } from '@/components/monetization/paywall/ProPaywallProvider';
 import UpdateGate from '@/components/UpdateGate';
 
-import { MONETIZATION_HARNESS_VISIBLE } from '@/lib/devFlags';
+import { MONETIZATION_HARNESS_VISIBLE, FAIL_SCREEN_PREVIEW_VISIBLE } from '@/lib/devFlags';
 // Deep link auth handler remains disabled until AuthProvider boot is confirmed stable.
 // import * as Linking from "expo-linking";
 
@@ -542,6 +542,12 @@ export default function RootLayout() {
                 secret; pack grants still need the sandbox allowlist. */}
             <Stack.Protected guard={__DEV__ || MONETIZATION_HARNESS_VISIBLE}>
               <Stack.Screen name="dev-monetization" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'modal' }} />
+            </Stack.Protected>
+            {/* Scan fail-screen preview. Fixed sample data, no network, no
+                account, no charges. Guarded by FAIL_SCREEN_PREVIEW_VISIBLE so
+                it can be turned off in one place before release. */}
+            <Stack.Protected guard={__DEV__ || FAIL_SCREEN_PREVIEW_VISIBLE}>
+              <Stack.Screen name="dev-fail-screens" options={{ headerShown: false, animation: 'slide_from_bottom', presentation: 'fullScreenModal' }} />
             </Stack.Protected>
             {/*
               gestureEnabled: false — the onboarding back-swipe fix.

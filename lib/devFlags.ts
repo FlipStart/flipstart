@@ -41,3 +41,14 @@
  * made this containable, and it does not apply to production purchases.
  */
 export const MONETIZATION_HARNESS_VISIBLE = false;
+
+/**
+ * Makes the fail-screen preview (app/dev-fail-screens.tsx) reachable in
+ * TestFlight, so every scan fail screen can be looked at without forcing a
+ * failure.
+ *
+ * Safe to leave on while testing: the preview has no network calls, reads no
+ * account, uses no scans and charges nothing. Set to false before the App
+ * Store build; Settings then hides the row and the route needs a dev build.
+ */
+export const FAIL_SCREEN_PREVIEW_VISIBLE = true;
