@@ -518,7 +518,11 @@ export async function getScanMetrics(base: BaseData): Promise<Maybe<any>> {
 
     const started   = count("scan_started");
     const completed  = count("scan_completed");
-    const failed     = count("scan_failed");
+    // A soft fail the user continued past logs scan_failed, then
+    // scan_completed (Phase 6). It ended in a result, so it is not a failure.
+    const continuedSoft = pe.filter(e => e.event_name === "scan_completed"
+      && (e.metadata as any)?.continuedAfterSoftFail === true).length;
+    const failed     = Math.max(0, count("scan_failed") - continuedSoft);
     const completionRate = (completed + failed) ? pct(completed, completed + failed) : null;
 
     // Saved scans from the scans table (source of truth) — profiles-only.

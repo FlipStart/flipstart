@@ -31,6 +31,7 @@ import {
 } from "./scanRuntime.js";
 import { isDraining } from "./shutdown.js";
 import { scanSoftFail, type ScanFailReason } from "../shared/scanFailure.js";
+import { startOutcome, rowForResult, rowForError, writeOutcome, resolveOutcome, noteAppGaveUp } from "./scanOutcomes.js";
 
 /**
  * A scan failure the app can route on. The message is what app 2.1 already
@@ -151,6 +152,12 @@ const appRouter_scan = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
+        // Phase 6: one scan_outcomes row per attempt — how it ended and why.
+        // Recorded after the answer is decided; never awaited, never throws.
+        const outcome = startOutcome(input);
+        try {
+          const answer = await (async () => {
+        // (The body below keeps its original indentation, so this reads as a small diff.)
         console.log("[analyze] request received");
         console.log("[analyze] mimeType:", input.mimeType);
         console.log("[analyze] base64 length:", input.imageBase64?.length ?? 0);
@@ -202,6 +209,7 @@ const appRouter_scan = router({
         // muid is the Supabase uid the SERVER verified from the x-supabase-auth
         // header. Null means unverified, and V1 then does not apply.
         const muid = await resolveSupabaseUserId(ctx?.req as never, "analyze");
+        outcome.owner = muid ?? null;
 
         /**
          * ── THE EXPENSIVE ENDPOINT REQUIRES A VERIFIED IDENTITY ─────────────
@@ -381,6 +389,7 @@ const appRouter_scan = router({
             const rid = reservationId;
             const back = useV1 && rid ? await refundScan(rid).catch(() => false) : true;
             if (back) refunded = true;
+            outcome.charge = back ? "not_charged" : "unknown";
             noteUnchargedSoftFail(muid);
             console.log(`[${tag}] no_item — scan handed straight back${back ? "" : " (refund failed; it expires)"}`);
             return { ...payload, scanUsed: false };
@@ -392,11 +401,14 @@ const appRouter_scan = router({
               // The legacy counter reserves nothing: there is nothing to hand back.
               release: async () => (useV1 && rid ? refundScan(rid) : true),
             });
+            outcome.charge = "held";
             console.log(`[${tag}] ${soft} — charge HELD until the user chooses Continue anyway`);
             return { ...payload, chargePending: true };
           }
+          outcome.charge = "not_charged";
           if (commit) {
             charged = await commit();
+            outcome.charge = charged ? "charged" : "not_charged";
             console.log(`[${tag}] scan ${charged ? "COMMITTED" : "commit returned false"}${soft ? ` (${soft})` : ""}`);
           }
           // The new app says "this scan was used" on a soft fail only when one
@@ -494,6 +506,7 @@ const appRouter_scan = router({
         // no analysis saved, no scan consumed, nothing unlocked. The legacy
         // path below is untouched and is the immediate rollback.
         if (canonicalV1EnabledFor(sid)) {
+          outcome.route = "v1";
           const analysisId = randomUUID();
 
           // ── Entitlement, enforced here rather than by hiding the UI ────────
@@ -735,6 +748,13 @@ const appRouter_scan = router({
           run.fail(out, refunded, charged);
           throw out;
         }
+          })();
+          writeOutcome(rowForResult(outcome, answer));
+          return answer;
+        } catch (err) {
+          writeOutcome(rowForError(outcome, err));
+          throw err;
+        }
       }),
     /**
      * The app's 45 s scan clock ran out (Phase 2). Stops this user's scan if it
@@ -743,10 +763,17 @@ const appRouter_scan = router({
      * so the user is never charged for nothing. Only the owner can cancel.
      */
     cancelAnalysis: publicProcedure
-      .input(z.object({ scanAttemptId: z.string().min(1).max(200) }))
+      .input(z.object({
+        scanAttemptId: z.string().min(1).max(200),
+        // "gave_up": the app's clock ran out or it stopped after errors — a
+        // failure. "user" (or absent, app 2.1): the Cancel button.
+        why: z.enum(["user", "gave_up"]).optional(),
+      }))
       .mutation(async ({ input, ctx }) => {
         const muid = await resolveSupabaseUserId(ctx?.req as never, "cancel");
         if (!muid) return { status: "not_running" as const };
+        // Before the stop, so the scan's own failure row already knows why.
+        if (input.why === "gave_up") noteAppGaveUp(muid, input.scanAttemptId.trim());
         const outcome = await cancelScan(muid, input.scanAttemptId.trim());
         console.log(`[analyze] cancel → ${outcome.status} — attempt ${input.scanAttemptId.slice(0, 16)}`);
         return outcome;
@@ -764,6 +791,9 @@ const appRouter_scan = router({
         const muid = await resolveSupabaseUserId(ctx?.req as never, "confirm-charge");
         if (!muid) return { status: "not_held" as const };
         const outcome = await confirmHeldCharge(muid, input.scanAttemptId.trim());
+        // not_held: the hold had already expired and the scan went back.
+        resolveOutcome(muid, input.scanAttemptId.trim(), "continued",
+          outcome.status === "charged" ? "charged" : outcome.status === "failed" ? "unknown" : "not_charged");
         console.log(`[analyze] continue anyway → ${outcome.status} — attempt ${input.scanAttemptId.slice(0, 16)}`);
         return outcome;
       }),
@@ -781,6 +811,8 @@ const appRouter_scan = router({
         const outcome = await releaseHeldCharge(muid, id);
         // Forgotten whenever a hold was taken, refunded or not: the user turned it down.
         if (outcome.status !== "not_held") forgetCachedAnalysis(id);
+        resolveOutcome(muid, id, "declined",
+          outcome.status === "released" ? "not_charged" : outcome.status === "failed" ? "unknown" : undefined);
         console.log(`[analyze] soft fail declined → ${outcome.status} — attempt ${id.slice(0, 16)}`);
         return outcome;
       }),

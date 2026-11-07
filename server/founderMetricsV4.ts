@@ -37,6 +37,7 @@
 import { loadBaseData, fetchAll, countRows, type BaseData } from "./founderMetrics";
 import { getPricingEras, getAppleFeeRate, eraAt, currentEra, eraPrice, ERA_NOTES, type PricingEra } from "./pricingEras";
 import { getSupabaseAdmin } from "./supabaseAdmin";
+import { loadScanOutcomes, buildScanReliability } from "./scanReliability";
 import { derivePlan, type AccountUsage, type PlanState,
   FREE_LIFETIME_SCANS, MONTHLY_SCANS, ANNUAL_SCANS } from "./monetization/policy";
 import { PAYWALL_SOURCES } from "../lib/paywallConfig";
@@ -2394,7 +2395,9 @@ export function getAppVersions(d: V4Data) {
     const users = new Set(on.filter(e => e.user_id).map(e => e.user_id!));
     const active = new Set(on.filter(e => e.user_id && inWindow(d.window, e.created_at)).map(e => e.user_id!));
     const completed = on.filter(e => e.event_name === "scan_completed").length;
-    const failed = on.filter(e => e.event_name === "scan_failed").length;
+    // A continued soft fail logs both events; it ended in a result (Phase 6).
+    const continuedSoft = on.filter(e => e.event_name === "scan_completed" && (e.metadata as any)?.continuedAfterSoftFail === true).length;
+    const failed = Math.max(0, on.filter(e => e.event_name === "scan_failed").length - continuedSoft);
     const viewers = new Set(on.filter(e => e.event_name === "paywall_opened" && e.user_id).map(e => e.user_id!));
     const buyers = new Set(on.filter(e => e.event_name === "paywall_purchase_completed" && e.user_id).map(e => e.user_id!));
     const cohort = [...firstVer.entries()].filter(([, x]) => x.v === v).map(([u]) => u);
@@ -3117,6 +3120,9 @@ export async function getFounderDashboardV4Metrics(
   const journeys = safe("paidJourneys", () => getPaidJourneys(d));
   const rates = v3Metrics?.cost && !isErrLike(v3Metrics.cost) ? v3Metrics.cost.rates ?? null : null;
   const explorer = await safeAsync("userExplorer", () => getExplorer(d, explorerParams, rates));
+  // Phase 6: every user, the selected dates only — see server/scanReliability.ts.
+  const scanReliability = await safeAsync("scanReliability", async () =>
+    buildScanReliability(await loadScanOutcomes(window), d.rawEvents ?? [], window));
   const out: any = {
     ...v3Metrics,
     cutover, cohort, window,
@@ -3145,6 +3151,7 @@ export async function getFounderDashboardV4Metrics(
     retentionV2: safe("retentionV2", () => getRetentionV2(d)),
     sessionsV2:  safe("sessionsV2", () => getSessionsV2(d)),
     featureUsage: safe("featureUsage", () => getFeatureUsage(d)),
+    scanReliability,
     unitEconomics: safe("unitEconomics", () => getUnitEconomics(d, v3Metrics?.cost)),
     dataQualityV4: safe("dataQualityV4", () => getDataQualityV4(d, cutover)),
     preLaunchProfiles: d.preLaunchProfiles,

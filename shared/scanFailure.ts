@@ -105,6 +105,33 @@ export function scanSoftFail(result: SoftFailSource | null | undefined): SoftFai
   return null;
 }
 
+/**
+ * What a hard failure means for the numbers (Phase 6, tracking).
+ *
+ * failure   — FlipStart let the user down: something broke, ran out of time
+ *             or couldn't be checked. These are what the failure rate counts.
+ * blocked   — working as designed: the user needs to sign in, buy scans,
+ *             upgrade or update. Shown, but never counted as a failure.
+ * stopped   — the user cancelled.
+ * duplicate — a retry of a scan that is still running or already settled.
+ *             The original request records the outcome; this one doesn't.
+ */
+export type FailureGroup = "failure" | "blocked" | "stopped" | "duplicate";
+
+export function failureGroup(reason: ScanFailReason): FailureGroup {
+  switch (reason) {
+    case "sign_in": case "out_of_scans": case "pro_third_photo":
+    case "pro_ai_context": case "app_outdated":
+      return "blocked";
+    case "cancelled":
+      return "stopped";
+    case "scan_in_progress": case "join_timeout":
+      return "duplicate";
+    default:
+      return "failure";
+  }
+}
+
 /** Soft fails where "Continue anyway" makes sense. No item = nothing to show. */
 export function softFailCanContinue(f: SoftFail): boolean {
   return f !== "no_item";

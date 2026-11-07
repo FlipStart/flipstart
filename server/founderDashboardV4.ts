@@ -28,6 +28,7 @@ import {
 } from "./founderDashboardV3";
 import type { Metric, Trust, PaywallRow, PaidJourney, Scope, AnalysisWindow, RangePreset } from "./founderMetricsV4";
 import { formatCentralDateTime } from "./dashboardDates";
+import { REASON_LABEL } from "./scanReliability";
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -446,6 +447,83 @@ function renderAppVersions(av: any): string {
     "event-time version");
 }
 
+// ── Scan reliability (Phase 6) ───────────────────────────────────────────────
+
+const reasonLabel = (k: string) => esc(REASON_LABEL[k] ?? k);
+const r8 = (x: any) => x && x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : "—";
+
+/**
+ * Every fail screen, most shown first — "what fails most often" at a glance.
+ * Zeros stay listed, so a screen nobody hit is visibly zero.
+ */
+export function renderFailScreenRanking(fs: any): string {
+  if (!fs || !Array.isArray(fs.rows)) return "";
+  const total = Number(fs.total) || 0;
+  const top = fs.rows[0];
+  const headline = total && top && top.shown
+    ? `<div class="banner">Most hit: <b>${esc(top.label)}</b> — ${num(top.shown)} of ${num(total)} fail screens (${pct(top.share)}), ${num(top.users)} ${top.users === 1 ? "user" : "users"}.</div>`
+    : `<div class="banner">No fail screens shown in this range.</div>`;
+  const maxShown = Math.max(1, ...fs.rows.map((r: any) => Number(r.shown) || 0));
+  const rows = fs.rows.map((r: any, i: number) => [
+    r.shown ? num(i + 1) : "—",
+    esc(r.label),
+    `<span class="muted">${esc(r.group)}</span>`,
+    num(r.shown),
+    r.share === null || r.share === undefined ? "—" : pct(r.share),
+    num(r.users),
+    `<div style="min-width:100px">${bar(r.shown / maxShown * 100)}</div>`,
+    when(r.lastShown),
+  ]);
+  const older = (fs.olderApp ?? []).length
+    ? `<div class="muted">Also ${num((fs.olderApp ?? []).reduce((a: number, x: any) => a + (Number(x.count) || 0), 0))} from app 2.1, which only says the general type: ${(fs.olderApp ?? []).map((x: any) => `${esc(x.key)} ${num(x.count)}`).join(" · ")}. Included in the total above.</div>`
+    : "";
+  return `<div class="card"><div class="card-h">Fail screens — most hit first ${badge("EXACT")} <span class="muted">— every user, the selected dates</span></div>
+    ${headline}
+    <div style="overflow-x:auto">${table(["#", "Screen", "Kind", "Times shown", "Share", "Users", "", "Last shown"], rows, "compact")}</div>
+    <div class="muted">One count per screen shown. "Unsure result" screens follow a scan that ran (they show the result as Continue anyway); "Didn't run" means no result; "Account" screens are working as designed.</div>
+    ${older}</div>`;
+}
+
+export function renderScanReliability(sr: any): string {
+  const title = "12c · Scan Reliability";
+  if (!sr || typeof sr !== "object") return section("reliability", title, absent("Scan Reliability", sr));
+  if (isErr(sr)) return errorCard("Scan Reliability", sr);
+  const app = sr.app ?? {};
+  const appBlock = `<div class="card"><div class="card-h">What the app showed ${badge("EXACT")} <span class="muted">— scan_failed events, every user</span></div>
+    ${grid([card("Fail screens shown", num(app.failedEvents)), card("Phone offline", num(app.offline), "never reached the server"), card("Server down (Railway)", num(app.serverDown), "the app reached the internet but not us")])}
+    ${table(["Screen", "Shown"], (app.byScreen ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}
+    <div class="card-h">What users tapped</div>
+    ${table(["Action", "Taps"], (app.actions ?? []).map((x: any) => [esc(x.key), num(x.count)]), "compact")}
+    <div class="card-h">Blocked screens shown (out of scans, update needed)</div>
+    ${table(["Screen", "Shown"], (app.blocked ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}
+    <div class="muted">Taps and blocked screens are recorded from the new app build onward; app 2.1 sends only scan_failed with an errorType.</div></div>`;
+  const ranking = renderFailScreenRanking(app.screens);
+  if (!sr.configured) {
+    return section("reliability", title, ranking + `<div class="banner warn">${esc(sr.note)}</div>` + appBlock, "server + app");
+  }
+  const t = sr.tiers ?? { high: 0, medium: 0, low: 0, none: 0 };
+  const tierRow = (label: string, n: number) => [esc(label), num(n), sr.results ? pct(n / sr.results) : "—", bar(sr.results ? n / sr.results * 100 : 0)];
+  const hardBlock = `<div class="card"><div class="card-h">Hard failures — no result ${badge("EXACT")}</div>
+    ${grid([m("Failure rate", { value: sr.failureRate.value, trust: "DERIVED", n: sr.failureRate.n, d: sr.failureRate.d }), card("Failed scans", num(sr.failures)), card("Cancelled by user", num(sr.stopped))])}
+    ${table(["Reason", "Scans", "Share of attempts"], (sr.failuresByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count), r8(x.share)]), "compact")}
+    <div class="card-h">Blocked — working as designed, not counted as failures</div>
+    ${table(["Reason", "Scans"], (sr.blockedByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}</div>`;
+  const softBlock = `<div class="card"><div class="card-h">Low-confidence results — soft fails ${badge("EXACT")}</div>
+    ${grid([m("Soft-fail rate", { value: sr.softRate.value, trust: "DERIVED", n: sr.softRate.n, d: sr.softRate.d }), m("Continue anyway rate", { value: sr.continueRate.value, trust: "DERIVED", n: sr.continueRate.n, d: sr.continueRate.d }), card("Charged at once", num(sr.chargedAtOnce), "app 2.1, or past the daily cap")])}
+    ${table(["Soft fail", "Scans", "Continued", "Back / Retake", "Left without choosing", "Waiting", "Charged at once", "Not charged, no choice", "Continue rate"],
+      (sr.softByReason ?? []).map((x: any) => [reasonLabel(x.reason), num(x.count), num(x.continued), num(x.declined), num(x.abandoned), num(x.open), num(x.chargedAtOnce), num(x.noChoice), r8(x.continueRate)]), "compact")}
+    <div class="muted">"Left without choosing": the app closed on the screen; after 10 minutes the hold expired and the scan went back to the user. "Charged at once": no choice could be recorded — app 2.1, or a user past the daily cap of uncharged soft fails. "Not charged, no choice": mostly "no item", which goes straight back.</div></div>`;
+  const tierBlock = `<div class="card"><div class="card-h">Confidence of every result ${badge("EXACT")} <span class="muted">— for calibrating the tiers</span></div>
+    ${table(["Tier", "Results", "Share", ""], [tierRow("HIGH", t.high), tierRow("MEDIUM", t.medium), tierRow("LOW", t.low), tierRow("No tier", t.none)], "compact")}
+    <div class="muted">${num(sr.results)} results in range. "No tier": couldn't identify, or an older result without a tier.</div></div>`;
+  return section("reliability", title,
+    `${ranking}
+     ${grid([card("Scan attempts", num(sr.attempts), "results + failures"), card("Results", num(sr.results)), card("Hard failures", num(sr.failures)), card("Soft fails", num(sr.soft))])}
+     <div class="two">${hardBlock}${softBlock}</div><div class="two">${tierBlock}${appBlock}</div>
+     <div class="muted">${esc(sr.note)}</div>`,
+    "server + app");
+}
+
 function renderAcquisitionSource(as: any): string {
   if (!as || typeof as !== "object") return section("source", "2b · Acquisition Source", absent("Acquisition Source", as));
   if (isErr(as)) return errorCard("Acquisition Source", as);
@@ -791,7 +869,7 @@ function renderDataQualityV4(q: any): string {
 const TOC: Array<[string, string]> = [
   ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
   ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"],
-  ["scans", "Scans"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
+  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
 ];
 
@@ -816,7 +894,7 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
     renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore),
     renderCohorts(metrics.cohorts), renderDistributions(metrics.distributions),
     renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderRetentionSegments(metrics.retentionSegments), renderSessionsV2(metrics.sessionsV2), renderAppVersions(metrics.appVersions),
-    renderScans(metrics.scans), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
+    renderScans(metrics.scans), renderScanReliability(metrics.scanReliability), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
     // V3 product analytics, preserved and demoted below the business funnel.
     renderTrust(metrics.trust), renderHunt(metrics.hunt), renderProgress(metrics.progress), renderAchievements(metrics.achievements),
     renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold),

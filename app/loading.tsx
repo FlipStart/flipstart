@@ -69,6 +69,8 @@ interface FailState {
 interface HeldResult {
   scanResult: ScanResult;
   chargePending: boolean;
+  /** scan_completed's fields, sent if the user taps Continue anyway. */
+  completedMeta: Record<string, unknown>;
 }
 
 /** How long Continue anyway waits for the server to confirm the charge before showing the result anyway. */
@@ -186,11 +188,14 @@ export default function LoadingScreen() {
    * "stopping" (told to stop, outcome not known yet) or "not_running". Null
    * when there was no answer within CANCEL_WAIT_MS. Never throws.
    */
-  const stopOnServer = useCallback(async (): Promise<{ status: string; result?: unknown } | null> => {
+  // why: "gave_up" when the app stopped waiting (45 s, or errors), "user" for
+  // the Cancel button — so the server records a slow scan as a failure, not
+  // as the user cancelling. A server without the field ignores it.
+  const stopOnServer = useCallback(async (why: "user" | "gave_up"): Promise<{ status: string; result?: unknown } | null> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        trpcUtils.client.scan.cancelAnalysis.mutate({ scanAttemptId }),
+        trpcUtils.client.scan.cancelAnalysis.mutate({ scanAttemptId, why }),
         new Promise<null>(res => { timer = setTimeout(() => res(null), CANCEL_WAIT_MS); }),
       ]);
     } catch (e: any) {
@@ -394,6 +399,13 @@ export default function LoadingScreen() {
       const pending = lastPendingScan.current ?? consumePendingScan();
       if (!pending?.front?.base64) {
         console.error("[loading] no pending scan data — aborting");
+        try {
+          logEvent("scan_failed", {
+            errorType: legacyErrorType("photo_load_failed"), reason: "photo_load_failed",
+            screen: "photo_load_failed", charge: "not_used", attemptId: scanAttemptId, inHunt: isHuntActive(),
+          });
+          incrementSessionCount("failedScanCount");
+        } catch { /* never block */ }
         setFailState({ screen: "photo_load_failed", charge: "not_used" });
         return;
       }
@@ -517,26 +529,39 @@ export default function LoadingScreen() {
             confidenceTierReason?: unknown; photoProblems?: unknown;
           };
           const chargePending = result?.chargePending === true;
-          heldResultRef.current = { scanResult, chargePending };
+          const tier = typeof (v1 as { confidenceTier?: unknown }).confidenceTier === "string"
+            ? (v1 as { confidenceTier: string }).confidenceTier : null;
+          heldResultRef.current = {
+            scanResult, chargePending,
+            completedMeta: {
+              confidence: matchConf, category: safeIdentification.category, brand: safeIdentification.brand,
+              recommendation: result.recommendation ?? "", tier,
+              continuedAfterSoftFail: true, softFail: soft, attemptId: scanAttemptId,
+            },
+          };
+          // scanUsed comes from a server that holds charges; a server that
+          // doesn't send it charged the scan, as before.
+          const softCharge: ChargeState = chargePending && softFailCanContinue(soft) ? "pending"
+            : result?.scanUsed === false ? "not_used"
+            : result?.scanUsed === true ? "used"
+            // A server that predates scanUsed charged every result, except
+            // "no item" which there was nothing to charge for.
+            : softFailCanContinue(soft) ? "used" : "not_used";
           console.log(`[loading] soft fail: ${soft} — charge ${chargePending ? "held" : "already taken"}`);
           try { player.pause(); } catch { /* ignore */ }
           try {
             logEvent("scan_failed", {
               errorType: legacyErrorType(soft), reason: soft, confidence: matchConf,
               chargeHeld: chargePending,
+              // Phase 6: which screen, and enough to join it to scan_outcomes.
+              screen: soft, kind: "soft", tier, charge: softCharge,
+              attemptId: scanAttemptId, inHunt: isHuntActive(),
             });
             incrementSessionCount("failedScanCount");
           } catch { /* never block */ }
           setFailState({
             screen: soft,
-            // scanUsed comes from a server that holds charges; a server that
-            // doesn't send it charged the scan, as before.
-            charge: chargePending && softFailCanContinue(soft) ? "pending"
-              : result?.scanUsed === false ? "not_used"
-              : result?.scanUsed === true ? "used"
-              // A server that predates scanUsed charged every result, except
-              // "no item" which there was nothing to charge for.
-              : softFailCanContinue(soft) ? "used" : "not_used",
+            charge: softCharge,
             seen: typeof v1.confidenceTierReason === "string" ? v1.confidenceTierReason : null,
             photoProblems: Array.isArray(v1.photoProblems) ? v1.photoProblems.map(String) : [],
           });
@@ -628,6 +653,7 @@ export default function LoadingScreen() {
       let lastTry: AbortController | null = null;
       let lastRaw  = "";
       let last: ClassifiedScanError | null = null;
+      let lastServerReason: string | null = null;
 
       try {
         while (true) {
@@ -674,6 +700,7 @@ export default function LoadingScreen() {
             if (!live()) return;
             lastRaw = String(err?.message ?? "");
             if (lastRaw === SCAN_DEADLINE) break;
+            lastServerReason = typeof err?.data?.scanReason === "string" ? err.data.scanReason.slice(0, 40) : null;
             // The server's reason code first; status and wording as fallbacks.
             last = classifyScanError(lastRaw, {
               reason:     err?.data?.scanReason,
@@ -730,7 +757,7 @@ export default function LoadingScreen() {
       let noCharge = last?.kind === "server_timeout";
       let cancelStatus = "skipped";
       if (outOfTime || last?.kind === "transient") {
-        const reply = await stopOnServer();
+        const reply = await stopOnServer("gave_up");
         if (!live()) return;
         cancelStatus = reply?.status ?? "no_answer";
         if (reply?.status === "completed" && reply.result) {
@@ -761,6 +788,13 @@ export default function LoadingScreen() {
 
       // Out of scans is a paywall moment, and an outdated app a build
       // problem; neither was ever counted as a failed scan.
+      // Phase 6 fields on both: the exact screen, the server's own code (null
+      // when no answer arrived), what the screen said about the charge, and
+      // the attempt id that joins it to scan_outcomes.
+      const failMeta = {
+        screen, cause: cause ?? null, serverReason: lastServerReason, kind: "hard",
+        charge, attemptId: scanAttemptId, inHunt: isHuntActive(), cancelStatus,
+      };
       if (screen !== "out_of_scans" && screen !== "app_outdated") {
         try {
           logEvent("scan_failed", {
@@ -769,9 +803,13 @@ export default function LoadingScreen() {
             autoRetries:   attempts - 1,
             durationMs,
             errorRaw:      lastRaw.slice(0, 80),
+            ...failMeta,
           });
           incrementSessionCount("failedScanCount");
         } catch { /* never block */ }
+      } else {
+        // Still a screen the user saw, so it gets one event — just not a failure.
+        try { logEvent("scan_blocked", { ...failMeta, durationMs }); } catch { /* never block */ }
       }
 
       setRetryCount(attempts - 1);
@@ -825,7 +863,7 @@ export default function LoadingScreen() {
       // A soft fail held while the user was leaving is handed back. Sent
       // whatever cancel answered — including no answer in time — because a
       // release with nothing held is a harmless no-op.
-      void stopOnServer().then(r => {
+      void stopOnServer("user").then(r => {
         if (r?.status !== "cancelled" && r?.status !== "not_running") releaseOnServer();
       });
     }
@@ -867,6 +905,13 @@ export default function LoadingScreen() {
         if (actionLockRef.current) return;
         actionLockRef.current = true;
       }
+      // What users do on each screen (Phase 6). Once per leaving action, thanks to the lock above.
+      try {
+        logEvent("scan_fail_action", {
+          action, screen: failState.screen, cause: failState.cause ?? null,
+          charge: failState.charge, attemptId: scanAttemptId, inHunt,
+        });
+      } catch { /* never block */ }
       switch (action) {
         case "continue": {
           const held = heldResultRef.current;
@@ -883,9 +928,16 @@ export default function LoadingScreen() {
             ]);
             if (timer) clearTimeout(timer);
             console.log("[loading] continue anyway — charge:", outcome?.status ?? "no answer");
+            held.completedMeta.chargeConfirm = outcome?.status ?? "no_answer";
           }
           heldResultRef.current = null;
           addScan(held.scanResult);
+          // The user got a result, so it counts as a completed scan — the
+          // dashboard's scan count and first-scan funnel read this event.
+          try {
+            logEvent("scan_completed", held.completedMeta);
+            incrementSessionCount("completedScanCount");
+          } catch { /* never block */ }
           void import("@/lib/reviewPrompt").then(m => m.recordCompletedScan()).catch(() => {});
           leave("result");
           return;

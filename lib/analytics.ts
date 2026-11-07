@@ -15,6 +15,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { getApiBaseUrl } from "@/constants/oauth";
+import { createEventQueue, newClientEventId, classifyInsertFailure, type InsertError, type SendResult } from "@/lib/analyticsQueue";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -213,8 +214,47 @@ function sanitizeMeta(meta: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-// Supabase sink — lazy client, fully fail-safe. Inserts one analytics row.
-// RLS: signed-in rows carry user_id = auth.uid(); guest rows carry user_id null.
+/**
+ * Supabase sink — lazy client, fully fail-safe.
+ * RLS: signed-in rows carry user_id = auth.uid(); guest rows carry user_id null.
+ *
+ * ── Offline (Phase 6) ───────────────────────────────────────────────────────
+ * A row that couldn't be sent for a connection reason waits on the phone
+ * (lib/analyticsQueue.ts) and is sent when the app is next in the foreground
+ * or another event gets through. Each row carries a client_event_id; a retry
+ * of a row that did arrive hits the unique index and counts as delivered.
+ * Until drizzle/sql/analytics_client_event_id.sql has been run the column
+ * doesn't exist: the first insert that says so switches the id off for the
+ * rest of the session, and nothing is lost.
+ */
+const ANALYTICS_QUEUE_KEY = "@flipstart/analyticsQueue";
+let _sendEventId = true;
+
+async function sendEventRow(row: Record<string, unknown>): Promise<SendResult> {
+  const { supabase } = await import("@/lib/supabase");
+  const body = { ...row };
+  if (!_sendEventId) delete body.client_event_id;
+  const res = await supabase.from("analytics_events").insert(body);
+  const error = res.error as InsertError;
+  if (!error) return "ok";
+  // Already stored: an earlier try got through and only its answer was lost.
+  if (error.code === "23505") return "ok";
+  if (_sendEventId && (error.code === "PGRST204" || error.code === "42703") && /client_event_id/.test(error.message ?? "")) {
+    _sendEventId = false;
+    return sendEventRow(row);
+  }
+  const verdict = classifyInsertFailure(error, res.status);
+  if (__DEV__) console.warn(`[analytics] supabase insert failed (${verdict}):`, error.message);
+  return verdict;
+}
+
+const _eventQueue = createEventQueue({ storage: AsyncStorage, send: sendEventRow, key: ANALYTICS_QUEUE_KEY });
+
+/** Send events held while offline. Called when the app comes to the foreground. */
+export function flushQueuedAnalytics(): void {
+  void _eventQueue.flush().catch(() => {});
+}
+
 function writeEventToSupabase(
   eventName: string,
   metadata: Record<string, unknown>,
@@ -223,9 +263,9 @@ function writeEventToSupabase(
 ): void {
   void (async () => {
     try {
-      const { supabase } = await import("@/lib/supabase");
       const anon = await getAnonUserId();
-      const { error } = await supabase.from("analytics_events").insert({
+      await _eventQueue.deliver({
+        client_event_id: newClientEventId(),
         user_id:        _identityUserId,           // null for guests
         profile_id:     _identityUserId,           // profiles.id == auth user id
         anonymous_id:   anon,
@@ -243,7 +283,6 @@ function writeEventToSupabase(
         // two can be compared to spot offline writes and skewed device clocks.
         occurred_at:    occurredAt ?? new Date().toISOString(),
       });
-      if (error && __DEV__) console.warn("[analytics] supabase insert failed:", error.message);
     } catch (e) {
       if (__DEV__) console.warn("[analytics] supabase insert threw:", e);
     }
@@ -372,6 +411,8 @@ export function trackAnalyticsEvent(
  * as multiple sessions, which was the root cause of session overcounting.
  */
 export function resumeOrStartSession(): void {
+  // Anything held while the phone was offline goes first.
+  flushQueuedAnalytics();
   void (async () => {
     try {
       const now = Date.now();
