@@ -117,6 +117,31 @@ export async function completeOnboarding(mode: UserMode): Promise<void> {
   await writeCompletion(mode);
 }
 
+/**
+ * A signed-in user on a device that has never finished onboarding.
+ *
+ * That is what deleting and reinstalling the app looks like: iOS wipes this
+ * file's AsyncStorage flags with the app, but the sign-in lives in the
+ * Keychain (lib/supabase.ts, expo-secure-store), which survives. Without this
+ * check the restored user was sent through the whole onboarding quiz again,
+ * already signed in, with no way to skip it.
+ *
+ *   'restored'    — signed in, never onboarded on this device, no signup in
+ *                   progress: marked complete. Go straight into the app.
+ *   'pending'     — a new account's signup funnel is in progress: leave it.
+ *   'not_needed'  — this device already finished some version of onboarding.
+ *                   (A user behind the CURRENT version still sees it once —
+ *                   that's the deliberate version bump, not a reinstall.)
+ *
+ * Only call this with a signed-in user.
+ */
+export async function restoreSignedInDevice(): Promise<'restored' | 'pending' | 'not_needed'> {
+  if (await readPendingNewUserOffer()) return 'pending';
+  if ((await getCompletedOnboardingVersion()) !== 0) return 'not_needed';
+  await writeCompletion('resell');
+  return 'restored';
+}
+
 async function writeCompletion(mode: UserMode): Promise<void> {
   try {
     await AsyncStorage.multiSet([

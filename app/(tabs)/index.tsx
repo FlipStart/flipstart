@@ -41,7 +41,7 @@ import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
 import { logEvent, useScreenFocus } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
-import { needsOnboarding } from '@/lib/onboarding-storage';
+import { needsOnboarding, restoreSignedInDevice } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -157,13 +157,26 @@ export default function HomeScreen() {
   useEffect(() => {
     // Version-gated: anyone whose device hasn't completed the CURRENT onboarding
     // version is sent through it once — including returning testers who finished
-    // the old onboarding (migrated to v1) and signed-in users. Any successful
-    // auth or onboarding completion writes the current version, so this never
-    // loops. Scans, Hunt, achievements, brands, diamonds, and profile are untouched.
-    needsOnboarding().then(needed => {
-      if (needed) router.replace('/onboarding' as any);
-    });
-  }, []);
+    // the old onboarding (migrated to v1). Any successful auth or onboarding
+    // completion writes the current version, so this never loops. Scans, Hunt,
+    // achievements, brands, diamonds, and profile are untouched.
+    //
+    // Waits for the sign-in to be restored first: someone who deleted and
+    // reinstalled the app is still signed in (the Keychain keeps the session)
+    // but has lost the local "onboarded" flag. They go straight back into
+    // their account — no onboarding, no sign-in screen.
+    if (authLoading) return;
+    let cancelled = false;
+    void (async () => {
+      if (!(await needsOnboarding())) return;
+      if (user && (await restoreSignedInDevice()) === 'restored') {
+        logEvent('onboarding_skipped_signed_in', { reason: 'session_restored' });
+        return;
+      }
+      if (!cancelled) router.replace('/onboarding' as any);
+    })();
+    return () => { cancelled = true; };
+  }, [authLoading, user?.id]);
 
   // routedForUser prevents re-routing when profile state updates after
   // username setup completes — without this guard a stale profile causes a loop.

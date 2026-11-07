@@ -66,7 +66,7 @@ import { MoneyTeaser, IntelligenceTeaser, GamificationTeaser } from '@/component
 import { ProfileBuilding } from '@/components/onboarding/ProfileBuilding';
 import { ProfileResult } from '@/components/onboarding/ProfileResult';
 import {
-  ONBOARDING_VERSION, completeOnboarding, finishNewUserOnboarding,
+  ONBOARDING_VERSION, completeOnboarding, finishNewUserOnboarding, restoreSignedInDevice,
   stageOnboardingAnswers, readStagedAnswers, clearStagedAnswers, bindStagedAnswersToUser,
   setPendingNewUserOffer, readPendingNewUserOffer, clearPendingNewUserOffer, bindPendingOfferToUser,
 } from '@/lib/onboarding-storage';
@@ -151,6 +151,13 @@ export default function OnboardingScreen() {
       setResume('none');
       return;
     }
+    // Signed in, no signup in progress, and this device never onboarded: a
+    // reinstall with the session restored from the Keychain. Straight in.
+    if (!pending && (await restoreSignedInDevice()) === 'restored') {
+      trackAnalyticsEvent('onboarding_skipped_signed_in', { reason: 'session_restored' });
+      router.replace('/(tabs)' as any);
+      return;
+    }
     if (!pending) { setResume('none'); return; }          // dev reset / version bump on an existing session
 
     if (pending.userId && pending.userId !== uid) {
@@ -179,7 +186,7 @@ export default function OnboardingScreen() {
     if (!profile.onboarding_complete) { setResume('username'); return; }
 
     setResume('offer');
-  }, [user?.id, user?.created_at, profile, profileError]);
+  }, [user?.id, user?.created_at, profile, profileError, router]);
 
   const decidingRef = useRef(false);
   useFocusEffect(useCallback(() => {
