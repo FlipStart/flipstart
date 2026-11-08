@@ -15,6 +15,7 @@
  * derived from the canonical object; nothing is recomputed or invented.
  */
 import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
+import { categoryLabel } from "./categoryLabel.js";
 
 export interface LegacyShape {
   identification: {
@@ -141,7 +142,12 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
     identification: {
       item_name: itemName,
       brand: ai.identification.canonical_brand || "Unknown",
-      category: ai.identification.broad_category || "Other",
+      // What the item IS ("Hoodie", "Denim Jacket"), short enough for the pill;
+      // the broad bucket ("Clothing") only when there's no usable type.
+      category: categoryLabel({
+        item_type: ai.identification.item_type, subtype: ai.identification.subtype,
+        broad_category: ai.identification.broad_category, brand: ai.identification.canonical_brand,
+      }),
       estimated_era: eraText,
       style_labels: ai.visible_attributes.style_labels ?? [],
       material_guess: ai.visible_attributes.material_composition.join(", ") || "Unknown",

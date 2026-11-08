@@ -280,7 +280,10 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   for (const f of ["product_line", "model_or_product_number"] as const) {
     const value = ai.identification[f];
     if (!value.trim()) continue;
-    const transcribed = evForField(f).some(e => e.evidence_mode === "direct_transcription");
+    // The user stating it in their note counts as reading it: they were
+    // holding the item (prompt v1.11.0 — AI Context is trusted).
+    const transcribed = evForField(f).some(e =>
+      e.evidence_mode === "direct_transcription" || e.photo_slot === "user_confirmed");
     if (!transcribed) {
       down("MODEL_NOT_TRANSCRIBED", f, value, "",
            "requires evidence_mode=direct_transcription; inference cannot populate it");

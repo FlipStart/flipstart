@@ -208,10 +208,15 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceResult {
    * survives validation (it has an evidence object) but is not an
    * identification, so it can neither hold the brand level nor add points.
    */
+  //
+  // The user's note counts as READ whatever mode the model labelled it with:
+  // the user was holding the item and told us (prompt v1.11.0). Without this a
+  // brand from the note recorded as "inference" was not an identification.
+  const fromNote = (e: { photo_slot?: string }) => e.photo_slot === "user_confirmed";
   const backed = (f: IdField) =>
-    evidence.some(e => e.field === f && e.evidence_mode !== "inference");
+    evidence.some(e => e.field === f && (e.evidence_mode !== "inference" || fromNote(e)));
   const transcribed = (f: IdField) =>
-    evidence.some(e => e.field === f && e.evidence_mode === "direct_transcription");
+    evidence.some(e => e.field === f && (e.evidence_mode === "direct_transcription" || fromNote(e)));
 
   // Facts the level is checked against. A product line / model number only
   // survives validation when it was read off the item, so "populated" already
@@ -339,16 +344,15 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceResult {
 
   // ── User-facing tier and its one-line reason ──────────────────────────────
   // From the level: the score, the photo count, authenticity and every
-  // non-identification signal play no part. HIGH also needs the identity to be
-  // visible in a PHOTO — the brief defines it as identified "from visible
-  // evidence" — so an identity resting only on the user's note shows MEDIUM.
+  // non-identification signal play no part.
+  //
+  // An identity from the user's note counts in full. It used to be capped at
+  // MEDIUM ("from your note — not confirmed in the photos") because HIGH was
+  // defined as identified from visible evidence; AI Context is now trusted
+  // (prompt v1.11.0), so the user telling us is as good as reading it.
   const inPhoto = (f: IdField) => populated(f) && evidence.some(e =>
     e.field === f && e.evidence_mode !== "inference" && e.photo_slot !== "user_confirmed");
-  const identityInPhoto = recognised || SPECIFIC_FIELDS.some(inPhoto) ||
-    inPhoto("canonical_brand") || LICENSED_FIELDS.some(inPhoto);
-  let tier = tierForLevel(level);
-  const noteOnly = tier === "high" && !identityInPhoto;
-  if (noteOnly) tier = "medium";
+  const tier = tierForLevel(level);
   const clip = (s: string) => (s.length > 48 ? `${s.slice(0, 47).trimEnd()}…` : s);
   const value = (f: IdField) => String((id as unknown as Record<string, unknown>)[f] ?? "").trim();
   /** The strongest sighting of a field: a photo beats the user's note, read
@@ -374,8 +378,7 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceResult {
       const brand = populated("canonical_brand") && backed("canonical_brand") ? value("canonical_brand") : "";
       const name = brand && !value(f).toLowerCase().startsWith(brand.toLowerCase())
         ? `${brand} ${value(f)}` : value(f);
-      tierReason = noteOnly ? `${clip(name)} from your note — not confirmed in the photos`
-        : from(f) === SLOT_PHRASE.user_confirmed ? `${clip(name)} from your note`
+      tierReason = from(f) === SLOT_PHRASE.user_confirmed ? `${clip(name)} from your note`
         : `${clip(name)} read off ${from(f)}`;
     } else {
       tierReason = "Matched a known product from its details";
@@ -386,8 +389,7 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceResult {
       : LICENSED_FIELDS.find(inPhoto)
       ?? (populated("canonical_brand") && backed("canonical_brand") ? "canonical_brand"
         : (licensedBacked[0] ?? "canonical_brand"));
-    tierReason = noteOnly ? `${clip(value(f))} from your note — not confirmed in the photos`
-      : `${clip(value(f))} confirmed from ${from(f)}`;
+    tierReason = `${clip(value(f))} confirmed from ${from(f)}`;
   } else if (level === "type") {
     tierReason = populated("canonical_brand")
       ? "Item type identified, but the brand couldn't be confirmed"

@@ -170,6 +170,14 @@ const appRouter_scan = router({
         // Entitlement is applied below once sid is known. Normalizing first is
         // safe — an unentitled context is discarded before it reaches the AI.
         const rawCtx = buildServerUserContext(input.userContext);
+        /**
+         * The plan check below allowed this user's AI Context (a paying Pro
+         * plan). Before, a Pro subscriber passed that check and then had the
+         * note silently STRIPPED by the older allow-list check further down
+         * (userContextAllowedFor), which predates subscriptions and never
+         * looked at the plan — so AI Context did nothing for paying users.
+         */
+        let contextAllowedByPlan = false;
 
         // ── RETRY SHORT-CIRCUIT ─────────────────────────────────────────────
         // This exact attempt already produced a successful analysis (the client
@@ -321,6 +329,7 @@ const appRouter_scan = router({
                 { code: "PRO_REQUIRED" },
               );
             }
+            if (ctxCheck.allowed) contextAllowedByPlan = true;
           }
         }
 
@@ -514,7 +523,8 @@ const appRouter_scan = router({
           // anything. An unauthorised caller has their context stripped and the
           // scan proceeds normally — failing the whole scan would punish the
           // user for a client bug they cannot see.
-          const entitled = userContextAllowedFor(sid);
+          // A paying Pro plan, or the older allow-list / kill switch.
+          const entitled = contextAllowedByPlan || userContextAllowedFor(sid);
           const userCtx = entitled ? rawCtx : buildServerUserContext(null);
           if (!entitled && (input.userContext ?? "").trim()) {
             console.warn(`[context] stripped — ${String(sid).slice(0, 12)}… not entitled`);

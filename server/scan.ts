@@ -1,6 +1,7 @@
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
 import { storagePut } from "./storage";
+import { legacyCategoryLabel } from "./compat/categoryLabel";
 
 /**
  * Upload a base64 image to S3 and return the public URL.
@@ -655,7 +656,8 @@ function sanitizeFullResult(raw: any): any {
   // Clean identification
   const itemName = String(id.item_name || "Unknown Item");
   const brand = String(id.brand || "Unbranded");
-  const category = String(id.category || "Other");
+  // Short and specific for the pill: no "Vintage", no brand ("Nike Hoodie" → "Hoodie").
+  const category = legacyCategoryLabel(id.category, id.brand);
 
   // Normalize demand/sell_speed
   const demandRaw = String(md.demand || "Medium");

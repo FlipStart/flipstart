@@ -45,6 +45,9 @@ export function buildCanonicalAnalysis(input: BuildInput): CanonicalAnalysisV1 {
     meaningfulPhotoCount: v.meaningfulPhotoCount,
     vintageCutoffYear: meta.vintage_cutoff_year,
     eraConfidenceCeiling: v.eraConfidenceCeiling,
+    // AI Context, read directly so a plain "modern" or "from the 90s" decides
+    // the era even if the model ignored it (prompt v1.11.0).
+    userNote: meta.input_context?.user_context ?? null,
   });
 
   // 3. Recognition. Only features backed by surviving observable-field evidence

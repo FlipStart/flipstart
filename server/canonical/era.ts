@@ -175,6 +175,81 @@ export interface EraValidationInput {
   vintageCutoffYear: number;
   /** Ceiling from photo count. Applied AFTER route selection — see below. */
   eraConfidenceCeiling: number;
+  /**
+   * The user's AI Context note, read directly as a backstop (step 10): if it
+   * plainly states the era, that's the answer even when the model ignored it.
+   */
+  userNote?: string | null;
+}
+
+// ── The user's note, read directly ──────────────────────────────────────────
+
+export interface NoteEra { kind: "modern" | "vintage"; decade: ProductionDecade | null }
+
+const DECADE_OF: Record<string, ProductionDecade> = {
+  "50": "1950s", "60": "1960s", "70": "1970s", "80": "1980s", "90": "1990s",
+  "1950": "1950s", "1960": "1960s", "1970": "1970s", "1980": "1980s", "1990": "1990s",
+  "2000": "2000s", "2010": "2010s", "2020": "2020s",
+};
+const DECADE_START: Partial<Record<ProductionDecade, number>> = {
+  "1950s": 1950, "1960s": 1960, "1970s": 1970, "1980s": 1980, "1990s": 1990,
+  "2000s": 2000, "2010s": 2010, "2020s": 2020,
+};
+
+/** Words after an era that make it a description of STYLE, not age. */
+const STYLE_AFTER = /^[\s-]*(?:style|styled|look|looking|inspired|vibe|vibes|aesthetic|repro|reproduction|reprint|design|designs|graphic|graphics|print|artwork|art)\b/;
+
+/**
+ * What the note plainly says about the item's age, or null.
+ *
+ * Deliberately narrow: only clear statements count. Styling is ignored
+ * ("90s style", "vintage look", "vintage-inspired"), and a note that says both
+ * old and new gives no answer.
+ */
+export function eraFromNote(note: string | null | undefined, cutoffYear: number): NoteEra | null {
+  if (!note) return null;
+  const t = ` ${note.toLowerCase().replace(/[’`]/g, "'").replace(/\s+/g, " ")} `;
+
+  const modern = /\b(?:modern|brand new|new with tags|nwt|recently made|recent release|current season|reproduction|repro|reprint|remake|not vintage|isn'?t vintage|not actually vintage|not old)\b/.test(t);
+  const negatedVintage = /\b(?:not|isn'?t|not actually)\s+vintage\b/.test(t);
+
+  let vintage = false;
+  let decade: ProductionDecade | null = null;
+
+  // The word "vintage", not negated and not "vintage style".
+  for (const m of t.matchAll(/\bvintage\b/g)) {
+    const after = t.slice((m.index ?? 0) + "vintage".length);
+    if (!STYLE_AFTER.test(after) && !negatedVintage) vintage = true;
+  }
+
+  // A decade of manufacture: "90s", "1990s", "'80s", "from the 70s" — not "90s style".
+  for (const m of t.matchAll(/\b19(50|60|70|80|90)s\b|(?:\b|')(50|60|70|80|90)'?s\b/g)) {
+    const after = t.slice((m.index ?? 0) + m[0].length);
+    if (STYLE_AFTER.test(after)) continue;
+    decade = DECADE_OF[m[1] ?? m[2]] ?? decade;
+    vintage = true;
+  }
+  for (const m of t.matchAll(/\b(2000|2010|2020)s\b/g)) {
+    const after = t.slice((m.index ?? 0) + m[0].length);
+    if (STYLE_AFTER.test(after)) continue;
+    const d = DECADE_OF[m[1]];
+    if (d && (DECADE_START[d] ?? 0) > cutoffYear) return modern || !vintage ? { kind: "modern", decade: null } : null;
+    if (d) { decade = d; vintage = true; }
+  }
+
+  // A year of manufacture: "made in 1994", "from 2019".
+  const ym = t.match(/\b(?:made in|made|from|dated|manufactured in|produced in)\s+(19[5-9]\d|20[0-2]\d)\b/);
+  if (ym) {
+    const y = Number(ym[1]);
+    if (y > cutoffYear) return vintage && !modern ? null : { kind: "modern", decade: null };
+    decade = DECADE_OF[String(Math.floor(y / 10) * 10)] ?? decade;
+    vintage = true;
+  }
+
+  if (modern && vintage) return null;   // says both: no plain answer
+  if (modern) return { kind: "modern", decade: null };
+  if (vintage) return { kind: "vintage", decade };
+  return null;
 }
 
 export interface EraValidationResult {
@@ -675,6 +750,42 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
     confidence = Math.min(confidence, cap);
     log("ERA_STRADDLE_AMBIGUOUS", "confirmed_vintage_route", "A", "B_standard",
         `${decade} straddles the cutoff ${vintageCutoffYear} and no year-level evidence resolves it`);
+  }
+
+  // 10. The user's note, read directly (prompt v1.11.0: AI Context is trusted).
+  //     A backstop for when the model ignored a plain statement — "modern"
+  //     coming back likely_vintage. Only a manufacturing YEAR read off the
+  //     item can overrule it: that is a photo plainly showing the opposite.
+  //     Never grants unlock eligibility.
+  const noteEra = eraFromNote(input.userNote, vintageCutoffYear);
+  if (noteEra) {
+    const photoYear = yearRes.year;
+    const photoSaysModern = photoYear != null && photoYear > vintageCutoffYear;
+    const photoSaysOld = photoYear != null && photoYear <= vintageCutoffYear;
+    if (noteEra.kind === "modern" && !photoSaysOld) {
+      if (status !== "modern") {
+        log("ERA_USER_NOTE", "era.era_status", status, "modern",
+            "the user's note says the item is modern", "", false);
+      }
+      status = "modern";
+      route = null;
+      vintageForUnlocks = false;
+      // A pre-cutoff decade can't stand next to "modern".
+      if (decade !== "unknown" && (DECADE_START[decade] ?? 0) <= vintageCutoffYear) decade = "unknown";
+      confidence = 100;
+    } else if (noteEra.kind === "vintage" && !photoSaysModern) {
+      if (status !== "confirmed_vintage") {
+        log("ERA_USER_NOTE", "era.era_status", status, "confirmed_vintage",
+            "the user's note says the item is vintage", "", false);
+        status = "confirmed_vintage";
+        route = "U";
+      }
+      vintageForUnlocks = route === "A" || route === "B_enhanced" ? vintageForUnlocks : false;
+      if (noteEra.decade && (decade === "unknown" || (DECADE_START[decade] ?? 0) > vintageCutoffYear)) {
+        decade = noteEra.decade;
+      }
+      confidence = 100;
+    }
   }
 
   if (status !== "confirmed_vintage") {
