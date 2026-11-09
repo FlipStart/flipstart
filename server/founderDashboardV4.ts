@@ -787,6 +787,33 @@ export function renderScanStoreInsights(x: any): string {
         <div class="muted">Every purchase from ${esc(formatCentralDateTime(x.since.at))} (ANALYTICS_V4_CUTOVER_AT) on, whatever date range is selected. Your own TestFlight test buys after that would be included.</div></div>`
     : na("Pack purchases since the 2.1.1 release", "Set ANALYTICS_V4_CUTOVER_AT to count purchases from the release on.");
 
+  const u = x.packUsage;
+  const usage = !u ? "" : u.buyers === 0
+    ? na("Pack scans used after purchase", "No real pack buyers yet.")
+    : `<div class="card"><div class="card-h">Pack scans used after purchase ${badge("DERIVED")} <span class="muted">— everyone who has bought a pack since 2.1.1, as of now</span></div>${grid([
+        m("Buyers", { value: u.buyers, trust: "EXACT" }), m("Scans bought", { value: u.bought, trust: "DERIVED" }),
+        m("Used", { value: u.used, trust: "DERIVED" }), m("Still unused", { value: u.left, trust: "EXACT" }),
+        m("Share used", u.usedShare), m("Median share used per buyer", { value: u.medianUsedPct, trust: "DERIVED" }, { fmt: "pct" }),
+        m("Median days since first purchase", { value: u.medianDaysSinceFirstPurchase, trust: "EXACT" }, { dp: 1 })])}
+      ${table(["How much of their pack scans buyers have used", "Buyers"], u.buckets.map((b: any) => [esc(b.label), num(b.users)]))}
+      ${table(["Plan when they first bought", "Buyers", "Share of pack scans used"], u.byPlan.map((p: any) => [esc(p.plan), num(p.buyers), r(p.usedShare)]))}
+      <div class="muted">Used = scans bought − today's pack balance. Pack scans are spent last (after free or Pro scans), so a Pro buyer only dips in once their monthly allowance is gone.
+      Scans bought counts every pack each buyer ever bought, earlier test buys included, because those sit in the same balance.
+      ${u.mismatched ? ` Left out: ${num(u.mismatched)} buyer(s) holding more pack scans than their recorded purchases (a purchase event was lost, or scans were added by hand).` : ""}
+      ${u.noUsageRow ? ` Left out: ${num(u.noUsageRow)} buyer(s) with no usage row.` : ""}
+      ${u.notLanded ? ` Not counted as bought: ${num(u.notLanded)} purchase(s) the app saw not reach the pack balance (e.g. a TestFlight buy the live server refused).` : ""}
+      ${u.v2At ? ` Pack sizes switch to the new pricing at ${esc(formatCentralDateTime(u.v2At))}.` : " FLIPSTART_SCAN_PACKS_V2_AT isn't set, so purchases from older app builds are counted at the old pack sizes."}</div></div>`;
+
+  const ap = x.atPurchase;
+  const PLAN_NAME: Record<string, string> = { free: "Free", monthly: "Monthly", annual: "Annual" };
+  const atBuy = !ap ? "" : ap.purchases === 0
+    ? na("Scans left when they bought", "No real pack purchases in this range.")
+    : `<div class="card"><div class="card-h">Scans left when they bought a pack ${badge("DERIVED")} <span class="muted">— real purchases in this range</span></div>
+      ${table(["Plan at purchase", "Purchases", "Median plan scans left", "0", "1–4", "5–14", "15–49", "50+", "Completely out of scans", "Still had pack scans"],
+        ap.byPlan.filter((p: any) => p.purchases > 0).map((p: any) => [esc(PLAN_NAME[p.plan] ?? p.plan), num(p.purchases), num(p.medianPlanLeft, 1),
+          ...p.buckets.map((b: any) => num(b.purchases)), num(p.outOfScans), num(p.hadPackLeft)]))}
+      <div class="muted">"Plan scans left" is free scans left for Free users and this month's Monthly/Annual scans left for Pro. Known for ${num(ap.known)} of ${num(ap.purchases)} purchases (older builds: read from the tap on that pack in the hour before).</div></div>`;
+
   const pw = `<div class="card"><div class="card-h">Paywall → Scan Store → purchase ${badge("EXACT")} <span class="muted">— unique users</span></div>
     ${table(["Paywall", "Saw it", "→ Scan Store", "→ bought a pack (24h)", "→ subscribed instead"],
       x.paywallToStore.map((p: any) => [esc(PAYWALL_LABEL(p.source, x.freeLimit)), num(p.shown), r(p.toStoreRate), num(p.boughtPack), num(p.subscribed)]))}
@@ -819,7 +846,7 @@ export function renderScanStoreInsights(x: any): string {
   const packs = `<div class="card"><div class="card-h">Which pack gets tapped ${badge("EXACT")}</div>
     ${table(["Pack", "Taps", "Share of taps", "Free taps", "Pro taps", "Purchases"],
       x.packs.map((k: any) => [`${esc(k.name)} · ${num(k.scans)} scans`, num(k.taps), r(k.tapShare), num(k.freeTaps), num(k.proTaps), num(k.purchases)]))}
-    <div class="muted">A tap is pressing a pack's Buy button (the App Store sheet opens). Purchases are in this date range.</div></div>`;
+    <div class="muted">A tap is pressing a pack's Buy button (the App Store sheet opens). Purchases are in this date range. Pack sizes shown are today's.</div></div>`;
 
   const v = x.visits;
   const visits = v.available
@@ -832,7 +859,7 @@ export function renderScanStoreInsights(x: any): string {
           [esc(ENTRY_LABEL[s.source] ?? s.source), num(s.visits), r(s.tapRate), r(s.buyRate)]))}</div>`
     : na("How Scan Store visits end", "Starts with the next app build — leaving the store wasn't logged before.");
 
-  return `<h3>Deep dive</h3>${since}${pw}${before}${popup}${byPlan}${packs}${visits}`;
+  return `<h3>Deep dive</h3>${since}${usage}${atBuy}${pw}${before}${popup}${byPlan}${packs}${visits}`;
 }
 
 function renderScanStore(s: any, insights?: any): string {

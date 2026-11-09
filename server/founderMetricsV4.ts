@@ -42,6 +42,7 @@ import { derivePlan, type AccountUsage, type PlanState,
   FREE_LIFETIME_SCANS, MONTHLY_SCANS, ANNUAL_SCANS } from "./monetization/policy";
 import { PAYWALL_SOURCES } from "../lib/paywallConfig";
 import { SCAN_PACKS } from "../lib/scanPackCatalog";
+import { SCAN_PACK_SKUS, SCAN_PACK_SKUS_V1 } from "./monetization/scanPacks";
 import {
   DASHBOARD_TZ, DASHBOARD_TZ_LABEL, centralDay, centralToday, centralRangeUtc,
   addCentralDays, centralDaysBetween, formatDayLabel,
@@ -450,7 +451,7 @@ export async function loadV4Data(
   const b = base ?? await loadBaseData();
   const [savedRows, usageRows, authUsers, profileRows] = await Promise.all([
     fetchAll<ScanRow>("scans", "user_id, created_at"),   // saved items — see V4Data.allSaved
-    fetchAll<UsageRow>("account_usage", "*"),
+    fetchAll<UsageRow>("account_usage", "*", { order: ["user_id"] }),
     fetchAuthUsers().catch(() => [] as AuthUser[]),
     fetchAll<ProfileRow>("profiles", "id, display_name, username, created_at"),
   ]);
@@ -1315,7 +1316,40 @@ const bump = (m: Map<string, number>, k: string, by = 1) => m.set(k, (m.get(k) ?
  * New-build events (popup, paywall store button, visit close) show a "starts
  * with the next build" note until they exist.
  */
-export function getScanStoreInsights(d: V4Data, c: Cutover) {
+/**
+ * When pack pricing V2 (40 / 150 / 400 / 1,200 / 2,000 scans) went live: the
+ * moment the server with the new counts was deployed. Set
+ * FLIPSTART_SCAN_PACKS_V2_AT on Railway to that time. Unset = every purchase
+ * that doesn't state its size is counted at the V1 size.
+ */
+export function scanPacksV2At(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env.FLIPSTART_SCAN_PACKS_V2_AT;
+  const t = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+/** Scans a completed pack purchase was worth: what the SERVER map granted at
+ *  that time when the V2 switch time is set; otherwise the size the app stated
+ *  (new builds carry the V2 catalog), else the V1 size. */
+export function packScansOf(e: Ev, v2At: string | null): number {
+  const sku = metaStr(e, "product_id");
+  const v1 = sku ? (SCAN_PACK_SKUS_V1 as Record<string, number>)[sku] : undefined;
+  const v2 = sku ? (SCAN_PACK_SKUS as Record<string, number>)[sku] : undefined;
+  if (v2At) return (e.created_at >= v2At ? v2 : v1) ?? 0;
+  const stated = metaNum(e, "pack_scans");
+  if (stated !== null && stated > 0 && stated <= 10_000) return stated;
+  return v1 ?? v2 ?? 0;
+}
+
+/** False when a new build saw the purchase NOT land in the pack balance
+ *  (e.g. a TestFlight buy the production server refused). Unknown = true. */
+const packLanded = (e: Ev): boolean => {
+  const after = metaNum(e, "pack_balance_after"), before = metaNum(e, "before_pack");
+  return after === null || before === null || after > before;
+};
+
+export function getScanStoreInsights(d: V4Data, c: Cutover, env: NodeJS.ProcessEnv = process.env) {
+  const v2At = scanPacksV2At(env);
   const win = d.base.events;
   const all = d.allEvents;
   const named = (evs: Ev[], n: string) => evs.filter(e => e.event_name === n);
@@ -1463,18 +1497,102 @@ export function getScanStoreInsights(d: V4Data, c: Cutover) {
       .sort((a, b) => b.visits - a.visits),
   };
 
+  // ── Pack scans used after purchase (current state) ─────────────────────────
+  // For everyone who has made a real purchase (since the release): scans
+  // bought (all their purchases, including earlier test buys, because those
+  // are in the same balance) against the pack balance account_usage holds now.
+  // Packs are spent last (after free or monthly/annual scans), so "used" means
+  // scans that came out of the pack.
+  const buyerIds = new Set(packDoneAll.filter(e => e.user_id && (!releaseAt || e.created_at >= releaseAt)).map(e => e.user_id!));
+  const nowIso = (d.now ?? new Date()).toISOString();
+  const perBuyer: Array<{ bought: number; left: number; used: number; plan: string; firstAt: string }> = [];
+  // Buyers left out because their numbers can't be reconciled: more pack scans
+  // than recorded purchases (a purchase event was lost: app killed mid-purchase,
+  // Ask to Buy, Recover button, or scans added by hand), or no usage row.
+  let mismatched = 0, noUsageRow = 0, notLanded = 0;
+  for (const u of buyerIds) {
+    const all_ = packDoneAll.filter(e => e.user_id === u).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    const mine = all_.filter(packLanded);
+    notLanded += all_.length - mine.length;
+    const bought = mine.reduce((n, e) => n + packScansOf(e, v2At), 0);
+    const realFirst = mine.find(e => !releaseAt || e.created_at >= releaseAt);
+    if (!realFirst || bought <= 0) continue;
+    const row = d.usage.get(u);
+    if (!row) { noUsageRow++; continue; }
+    const left = Math.max(0, Number(row.pack_scan_balance) || 0);
+    if (left > bought) { mismatched++; continue; }
+    perBuyer.push({ bought, left, used: bought - left, plan: planOfEvent(realFirst), firstAt: realFirst.created_at });
+  }
+  const sumOf = (xs: typeof perBuyer, k: "bought" | "left" | "used") => xs.reduce((n, x) => n + x[k], 0);
+  const usedPct = perBuyer.map(x => x.used / x.bought);
+  const isPro = (p: string) => p === "monthly" || p === "annual";
+  const packUsage = {
+    buyers: perBuyer.length, bought: sumOf(perBuyer, "bought"), left: sumOf(perBuyer, "left"), used: sumOf(perBuyer, "used"),
+    usedShare: derived(sumOf(perBuyer, "used"), sumOf(perBuyer, "bought")),
+    medianUsedPct: median(usedPct),
+    buckets: [
+      { label: "None yet", users: usedPct.filter(p => p === 0).length },
+      { label: "Under half", users: usedPct.filter(p => p > 0 && p < 0.5).length },
+      { label: "Half or more", users: usedPct.filter(p => p >= 0.5 && p < 1).length },
+      { label: "All of them", users: usedPct.filter(p => p >= 1).length },
+    ],
+    byPlan: [
+      { plan: "Free when they bought", ...(() => { const xs = perBuyer.filter(x => x.plan === "free"); return { buyers: xs.length, usedShare: derived(sumOf(xs, "used"), sumOf(xs, "bought")) }; })() },
+      { plan: "Pro when they bought", ...(() => { const xs = perBuyer.filter(x => isPro(x.plan)); return { buyers: xs.length, usedShare: derived(sumOf(xs, "used"), sumOf(xs, "bought")) }; })() },
+    ],
+    medianDaysSinceFirstPurchase: median(perBuyer.map(x => (Date.parse(nowIso) - Date.parse(x.firstAt)) / 86_400_000)),
+    mismatched, noUsageRow, notLanded,
+    v2At,
+  };
+
+  // ── Scans left on their plan at the moment they bought ────────────────────
+  // New builds put the balances from the tap on the purchase; older ones are
+  // matched to the user's purchase tap for that pack in the hour before.
+  const startedAll = named(all, "scan_pack_purchase_started");
+  const balancesBefore = (e: Ev) => {
+    const total = metaNum(e, "before_total");
+    if (total !== null) return { free: metaNum(e, "before_free") ?? 0, sub: metaNum(e, "before_subscription") ?? 0, pack: metaNum(e, "before_pack") ?? 0, total };
+    const t = Date.parse(e.created_at);
+    const tap = startedAll.filter(s => whoOf(s) === whoOf(e) && metaStr(s, "product_id") === metaStr(e, "product_id") &&
+      s.created_at <= e.created_at && t - Date.parse(s.created_at) <= 3_600_000)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    const tt = tap ? metaNum(tap, "totalUsableScans") : null;
+    if (!tap || tt === null) return null;
+    return { free: metaNum(tap, "freeScansRemaining") ?? 0, sub: metaNum(tap, "subscriptionScansRemaining") ?? 0, pack: metaNum(tap, "packScansRemaining") ?? 0, total: tt };
+  };
+  const LEFT_BUCKETS: Array<[string, (n: number) => boolean]> = [
+    ["0", n => n <= 0], ["1–4", n => n >= 1 && n <= 4], ["5–14", n => n >= 5 && n <= 14], ["15–49", n => n >= 15 && n <= 49], ["50+", n => n >= 50],
+  ];
+  const realInRange = buysWin.filter(e => !releaseAt || e.created_at >= releaseAt);
+  const withBal = realInRange.map(e => ({ plan: planOfEvent(e), b: balancesBefore(e) }));
+  const atPurchase = {
+    purchases: realInRange.length,
+    known: withBal.filter(x => x.b).length,
+    byPlan: (["free", "monthly", "annual"] as const).map(plan => {
+      const xs = withBal.filter(x => x.plan === plan && x.b).map(x => x.b!);
+      const planLeft = xs.map(b => (plan === "free" ? b.free : b.sub));
+      return {
+        plan, purchases: withBal.filter(x => x.plan === plan).length, known: xs.length,
+        medianPlanLeft: median(planLeft),
+        outOfScans: xs.filter(b => b.total <= 0).length,
+        hadPackLeft: xs.filter(b => b.pack > 0).length,
+        buckets: LEFT_BUCKETS.map(([label, f]) => ({ label, purchases: planLeft.filter(f).length })),
+      };
+    }),
+  };
+
   // ── Purchases since 2.1.1 ─────────────────────────────────────────────────
   // All purchases since the release, whatever range is selected.
   const real = releaseAt ? packDoneAll.filter(e => e.created_at >= releaseAt) : [];
   const since = {
     available: Boolean(c.configured && c.at), at: c.at,
     purchases: real.length, buyers: new Set(real.map(whoOf).filter(Boolean)).size,
-    scansSold: real.reduce((n, e) => n + (SCAN_PACKS.find(p => p.sku === metaStr(e, "product_id"))?.scans ?? 0), 0),
+    scansSold: real.reduce((n, e) => n + packScansOf(e, v2At), 0),
     repeatBuyers: [...real.reduce((m, e) => bump(m, whoOf(e)), new Map<string, number>()).values()].filter(n => n > 1).length,
   };
 
   return { paywallToStore, storeButtonClicks, scansBeforeFirstVisit, popup, byPlan, packs, visits, since,
-           freeLimit: FREE_LIFETIME_SCANS };
+           packUsage, atPurchase, freeLimit: FREE_LIFETIME_SCANS };
 }
 
 // ── Cohorts (CURRENT plan) + Free behaviour ─────────────────────────────────

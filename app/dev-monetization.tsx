@@ -30,6 +30,7 @@ import { purchase, restorePurchases, isPurchaseInProgress,
 import { useProPaywall, ProPaywallHost }
   from '@/components/monetization/paywall/ProPaywallProvider';
 import { PAYWALL_SOURCES, type ProPaywallSource } from '@/lib/paywallConfig';
+import { packBySku } from '@/lib/scanPackCatalog';
 
 const FOREST = '#2A4A2A';
 const BROWN  = '#5A3A1A';
@@ -387,7 +388,7 @@ export default function DevMonetization() {
           >
             {busy === sku
               ? <ActivityIndicator size="small" color={CREAM} />
-              : <Text style={s.smallBtnText}>Buy {sku.replace('flipstart_scan_pack_', '')} scans</Text>}
+              : <Text style={s.smallBtnText}>Buy {packBySku(sku)?.scans ?? sku} scans</Text>}
           </Pressable>
         ))}
 

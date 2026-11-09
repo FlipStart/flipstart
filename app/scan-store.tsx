@@ -288,6 +288,9 @@ export default function ScanStoreScreen() {
     setPhase('purchasing');
     visit.current.taps += 1;
     visit.current.lastSku = sku;
+    // Balances BEFORE the purchase, kept for the completed event: by the time
+    // it fires the pack has usually landed, so its own balances would include it.
+    const before = currentScanBalances();
     trackAnalyticsEvent('scan_pack_purchase_started', {
       product_id: sku, entry_mode: entryMode, entry_source: entrySource, visit_id: visit.current.id,
       ...(currentScanBalances() ?? {}),
@@ -309,6 +312,17 @@ export default function ScanStoreScreen() {
       await invalidateEntitlement().catch(() => {});
       trackAnalyticsEvent('scan_pack_purchase_completed', {
         product_id: sku, entry_mode: entryMode, entry_source: entrySource, visit_id: visit.current.id,
+        // The pack's size as this build's catalog states it (matches the server
+        // map it shipped with), so the dashboard can tell pricing V1 from V2,
+        // and the server's pack balance after the grant.
+        ...(pack ? { pack_scans: pack.scans } : {}),
+        ...(typeof r.packBalance === 'number' ? { pack_balance_after: r.packBalance } : {}),
+        ...(before ? {
+          before_free: before.freeScansRemaining,
+          before_subscription: before.subscriptionScansRemaining,
+          before_pack: before.packScansRemaining,
+          before_total: before.totalUsableScans,
+        } : {}),
       });
 
       /**
