@@ -22,6 +22,12 @@ export interface StoredAnalysis {
   analysisId: string;
   scanAttemptId: string;
   ownerId: string;
+  /**
+   * The Supabase user the SERVER verified when this scan ran. Sold comps for
+   * the analysis are released only to that same verified session. Absent on
+   * analyses stored before it existed, which fall back to `ownerId`.
+   */
+  verifiedOwnerId?: string | null;
   canonical: CanonicalAnalysisV1;
   savedAt: number;
 }

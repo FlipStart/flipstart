@@ -908,12 +908,74 @@ function renderDataQualityV4(q: any): string {
     `<div class="note-block">${badge("NOT_TRACKED")} ${esc(q.revenueCatHistoryNote)}</div>`);
 }
 
+/**
+ * 12d · Sold Comps Inspector.
+ *
+ * Every recent comps run (all users): the search, what came back, how it was
+ * tiered and why, what was thrown out — plus the founder's right/wrong marks,
+ * which are the labelled set any later matching change is judged against.
+ * Always renders its full layout; missing data shows as zeros with a banner.
+ * Every value is escaped; nothing here identifies a user.
+ */
+export function renderCompsInspector(input: any): string {
+  const title = "12d · Sold Comps Inspector";
+  const empty = { runCount: 0, runs: [], feedback: [], feedbackTotals: { right: 0, wrong: 0 }, byTier: {}, durable: true };
+  const snap = input && typeof input === "object" && !isErr(input) ? { ...empty, ...input } : empty;
+  const problem = !input || typeof input !== "object"
+    ? `<div class="banner warn">This load didn't include comps inspector data (the server may be running an older version), so everything shows zero.</div>`
+    : isErr(input) ? `<div class="banner warn">Loading the comps inspector failed: ${esc(String(input.error).slice(0, 200))}</div>`
+    : !snap.durable ? `<div class="banner warn">DATA_DIR is not set, so inspector history resets on every deploy.</div>` : "";
+  const when = (ms: number) => esc(formatCentralDateTime(new Date(ms).toISOString()));
+  const tiers = (t: any) => t ? `${num(t.exact)} / ${num(t.strong)} / ${num(t.similar)} / ${num(t.weak)}` : "—";
+  const runs: any[] = Array.isArray(snap.runs) ? snap.runs : [];
+  const runRows = runs.map((r: any) => [
+    when(r.at), esc(r.item), esc(r.query ?? "—"), esc(r.outcome), num(r.raw), tiers(r.tierCounts),
+    num(r.rejectedCount), num(r.duplicatesRemoved), esc(r.dataStrength ?? "—"),
+    r.median != null ? usd(r.median) : "—",
+    r.aiLow != null && r.aiHigh != null ? `${usd(r.aiLow, 0)}–${usd(r.aiHigh, 0)}` : "—",
+    r.historySpanDays != null ? `${num(r.historySpanDays)}d of ${num(r.historyDays)}d` : "—",
+  ]);
+  const detail = (r: any) => {
+    const counts = Object.entries(r.rejectionCounts ?? {}).sort((a: any, b: any) => b[1] - a[1]);
+    return `<details class="more"><summary>${esc(r.item)} — ${esc(r.query ?? "no search")} · ${when(r.at)}</summary>
+      <div class="card-h">Shown, in order</div>
+      ${table(["Tier", "Score", "Price", "Title", "Why"], (r.shown ?? []).map((c: any) => [esc(c.tier), num(c.score), usd(c.price), esc(c.title), esc(c.reason)]), "compact")}
+      <div class="card-h">Why listings were thrown out</div>
+      ${table(["Reason", "Listings"], counts.map(([k, v]: any) => [esc(String(k).toLowerCase().replace(/_/g, " ")), num(v)]), "compact")}
+      <div class="card-h">Rejected (sample)</div>
+      ${table(["Reason", "Title", "Price", "Detail"], (r.rejectedSample ?? []).map((x: any) => [esc(String(x.reason).toLowerCase().replace(/_/g, " ")), esc(x.title), usd(x.price), esc(x.detail ?? "")]), "compact")}
+      <div class="card-h">Weak — never shown (sample)</div>
+      ${table(["Title", "Why"], (r.weakSample ?? []).map((x: any) => [esc(x.title), esc(x.reason)]), "compact")}
+      <div class="card-h">Duplicates removed</div>
+      ${table(["Title", "Why"], (r.duplicates ?? []).map((x: any) => [esc(x.title), esc(x.reason)]), "compact")}
+    </details>`;
+  };
+  const fb: any[] = Array.isArray(snap.feedback) ? snap.feedback : [];
+  const byTier = Object.entries(snap.byTier ?? {}) as Array<[string, any]>;
+  const tierOrder = ["exact", "strong", "similar"];
+  byTier.sort((a, b) => tierOrder.indexOf(a[0]) - tierOrder.indexOf(b[0]));
+  const marks = `<div class="card"><div class="card-h">Your marks ${badge("EXACT")} <span class="muted">— right / wrong taps from the in-app inspector</span></div>
+    ${grid([card("Marked right", num(snap.feedbackTotals?.right)), card("Marked wrong", num(snap.feedbackTotals?.wrong))])}
+    ${table(["Tier", "Right", "Wrong", "Wrong rate"], byTier.map(([t, v]) => [esc(t), num(v.right), num(v.wrong), pct((v.right + v.wrong) ? v.wrong / (v.right + v.wrong) : null)]), "compact")}
+    <div class="card-h">Latest marks</div>
+    ${table(["When", "Mark", "Tier", "Score", "Item", "Comp"], fb.slice(0, 50).map((f: any) => [when(f.at), esc(f.verdict), esc(f.tier), num(f.score), esc(f.item), esc(f.title)]), "compact")}</div>`;
+  return section("comps", title,
+    `${problem}
+     ${grid([card("Comps runs kept", num(snap.runCount)), card("Marked right", num(snap.feedbackTotals?.right)), card("Marked wrong", num(snap.feedbackTotals?.wrong))])}
+     <div class="card"><div class="card-h">Recent runs ${badge("EXACT")} <span class="muted">— tiers are Exact / Strong / Similar / Weak; one row per scan, latest view</span></div>
+     ${table(["When", "Item", "Search", "Outcome", "Returned", "Tiers E/S/s/W", "Rejected", "Dupes", "Data", "Median", "AI range", "History"], runRows, "compact")}
+     ${runs.slice(0, 15).map(detail).join("")}</div>
+     ${marks}
+     <div class="muted">"History" is the span of sale dates the provider actually returned, against the window asked for. Comps never change the resale estimate.</div>`,
+    "server");
+}
+
 // ── Composer ─────────────────────────────────────────────────────────────────
 
 const TOC: Array<[string, string]> = [
   ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
   ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"],
-  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
+  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
 ];
 
@@ -938,7 +1000,7 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
     renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore),
     renderCohorts(metrics.cohorts), renderDistributions(metrics.distributions),
     renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderRetentionSegments(metrics.retentionSegments), renderSessionsV2(metrics.sessionsV2), renderAppVersions(metrics.appVersions),
-    renderScans(metrics.scans), renderScanReliability(metrics.scanReliability), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
+    renderScans(metrics.scans), renderScanReliability(metrics.scanReliability), renderCompsInspector(metrics.compsInspector), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
     // V3 product analytics, preserved and demoted below the business funnel.
     renderTrust(metrics.trust), renderHunt(metrics.hunt), renderProgress(metrics.progress), renderAchievements(metrics.achievements),
     renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold),

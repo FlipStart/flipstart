@@ -25,7 +25,7 @@ import type { NormalizedSoldComp } from "./types.js";
 import type { ScoredComp } from "./matching.js";
 
 /** Bumped when the shape of a display match changes. */
-export const COMP_CONTRACT_VERSION = "comp-contract-1";
+export const COMP_CONTRACT_VERSION = "comp-contract-2";
 
 export type Marketplace = "ebay" | "unknown";
 export type ImageStatus = "available" | "missing" | "invalid" | "unsupported";
@@ -108,6 +108,9 @@ export interface PublicSoldCompMatch {
 
   matchScore: number;
   matchClass: "strong" | "moderate";
+  /** Relevance tier (contract 2). The app labels Similar comps; Exact and
+   *  Strong need no label. Weak comps are never in the public payload. */
+  tier: "exact" | "strong" | "similar";
 }
 
 /** Founder-only. Never returned by the app endpoint. */
@@ -122,6 +125,9 @@ export interface DebugSoldCompMatch extends PublicSoldCompMatch {
   penalties: string[];
   detected: { closure: string | null; specialty: Array<{ kind: string; match: string }> };
   scoreComponents: Record<string, number>;
+  /** "Strong: same item type and brand" — why this comp ranked where it did. */
+  reason: string;
+  signals: ScoredComp["signals"];
 }
 
 /**
@@ -299,6 +305,7 @@ export function toPublicMatch(
     bestOfferAccepted: c.bestOfferAccepted,
     matchScore: s.score,
     matchClass: s.matchClass === "strong" ? "strong" : "moderate",
+    tier: s.tier === "exact" || s.tier === "strong" ? s.tier : "similar",
   };
 
   return {
@@ -315,6 +322,8 @@ export function toPublicMatch(
       penalties: s.penalties,
       detected: s.detected,
       scoreComponents: s.components,
+      reason: s.reason,
+      signals: s.signals,
     },
   };
 }

@@ -25,6 +25,8 @@ import { C, marketplaceLabel } from './tokens';
 import { SoldCompCard, type PublicMatch } from './SoldCompCard';
 import { SoldCompMetrics, SoldCompConfidence, type PublicStats } from './SoldCompMetrics';
 import { SoldCompsUnavailableState, type UnavailableVariant } from './SoldCompsUnavailableState';
+import { FounderCompsPanel, type FounderDebug } from './FounderCompsPanel';
+import type { DataStrength } from './tokens';
 
 export type PublicAvailability =
   | 'available' | 'limited' | 'no_reliable_matches'
@@ -50,6 +52,11 @@ export interface SoldCompsResponse {
   query?: string | null;
   historyDays?: number | null;
   cacheHit?: boolean;
+  /** How much sold data backs the item, in words. Newer servers only. */
+  dataStrength?: DataStrength | null;
+  analysisId?: string | null;
+  /** Present only for a verified founder session. Never decided client-side. */
+  founderDebug?: FounderDebug | null;
 }
 
 /** Section horizontal padding inside the results card. */
@@ -220,6 +227,13 @@ export function SoldCompsSection({
           {matches.length === 3 && (
             <Text style={s.affordance}>Showing the three closest matches</Text>
           )}
+          {/* When nothing closer exists, say so plainly rather than letting a
+              similar item pass for the same one. */}
+          {matches.every(m => m.tier === 'similar') && (
+            <Text style={s.stateCopy}>
+              No exact matches sold recently — these are similar items, not the same one.
+            </Text>
+          )}
         </>
       )}
 
@@ -234,6 +248,7 @@ export function SoldCompsSection({
             label={data?.confidenceLabel ?? null}
             percent={data?.confidencePercent ?? null}
             summaryText={data?.countSummary?.summaryText ?? null}
+            dataStrength={data?.dataStrength ?? null}
           />
           {/* Limited data with real cards on screen: a note, not a failure. The
               zero-card case is handled by the final state above. */}
@@ -248,6 +263,16 @@ export function SoldCompsSection({
 
       {/* Provider failure, identity failure and legacy scans are all handled by
           the final state above — the Phase 4 plain-text fallbacks are gone. */}
+
+      {/* Founder inspector. The server sends `founderDebug` only to a verified
+          inspector account; everyone else's payload has no such field. */}
+      {!loading && !!data?.founderDebug && (
+        <FounderCompsPanel
+          analysisId={data.analysisId ?? null}
+          debug={data.founderDebug}
+          titles={Object.fromEntries(matches.map(m => [m.id, m.fullTitle]))}
+        />
+      )}
     </View>
   );
 }

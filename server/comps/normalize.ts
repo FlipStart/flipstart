@@ -13,7 +13,7 @@
  *  cache key, so old entries invalidate automatically. */
 export const QUERY_BUILDER_VERSION = "qb-2";
 /** Matching-algorithm version. Same contract. */
-export const MATCH_ALGO_VERSION = "match-2";
+export const MATCH_ALGO_VERSION = "match-3";
 
 export function normalizeText(s: string): string {
   return s.toLowerCase()
@@ -31,10 +31,15 @@ export function tokens(s: string): string[] {
  * Alias groups. Every member maps to the group's canonical first entry, so
  * "1/4 zip", "quarter-zip" and "quarter zip" become one token.
  */
+// Removed in match-3, deliberately:
+//   "coat" = "jacket"      — it made a trench coat a comp for a casual jacket.
+//   "crewneck" = "sweatshirt" — it turned "crewneck sweater" into a sweatshirt.
+//   the Polo Ralph Lauren spellings — brand spellings now live in taxonomy.ts,
+//     where aliasing cannot swallow the garment word ("Ralph Lauren Polo Shirt").
+// Category and brand equivalence are decided in server/comps/taxonomy.ts.
 const ALIAS_GROUPS: string[][] = [
   ["tee", "t-shirt", "tshirt", "t shirt"],
   ["hoodie", "hooded sweatshirt", "hoody"],
-  ["sweatshirt", "crewneck", "crew neck"],
   ["quarter zip", "1/4 zip", "quarter-zip", "qtr zip"],
   ["full zip", "zip-up", "zip up", "fullzip"],
   ["fleece", "fleece jacket"],
@@ -42,6 +47,9 @@ const ALIAS_GROUPS: string[][] = [
   ["xxl", "2xl", "double extra large"],
   ["xs", "extra small"],
   ["l", "large"], ["m", "medium"], ["s", "small"],
+  ["1960s", "60s", "sixties"],
+  ["1970s", "70s", "seventies"],
+  ["1980s", "80s", "eighties"],
   ["1990s", "90s", "nineties"],
   ["2000s", "00s", "y2k", "early 2000s"],
 
@@ -68,13 +76,11 @@ const ALIAS_GROUPS: string[][] = [
   ["navy", "navy blue"],
   ["womens", "women", "ladies", "female"],
   ["mens", "men", "male"],
-  ["jacket", "coat"],
   ["pants", "trousers"],
   // Team shorthands, so "Yankees" and "New York Yankees" are one token.
   ["new york yankees", "yankees", "ny yankees"],
   ["chicago cubs", "cubs"],
   ["chicago bulls", "bulls"],
-  ["polo ralph lauren", "polo by ralph lauren", "ralph lauren polo"],
 ];
 
 /**
@@ -143,14 +149,24 @@ export function detectClosure(text: string): string | null {
  * are the traits that make a listing a different PRODUCT rather than a slightly
  * different one.
  */
+/*
+ * match-3 corrections — each was rejecting genuine comps:
+ *   team    nicknames that are ordinary words (eagles, bears, rangers, nets,
+ *           warriors, penguins, cowboys) now need their city, so "Care Bears"
+ *           and "eagle graphic" stop reading as NFL merch.
+ *   college "varsity" removed: a varsity jacket is a garment style.
+ *   limited "deadstock" removed: it describes condition, not a special edition.
+ *   tour    removed entirely: "band tee" / "concert tee" describe EVERY band
+ *           tee, so a vintage AC/DC tee rejected every vintage AC/DC tee.
+ */
 export const SPECIALTY_PATTERNS: Array<[string, RegExp]> = [
-  ["team",          /\b(yankees|mets|red sox|dodgers|cubs|bulls|lakers|celtics|packers|cowboys|steelers|raiders|knicks|braves|eagles|patriots|49ers|bears|warriors|nets|rangers|blackhawks|penguins)\b/i],
+  ["team",          /\b(yankees|mets|red sox|white sox|dodgers|cubs|bulls|lakers|celtics|packers|steelers|raiders|knicks|braves|patriots|49ers|blackhawks|dallas cowboys|philadelphia eagles|chicago bears|texas rangers|new york rangers|ny rangers|brooklyn nets|new jersey nets|golden state warriors|pittsburgh penguins)\b/i],
   ["league",        /\b(mlb|nba|nfl|nhl|mls|ncaa|premier league|world cup)\b/i],
-  ["college",       /\b(university|college|alumni|varsity)\b/i],
+  // "University Blue / Red / Gold" is a sneaker colourway, not a college.
+  ["college",       /\b(university(?! (?:blue|red|gold|purple))|college|alumni)\b/i],
   ["collaboration", /\b(collab|collaboration|supreme|off[- ]white|kith|palace|bape|stussy)\b/i],
-  ["limited",       /\b(limited edition|limited ed|numbered|deadstock|sample|prototype)\b/i],
+  ["limited",       /\b(limited edition|limited ed|numbered|sample|prototype)\b/i],
   ["event",         /\b(championship|world series|super bowl|final four|playoffs|commemorative)\b/i],
-  ["tour",          /\b(world tour|concert tee|tour dates|band tee)\b/i],
   ["license",       /\b(disney|marvel|star wars|harry potter|pokemon|looney tunes|nintendo|sanrio|hello kitty)\b/i],
   ["premium_line",  /\b(purple label|double rl|rrl|polo sport|rlx|lauren ralph lauren|polo jeans|ralph lauren golf|summit series)\b/i],
 ];

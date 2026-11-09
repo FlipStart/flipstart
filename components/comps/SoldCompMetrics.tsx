@@ -10,7 +10,10 @@
  */
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { C, formatMoney, confidenceColor, confidenceText, type ConfidenceLabel } from './tokens';
+import {
+  C, formatMoney, confidenceColor, confidenceText, dataStrengthText, dataStrengthColor,
+  type ConfidenceLabel, type DataStrength,
+} from './tokens';
 
 export interface PublicStats {
   medianSoldPrice: number | null;
@@ -78,14 +81,16 @@ export function SoldCompMetrics({ stats, currency = 'USD' }: { stats: PublicStat
  * for. Wraps rather than shrinking text on narrow screens.
  */
 export function SoldCompConfidence({
-  label, percent, summaryText,
+  label, percent, summaryText, dataStrength,
 }: {
   label: ConfidenceLabel | null;
   percent: number | null;
   summaryText: string | null;
+  /** Server-decided words. Preferred over label + percent whenever present. */
+  dataStrength?: DataStrength | null;
 }) {
-  const color = confidenceColor(label);
-  const text = confidenceText(label, percent);
+  const color = dataStrength ? dataStrengthColor(dataStrength) : confidenceColor(label);
+  const text = dataStrength ? dataStrengthText(dataStrength) : confidenceText(label, percent);
   return (
     <View style={s.confRow}>
       <View
@@ -93,7 +98,9 @@ export function SoldCompConfidence({
         accessible
         /* Spoken, not colour-coded. Colour alone would exclude anyone who
            cannot distinguish it. */
-        accessibilityLabel={`Sold comp confidence: ${label ?? 'insufficient'}${typeof percent === 'number' ? `, ${percent} percent` : ''}`}
+        accessibilityLabel={dataStrength
+          ? text
+          : `Sold comp confidence: ${label ?? 'insufficient'}${typeof percent === 'number' ? `, ${percent} percent` : ''}`}
       >
         <View style={[s.confDot, { backgroundColor: color }]} />
         <Text style={[s.confText, { color }]}>{text}</Text>

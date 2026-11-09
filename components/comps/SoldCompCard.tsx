@@ -27,6 +27,8 @@ export interface PublicMatch {
   bestOfferAccepted: boolean | null;
   matchScore: number;
   matchClass: string;
+  /** Contract 2. Absent from older servers, which never sent Similar comps. */
+  tier?: 'exact' | 'strong' | 'similar';
 }
 
 /** Collapsed preview length. Beyond this a More control appears. */
@@ -122,7 +124,8 @@ export function SoldCompCard({
       accessible
       accessibilityLabel={
         `${market ?? 'Marketplace'} sold comp. ${title}. ` +
-        `${hasPrice ? `Sold for ${price}.` : 'Sold price unavailable.'} ${match.matchClass} match.`
+        `${hasPrice ? `Sold for ${price}.` : 'Sold price unavailable.'} ` +
+        (match.tier === 'similar' ? 'Similar item, not an exact match.' : `${match.tier ?? match.matchClass} match.`)
       }
     >
       <View style={[s.imageWrap, { width, height: width }]}>
@@ -152,6 +155,13 @@ export function SoldCompCard({
         {!!market && (
           <View style={s.marketBadge}>
             <Text style={s.marketText} accessibilityLabel={`Sold on ${market}`}>{market}</Text>
+          </View>
+        )}
+        {/* Similar comps are labelled so a looser comparison never passes for an
+            exact one. Exact and Strong need no label. */}
+        {match.tier === 'similar' && (
+          <View style={s.similarBadge}>
+            <Text style={s.similarText}>Similar item</Text>
           </View>
         )}
       </View>
@@ -219,6 +229,10 @@ const s = StyleSheet.create({
                  borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2.5,
                  borderWidth: 1, borderColor: C.cardB },
   marketText: { fontSize: 9.5, fontWeight: '800', color: C.brown, letterSpacing: 0.2 },
+  similarBadge: { position: 'absolute', bottom: 7, left: 7, backgroundColor: 'rgba(255,254,250,0.94)',
+                  borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2.5,
+                  borderWidth: 1, borderColor: C.amber + '88' },
+  similarText: { fontSize: 9.5, fontWeight: '800', color: C.amber, letterSpacing: 0.2 },
   body: { paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 4 },
   title: { fontSize: 11.5, color: C.brown, lineHeight: 15.5, fontWeight: '600' },
   more: { fontSize: 10.5, color: C.gold, fontWeight: '800', marginTop: 2 },

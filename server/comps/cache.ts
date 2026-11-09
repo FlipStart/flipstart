@@ -59,10 +59,19 @@ const TTL_MS = (() => {
   return (Number.isFinite(d) && d > 0 ? Math.min(d, 30) : 7) * 86_400_000;
 })();
 
-/** Each entry is roughly 20-30KB. 2,000 keeps the file well under 60MB. */
-const MAX_ENTRIES = 2_000;
-/** Cap items per entry: stats stabilise well before 120 and the tail is bulk. */
-const MAX_ITEMS_PER_ENTRY = 80;
+/** Each entry holds up to 240 listings, roughly 70-90KB. 700 entries keeps the
+ *  file about where 2,000 entries of 80 listings used to be. */
+const MAX_ENTRIES = 700;
+/**
+ * The FULL candidate pool, not a slice of it.
+ *
+ * This was 80 while a fresh search scored 240. The first person to scan an
+ * item saw comps picked from 240 listings; everyone after them, and the same
+ * person reopening the scan, saw comps picked from the newest 80 — a different
+ * pool, so different cards and a different median for the same item.
+ * Storing what was scored makes every view score the same listings.
+ */
+const MAX_ITEMS_PER_ENTRY = 240;
 
 const FLUSH_IDLE_MS = 2_000;
 const FLUSH_MAX_WAIT_MS = 15_000;

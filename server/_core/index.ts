@@ -296,6 +296,11 @@ async function startServer() {
       try { base = await loadBaseData(); } catch { base = undefined; }
       const v3 = await getFounderDashboardV3Metrics(base);
       const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3, scope, process.env, range, base, explorer);
+      // Sold comps inspector lives in this process (DATA_DIR), not Supabase.
+      if (metrics && typeof metrics === "object" && !metrics.fatal && metrics.configured !== false) {
+        try { metrics.compsInspector = require("../comps/inspector").inspectorSnapshot(); }
+        catch (e: any) { metrics.compsInspector = { error: String(e?.message ?? e) }; }
+      }
       const html = generateFounderDashboardV4(metrics, String(req.query.secret ?? ""));
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(html);

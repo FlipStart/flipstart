@@ -18,15 +18,27 @@
  * One excellent match is not a market. Ninety poor matches are not a market
  * either. These are separate questions and this file keeps them separate.
  */
-import type { ScoredComp } from "./matching.js";
+import { TIER_RANK, type ScoredComp } from "./matching.js";
+import { prep } from "./taxonomy.js";
 import { computeStats, type CompsStats } from "./stats.js";
 
 /** Bumped when the meaning of the statistics changes. Part of the cache key. */
-export const STATS_VERSION = "stats-2";
+export const STATS_VERSION = "stats-3";
 
 export type ResultState = "strong" | "moderate" | "limited" | "weak" | "insufficient";
 export type ConfidenceLabel = "high" | "moderate" | "low" | "insufficient";
 export type DispersionClass = "tight" | "moderate" | "wide" | "extreme" | "unknown";
+/**
+ * How much sold data backs this item, in words. Replaces the percentage the
+ * screen used to show ("Moderate confidence · 72%"): a percent implies a
+ * precision this measure does not have.
+ *
+ *   strong   5+ Exact/Strong comps, prices agree
+ *   some     3+ Exact/Strong comps
+ *   limited  1-2 comps, or only Similar ones
+ *   none     nothing qualified
+ */
+export type DataStrength = "strong" | "some" | "limited" | "none";
 
 export type SuppressionReason =
   | "NO_RELIABLE_MATCHES"
@@ -82,10 +94,18 @@ export interface CompsEvaluation {
     iqrOverMedian: number | null;
     dispersion: DispersionClass;
     outliers: Array<{ price: number; reason: "PRICE_OUTLIER" }>;
+    /** What dedupe removed, and why. */
+    duplicates: Array<{ title: string; price: number; reason: string }>;
   };
 
+  /** Internal score, kept for logs and the founder inspector. Never shown to
+   *  users: the app shows `dataStrength` in words instead. */
   confidencePercent: number;
+  /** Derived from `dataStrength`, for app builds that still read the old label. */
   confidenceLabel: ConfidenceLabel;
+  dataStrength: DataStrength;
+  /** Accepted comps by tier, after dedupe; weak counts every weak candidate. */
+  tierCounts: { exact: number; strong: number; similar: number; weak: number };
   confidenceComponents: {
     matchQuality: number;      // /40
     sampleSize: number;        // /25
@@ -115,33 +135,66 @@ const pct = (sorted: number[], p: number): number => {
 };
 
 /**
- * Duplicate removal beyond the matcher's external-id check.
+ * Duplicate removal, for both the cards and the statistics.
  *
- * Conservative on purpose: two genuine sales of the same item at the same price
- * are two data points, so title+price alone is not enough. Collapsing them would
- * understate a real market. Requires the same URL, or the same title AND price
- * AND date.
+ * It used to run for the median only, so the carousel could show the same
+ * sale three times. Two rows are the same sale when they share any of:
+ *   - the listing id or URL
+ *   - the photo (the same eBay image, at any size) AND the title — a relist
+ *     reuses its photos; a stock photo shared by different listings does not
+ *     make them one sale
+ *   - the title, price and sale date
+ *
+ * `near` (cards only): a near-identical listing — same title, price within 5%,
+ * sold within 14 days — adds nothing to look at, so the cards show one. The
+ * statistics keep it: five real sales at $40 are five data points.
+ *
+ * Input order decides which copy survives, so callers pass comps best-first.
  */
-function dedupe(comps: ScoredComp[]): { kept: ScoredComp[]; removed: number } {
-  const seenIds = new Set<string>();
-  const seenUrls = new Set<string>();
-  const seenTriples = new Set<string>();
+export function dedupeComps(comps: ScoredComp[], opts: { near?: boolean } = {}): {
+  kept: ScoredComp[];
+  removed: Array<{ comp: ScoredComp; reason: string }>;
+} {
   const kept: ScoredComp[] = [];
-  let removed = 0;
+  const removed: Array<{ comp: ScoredComp; reason: string }> = [];
+  const ids = new Set<string>();
+  const urls = new Set<string>();
+  const images = new Set<string>();
+  const triples = new Set<string>();
+  const titleKey = (s: string) => prep(s).replace(/[^a-z0-9 ]/g, "").trim();
+  const imageKey = (u: string | null) => u ? u.replace(/\/s-l\d+(\.[a-z]+)$/i, "").replace(/\?.*$/, "") : "";
+  const day = (d: string | null) => { const t = d ? Date.parse(d) : NaN; return Number.isFinite(t) ? t / 86_400_000 : null; };
+
   for (const s of comps) {
     const c = s.comp;
-    const triple = `${c.title.toLowerCase()}|${c.soldPrice}|${c.soldAt ?? ""}`;
-    if (seenIds.has(c.externalId) ||
-        (c.listingUrl && seenUrls.has(c.listingUrl)) ||
-        (c.soldAt && seenTriples.has(triple))) {
-      removed++; continue;
+    const tk = titleKey(c.title);
+    const ik = imageKey(c.imageUrl) ? `${imageKey(c.imageUrl)}|${tk}` : "";
+    const triple = `${tk}|${c.soldPrice}|${c.soldAt ?? ""}`;
+    let why: string | null = null;
+    if (ids.has(c.externalId)) why = "same listing id";
+    else if (c.listingUrl && urls.has(c.listingUrl)) why = "same listing URL";
+    else if (ik && images.has(ik)) why = "same photo (relisted)";
+    else if (c.soldAt && triples.has(triple)) why = "same title, price and date";
+    else if (opts.near) {
+      const d = day(c.soldAt);
+      const near = kept.find(k => titleKey(k.comp.title) === tk &&
+        Math.abs(k.comp.soldPrice - c.soldPrice) <= 0.05 * Math.max(k.comp.soldPrice, c.soldPrice) &&
+        d != null && day(k.comp.soldAt) != null && Math.abs((day(k.comp.soldAt) as number) - d) <= 14);
+      if (near) why = "near-identical relist";
     }
-    seenIds.add(c.externalId);
-    if (c.listingUrl) seenUrls.add(c.listingUrl);
-    if (c.soldAt) seenTriples.add(triple);
+    if (why) { removed.push({ comp: s, reason: why }); continue; }
+    ids.add(c.externalId);
+    if (c.listingUrl) urls.add(c.listingUrl);
+    if (ik) images.add(ik);
+    if (c.soldAt) triples.add(triple);
     kept.push(s);
   }
   return { kept, removed };
+}
+
+/** Best tier first, then score. The order dedupe keeps copies in. */
+export function byRelevance(a: ScoredComp, b: ScoredComp): number {
+  return TIER_RANK[a.tier ?? "weak"] - TIER_RANK[b.tier ?? "weak"] || b.score - a.score;
 }
 
 /**
@@ -190,13 +243,19 @@ export function evaluateComps(
 
   const rejected = scored.filter(s => !s.accepted && !s.weak);
   const weakAll = scored.filter(s => s.weak);
-  const acceptedAll = scored.filter(s => s.accepted);
+  const acceptedAll = scored.filter(s => s.accepted).sort(byRelevance);
 
   // Reliable sample = accepted, deduped, price-valid. Weak candidates never
   // enter it, however many of them there are.
-  const { kept: deduped, removed: duplicatesRemoved } = dedupe(acceptedAll);
-  const reliable = deduped.filter(validForStats);
-  const invalidDropped = deduped.length - reliable.length;
+  const { kept: deduped, removed: dupList } = dedupeComps(acceptedAll);
+  const duplicatesRemoved = dupList.length;
+  const valid = deduped.filter(validForStats);
+  // Exact and Strong comps carry the median. Similar ones join only when there
+  // are too few of those to make a median at all — and the result is then
+  // labelled Limited, never Strong.
+  const core = valid.filter(s => s.tier === "exact" || s.tier === "strong");
+  const reliable = core.length >= MIN_FOR_MEDIAN ? core : valid;
+  const invalidDropped = deduped.length - valid.length;
   if (invalidDropped > 0) penalties.push(`${invalidDropped} listings had unusable prices`);
   if (duplicatesRemoved > 0) penalties.push(`${duplicatesRemoved} duplicate listings removed`);
 
@@ -246,11 +305,6 @@ export function evaluateComps(
   if (n < MIN_FOR_MEDIAN) confidencePercent = Math.min(confidencePercent, 35);
   if (n === 0) confidencePercent = 0;
 
-  const confidenceLabel: ConfidenceLabel =
-    n === 0 ? "insufficient"
-    : confidencePercent >= 75 ? "high"
-    : confidencePercent >= 50 ? "moderate"
-    : confidencePercent >= 20 ? "low" : "insufficient";
 
   // ── Public eligibility ─────────────────────────────────────────────────────
   let suppressed: SuppressionReason | null = null;
@@ -267,6 +321,22 @@ export function evaluateComps(
     else canShowTypicalRange = true;
   }
   const limitedSample = canShowMedian && n < MIN_FOR_RANGE;
+
+  const nCore = finalComps.filter(s => s.tier === "exact" || s.tier === "strong").length;
+  const dataStrength: DataStrength =
+    n === 0 ? "none"
+    : nCore >= MIN_FOR_RANGE && (dispersion === "tight" || dispersion === "moderate") ? "strong"
+    : nCore >= MIN_FOR_MEDIAN && canShowMedian ? "some"
+    : "limited";
+  const confidenceLabel: ConfidenceLabel =
+    dataStrength === "strong" ? "high" : dataStrength === "some" ? "moderate"
+    : dataStrength === "limited" ? "low" : "insufficient";
+  const tierCounts = {
+    exact: deduped.filter(s => s.tier === "exact").length,
+    strong: deduped.filter(s => s.tier === "strong").length,
+    similar: deduped.filter(s => s.tier === "similar").length,
+    weak: weakAll.length,
+  };
 
   const resultState: ResultState =
     n === 0 ? "insufficient"
@@ -305,9 +375,12 @@ export function evaluateComps(
       iqrOverMedian: iqrOverMedian == null ? null : Math.round(iqrOverMedian * 100) / 100,
       dispersion,
       outliers: outlierPrices.map(p => ({ price: p, reason: "PRICE_OUTLIER" as const })),
+      duplicates: dupList.map(d => ({ title: d.comp.comp.title, price: d.comp.comp.soldPrice, reason: d.reason })),
     },
     confidencePercent,
     confidenceLabel,
+    dataStrength,
+    tierCounts,
     confidenceComponents: {
       matchQuality: Math.round(mq), sampleSize: ss,
       priceConsistency: pc, dataCompleteness: dc,

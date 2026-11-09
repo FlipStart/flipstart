@@ -11,9 +11,9 @@
  */
 import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
 import { buildCompsQuery } from "./queryBuilder.js";
-import { scoreComp, type ScoredComp, type RejectionReason } from "./matching.js";
+import { scoreComp, TIER_RANK, type ScoredComp, type RejectionReason, type Tier } from "./matching.js";
 import { summarize, type CompsSummary } from "./stats.js";
-import { evaluateComps, STATS_VERSION, type CompsEvaluation } from "./evaluate.js";
+import { evaluateComps, dedupeComps, STATS_VERSION, type CompsEvaluation } from "./evaluate.js";
 import {
   toPublicMatch, normalizeMarketplace, COMP_CONTRACT_VERSION,
   type PublicSoldCompMatch, type DebugSoldCompMatch,
@@ -52,7 +52,10 @@ export interface CompsRunRecord {
   topMatches?: Array<Record<string, unknown>>;
   weak?: Array<Record<string, unknown>>;
   weakCount?: number;
-  rejected?: Array<{ title: string; reason: RejectionReason; detail: string | null; score: number }>;
+  rejected?: Array<{ title: string; reason: RejectionReason; detail: string | null; score: number; price: number }>;
+  /** Days between the oldest and newest sale the provider returned — the
+   *  history actually searched, which can be shorter than `historyDays`. */
+  historySpanDays?: number | null;
   matchMs?: number;
   rejectionCounts?: Record<string, number>;
   /** Phase 1 shape, retained for backward compatibility. New consumers should
@@ -194,12 +197,14 @@ export async function runCompsForAnalysis(
   const scored: ScoredComp[] = items.map(i => scoreComp(c, i, seen));
 
   /**
-   * Ranked by SIMILARITY, with deterministic tie-breakers.
+   * Ranked by TIER, then similarity, with deterministic tie-breakers.
    *
-   * Never by price. A $100 listing outranking a $30 one because it is expensive
-   * is how a plain hoodie ends up with a $65 median.
+   * Tier first: an Exact comp always outranks a Strong one, whatever their
+   * scores. Never by price. A $100 listing outranking a $30 one because it is
+   * expensive is how a plain hoodie ends up with a $65 median.
    */
   const accepted = scored.filter(s => s.accepted).sort((a, b) =>
+    TIER_RANK[a.tier as Tier] - TIER_RANK[b.tier as Tier] ||
     b.score - a.score ||
     a.penalties.length - b.penalties.length ||
     b.positives.length - a.positives.length ||
@@ -211,6 +216,12 @@ export async function runCompsForAnalysis(
   // otherwise unanswerable.
   const weak = scored.filter(s => s.weak);
   const rejected = scored.filter(s => !s.accepted && !s.weak);
+  // The cards come from the SAME deduped list the statistics use, so one sale
+  // can never fill all three cards.
+  const display = dedupeComps(accepted, { near: true }).kept;
+  const saleDays = items.map(i => (i.soldAt ? Date.parse(i.soldAt) : NaN)).filter(Number.isFinite).sort((a, b) => a - b);
+  const historySpanDays = saleDays.length >= 2
+    ? Math.round((saleDays[saleDays.length - 1] - saleDays[0]) / 86_400_000) : null;
   const matchMs = Date.now() - matchStart;
   const rejectionCounts: Record<string, number> = {};
   for (const r of rejected) if (r.rejection) rejectionCounts[r.rejection] = (rejectionCounts[r.rejection] ?? 0) + 1;
@@ -237,7 +248,7 @@ export async function runCompsForAnalysis(
       // numberOfLines, which does not mutate the value.
       title: s.comp.title, soldPrice: s.comp.soldPrice, shipping: s.comp.shippingPrice,
       buyerPaidTotal: s.comp.buyerPaidTotal,
-      soldAt: s.comp.soldAt, score: s.score, matchClass: s.matchClass,
+      soldAt: s.comp.soldAt, score: s.score, matchClass: s.matchClass, tier: s.tier, reason: s.reason,
       positives: s.positives, penalties: s.penalties,
       url: s.comp.listingUrl, imageUrl: s.comp.imageUrl,
       externalId: s.comp.externalId, provider: s.comp.provider,
@@ -245,7 +256,7 @@ export async function runCompsForAnalysis(
       detected: s.detected,
     })),
     /** Phase 1 shape, retained so existing consumers keep working. */
-    topMatches: accepted.slice(0, 3).map(s => ({
+    topMatches: display.slice(0, 3).map(s => ({
       title: s.comp.title, soldPrice: s.comp.soldPrice, shipping: s.comp.shippingPrice,
       soldAt: s.comp.soldAt, score: s.score, matchClass: s.matchClass,
       url: s.comp.listingUrl, imageUrl: s.comp.imageUrl,
@@ -259,13 +270,14 @@ export async function runCompsForAnalysis(
      * point is accuracy and a prettier carousel built from worse comps is a
      * worse product.
      */
-    displayMatches: accepted.slice(0, 3).map(s => toPublicMatch(s, marketplace).pub),
-    debugMatches: accepted.slice(0, 3).map(s => toPublicMatch(s, marketplace).dbg),
+    displayMatches: display.slice(0, 3).map(s => toPublicMatch(s, marketplace).pub),
+    debugMatches: display.slice(0, 3).map(s => toPublicMatch(s, marketplace).dbg),
     weak: weak.map(s => ({ title: s.comp.title, soldPrice: s.comp.soldPrice,
-                           score: s.score, penalties: s.penalties })),
+                           score: s.score, penalties: s.penalties, reason: s.reason })),
     weakCount: weak.length,
     rejected: rejected.map(s => ({ title: s.comp.title, reason: s.rejection!,
-                                   detail: s.rejectionDetail, score: s.score })),
+                                   detail: s.rejectionDetail, score: s.score, price: s.comp.soldPrice })),
+    historySpanDays,
     rejectionCounts,
     matchMs,
     summary: summarize(scored),

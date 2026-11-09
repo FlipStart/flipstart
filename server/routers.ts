@@ -21,6 +21,7 @@ import { saveAnalysis, getLatestAnalysis, getAnalysis } from "./analysisStore.js
 import { compsCacheStats } from "./comps/cache.js";
 import { budgetState, budgetSource } from "./comps/budget.js";
 import { resolveAvailability, buildDiagnostic } from "./comps/availability.js";
+import { compsInspectorAllowed, recordCompsRun, feedbackFor, setCompFeedback } from "./comps/inspector.js";
 import { renderUserContextBlock } from "../shared/userContext.js";
 import { saveScanContext, getScanContext } from "./scanContextStore.js";
 import { randomUUID } from "node:crypto";
@@ -570,6 +571,8 @@ const appRouter_scan = router({
               analysisId,
               scanAttemptId: input.scanAttemptId ?? analysisId,
               ownerId: sid ?? "",
+              // muid is verified above (a scan needs a session); comps check it.
+              verifiedOwnerId: muid ?? null,
               canonical,
             });
 
@@ -1173,15 +1176,27 @@ const compsRouter = router({
       scannerId: z.string().min(1).max(200),
       analysisId: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const sid = input.scannerId.trim();
-      // Same gate as V1 scanning. Ordinary users get a clean "unavailable".
-      // Public category only. The internal reason stays in the server log — a
-      // user cannot act on "not on the allow-list" and does not need to know it.
-      if (!canonicalV1EnabledFor(sid)) {
-        return { ok: false as const, availability: { state: "temporarily_unavailable" as const,
-          reviewedCount: null, filteredOutCount: null, searchPerformed: false } };
+      const unavailable = { ok: false as const, availability: { state: "temporarily_unavailable" as const,
+        reviewedCount: null, filteredOutCount: null, searchPerformed: false } };
+
+      /**
+       * The caller must be the VERIFIED owner of the analysis.
+       *
+       * `scannerId` is whatever the app sends, so on its own it proves nothing:
+       * anyone who knew another user's id could read that user's latest comps
+       * and spend that user's daily comps budget. Every scan already requires a
+       * verified session, so comps require the same one.
+       */
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "comps.forScan");
+      if (!uid) {
+        console.warn("[comps:forScan] refused — no verified session");
+        return unavailable;
       }
+      // Same gate as V1 scanning, on the VERIFIED id. Ordinary users get a
+      // clean "unavailable"; the internal reason stays out of the payload.
+      if (!canonicalV1EnabledFor(uid)) return unavailable;
       const stored = input.analysisId
         ? getAnalysis(input.analysisId, sid)
         : getLatestAnalysis(sid);
@@ -1191,86 +1206,117 @@ const compsRouter = router({
         return { ok: false as const, availability: { state: "legacy_unavailable" as const,
           reviewedCount: null, filteredOutCount: null, searchPerformed: false } };
       }
+      if ((stored.verifiedOwnerId ?? stored.ownerId) !== uid) {
+        console.warn("[comps:forScan] refused — session does not own this analysis");
+        return unavailable;
+      }
+      const inspector = compsInspectorAllowed(uid);
 
       // userId charges this against the caller's per-user daily cap, so one heavy
       // user cannot drain the shared monthly pool.
-      const rec = await runCompsForAnalysis(stored.canonical, { founderAuthorised: true, userId: sid });
+      const rec = await runCompsForAnalysis(stored.canonical, { founderAuthorised: true, userId: uid });
       const ai = stored.canonical.derived.pricing;
+      const ev = rec.evaluation;
       const diag = buildDiagnostic({
         ok: rec.ok,
         errorCode: rec.errorCode ?? null,
         ineligibleReason: rec.ineligibleReason ?? null,
         detail: rec.detail ?? null,
-        reliableMatchCount: rec.evaluation?.counts.finalSample ?? 0,
+        reliableMatchCount: ev?.counts.finalSample ?? 0,
         providerCalled: Boolean(rec.provider),
       });
+      const itemName = stored.canonical.derived.identification.display_item_name;
       console.log(
-        `[comps:forScan] "${stored.canonical.derived.identification.display_item_name}"` +
+        `[comps:forScan] "${itemName}"` +
         // FOUNDER DIAGNOSTIC. The public payload carries no internal code, so
-        // this line is the only place the real reason survives — including the
-        // detail that separates a daily from a monthly budget stop, which the
-        // previous version dropped. Contains no key, secret or provider body.
+        // this line is the only place the real reason survives. Contains no key,
+        // secret or provider body.
         ` ${diag.internalCode}/${diag.stage}` +
         (diag.detail ? `(${diag.detail})` : "") +
         ` reached:${diag.providerReached} reserved:${diag.requestReserved}` +
         (rec.query ? ` q:"${rec.query.text}"` : "") +
-        (rec.evaluation ? ` reliable:${rec.evaluation.counts.finalSample}` +
-          ` median:${rec.evaluation.public.canShowMedian ? `$${rec.evaluation.public.medianSoldPrice}` : "suppressed"}` +
-          ` conf:${rec.evaluation.confidencePercent}%/${rec.evaluation.confidenceLabel}` +
-          ` state:${rec.evaluation.resultState} disp:${rec.evaluation.debug.dispersion}` +
-          (rec.evaluation.public.statisticsSuppressedReason ? ` why:${rec.evaluation.public.statisticsSuppressedReason}` : "") : "") +
-        // Contract telemetry. Image HOSTS only, never full URLs — those carry
-        // query parameters that should not sit in logs.
+        (ev ? ` reliable:${ev.counts.finalSample}` +
+          ` tiers:${ev.tierCounts.exact}E/${ev.tierCounts.strong}S/${ev.tierCounts.similar}s/${ev.tierCounts.weak}w` +
+          ` median:${ev.public.canShowMedian ? `$${ev.public.medianSoldPrice}` : "suppressed"}` +
+          ` data:${ev.dataStrength} conf:${ev.confidencePercent}%` +
+          ` disp:${ev.debug.dispersion}` +
+          (ev.public.statisticsSuppressedReason ? ` why:${ev.public.statisticsSuppressedReason}` : "") : "") +
+        (rec.historySpanDays != null ? ` span:${rec.historySpanDays}d/${rec.query?.historyDays ?? "?"}d` : "") +
+        // Contract telemetry. Image HOSTS only, never full URLs.
         (rec.displayMatches ? ` shown:${rec.displayMatches.length}` +
           ` img:${rec.displayMatches.filter(m => m.imageStatus === "available").length}/${rec.displayMatches.length}` +
           ` mkt:${rec.source?.marketplaces.join("+") ?? "?"}` : "") +
         ` ai:$${ai.resale_low}-$${ai.resale_high} ${rec.totalMs}ms`
       );
 
+      // Every run, every user, for the founder dashboard's Comps inspector. No
+      // user id is stored — only the opaque analysis id.
+      const shown = (rec.debugMatches ?? []).map(d => ({
+        id: d.id, title: d.fullTitle, price: d.soldPrice.amount, tier: d.tier, score: d.matchScore, reason: d.reason,
+      }));
+      recordCompsRun({
+        at: Date.now(),
+        analysisId: stored.analysisId,
+        item: itemName,
+        query: rec.query?.text ?? null,
+        historyDays: rec.query?.historyDays ?? null,
+        historySpanDays: rec.historySpanDays ?? null,
+        cacheHit: rec.provider?.cacheHit ?? false,
+        outcome: `${diag.internalCode}/${diag.stage}`,
+        raw: rec.provider?.rawCount ?? 0,
+        tierCounts: ev?.tierCounts ?? null,
+        rejectedCount: rec.rejected?.length ?? 0,
+        duplicatesRemoved: ev?.counts.duplicatesRemoved ?? 0,
+        dataStrength: ev?.dataStrength ?? null,
+        median: ev?.public.canShowMedian ? ev.public.medianSoldPrice : null,
+        aiLow: ai.resale_low, aiHigh: ai.resale_high,
+        shown,
+        rejectionCounts: rec.rejectionCounts ?? {},
+        rejectedSample: (rec.rejected ?? []).map(r => ({ title: r.title, reason: r.reason, detail: r.detail, price: r.price })),
+        weakSample: ((rec.weak ?? []) as Array<{ title: string; reason: string }>).map(w => ({ title: w.title, reason: w.reason })),
+        duplicates: (ev?.debug.duplicates ?? []).map(d => ({ title: d.title, reason: d.reason })),
+      });
+
       // Trimmed to what the screen needs. Full diagnostics stay on runLatest.
       return {
         ok: rec.ok,
-        // errorCode and ineligibleReason are NO LONGER returned to the app.
+        // errorCode and ineligibleReason are NOT returned to the app.
         // `availability.state` carries everything the screen may safely know;
         // the exact reason remains in the server log and founder tooling.
+        analysisId: stored.analysisId,
         query: rec.query?.text ?? null,
         historyDays: rec.query?.historyDays ?? null,
         cacheHit: rec.provider?.cacheHit ?? false,
-        // ── Phase 5: safe public availability category ─────────────────────
-        // Internal codes (COMPS_BUDGET_EXHAUSTED, PROVIDER_TIMEOUT,
-        // PROVIDER_NOT_CONFIGURED, FOUNDER_ONLY) are deliberately NOT returned.
-        // They were previously in this payload, which put our billing and
-        // configuration one error-boundary dump away from a user's screen.
         availability: resolveAvailability({
           ok: rec.ok,
           errorCode: rec.errorCode ?? null,
           ineligibleReason: rec.ineligibleReason ?? null,
-          reliableMatchCount: rec.evaluation?.counts.finalSample ?? 0,
+          reliableMatchCount: ev?.counts.finalSample ?? 0,
           displayMatchCount: rec.displayMatches?.length ?? 0,
           rawCount: rec.provider?.rawCount ?? null,
-          filteredOutCount: rec.evaluation?.summary.filteredOutCount ?? null,
+          filteredOutCount: ev?.summary.filteredOutCount ?? null,
         }),
 
-        // ── Phase 2: only ELIGIBLE numbers cross the wire ──────────────────
-        // A suppressed median is null here, so the screen cannot render it by
-        // mistake. That was the entire bug: summarize() reported "insufficient"
-        // and handed over a $65 median anyway.
-        publicStats: rec.evaluation?.public ?? null,
-        resultState: rec.evaluation?.resultState ?? null,
-        confidencePercent: rec.evaluation?.confidencePercent ?? null,
-        confidenceLabel: rec.evaluation?.confidenceLabel ?? null,
-        countSummary: rec.evaluation?.summary ?? null,
-        statsVersion: rec.evaluation?.statsVersion ?? null,
-        matchScore: rec.evaluation?.debug.medianMatchScore ?? null,
+        // Only ELIGIBLE numbers cross the wire: a suppressed median is null.
+        publicStats: ev?.public ?? null,
+        resultState: ev?.resultState ?? null,
+        /**
+         * Data strength in words. The percentage is NOT sent any more — it was
+         * shown as "Moderate confidence · 72%", a precision this measure does
+         * not have. Older app builds read `confidenceLabel`, now derived from the
+         * same words, and simply drop the percent when it is null.
+         */
+        dataStrength: ev?.dataStrength ?? null,
+        confidencePercent: null,
+        confidenceLabel: ev?.confidenceLabel ?? null,
+        countSummary: ev?.summary ?? null,
+        statsVersion: ev?.statsVersion ?? null,
+        matchScore: ev?.debug.medianMatchScore ?? null,
         examined: rec.provider?.rawCount ?? 0,
         rejectedCount: rec.rejected?.length ?? 0,
-        // Why listings were dropped. This was the only thing the removed
-        // terminal endpoints gave that the screen did not — it is the fastest
-        // signal when a median looks wrong, so it moves here rather than dying
-        // with them.
         rejectionCounts: rec.rejectionCounts ?? {},
-        // Phase 3 contract: up to three fully normalised matches for the future
-        // carousel. Complete titles, validated image URLs, honest marketplace.
+        // Up to three, deduped, ranked Exact → Strong → Similar. Weak comps are
+        // never here.
         displayMatches: rec.displayMatches ?? [],
         source: rec.source ?? null,
         contractVersion: rec.versions.compContract,
@@ -1280,7 +1326,58 @@ const compsRouter = router({
           soldAt: m.soldAt, score: m.matchScore, url: m.listingUrl,
         })),
         aiLow: ai.resale_low, aiHigh: ai.resale_high,
+        /**
+         * Founder inspector. Present ONLY for a verified session listed in
+         * COMPS_INSPECTOR_USER_IDS; absent (not null) for everyone else, so an
+         * ordinary payload is byte-for-byte the public contract.
+         */
+        ...(inspector ? {
+          founderDebug: {
+            query: rec.query?.text ?? null,
+            historyDays: rec.query?.historyDays ?? null,
+            historySpanDays: rec.historySpanDays ?? null,
+            cacheHit: rec.provider?.cacheHit ?? false,
+            outcome: `${diag.internalCode}/${diag.stage}`,
+            counts: {
+              raw: rec.provider?.rawCount ?? 0,
+              rejected: rec.rejected?.length ?? 0,
+              duplicates: ev?.counts.duplicatesRemoved ?? 0,
+              ...(ev?.tierCounts ?? { exact: 0, strong: 0, similar: 0, weak: rec.weakCount ?? 0 }),
+            },
+            dataStrength: ev?.dataStrength ?? null,
+            internalConfidencePercent: ev?.confidencePercent ?? null,
+            shown: (rec.debugMatches ?? []).map(d => ({
+              id: d.id, tier: d.tier, score: d.matchScore, reason: d.reason,
+              positives: d.positives, penalties: d.penalties,
+            })),
+            rejected: (rec.rejected ?? []).slice(0, 40),
+            weak: ((rec.weak ?? []) as Array<{ title: string; reason: string; score: number }>)
+              .slice(0, 20).map(w => ({ title: w.title, reason: w.reason, score: w.score })),
+            duplicates: (ev?.debug.duplicates ?? []).slice(0, 20),
+            feedback: feedbackFor(stored.analysisId),
+          },
+        } : {}),
       };
+    }),
+
+  /**
+   * Founder inspector: mark a shown comp right or wrong (or clear the mark).
+   *
+   * Builds the labelled set later matching changes are measured against. The
+   * comp's title, tier and score are read from the stored run — the client
+   * sends only ids. Inspector accounts only, verified server-side.
+   */
+  flagComp: publicProcedure
+    .input(z.object({
+      analysisId: z.string().min(1).max(100),
+      compId: z.string().min(1).max(300),
+      verdict: z.enum(["right", "wrong", "clear"]),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "comps.flagComp");
+      if (!compsInspectorAllowed(uid)) return { ok: false as const };
+      const ok = setCompFeedback(input.analysisId, input.compId, input.verdict);
+      return { ok, feedback: feedbackFor(input.analysisId) };
     }),
 });
 
