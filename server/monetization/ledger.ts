@@ -15,6 +15,7 @@
  * before any money is spent, and a failure hands it back.
  */
 import { getSupabaseAdmin, isSupabaseAdminConfigured } from "../supabaseAdmin.js";
+import { applyCreatorGrantIfDue } from "./creatorGrants.js";
 import {
   emptyUsage, derivePlan, consumptionOrder, subscriptionLimitFor, computeBalances,
   FREE_LIFETIME_SCANS,
@@ -113,7 +114,15 @@ export async function readUsage(userId: string): Promise<UsageRead> {
     return { ok: true, usage: emptyUsage(), existed: false };
   }
 
-  return { ok: true, usage: data as AccountUsage, existed: true };
+  /**
+   * Creator grants (free Pro for chosen accounts): start the next 30-day period
+   * when one is due. A no-op for everyone without an active grant, and it never
+   * touches a running paid subscription. A failure here never blocks the read.
+   */
+  let usage = data as AccountUsage;
+  try { usage = await applyCreatorGrantIfDue(userId, usage); }
+  catch (e) { console.error("[creator-grant] skipped:", (e as Error).message); }
+  return { ok: true, usage, existed: true };
 }
 
 /**

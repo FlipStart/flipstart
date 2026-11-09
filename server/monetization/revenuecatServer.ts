@@ -16,6 +16,8 @@
  * got the wrong allowance.
  */
 import { getSupabaseAdmin } from "../supabaseAdmin.js";
+import { keepCreatorGrant } from "./creatorGrants.js";
+import { readUsage } from "./ledger.js";
 import {
   normalizeSubscriber, freeSnapshot,
   type RcSubscriber, type SubscriptionSnapshot,
@@ -233,6 +235,21 @@ export async function reconcileUser(
    * `free` is deliberately NOT routed here. A confirmed inactive entitlement is
    * a real answer, and clearing state for it is correct.
    */
+  /**
+   * ── CREATOR GRANT — free Pro the founder gave this account ────────────────
+   * RevenueCat knows nothing about it, so for a creator it always answers
+   * "no subscription". Applying that would clear the grant on their next
+   * restore. An active grant is kept (and its period started if due); only a
+   * REAL subscription from RevenueCat replaces it.
+   */
+  if (snapshot.plan === "free") {
+    const read = await readUsage(supabaseUserId);
+    if (await keepCreatorGrant(supabaseUserId, read.ok ? read.usage : null, now.getTime())) {
+      console.log(`[revenuecat] uid=${supabaseUserId.slice(0, 8)}… no RevenueCat subscription; creator grant kept`);
+      return { ok: true, plan: "monthly" };
+    }
+  }
+
   if (snapshot.plan === "unknown") {
     console.error(
       `[revenuecat] UNKNOWN active product "${snapshot.productId}" — PRESERVING existing ` +
