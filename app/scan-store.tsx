@@ -115,7 +115,32 @@ export default function ScanStoreScreen() {
    * consumed, changing the screen's behaviour mid-purchase.
    */
   /** Route param set by whichever screen pushed us here; 'unknown' if absent. */
-  const params = useLocalSearchParams<{ from?: string }>();
+  const params = useLocalSearchParams<{ from?: string; paywall_source?: string }>();
+  /**
+   * One visit, for analytics: every pack tap and purchase carries its id, and
+   * the visit logs how it ended when the screen closes — so "opened the store
+   * and left without buying" and "how long they looked" are answerable.
+   */
+  const visit = useRef({
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    openedAt: Date.now(),
+    taps: 0,
+    purchased: false,
+    lastSku: null as string | null,
+  });
+  const entrySource = typeof params.from === 'string' && params.from ? params.from : 'unknown';
+  const paywallSource = typeof params.paywall_source === 'string' && params.paywall_source ? params.paywall_source : null;
+  useEffect(() => () => {
+    const v = visit.current;
+    trackAnalyticsEvent('scan_store_closed', {
+      visit_id: v.id, dwell_ms: Date.now() - v.openedAt, entry_source: entrySource,
+      ...(paywallSource ? { paywall_source: paywallSource } : {}),
+      pack_taps: v.taps, purchased: v.purchased, last_sku: v.lastSku,
+      ...(currentScanBalances() ?? {}),
+    });
+    // Mount/unmount only: the visit is one screen lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [entryMode] = useState(() => scanStoreEntryMode());
 
   const [products, setProducts] = useState<ScanPackProductsResult | null>(null);
@@ -164,6 +189,9 @@ export default function ScanStoreScreen() {
       entry_mode:   entryMode,
       entry_source: typeof params.from === 'string' && params.from ? params.from : 'unknown',
       ...(currentScanBalances() ?? {}),
+      // Which paywall sent them (the 15-scan limit, Generate Listings, …).
+      ...(paywallSource ? { paywall_source: paywallSource } : {}),
+      visit_id: visit.current.id,
     });
   }, [entryMode]);
 
@@ -258,22 +286,30 @@ export default function ScanStoreScreen() {
     setActiveSku(sku);
     setNotice(null);
     setPhase('purchasing');
+    visit.current.taps += 1;
+    visit.current.lastSku = sku;
     trackAnalyticsEvent('scan_pack_purchase_started', {
-      product_id: sku, entry_mode: entryMode, ...(currentScanBalances() ?? {}),
+      product_id: sku, entry_mode: entryMode, entry_source: entrySource, visit_id: visit.current.id,
+      ...(currentScanBalances() ?? {}),
     });
 
     const r = await purchaseScanPack(sku, startedUid, () => uidRef.current ?? null);
 
     if (r.status === 'cancelled') {
-      trackAnalyticsEvent('scan_pack_purchase_cancelled', { product_id: sku });
+      trackAnalyticsEvent('scan_pack_purchase_cancelled', { product_id: sku, visit_id: visit.current.id });
       setPhase('idle'); setActiveSku(null);
       return;                               // benign — no notice at all
     }
 
     if (r.status === 'success' || r.status === 'sync_pending') {
+      // Marked before the await: leaving during "granting" must still close
+      // the visit as a purchase.
+      visit.current.purchased = true;
       setPhase('granting');
       await invalidateEntitlement().catch(() => {});
-      trackAnalyticsEvent('scan_pack_purchase_completed', { product_id: sku, entry_mode: entryMode });
+      trackAnalyticsEvent('scan_pack_purchase_completed', {
+        product_id: sku, entry_mode: entryMode, entry_source: entrySource, visit_id: visit.current.id,
+      });
 
       /**
        * The granted count is the SERVER's, never `pack.scans`. They agree
@@ -293,7 +329,7 @@ export default function ScanStoreScreen() {
       return;
     }
 
-    trackAnalyticsEvent('scan_pack_purchase_failed', { product_id: sku, reason: r.status });
+    trackAnalyticsEvent('scan_pack_purchase_failed', { product_id: sku, reason: r.status, visit_id: visit.current.id });
     setNotice({
       tone: r.status === 'account_changed' || r.status === 'pending' || r.status === 'unavailable' ? 'info' : 'error',
       text: r.message ?? `We couldn't complete that purchase${pack ? ` for ${pack.name}` : ''}. Please try again.`,

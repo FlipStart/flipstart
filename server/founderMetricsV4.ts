@@ -1285,6 +1285,198 @@ export function getScanStore(d: V4Data, c: Cutover) {
   };
 }
 
+// ── Scan Store deep dive ────────────────────────────────────────────────────
+
+/** Hours a pack purchase may follow a store visit and still be credited to it. */
+const STORE_CREDIT_HOURS = 24;
+/** Minutes a store visit may follow a paywall and be inferred to come from it
+ *  (older app builds didn't say which paywall sent them). */
+const PAYWALL_INFER_MIN = 30;
+
+const whoOf = (e: Ev) => e.user_id ?? e.anonymous_id ?? "";
+const planOfEvent = (e: Ev): "free" | "monthly" | "annual" | "unknown" => {
+  const s = e.entitlement_state_snapshot as string | null | undefined;
+  return s === "free" || s === "monthly" || s === "annual" ? s : "unknown";
+};
+const bump = (m: Map<string, number>, k: string, by = 1) => m.set(k, (m.get(k) ?? 0) + by);
+
+/**
+ * Everything the founder asked of the Scan Store, in one place:
+ *   - paywall → Scan Store → purchase, per paywall (the 15-scan one first)
+ *   - how many scans people have done before they first open the store
+ *   - the scans-remaining popup: opened, and where people went from it
+ *   - Free vs Pro: who visits, who taps, who buys
+ *   - which pack is tapped and bought, by plan
+ *   - how store visits end (left without tapping, tapped and backed out, bought)
+ *   - genuine purchases since the 2.1.1 release
+ *
+ * Counts come from the selected window; histories (scans before the first
+ * visit, which paywall came just before a visit) look at everything loaded.
+ * New-build events (popup, paywall store button, visit close) show a "starts
+ * with the next build" note until they exist.
+ */
+export function getScanStoreInsights(d: V4Data, c: Cutover) {
+  const win = d.base.events;
+  const all = d.allEvents;
+  const named = (evs: Ev[], n: string) => evs.filter(e => e.event_name === n);
+
+  // ── Paywall → Scan Store → purchase, per paywall ──────────────────────────
+  const paywallOpens = named(win, "paywall_opened");
+  const storeOpensWin = named(win, "scan_store_opened");
+  const packDoneAll = named(all, "scan_pack_purchase_completed");
+  const subDone = named(win, "paywall_purchase_completed");
+  const paywallsByUser = new Map<string, Ev[]>();
+  for (const e of named(all, "paywall_opened")) {
+    const k = whoOf(e); if (!k) continue;
+    (paywallsByUser.get(k) ?? paywallsByUser.set(k, []).get(k)!).push(e);
+  }
+  /** Which paywall a store visit came from: stated (new builds), or — older
+   *  builds — the 15-scan paywall if the user saw it in the 30 minutes before
+   *  (it was the only paywall with a Scan Store button). */
+  const visitPaywall = (e: Ev): { source: string; inferred: boolean } | null => {
+    if (metaStr(e, "entry_source") !== "paywall") return null;
+    const stated = metaStr(e, "paywall_source");
+    if (stated) return { source: stated, inferred: false };
+    const t = Date.parse(e.created_at);
+    const sawLimit = (paywallsByUser.get(whoOf(e)) ?? []).some(p => {
+      const pt = Date.parse(p.created_at);
+      return metaStr(p, "paywall_source") === "scan_limit" && pt <= t && t - pt <= PAYWALL_INFER_MIN * 60_000;
+    });
+    return { source: sawLimit ? "scan_limit" : "unknown", inferred: true };
+  };
+  /** New builds join on visit_id; older rows fall back to "bought within 24h". */
+  const boughtPackAfter = (visit: Ev) => {
+    const vid = metaStr(visit, "visit_id"); const who = whoOf(visit); const at = visit.created_at;
+    if (vid) return packDoneAll.some(p => metaStr(p, "visit_id") === vid);
+    return packDoneAll.some(p => whoOf(p) === who && !metaStr(p, "visit_id") &&
+      p.created_at >= at && Date.parse(p.created_at) - Date.parse(at) <= STORE_CREDIT_HOURS * 3_600_000);
+  };
+
+  const pw = new Map<string, { shown: Set<string>; toStore: Set<string>; bought: Set<string>; subscribed: Set<string>; inferred: number }>();
+  const pwRow = (s: string) => pw.get(s) ?? pw.set(s, { shown: new Set(), toStore: new Set(), bought: new Set(), subscribed: new Set(), inferred: 0 }).get(s)!;
+  for (const e of paywallOpens) { const s = metaStr(e, "paywall_source"); if (s && whoOf(e)) pwRow(s).shown.add(whoOf(e)); }
+  for (const e of storeOpensWin) {
+    const v = visitPaywall(e); if (!v) continue;
+    const r = pwRow(v.source); const who = whoOf(e); if (!who) continue;
+    // Same people top and bottom: only those who saw this paywall in range.
+    if (v.source !== "unknown" && !r.shown.has(who)) continue;
+    r.toStore.add(who); if (v.inferred) r.inferred++;
+    if (boughtPackAfter(e)) r.bought.add(who);
+  }
+  for (const e of subDone) { const s = metaStr(e, "paywall_source"); if (s && whoOf(e)) pwRow(s).subscribed.add(whoOf(e)); }
+  const paywallToStore = [...pw.entries()].map(([source, r]) => ({
+    source, shown: r.shown.size, toStore: r.toStore.size, toStoreRate: derived(r.toStore.size, r.shown.size),
+    boughtPack: r.bought.size, subscribed: r.subscribed.size, inferredVisits: r.inferred,
+  })).sort((a, b) => (a.source === "scan_limit" ? -1 : b.source === "scan_limit" ? 1 : b.shown - a.shown));
+  const storeButtonClicks = named(win, "paywall_scan_store_clicked").length;
+
+  // ── Scans before the first store visit ────────────────────────────────────
+  const firstVisit = new Map<string, string>();
+  for (const e of named(all, "scan_store_opened")) {
+    const k = e.user_id; if (!k) continue;
+    if (!firstVisit.has(k) || e.created_at < firstVisit.get(k)!) firstVisit.set(k, e.created_at);
+  }
+  const scansByUser = new Map<string, string[]>();
+  for (const s of d.allScans) if (s.user_id) (scansByUser.get(s.user_id) ?? scansByUser.set(s.user_id, []).get(s.user_id)!).push(s.created_at);
+  const before: number[] = [];
+  for (const [u, at] of firstVisit) {
+    if (!inWindow(d.window, at)) continue;                  // first visit outside the selected window
+    before.push((scansByUser.get(u) ?? []).filter(t => t < at).length);
+  }
+  const BUCKETS: Array<[string, (n: number) => boolean]> = [
+    ["0", n => n === 0], ["1–4", n => n >= 1 && n <= 4], ["5–9", n => n >= 5 && n <= 9], ["10–14", n => n >= 10 && n <= 14],
+    [`${FREE_LIFETIME_SCANS} (free limit)`, n => n === FREE_LIFETIME_SCANS], [`${FREE_LIFETIME_SCANS + 1}–29`, n => n > FREE_LIFETIME_SCANS && n <= 29], ["30+", n => n >= 30],
+  ];
+  // Real buyers only (first purchase since the release cutover, test buys
+  // before it ignored), whose first purchase falls in the selected range.
+  const releaseAt = c.configured && c.at ? c.at : null;
+  const firstBuy = new Map<string, string>();
+  for (const e of packDoneAll) {
+    const k = e.user_id; if (!k || (releaseAt && e.created_at < releaseAt)) continue;
+    if (!firstBuy.has(k) || e.created_at < firstBuy.get(k)!) firstBuy.set(k, e.created_at);
+  }
+  const beforeBuy = [...firstBuy.entries()].filter(([, at]) => inWindow(d.window, at))
+    .map(([u, at]) => (scansByUser.get(u) ?? []).filter(t => t < at).length);
+  const scansBeforeFirstVisit = {
+    users: before.length, median: median(before), mean: mean(before),
+    buckets: BUCKETS.map(([label, f]) => ({ label, users: before.filter(f).length })),
+    beforeFirstPurchase: { users: beforeBuy.length, median: median(beforeBuy) },
+  };
+
+  // ── The scans-remaining popup ─────────────────────────────────────────────
+  const popOpens = named(win, "scan_balance_opened");
+  const popCloses = named(win, "scan_balance_closed");
+  const popUsers = new Set(popOpens.map(whoOf).filter(Boolean));
+  const popStoreUsers = new Set(popCloses.filter(e => metaStr(e, "action") === "scan_store").map(whoOf).filter(Boolean));
+  const actions = new Map<string, number>(); for (const e of popCloses) bump(actions, metaStr(e, "action") ?? "unknown");
+  const atZero = popOpens.filter(e => (metaNum(e, "totalUsableScans") ?? 1) <= 0).length;
+  const popup = {
+    available: all.some(e => e.event_name === "scan_balance_opened"),
+    opens: popOpens.length, users: popUsers.size,
+    toStore: actions.get("scan_store") ?? 0, gotIt: actions.get("got_it") ?? 0, dismissed: actions.get("dismissed") ?? 0,
+    usersNeverToStore: [...popUsers].filter(u => !popStoreUsers.has(u)).length,
+    toStoreRate: derived(actions.get("scan_store") ?? 0, popCloses.length),
+    openedAtZero: atZero,
+    medianSecondsOpen: median(popCloses.map(e => (metaNum(e, "dwell_ms") ?? NaN) / 1000).filter(Number.isFinite)),
+  };
+
+  // ── Free vs Pro ───────────────────────────────────────────────────────────
+  const planCount = (evs: Ev[]) => {
+    const firstByUser = new Map<string, Ev>();
+    for (const e of evs) { const k = whoOf(e); if (k && !firstByUser.has(k)) firstByUser.set(k, e); }
+    const out = { free: 0, monthly: 0, annual: 0, unknown: 0 };
+    for (const e of firstByUser.values()) out[planOfEvent(e)]++;
+    return out;
+  };
+  const taps = named(win, "scan_pack_purchase_started");
+  const buysWin = named(win, "scan_pack_purchase_completed");
+  const byPlan = { visitors: planCount(storeOpensWin), tappers: planCount(taps), buyers: planCount(buysWin) };
+
+  // ── Which pack ────────────────────────────────────────────────────────────
+  const packs = SCAN_PACKS.map(pk => {
+    const t = taps.filter(e => metaStr(e, "product_id") === pk.sku);
+    const b = buysWin.filter(e => metaStr(e, "product_id") === pk.sku);
+    return { sku: pk.sku, name: pk.name, scans: pk.scans, taps: t.length, tapShare: derived(t.length, taps.length),
+      purchases: b.length, freeTaps: t.filter(e => planOfEvent(e) === "free").length,
+      proTaps: t.filter(e => planOfEvent(e) === "monthly" || planOfEvent(e) === "annual").length };
+  });
+
+  // ── How visits end ────────────────────────────────────────────────────────
+  const closes = named(win, "scan_store_closed");
+  const ends = { leftWithoutTapping: 0, tappedNoPurchase: 0, bought: 0 };
+  const bySource = new Map<string, { visits: number; tapped: number; bought: number }>();
+  for (const e of closes) {
+    const tapsN = metaNum(e, "pack_taps") ?? 0; const bought = meta(e, "purchased") === true;
+    if (bought) ends.bought++; else if (tapsN > 0) ends.tappedNoPurchase++; else ends.leftWithoutTapping++;
+    const s = metaStr(e, "entry_source") ?? "unknown";
+    const r = bySource.get(s) ?? bySource.set(s, { visits: 0, tapped: 0, bought: 0 }).get(s)!;
+    r.visits++; if (tapsN > 0) r.tapped++; if (bought) r.bought++;
+  }
+  // New-build visits (they carry visit_id) that never logged a close: the
+  // app was killed or crashed with the store open.
+  const closedIds = new Set(named(all, "scan_store_closed").map(e => metaStr(e, "visit_id")).filter(Boolean));
+  const noClose = storeOpensWin.filter(e => { const v = metaStr(e, "visit_id"); return v && !closedIds.has(v); }).length;
+  const visits = {
+    available: all.some(e => e.event_name === "scan_store_closed"), total: closes.length, noClose, ...ends,
+    medianSeconds: median(closes.map(e => (metaNum(e, "dwell_ms") ?? NaN) / 1000).filter(Number.isFinite)),
+    bySource: [...bySource.entries()].map(([source, r]) => ({ source, ...r, tapRate: derived(r.tapped, r.visits), buyRate: derived(r.bought, r.visits) }))
+      .sort((a, b) => b.visits - a.visits),
+  };
+
+  // ── Purchases since 2.1.1 ─────────────────────────────────────────────────
+  // All purchases since the release, whatever range is selected.
+  const real = releaseAt ? packDoneAll.filter(e => e.created_at >= releaseAt) : [];
+  const since = {
+    available: Boolean(c.configured && c.at), at: c.at,
+    purchases: real.length, buyers: new Set(real.map(whoOf).filter(Boolean)).size,
+    scansSold: real.reduce((n, e) => n + (SCAN_PACKS.find(p => p.sku === metaStr(e, "product_id"))?.scans ?? 0), 0),
+    repeatBuyers: [...real.reduce((m, e) => bump(m, whoOf(e)), new Map<string, number>()).values()].filter(n => n > 1).length,
+  };
+
+  return { paywallToStore, storeButtonClicks, scansBeforeFirstVisit, popup, byPlan, packs, visits, since,
+           freeLimit: FREE_LIFETIME_SCANS };
+}
+
 // ── Cohorts (CURRENT plan) + Free behaviour ─────────────────────────────────
 
 export function getCohorts(d: V4Data) {
@@ -1624,7 +1816,7 @@ export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: n
       preLaunchProfiles: exact(preLaunch),
       postLaunchShare: derived(inScope, allTime, "share of all profiles acquired since launch"),
       anonymousExcluded: exact(d.anonymousExcluded ?? 0, "pre-auth events with no user_id — cannot be cohort-attributed, so excluded from post-launch analytics"),
-      scanPackWarning: "Historical Scan Pack purchase events include test activity. No genuine scan-pack sale has occurred; purchase counts are not monetization evidence.",
+      scanPackWarning: "Historical Scan Pack purchase events include test activity: purchases before the 2.1.1 release are TestFlight test buys. Purchases since the release are real App Store sales — see Scan Store → Deep dive.",
       note: "GLOBAL_LAUNCH_AT defines the acquisition cohort. ANALYTICS_V4_CUTOVER_AT defines instrumentation trust. They are independent.",
     },
     totalEvents: exact(all.length),
@@ -3146,6 +3338,7 @@ export async function getFounderDashboardV4Metrics(
     monetization: safe("monetization", () => getMonetization(d, paywalls as any, journeys as any)),
     onboardingOffer: safe("onboardingOffer", () => getOnboardingOffer(d, cutover)),
     scanStore:   safe("scanStore", () => getScanStore(d, cutover)),
+    scanStoreInsights: safe("scanStoreInsights", () => getScanStoreInsights(d, cutover)),
     cohorts:     safe("cohorts", () => getCohorts(d)),
     freeBehaviour: safe("freeBehaviour", () => getFreeBehaviour(d)),
     retentionV2: safe("retentionV2", () => getRetentionV2(d)),

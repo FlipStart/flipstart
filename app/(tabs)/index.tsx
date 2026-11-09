@@ -40,6 +40,7 @@ import { type CapturedPhotoSet } from '@/lib/capture';
 import { consumePendingCaptureSet } from '@/lib/pending-capture-set';
 import { setPendingScan } from '@/lib/pending-scan';
 import { logEvent, useScreenFocus } from '@/lib/analytics';
+import { currentScanBalances } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { needsOnboarding, restoreSignedInDevice } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
@@ -153,6 +154,29 @@ export default function HomeScreen() {
   const { user, profile, loading: authLoading, profileChecked, profileError } = useAuth();
   const roar = useAudioPlayer(ROAR_SOUND);
   const [showScanModal,   setShowScanModal]   = useState(false);
+  /**
+   * Scan-balance popup analytics. Opened → closed, with HOW it closed, so the
+   * dashboard can count people who checked their balance and did NOT go to the
+   * Scan Store. One close per open: the ref is cleared on the first close.
+   */
+  const scanModalOpenedAt = useRef<number | null>(null);
+  const openScanModal = () => {
+    scanModalOpenedAt.current = Date.now();
+    try { logEvent('scan_balance_opened', { ...(currentScanBalances() ?? {}) }); } catch {}
+    setShowScanModal(true);
+  };
+  const logScanModalClosed = (action: 'scan_store' | 'got_it' | 'dismissed') => {
+    const at = scanModalOpenedAt.current;
+    scanModalOpenedAt.current = null;
+    if (at === null) return;
+    try {
+      logEvent('scan_balance_closed', { action, dwell_ms: Date.now() - at, ...(currentScanBalances() ?? {}) });
+    } catch {}
+  };
+  const closeScanModal = (action: 'scan_store' | 'got_it' | 'dismissed') => {
+    logScanModalClosed(action);
+    setShowScanModal(false);
+  };
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   useEffect(() => {
     // Version-gated: anyone whose device hasn't completed the CURRENT onboarding
@@ -436,7 +460,7 @@ export default function HomeScreen() {
                   wide enough to crowd the FlipStart header. */}
             <Animated.View style={pillFx.animatedStyle}>
             <Pressable
-              onPress={() => { pillFx.markUsed(); setShowScanModal(true); }}
+              onPress={() => { pillFx.markUsed(); openScanModal(); }}
               onPressIn={pillFx.onPressIn}
               onPressOut={pillFx.onPressOut}
               style={[
@@ -664,9 +688,9 @@ export default function HomeScreen() {
         visible={showScanModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowScanModal(false)}
+        onRequestClose={() => closeScanModal('dismissed')}
       >
-        <Pressable style={sm.backdrop} onPress={() => setShowScanModal(false)}>
+        <Pressable style={sm.backdrop} onPress={() => closeScanModal('dismissed')}>
           <Pressable style={sm.card} onPress={e => e.stopPropagation()}>
             <View style={sm.header}>
               <MaterialIcons name="bolt" size={22} color={GOLD} />
@@ -732,6 +756,7 @@ export default function HomeScreen() {
               style={sm.storeBtn}
               onPress={() => {
                 setShowScanModal(false);
+                logScanModalClosed('scan_store');
                 // Voluntary entry = BROWSE. Clearing any stale intent is what
                 // stops an old exhausted-scan attempt resuming after a purchase
                 // the user made just to stock up.
@@ -741,7 +766,7 @@ export default function HomeScreen() {
             />
 
             <Pressable
-              onPress={() => setShowScanModal(false)}
+              onPress={() => closeScanModal('got_it')}
               hitSlop={10}
               accessibilityRole="button"
               accessibilityLabel="Got it"

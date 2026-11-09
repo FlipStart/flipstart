@@ -119,6 +119,7 @@ export interface ProPaywallModalProps {
   consumeUnlock: () => (() => void) | null;
   onDismiss: (resolved: boolean) => void;
   /** Called when the user chooses to continue from the Scan Store alternative. */
+  /** Receives the paywall's source, so the store can record where the visit came from. */
   onScanStore: () => void;
 }
 
@@ -393,9 +394,13 @@ export function ProPaywallModal({
     // Dismiss FIRST, then navigate. Pushing while the sheet is mounted leaves
     // it floating over the new screen on iOS — the same fix already applied to
     // the scan-balance modal in app/(tabs)/index.tsx.
-    dismiss(false);
+    // Its own terminal event, then close WITHOUT dismiss(): that would also
+    // log paywall_closed and count every store tap as an X (same as
+    // continueFree).
+    paywallAnalytics.scanStoreClicked(source);
+    onDismiss(false);
     onScanStore();
-  }, [dismiss, onScanStore]);
+  }, [onDismiss, onScanStore, source]);
 
   // ── Derived UI state ──────────────────────────────────────────────────────
   const selectedProduct = selected === "annual" ? products.annual : products.monthly;

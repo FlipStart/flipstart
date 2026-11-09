@@ -230,7 +230,12 @@ export function ProPaywallHost({ rootHost = false }: { rootHost?: boolean }) {
       request={_request}
       consumeUnlock={_consumeUnlock}
       onDismiss={() => _dismiss()}
-      onScanStore={() => router.push("/scan-store?from=paywall" as any)}
+      onScanStore={() => {
+        // Which paywall sent them, so the dashboard can show paywall → store
+        // per paywall (the 15-scan one especially).
+        const from = _request?.config.source;
+        router.push((from ? `/scan-store?from=paywall&paywall_source=${encodeURIComponent(from)}` : '/scan-store?from=paywall') as any);
+      }}
     />
   );
 }

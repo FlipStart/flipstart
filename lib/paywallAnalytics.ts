@@ -34,6 +34,8 @@ export type PaywallEvent =
   | "paywall_restore_started"
   | "paywall_restore_completed"
   | "paywall_continue_free"
+  /** The "buy scan packs instead" button: paywall → Scan Store. */
+  | "paywall_scan_store_clicked"
   | "paywall_closed"
   /** @deprecated Legacy overloaded terminal event — see `dismissed` below. */
   | "paywall_dismissed";
@@ -93,6 +95,17 @@ export const paywallAnalytics = {
     emit("paywall_purchase_failed", source, { selected_plan: plan, reason }),
 
   restoreStarted: (source: ProPaywallSource) => emit("paywall_restore_started", source),
+
+  /**
+   * Left the paywall for the Scan Store. Its own event — before this, a store
+   * visit from the paywall could not be told apart from any other, and "how
+   * many people hit the 15-scan limit and went to buy packs" had no answer.
+   * Terminal for the paywall, so the active marker is cleared.
+   */
+  scanStoreClicked: (source: ProPaywallSource) => {
+    setActivePaywall(null);
+    emit("paywall_scan_store_clicked", source, { ...currentScanBalances() });
+  },
 
   restoreCompleted: (source: ProPaywallSource, outcome: string) =>
     emit("paywall_restore_completed", source, { outcome }),

@@ -765,9 +765,79 @@ function renderPaidJourneys(pj: any): string {
     pj.smallSample ? "small sample" : "");
 }
 
-function renderScanStore(s: any): string {
+/** Where people entered the Scan Store from, in plain words. */
+const ENTRY_LABEL: Record<string, string> = {
+  home_cta: "Scans-remaining popup", paywall: "Paywall's scan-store button", home_gate: "Scan button, Pro & out of scans (home)",
+  tab_gate: "Scan button, Pro & out of scans (tab bar)", hunt_active: "Scan button, Pro & out of scans (hunt)",
+  scan_fail: "Scan failed screen", settings: "Settings", unknown: "Unknown (older app build)",
+};
+const PAYWALL_LABEL = (s: string, limit: number) => s === "scan_limit" ? `${limit}-scan limit paywall` : s.replace(/_/g, " ");
+
+/**
+ * Scan Store deep dive — the founder's questions, answered in order. Every
+ * value escaped; nothing here names a user.
+ */
+export function renderScanStoreInsights(x: any): string {
+  if (!x || isErr(x)) return isErr(x) ? errorCard("Scan Store deep dive", x) : "";
+  const r = (v: any) => (v && v.d ? rate(v.n, v.d) : "—");
+  const since = x.since.available
+    ? `<div class="card"><div class="card-h">Pack purchases since the 2.1.1 release ${badge("EXACT")}</div>${grid([
+        m("Purchases", { value: x.since.purchases, trust: "EXACT" }), m("Buyers", { value: x.since.buyers, trust: "EXACT" }),
+        m("Repeat buyers", { value: x.since.repeatBuyers, trust: "EXACT" }), m("Scans sold", { value: x.since.scansSold, trust: "EXACT" })])}
+        <div class="muted">Every purchase from ${esc(formatCentralDateTime(x.since.at))} (ANALYTICS_V4_CUTOVER_AT) on, whatever date range is selected. Your own TestFlight test buys after that would be included.</div></div>`
+    : na("Pack purchases since the 2.1.1 release", "Set ANALYTICS_V4_CUTOVER_AT to count purchases from the release on.");
+
+  const pw = `<div class="card"><div class="card-h">Paywall → Scan Store → purchase ${badge("EXACT")} <span class="muted">— unique users</span></div>
+    ${table(["Paywall", "Saw it", "→ Scan Store", "→ bought a pack (24h)", "→ subscribed instead"],
+      x.paywallToStore.map((p: any) => [esc(PAYWALL_LABEL(p.source, x.freeLimit)), num(p.shown), r(p.toStoreRate), num(p.boughtPack), num(p.subscribed)]))}
+    <div class="muted">Scan-store button taps on any paywall in this range: ${num(x.storeButtonClicks)} (logged from the next app build on).
+    Only people who saw that paywall in this range are counted as going to the store, so the rate can't pass 100%. A pack counts as bought if it was bought in that same store visit (older builds: within 24h).
+    ${x.paywallToStore.some((p: any) => p.inferredVisits > 0) ? " Older builds didn't say which paywall sent people; those visits count for the 15-scan paywall if the person saw it in the 30 minutes before (it was the only one with a Scan Store button)." : ""}</div></div>`;
+
+  const sb = x.scansBeforeFirstVisit;
+  const before = `<div class="card"><div class="card-h">Scans done before the first Scan Store visit ${badge("EXACT")}</div>
+    ${grid([m("Users (first visit in range)", { value: sb.users, trust: "EXACT" }), m("Median scans", { value: sb.median, trust: "EXACT" }),
+            m("Average scans", { value: sb.mean, trust: "EXACT" }, { dp: 1 }), m("Median scans before first real pack purchase", { value: sb.beforeFirstPurchase.median, trust: "EXACT", d: sb.beforeFirstPurchase.users })])}
+    ${table(["Scans before first visit", "Users"], sb.buckets.map((b: any) => [esc(b.label), num(b.users)]))}
+    <div class="muted">Completed scans, all time, before the user's first-ever store visit (for users whose first visit is in this range). The purchase figure counts real buyers only: first purchase since 2.1.1, in this range. Free accounts hit the paywall at ${num(x.freeLimit)}.</div></div>`;
+
+  const p = x.popup;
+  const popup = p.available
+    ? `<div class="card"><div class="card-h">Scans-remaining popup ${badge("EXACT")}</div>${grid([
+        m("Times opened", { value: p.opens, trust: "EXACT" }), m("People who opened it", { value: p.users, trust: "EXACT" }),
+        m("→ Scan Store", { value: p.toStore, trust: "EXACT" }), m("Pressed Got it", { value: p.gotIt, trust: "EXACT" }),
+        m("Tapped away", { value: p.dismissed, trust: "EXACT" }), m("Opened it, never tapped its store button", { value: p.usersNeverToStore, trust: "EXACT" }),
+        m("Opened at 0 scans", { value: p.openedAtZero, trust: "EXACT" }), m("Median seconds open", { value: p.medianSecondsOpen, trust: "EXACT" }, { dp: 1 })])}
+        <div class="muted">Popup → store: ${r(p.toStoreRate)}</div></div>`
+    : na("Scans-remaining popup", "Starts with the next app build — tapping the scans pill wasn't logged before.");
+
+  const plans = ["free", "monthly", "annual", "unknown"];
+  const planRow = (label: string, o: any) => [esc(label), ...plans.map(k => num(o[k]))];
+  const byPlan = `<div class="card"><div class="card-h">Free vs Pro in the Scan Store ${badge("EXACT")} <span class="muted">— unique users, plan at the time</span></div>
+    ${table(["", "Free", "Monthly", "Annual", "Unknown"], [planRow("Visited", x.byPlan.visitors), planRow("Tapped a pack", x.byPlan.tappers), planRow("Bought", x.byPlan.buyers)])}</div>`;
+
+  const packs = `<div class="card"><div class="card-h">Which pack gets tapped ${badge("EXACT")}</div>
+    ${table(["Pack", "Taps", "Share of taps", "Free taps", "Pro taps", "Purchases"],
+      x.packs.map((k: any) => [`${esc(k.name)} · ${num(k.scans)} scans`, num(k.taps), r(k.tapShare), num(k.freeTaps), num(k.proTaps), num(k.purchases)]))}
+    <div class="muted">A tap is pressing a pack's Buy button (the App Store sheet opens). Purchases are in this date range.</div></div>`;
+
+  const v = x.visits;
+  const visits = v.available
+    ? `<div class="card"><div class="card-h">How Scan Store visits end ${badge("EXACT")}</div>${grid([
+        m("Visits", { value: v.total, trust: "EXACT" }), m("Left without tapping a pack", { value: v.leftWithoutTapping, trust: "EXACT" }),
+        m("Tapped, didn't buy", { value: v.tappedNoPurchase, trust: "EXACT" }), m("Bought", { value: v.bought, trust: "EXACT" }),
+        m("Median seconds in store", { value: v.medianSeconds, trust: "EXACT" }, { dp: 0 }),
+        m("No close recorded (app closed in store)", { value: v.noClose, trust: "EXACT" })])}
+        ${table(["Came from", "Visits", "Tapped a pack", "Bought"], v.bySource.map((s: any) =>
+          [esc(ENTRY_LABEL[s.source] ?? s.source), num(s.visits), r(s.tapRate), r(s.buyRate)]))}</div>`
+    : na("How Scan Store visits end", "Starts with the next app build — leaving the store wasn't logged before.");
+
+  return `<h3>Deep dive</h3>${since}${pw}${before}${popup}${byPlan}${packs}${visits}`;
+}
+
+function renderScanStore(s: any, insights?: any): string {
   // Wrapped in its section so the contents link still lands somewhere.
-  if (isErr(s)) return section("store", "8 · Scan Store", errorCard("Scan Store", s));
+  if (isErr(s)) return section("store", "8 · Scan Store", errorCard("Scan Store", s) + renderScanStoreInsights(insights));
   const skus = table(["Pack", "Scans", "Attempts", "Purchases", "Cancels", "Failures", "Attempt → purchase"],
     s.skus.map((k: any) => [`${esc(k.name)} <code>${esc(k.sku)}</code>`, num(k.scans), num(k.attempts), num(k.purchases), num(k.cancels), num(k.failures), k.conversion.d ? rate(k.conversion.n, k.conversion.d) : "—"]));
   const v4 = s.v4.available
@@ -781,7 +851,7 @@ function renderScanStore(s: any): string {
    * never been a genuine sale. Opens and browsing ARE real and useful; the
    * purchase counts must not be read as revenue or customers.
    */
-  const contamination = `<div class="banner warn"><strong>Historical Scan Pack purchase events include test activity.</strong> <span class="muted">No genuine scan-pack sale has occurred. Treat purchase counts below as ${TRUST_LABEL.LEGACY.toUpperCase()} — opens and browsing behaviour are real; purchases are not monetization evidence.</span></div>`;
+  const contamination = `<div class="banner warn"><strong>Historical Scan Pack purchase events include test activity.</strong> <span class="muted">Purchases before the 2.1.1 release are TestFlight test buys, so the all-time purchase counts below are marked ${TRUST_LABEL.LEGACY.toUpperCase()}. For real sales, use "Pack purchases since the 2.1.1 release" in the deep dive. Opens and browsing are real throughout.</span></div>`;
   return section("store", "8 · Scan Store", contamination + grid([
     m("Opens", s.opens), m("Unique visitors", s.uniqueVisitors), m("Repeat visitors", s.repeatVisitors), m("Opens / visitor", s.opensPerVisitor, { dp: 2 }),
     m("Visitor → buyer", { ...s.visitorToBuyer, trust: "LEGACY", note: "test-contaminated" }),
@@ -791,7 +861,7 @@ function renderScanStore(s: any): string {
     m("Median first visit → purchase", { value: s.hoursFirstVisitToPurchase.median, trust: "DERIVED", d: s.hoursFirstVisitToPurchase.d }, { fmt: "hrs" }), m("Revenue", s.revenue),
   ]) + `<div class="two"><div class="card"><div class="card-h">Funnel (unique users)</div>${funnel(s.funnel)}<div class="muted">StoreKit sheet presentation is not tracked, so it is not a stage.</div></div>
   <div class="card"><div class="card-h">Entry mode (legacy field)</div>${table(["Mode", "Opens"], s.entryMode.map((r: any) => [esc(r.mode), num(r.opens)]))}</div></div>
-  <div class="card"><div class="card-h">Per SKU</div>${skus}</div>${v4}`, s.smallSample ? "small sample" : "");
+  <div class="card"><div class="card-h">Per SKU</div>${skus}</div>${v4}${renderScanStoreInsights(insights)}`, s.smallSample ? "small sample" : "");
 }
 
 function cohortCard(c: any): string {
@@ -919,7 +989,8 @@ function renderDataQualityV4(q: any): string {
  */
 export function renderCompsInspector(input: any): string {
   const title = "12d · Sold Comps Inspector";
-  const empty = { runCount: 0, runs: [], feedback: [], feedbackTotals: { right: 0, wrong: 0 }, byTier: {}, durable: true };
+  const empty = { runCount: 0, runs: [], feedback: [], feedbackTotals: { right: 0, wrong: 0 }, byTier: {}, durable: true,
+                  history: { runsAsking365: 0, medianSpanDays: null, maxSpanDays: null }, searchTiers: {}, paidCalls: 0 };
   const snap = input && typeof input === "object" && !isErr(input) ? { ...empty, ...input } : empty;
   const problem = !input || typeof input !== "object"
     ? `<div class="banner warn">This load didn't include comps inspector data (the server may be running an older version), so everything shows zero.</div>`
@@ -929,7 +1000,8 @@ export function renderCompsInspector(input: any): string {
   const tiers = (t: any) => t ? `${num(t.exact)} / ${num(t.strong)} / ${num(t.similar)} / ${num(t.weak)}` : "—";
   const runs: any[] = Array.isArray(snap.runs) ? snap.runs : [];
   const runRows = runs.map((r: any) => [
-    when(r.at), esc(r.item), esc(r.query ?? "—"), esc(r.outcome), num(r.raw), tiers(r.tierCounts),
+    when(r.at), esc(r.item), esc(r.query ?? "—"), esc(r.outcome), esc(r.searchTier ?? "—"),
+    num((r.searches ?? []).filter((s: any) => s.paid).length), num(r.raw), tiers(r.tierCounts),
     num(r.rejectedCount), num(r.duplicatesRemoved), esc(r.dataStrength ?? "—"),
     r.median != null ? usd(r.median) : "—",
     r.aiLow != null && r.aiHigh != null ? `${usd(r.aiLow, 0)}–${usd(r.aiHigh, 0)}` : "—",
@@ -938,6 +1010,8 @@ export function renderCompsInspector(input: any): string {
   const detail = (r: any) => {
     const counts = Object.entries(r.rejectionCounts ?? {}).sort((a: any, b: any) => b[1] - a[1]);
     return `<details class="more"><summary>${esc(r.item)} — ${esc(r.query ?? "no search")} · ${when(r.at)}</summary>
+      <div class="card-h">Searches run</div>
+      ${table(["Step", "Search", "Category", "Outcome", "Paid", "Returned"], (r.searches ?? []).map((s: any) => [esc(s.tier), esc(s.query), esc(s.categoryId ?? "none"), esc(s.cacheHit ? "cached" : s.outcome), s.paid ? "yes" : "no", num(s.raw)]), "compact")}
       <div class="card-h">Shown, in order</div>
       ${table(["Tier", "Score", "Price", "Title", "Why"], (r.shown ?? []).map((c: any) => [esc(c.tier), num(c.score), usd(c.price), esc(c.title), esc(c.reason)]), "compact")}
       <div class="card-h">Why listings were thrown out</div>
@@ -961,9 +1035,15 @@ export function renderCompsInspector(input: any): string {
     ${table(["When", "Mark", "Tier", "Score", "Item", "Comp"], fb.slice(0, 50).map((f: any) => [when(f.at), esc(f.verdict), esc(f.tier), num(f.score), esc(f.item), esc(f.title)]), "compact")}</div>`;
   return section("comps", title,
     `${problem}
-     ${grid([card("Comps runs kept", num(snap.runCount)), card("Marked right", num(snap.feedbackTotals?.right)), card("Marked wrong", num(snap.feedbackTotals?.wrong))])}
+     ${grid([card("Comps runs kept", num(snap.runCount)), card("Paid searches (all time)", num(snap.paidCalls)), card("Marked right", num(snap.feedbackTotals?.right)), card("Marked wrong", num(snap.feedbackTotals?.wrong))])}
+     <div class="card"><div class="card-h">Search depth & history ${badge("EXACT")} <span class="muted">— A precise · B relaxed · C broad · D nothing shown</span></div>
+     ${grid(["A", "B", "C", "D"].map(t => card(`Reached ${t}`, num((snap.searchTiers ?? {})[t] ?? 0))))}
+     ${grid([card("Runs that asked for 365 days", num(snap.history?.runsAsking365)),
+             card("Median days of sales returned", snap.history?.medianSpanDays != null ? `${num(snap.history.medianSpanDays)}d` : "—"),
+             card("Longest span returned", snap.history?.maxSpanDays != null ? `${num(snap.history.maxSpanDays)}d` : "—")])}
+     <div class="muted">If the median stays near 90 days, eBay isn't giving more than that — the 365-day setting can be dropped.</div></div>
      <div class="card"><div class="card-h">Recent runs ${badge("EXACT")} <span class="muted">— tiers are Exact / Strong / Similar / Weak; one row per scan, latest view</span></div>
-     ${table(["When", "Item", "Search", "Outcome", "Returned", "Tiers E/S/s/W", "Rejected", "Dupes", "Data", "Median", "AI range", "History"], runRows, "compact")}
+     ${table(["When", "Item", "Search", "Outcome", "Depth", "Paid", "Returned", "Tiers E/S/s/W", "Rejected", "Dupes", "Data", "Median", "AI range", "History"], runRows, "compact")}
      ${runs.slice(0, 15).map(detail).join("")}</div>
      ${marks}
      <div class="muted">"History" is the span of sale dates the provider actually returned, against the window asked for. Comps never change the resale estimate.</div>`,
@@ -997,7 +1077,7 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
     renderAcquisition(metrics.acquisition), renderAcquisitionSource(metrics.acquisitionSource), renderActivation(metrics.activation), renderFunnel(metrics.firstSession),
     renderMonetization(metrics.monetization), renderPricing(metrics.pricing), renderFreeToPaid(metrics.freeToPaid),
     renderPaywalls(metrics.paywalls), renderPaywallIntel(metrics.paywallIntel), renderOnboardingOffer(metrics.onboardingOffer),
-    renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore),
+    renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore, metrics.scanStoreInsights),
     renderCohorts(metrics.cohorts), renderDistributions(metrics.distributions),
     renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderRetentionSegments(metrics.retentionSegments), renderSessionsV2(metrics.sessionsV2), renderAppVersions(metrics.appVersions),
     renderScans(metrics.scans), renderScanReliability(metrics.scanReliability), renderCompsInspector(metrics.compsInspector), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
