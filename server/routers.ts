@@ -1283,7 +1283,7 @@ const compsRouter = router({
         outcome: `${diag.internalCode}/${diag.stage}`,
         searchTier: rec.searchTier ?? null,
         searches: (rec.searches ?? []).map(s => ({ tier: s.tier, query: s.query, categoryId: s.categoryId,
-          outcome: s.outcome, cacheHit: s.cacheHit, paid: s.calledProvider, raw: s.rawCount,
+          outcome: s.outcome, cacheHit: s.cacheHit, paid: s.calledProvider, raw: s.rawCount, ms: s.latencyMs,
           ...(s.errorCode && s.outcome !== "ok" ? { error: s.errorDetail ? `${s.errorCode}: ${s.errorDetail}` : s.errorCode } : {}) })),
         raw: rec.provider?.rawCount ?? 0,
         tierCounts: ev?.tierCounts ?? null,
@@ -1362,7 +1362,7 @@ const compsRouter = router({
             outcome: `${diag.internalCode}/${diag.stage}`,
             searchTier: rec.searchTier ?? null,
             searches: (rec.searches ?? []).map(s => ({ tier: s.tier, query: s.query, categoryId: s.categoryId,
-              outcome: s.outcome, cacheHit: s.cacheHit, paid: s.calledProvider, raw: s.rawCount,
+              outcome: s.outcome, cacheHit: s.cacheHit, paid: s.calledProvider, raw: s.rawCount, ms: s.latencyMs,
           ...(s.errorCode && s.outcome !== "ok" ? { error: s.errorDetail ? `${s.errorCode}: ${s.errorDetail}` : s.errorCode } : {}) })),
             counts: {
               raw: rec.provider?.rawCount ?? 0,

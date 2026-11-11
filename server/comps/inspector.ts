@@ -73,6 +73,8 @@ export interface InspectorSearch {
   raw: number;
   /** Why a search failed or was skipped, e.g. "PROVIDER_UNAVAILABLE: provider returned 502". */
   error?: string;
+  /** Provider time for this search, ms. 0 when cached or skipped. */
+  ms?: number;
 }
 
 export type CompVerdict = "right" | "wrong";

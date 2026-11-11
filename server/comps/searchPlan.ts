@@ -264,7 +264,10 @@ export function buildSearchPlan(c: CanonicalAnalysisV1, precise: string, opts: {
     const brand = queryPart(id.canonical_brand);
     const subject = searchSubject(c);
     const merch = queryPart(id.team) || queryPart(id.artist) || queryPart(id.character_or_license);
-    if (brand && subject && !merch) {
+    // A subject that is the brand's own mark ("swoosh logo") is not a design:
+    // "Nike swoosh" is every Nike item ever sold. Those keep brand + noun.
+    const isLogo = /\blogo\b/i.test(id.subject ?? "");
+    if (brand && subject && !merch && !isLogo) {
       // A branded GRAPHIC item: brand + design with NO garment word. The
       // garment word is the part sellers disagree on — the same Rebel
       // Vengeance tiger piece sells as a "button down shirt", "shacket",

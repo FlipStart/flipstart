@@ -55,6 +55,19 @@ function fallbackStartLimitMs(): number {
   const n = Number.parseInt(process.env.COMPS_FALLBACK_START_LIMIT_MS ?? "", 10);
   return Number.isFinite(n) && n >= 0 ? n : 10_000;
 }
+/**
+ * The same limit when NOTHING has been found yet. Skipping a fallback then
+ * doesn't save the user a wait, it guarantees "no comps" — the Rebel Vengeance
+ * tiger shirt lost its only working search ("Rebel Vengeance Tiger") to the
+ * 10 s limit after the precise search came back empty. Comps load after the
+ * screen and start when the scan finishes, so a longer rescue costs a spinner,
+ * not the scan. The rescue gets this much on top of the normal limit
+ * (10 s + 15 s = 25 s). COMPS_RESCUE_EXTRA_MS overrides.
+ */
+function rescueExtraMs(): number {
+  const n = Number.parseInt(process.env.COMPS_RESCUE_EXTRA_MS ?? "", 10);
+  return Number.isFinite(n) && n >= 0 ? n : 15_000;
+}
 
 /**
  * Fallback searches (Phase 3). B and C run only while fewer than MIN_CORE
@@ -219,7 +232,7 @@ export async function runCompsForAnalysis(
   let budget: BudgetState | undefined;
 
   type Fetched = SearchRun & { items: NormalizedSoldComp[]; fetchedAt: number | null; malformed: number; detail?: string };
-  const runSearch = async (step: SearchStep, categoryId: string | null, fallback: boolean): Promise<Fetched> => {
+  const runSearch = async (step: SearchStep, categoryId: string | null, fallback: boolean, rescue = false): Promise<Fetched> => {
     const base = { tier: step.tier, query: step.query, categoryId, why: step.why };
     const key = compsCacheKey(step.normalizedQuery, built.historyDays, "ebay_us", categoryId);
     const cached = getCachedComps(key);
@@ -238,7 +251,7 @@ export async function runCompsForAnalysis(
     }
     // A PAID fallback after a slow start is skipped (a cached or in-flight one,
     // above, costs no time and still runs).
-    if (fallback && Date.now() - t0 >= fallbackStartLimitMs()) {
+    if (fallback && Date.now() - t0 >= fallbackStartLimitMs() + (rescue ? rescueExtraMs() : 0)) {
       return { ...base, outcome: "budget", cacheHit: false, calledProvider: false, rawCount: 0, latencyMs: 0,
                malformed: 0, items: [], fetchedAt: null, errorCode: "FALLBACK_TIME_LIMIT",
                detail: "the first search was slow; not making the user wait for another" };
@@ -262,6 +275,7 @@ export async function runCompsForAnalysis(
                detail: `${res.window} budget reached` };
     }
     // 7. Provider.
+    const callStart = Date.now();
     const call = provider().searchSold({
       keyword: step.query, marketplace: "ebay_us",
       historyDays: built.historyDays, condition: "used", count: candidatePool(),
@@ -286,7 +300,7 @@ export async function runCompsForAnalysis(
       // quietly overruns the budget.
       const neverSent = code === "PROVIDER_NOT_CONFIGURED" || code === "UNAUTHORIZED" || code === "INVALID_REQUEST";
       if (neverSent) releaseRequest(ctx.userId ?? null);
-      return { ...base, outcome: "error", cacheHit: false, calledProvider: !neverSent, rawCount: 0, latencyMs: 0,
+      return { ...base, outcome: "error", cacheHit: false, calledProvider: !neverSent, rawCount: 0, latencyMs: Date.now() - callStart,
                malformed: 0, items: [], fetchedAt: null, errorCode: code, detail: (err as Error).message };
     } finally {
       inflight.delete(key);
@@ -317,13 +331,18 @@ export async function runCompsForAnalysis(
    */
   let dropCategory = false;
   const queue: SearchStep[] = [...plan];
+  /** Move the broad search to the front of the queue. */
+  const broadNext = () => {
+    const at = queue.findIndex(s => s.tier === "C");
+    if (at > 0) queue.unshift(...queue.splice(at, 1));
+  };
 
   while (queue.length > 0 && searches.length < MAX_SEARCHES) {
     const step = queue.shift() as SearchStep;
     const fallback = searches.length > 0;
     if (fallback && coreSoFar(pool) >= MIN_CORE) break;
     const categoryId = dropCategory ? null : step.categoryId;
-    const run = await runSearch(step, categoryId, fallback);
+    const run = await runSearch(step, categoryId, fallback, fallback && pool.size === 0);
     searches.push(strip(run));
     if (run.outcome !== "ok") {
       firstFailure ??= run;
@@ -340,12 +359,17 @@ export async function runCompsForAnalysis(
         // the relaxed search is the one most likely to fail the same way; the
         // broad search is the least. The relaxed one still runs after it if a
         // slot is left and comps are still short.
-        const broadAt = queue.findIndex(s => s.tier === "C");
-        if (broadAt > 0) queue.unshift(...queue.splice(broadAt, 1));
+        broadNext();
         continue;
       }
       break;              // a refused or failed fallback never costs the scan what it already has
     }
+    // The precise search found NOTHING on eBay at all. The relaxed search is the
+    // same words minus a few, so it usually finds nothing too ("…Tiger polo
+    // shirt" after "…Tiger long sleeve polo shirt"); the broad one is the
+    // search with a real chance. It goes next; relaxed still runs after it if
+    // there is a slot and comps are still short.
+    if (run.tier === "A" && run.rawCount === 0) broadNext();
     if (run.rawCount === 0 && categoryId) {
       dropCategory = true;
       if (searches.length + queue.length < MAX_SEARCHES) queue.unshift(step);
