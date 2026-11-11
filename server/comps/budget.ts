@@ -278,9 +278,27 @@ export function __resetBudget(): void {
   loaded = true;   // tests never touch disk
 }
 
-/** Per-user usage today. Founder diagnostics only. */
-export function perUserUsage(userId: string): number {
-  load();
+/** Paid searches this user may still make today. */
+export function perUserRemaining(userId: string, now = Date.now()): number {
+  return Math.max(0, envInt(PER_USER_NAMES, DEFAULT_PER_USER_DAILY) - perUserUsage(userId, now));
+}
+
+/**
+ * Searches left in the SHARED daily and monthly pools, whichever is smaller.
+ * Fallback searches keep a reserve here so a run of misses can't use up the
+ * pool other users' first searches depend on.
+ */
+export function sharedRemaining(now = Date.now()): { remaining: number; limit: number } {
+  const s = budgetState(now);
+  const daily = s.dailyLimit - s.dailyUsed;
+  const monthly = s.monthlyLimit - s.monthlyUsed;
+  return daily <= monthly ? { remaining: daily, limit: s.dailyLimit } : { remaining: monthly, limit: s.monthlyLimit };
+}
+
+/** Per-user usage today. Rolls the day over first, so a count from yesterday
+ *  is never read as today's. */
+export function perUserUsage(userId: string, now = Date.now()): number {
+  roll(now);
   const rec = counters.perUser[userId];
   return rec && rec.dayKey === counters.dayKey ? rec.count : 0;
 }

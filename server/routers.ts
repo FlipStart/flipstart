@@ -1235,6 +1235,8 @@ const compsRouter = router({
         (diag.detail ? `(${diag.detail})` : "") +
         ` reached:${diag.providerReached} reserved:${diag.requestReserved}` +
         (rec.query ? ` q:"${rec.query.text}"` : "") +
+        (rec.searches?.length ? ` search:${rec.searchTier ?? "?"}` +
+          ` paid:${rec.searches.filter(s => s.calledProvider).length}/${rec.searches.length}` : "") +
         (ev ? ` reliable:${ev.counts.finalSample}` +
           ` tiers:${ev.tierCounts.exact}E/${ev.tierCounts.strong}S/${ev.tierCounts.similar}s/${ev.tierCounts.weak}w` +
           ` median:${ev.public.canShowMedian ? `$${ev.public.medianSoldPrice}` : "suppressed"}` +
@@ -1263,6 +1265,9 @@ const compsRouter = router({
         historySpanDays: rec.historySpanDays ?? null,
         cacheHit: rec.provider?.cacheHit ?? false,
         outcome: `${diag.internalCode}/${diag.stage}`,
+        searchTier: rec.searchTier ?? null,
+        searches: (rec.searches ?? []).map(s => ({ tier: s.tier, query: s.query, categoryId: s.categoryId,
+          outcome: s.outcome, cacheHit: s.cacheHit, paid: s.calledProvider, raw: s.rawCount })),
         raw: rec.provider?.rawCount ?? 0,
         tierCounts: ev?.tierCounts ?? null,
         rejectedCount: rec.rejected?.length ?? 0,
@@ -1338,6 +1343,9 @@ const compsRouter = router({
             historySpanDays: rec.historySpanDays ?? null,
             cacheHit: rec.provider?.cacheHit ?? false,
             outcome: `${diag.internalCode}/${diag.stage}`,
+            searchTier: rec.searchTier ?? null,
+            searches: (rec.searches ?? []).map(s => ({ tier: s.tier, query: s.query, categoryId: s.categoryId,
+              outcome: s.outcome, cacheHit: s.cacheHit, paid: s.calledProvider, raw: s.rawCount })),
             counts: {
               raw: rec.provider?.rawCount ?? 0,
               rejected: rec.rejected?.length ?? 0,

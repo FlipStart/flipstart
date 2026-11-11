@@ -150,13 +150,17 @@ function hookExit(): void {
  * MATCH_ALGO_VERSION is deliberately absent — see the file header. Including it
  * would discard paid-for listings every time scoring improved.
  */
-export function compsCacheKey(normalizedQuery: string, historyDays: number, marketplace: string): string {
+export function compsCacheKey(normalizedQuery: string, historyDays: number, marketplace: string,
+                              categoryId: string | null = null): string {
   // STATS_VERSION is deliberately NOT here. This cache stores RAW provider
   // listings, which are independent of how we evaluate them — including it would
   // discard paid-for data every time the statistics changed. Raw results are
   // re-scored and re-evaluated on every read, so a stats change takes effect
   // immediately on everything already cached.
-  const basis = [normalizedQuery, historyDays, marketplace, QUERY_BUILDER_VERSION].join("|");
+  // The category changes what comes back, so it is part of the key. Left off
+  // when absent, so uncategorised searches keep the keys they always had.
+  const basis = [normalizedQuery, historyDays, marketplace, QUERY_BUILDER_VERSION,
+                 ...(categoryId ? [`cat:${categoryId}`] : [])].join("|");
   return crypto.createHash("sha256").update(basis).digest("hex").slice(0, 24);
 }
 

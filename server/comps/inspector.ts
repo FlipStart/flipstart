@@ -45,6 +45,9 @@ export interface InspectorRun {
   cacheHit: boolean;
   /** internalCode/stage, e.g. "OK/evaluation" or "IDENTITY_TOO_WEAK/eligibility". */
   outcome: string;
+  /** Deepest search that ran (A precise, B relaxed, C broad), D = nothing shown. */
+  searchTier?: string | null;
+  searches?: InspectorSearch[];
   raw: number;
   tierCounts: { exact: number; strong: number; similar: number; weak: number } | null;
   rejectedCount: number;
@@ -58,6 +61,16 @@ export interface InspectorRun {
   rejectedSample: Array<{ title: string; reason: string; detail: string | null; price: number }>;
   weakSample: Array<{ title: string; reason: string }>;
   duplicates: Array<{ title: string; reason: string }>;
+}
+
+export interface InspectorSearch {
+  tier: string;
+  query: string;
+  categoryId: string | null;
+  outcome: string;
+  cacheHit: boolean;
+  paid: boolean;
+  raw: number;
 }
 
 export type CompVerdict = "right" | "wrong";
@@ -78,6 +91,9 @@ interface InspectorFile {
   version: 1;
   runs: InspectorRun[];
   feedback: Record<string, CompFeedback>;
+  /** Running totals. Runs are replaced on reopen, so a sum over `runs` would
+   *  lose the paid searches of every view but the latest. */
+  totals?: { paidCalls: number };
 }
 
 const DATA_DIR = process.env.DATA_DIR ?? "/tmp";
@@ -88,6 +104,7 @@ const SAMPLE = { rejected: 40, weak: 20, duplicates: 20 };
 
 let runs: InspectorRun[] = [];
 let feedback: Record<string, CompFeedback> = {};
+let totals = { paidCalls: 0 };
 let loaded = false;
 let pending = 0;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -101,6 +118,7 @@ function load(): void {
       if (raw?.version === 1) {
         runs = Array.isArray(raw.runs) ? raw.runs : [];
         feedback = raw.feedback && typeof raw.feedback === "object" ? raw.feedback : {};
+        totals = { paidCalls: Number(raw.totals?.paidCalls) || 0 };
       }
     }
   } catch (e) {
@@ -117,7 +135,7 @@ function flushNow(reason: string): void {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const tmp = `${FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, runs, feedback } satisfies InspectorFile));
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, runs, feedback, totals } satisfies InspectorFile));
     fs.renameSync(tmp, FILE);
   } catch (e) {
     console.error(`[comps-inspector] flush failed (${reason}):`, (e as Error).message);
@@ -159,6 +177,7 @@ export function recordCompsRun(run: InspectorRun): void {
     duplicates: run.duplicates.slice(0, SAMPLE.duplicates),
     shown: run.shown.slice(0, 3),
   };
+  totals.paidCalls += (run.searches ?? []).filter(s => s.paid).length;
   // One entry per analysis: reopening a scan replaces its run, newest first.
   runs = [bounded, ...runs.filter(r => r.analysisId !== run.analysisId)].slice(0, MAX_RUNS);
   scheduleSave();
@@ -211,9 +230,26 @@ export function inspectorSnapshot(limitRuns = 40) {
     const t = (byTier[f.tier] ??= { right: 0, wrong: 0 });
     t[f.verdict]++;
   }
+  /*
+   * The history question: we ask for 365 days on vintage and niche items, but
+   * eBay's public sold search is said to hold about 90. The span of sale dates
+   * that actually came back, on runs that asked for 365, answers it.
+   */
+  const spans = runs.filter(r => r.historyDays === 365 && r.historySpanDays != null && r.raw >= 20)
+    .map(r => r.historySpanDays as number).sort((a, b) => a - b);
+  const tiers: Record<string, number> = {};
+  for (const r of runs) if (r.searchTier) tiers[r.searchTier] = (tiers[r.searchTier] ?? 0) + 1;
+  const paidCalls = totals.paidCalls;
   return {
     durable: Boolean(process.env.DATA_DIR),
     runCount: runs.length,
+    history: {
+      runsAsking365: spans.length,
+      medianSpanDays: spans.length ? spans[Math.floor(spans.length / 2)] : null,
+      maxSpanDays: spans.length ? spans[spans.length - 1] : null,
+    },
+    searchTiers: tiers,
+    paidCalls,
     runs: runs.slice(0, limitRuns),
     feedback: fb.slice(0, 100),
     feedbackTotals: { right: fb.filter(f => f.verdict === "right").length, wrong: fb.filter(f => f.verdict === "wrong").length },
@@ -223,5 +259,5 @@ export function inspectorSnapshot(limitRuns = 40) {
 
 /** Test seam. */
 export function __resetInspector(): void {
-  runs = []; feedback = {}; loaded = true; pending = 0;
+  runs = []; feedback = {}; totals = { paidCalls: 0 }; loaded = true; pending = 0;
 }

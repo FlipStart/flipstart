@@ -311,9 +311,13 @@ export function evaluateComps(
   let canShowMedian = false;
   let canShowTypicalRange = false;
 
+  // A median needs at least one Exact or Strong comp behind it. Similar comps
+  // alone ("black t-shirt" for an unbranded black tee) can be shown as cards,
+  // but their prices describe other items, not this one.
+  const anyCore = finalComps.some(s => s.tier === "exact" || s.tier === "strong");
   if (n === 0) suppressed = "NO_RELIABLE_MATCHES";
   else if (n < MIN_FOR_MEDIAN) suppressed = "SAMPLE_TOO_SMALL_FOR_MEDIAN";
-  else if (medianMatchScore < 70) suppressed = "MATCH_QUALITY_TOO_LOW";
+  else if (medianMatchScore < 70 || !anyCore) suppressed = "MATCH_QUALITY_TOO_LOW";
   else {
     canShowMedian = true;
     if (n < MIN_FOR_RANGE) suppressed = "SAMPLE_TOO_SMALL_FOR_RANGE";

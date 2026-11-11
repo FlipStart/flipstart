@@ -388,8 +388,8 @@ export default function HomeScreen() {
     try { logEvent('scan_started', { tagPresent: !!photoSet.tag?.base64 }); } catch {}
     setPendingScan({
       front: { base64: photoSet.front.base64, mimeType: photoSet.front.mimeType },
-      ...(photoSet.detail?.base64 ? { detail: { base64: photoSet.detail.base64, mimeType: photoSet.detail.mimeType } } : {}),
-      ...(photoSet.tag?.base64    ? { tag:    { base64: photoSet.tag.base64,    mimeType: photoSet.tag.mimeType    } } : {}),
+      ...(photoSet.detail?.base64 ? { detail: { base64: photoSet.detail.base64, mimeType: photoSet.detail.mimeType, uri: photoSet.detail.uri } } : {}),
+      ...(photoSet.tag?.base64    ? { tag:    { base64: photoSet.tag.base64,    mimeType: photoSet.tag.mimeType,    uri: photoSet.tag.uri    } } : {}),
     });
     const imageUri = photoSet.front.uri;
     const mimeType = photoSet.front.mimeType;

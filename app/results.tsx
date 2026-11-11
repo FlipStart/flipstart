@@ -24,6 +24,8 @@ import { useScanContext } from '@/lib/scan-context';
 import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt, updateHuntItemImage } from '@/lib/hunt-context';
 import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
+import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { scanPhotosFor } from '@/lib/scanSessionPhotos';
 import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
 import { useRefreshEntitlement } from '@/lib/useEntitlement';
 import { useGenerateListingsGate } from '@/lib/useGenerateListingsGate';
@@ -96,42 +98,6 @@ const SUMMARY_ICONS: Record<string, string> = {
   'Competition': 'group',
   'Sell Speed':  'speed',
 };
-
-// ─── Image Viewer Modal ───────────────────────────────────────────────────────
-
-function ImageViewerModal({
-  uri, visible, onClose,
-}: { uri: string; visible: boolean; onClose: () => void }) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={iv.backdrop} onPress={onClose}>
-        <Pressable style={iv.closeBtn} onPress={onClose}>
-          <MaterialIcons name="close" size={22} color={CREAM} />
-        </Pressable>
-        <Image
-          source={{ uri }}
-          style={iv.image}
-          contentFit="contain"
-          transition={200}
-        />
-      </Pressable>
-    </Modal>
-  );
-}
-
-const iv = StyleSheet.create({
-  backdrop: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  closeBtn: {
-    position: 'absolute', top: 52, right: 20,
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  image: { width: '90%', height: '75%' },
-});
 
 // ─── Listings Modal ───────────────────────────────────────────────────────────
 
@@ -298,6 +264,13 @@ export default function ResultsScreen() {
   const [listingsLoading, setListingsLoading] = useState(false);
   const [listingsError,   setListingsError]   = useState(false);
   const [imageModalOpen,  setImageModalOpen]  = useState(false);
+  // The photos for the full-screen viewer: every photo taken for this scan when
+  // this session took them, else just the scan's main photo.
+  const viewerPhotos = useMemo(() => {
+    const session = scanPhotosFor(currentScan?.id);
+    if (session && session.length > 0) return session;
+    return currentScan?.imageUri ? [{ uri: currentScan.imageUri }] : [];
+  }, [currentScan?.id, currentScan?.imageUri]);
   const [listingsOpen,    setListingsOpen]    = useState(false);
   const [isSaved,         setIsSaved]         = useState(false);
   // ── Reward queue — ensures brand reveals + achievement celebrations never overlap ──
@@ -1022,13 +995,14 @@ export default function ResultsScreen() {
         completed scans. See lib/reviewPrompt.ts.
       */}
       {/* Modals */}
-      {currentScan.imageUri && (
-        <ImageViewerModal
-          uri={currentScan.imageUri}
-          visible={imageModalOpen}
-          onClose={() => setImageModalOpen(false)}
-        />
-      )}
+      {/* Every photo taken for this scan (front, tag, detail): swipe or use
+          the arrows. Only this session's scans have the extra photos; a saved
+          scan shows its main photo alone. */}
+      <PhotoViewerModal
+        photos={viewerPhotos}
+        visible={imageModalOpen}
+        onClose={() => setImageModalOpen(false)}
+      />
       <ListingsModal
         visible={listingsOpen}
         listings={listings}
@@ -1220,12 +1194,10 @@ export default function ResultsScreen() {
                   })()}
                 </View>
 
-                {/* What the confidence rests on, in one line from the server.
-                    Authenticity is a separate question from identification, so
-                    a concern gets its own line instead of lowering the tier. */}
-                {!!confidence?.reason && (
-                  <Text style={s.confReason} numberOfLines={2}>{confidence.reason}</Text>
-                )}
+                {/* The confidence reason ("Nike confirmed from the tag") is not
+                    shown on this card — it stretched the title card. It is still
+                    in Deep Analysis. Authenticity is a separate question from
+                    identification, so a concern keeps its own line. */}
                 {!!confidence?.authenticity && (
                   <Text style={s.confAuth} numberOfLines={2}>Authenticity not verified — {confidence.authenticity}</Text>
                 )}
@@ -1761,7 +1733,6 @@ const s = StyleSheet.create({
   chipText:  { fontSize: 10.5, fontWeight: '600', color: BROWN, flexShrink: 1 },
   chipConf:  { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
   chipConfText: { color: FOREST, fontWeight: '700' },
-  confReason: { fontSize: 11.5, color: BROWN, marginTop: 6, lineHeight: 15 },
   confAuth:   { fontSize: 11.5, color: '#8A3A2A', fontWeight: '600', marginTop: 4, lineHeight: 15 },
   // Deep Analysis coach-mark (thought bubble)
   deepTip: {

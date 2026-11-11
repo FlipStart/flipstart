@@ -12,6 +12,8 @@
 export interface PhotoData {
   base64:   string;
   mimeType: string;
+  /** The photo's file on the phone, for the results screen's photo viewer only. */
+  uri?:     string;
 }
 
 export interface PendingScan {

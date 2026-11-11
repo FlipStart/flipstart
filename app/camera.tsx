@@ -621,8 +621,8 @@ export default function CameraScreen() {
 
       setPendingScan({
         front: { base64: front.base64, mimeType: front.mimeType },
-        ...(detail ? { detail: { base64: detail.base64, mimeType: detail.mimeType } } : {}),
-        ...(tag    ? { tag:    { base64: tag.base64,    mimeType: tag.mimeType    } } : {}),
+        ...(detail ? { detail: { base64: detail.base64, mimeType: detail.mimeType, uri: detail.uri } } : {}),
+        ...(tag    ? { tag:    { base64: tag.base64,    mimeType: tag.mimeType,    uri: tag.uri    } } : {}),
         ...(ctx ? { userContext: ctx } : {}),
       });
       console.log('[camera] analysis start — front✓ detail:', !!detail, 'tag:', !!tag);

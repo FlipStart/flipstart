@@ -45,6 +45,7 @@ import { scanSoftFail, softFailCanContinue } from "@shared/scanFailure";
 import { APP_STORE_PRODUCT_URL } from "@/lib/reviewPrompt";
 import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
 import { isHuntActive } from "@/lib/hunt-context";
+import { rememberScanPhotos } from "@/lib/scanSessionPhotos";
 import { useAuth } from "@/lib/auth-context";
 import { useEntitlement } from "@/lib/useEntitlement";
 import {
@@ -515,6 +516,14 @@ export default function LoadingScreen() {
           risk_analysis:  safeRiskAnalysis,
           // listings intentionally omitted — undefined until user generates them
         };
+        // Every photo taken for this scan, for the results screen's viewer
+        // (also after "Continue anyway" on a soft fail).
+        // Memory only — never saved with the scan.
+        rememberScanPhotos(scanId, [
+          { uri: scanResult.imageUri, label: "Front" },
+          tag?.uri ? { uri: tag.uri, label: "Tag" } : null,
+          detail?.uri ? { uri: detail.uri, label: "Detail" } : null,
+        ]);
 
         // ── A result FlipStart can't stand behind ─────────────────────────
         // Decided by the server's own scan issue and confidence tier (the

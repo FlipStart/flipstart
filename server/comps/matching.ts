@@ -690,6 +690,11 @@ export function scoreComp(
     tier = "similar"; why = "listing doesn't say what kind of item it is";
   } else if (brand && !brandHit) {
     tier = "similar"; why = "brand not confirmed in listing";
+  } else if ((model || productLine) && !modelHit && !lineHit && !hardIdentityHit) {
+    // The scan names a specific product (Dunk Low, 501, Better Sweater) and the
+    // listing names neither it nor anything else that pins it down: same brand
+    // and type, but possibly a different product ("Nike Air Max" for a Dunk).
+    tier = "similar"; why = "listing doesn't name the model or product line";
   } else if (eraConflict || colorConflict || eraUnconfirmed || modelConflict) {
     tier = "similar"; why = eraConflict ? "era differs" : colorConflict ? "colour differs"
       : modelConflict ? "different style code" : "listing doesn't say it's vintage";

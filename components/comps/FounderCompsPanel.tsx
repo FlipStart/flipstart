@@ -24,6 +24,10 @@ export interface FounderDebug {
   historySpanDays: number | null;
   cacheHit: boolean;
   outcome: string;
+  /** Deepest search that ran: A precise, B relaxed, C broad; D = nothing shown. Newer servers only. */
+  searchTier?: string | null;
+  searches?: Array<{ tier: string; query: string; categoryId: string | null; outcome: string;
+                     cacheHit: boolean; paid: boolean; raw: number }>;
   counts: { raw: number; rejected: number; weak: number; duplicates: number; exact: number; strong: number; similar: number };
   dataStrength: string | null;
   internalConfidencePercent: number | null;
@@ -80,6 +84,14 @@ export function FounderCompsPanel({
       <Text style={s.meta}>
         {debug.outcome} · returned {c.raw} · Exact {c.exact} · Strong {c.strong} · Similar {c.similar} · Weak {c.weak} · Rejected {c.rejected} · Dupes {c.duplicates}
       </Text>
+      {(debug.searches ?? []).map((q, i) => (
+        <Text key={`q${i}`} style={s.meta} selectable>
+          {q.tier} · “{q.query}”{q.categoryId ? ` · cat ${q.categoryId}` : ''} · {q.cacheHit ? 'cached' : q.outcome !== 'ok' ? q.outcome : q.paid ? 'paid' : 'free'} · {q.raw} back
+        </Text>
+      ))}
+      {!!debug.searchTier && (
+        <Text style={s.meta}>Deepest search: {debug.searchTier}{debug.searchTier === 'D' ? ' (nothing good enough to show)' : ''}</Text>
+      )}
       <Text style={s.meta}>
         Data: {debug.dataStrength ?? '—'}{debug.internalConfidencePercent != null ? ` (internal ${debug.internalConfidencePercent})` : ''}
       </Text>
