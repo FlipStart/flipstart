@@ -25,6 +25,7 @@ import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt, updateHu
 import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { DeepAnalysisButton } from '@/components/results/DeepAnalysisButton';
 import { scanPhotosFor } from '@/lib/scanSessionPhotos';
 import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
 import { useRefreshEntitlement } from '@/lib/useEntitlement';
@@ -1472,6 +1473,23 @@ export default function ResultsScreen() {
             </View>
           </View>
 
+          {/* ── 4b. Deep Analysis — a real button ───────────────────────────
+              Until now the only way in was tapping the item name, which looks
+              like a title, not a control. A coach-mark pointed at it on early
+              scans, but after that nothing on the screen said Deep Analysis
+              existed. Shown to everyone with no entitlement condition: the gate
+              decides what happens on tap (free look, then paywall), and free
+              users have to be able to see this to ever reach that moment.
+
+              Sits right under the price, before Sold Comps: that is where
+              someone who has the verdict and the number goes looking for "why
+              should I trust this". Same handler as the title tap, so the
+              coach-mark is dismissed and the gate/analytics path is identical.
+
+              The button shivers and bounces like the Progress tab badge, then
+              a gold sheen crosses it — see components/results/DeepAnalysisButton. */}
+          <DeepAnalysisButton onPress={handleOpenDeepAnalysis} />
+
           {/* ── 5. Recent Sold Comps ─────────────────────────────────────────
               Replaced a debug-style box: a hardcoded row of five marketplace
               logos (only eBay is actually searched), a plain pill for stats, and
@@ -1700,19 +1718,6 @@ const s = StyleSheet.create({
   bulletDot: { fontSize: 14, color: GOLD, lineHeight: 20 },
   bulletText:{ flex: 1, fontSize: 13, color: BROWN, lineHeight: 20 },
 
-  // Deep analysis CTA
-  deepCtaCard: {
-    backgroundColor: CARD, borderRadius: 14,
-    borderWidth: 1.5, borderColor: GOLD + '70',
-    marginHorizontal: 14, marginTop: 12,
-    shadowColor: GOLD, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.14, shadowRadius: 6, elevation: 3,
-  },
-  deepCtaInner:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16 },
-  deepCtaTextCol: { flex: 1, gap: 3 },
-  deepCtaTitle:   { fontSize: 11, fontWeight: '700', color: FOREST, letterSpacing: 1 },
-  deepCtaSub:     { fontSize: 11, color: MUTED },
-  deepCtaArrow:   { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  deepCtaLink:    { fontSize: 13, fontWeight: '700', color: FOREST, fontFamily: FONTS.serif },
 
   // Market value
   marketRow:    { flexDirection: 'row' },
