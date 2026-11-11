@@ -1,16 +1,18 @@
 /**
  * app/loading.tsx — Scan analysis screen
  *
- * Background image: green ribbon banner, clock face, treasure chest.
- * Overlays: banner text, pulsing gold dot, rotating status message,
- *           progress bar, cancel button.
+ * Plain forest-green screen, no artwork: a pulsing magnifying glass, the
+ * heading, a rotating status line, an indeterminate bar and Cancel scan.
+ * Everything visual lives in the "Loading state" return at the bottom of this
+ * file. The scan pipeline above it is untouched by the redesign.
  *
  * When a scan can't end on a normal result it ends on FailStateScreen, chosen
  * by reason (Phase 4/5 of the scan-failure plan): the server's reason code for
  * an error, scanSoftFail() for a result FlipStart can't stand behind. A soft
  * fail is charged only if the user taps "Continue anyway".
  *
- * No fake countdown. No fake eBay/Depop claims.
+ * No fake countdown, no fake percentage, no fake eBay/Depop claims. The
+ * server sends nothing until it is done, so the bar is indeterminate.
  * Navigation fires IMMEDIATELY when the API responds.
  */
 
@@ -19,14 +21,15 @@ import {
 } from "react";
 import {
   Text, View, StyleSheet, Platform, Pressable,
-  ImageBackground, useWindowDimensions, Linking,
+  Linking, AccessibilityInfo,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import Animated, {
   useSharedValue, useAnimatedStyle,
-  withRepeat, withSequence, withTiming, withSpring,
-  Easing, FadeIn, FadeInDown,
+  withRepeat, withSequence, withTiming,
+  Easing, FadeIn, cancelAnimation,
 } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 
@@ -38,7 +41,6 @@ import { consumePendingScan } from "@/lib/pending-scan";
 import { ScanResult } from "@/lib/types";
 import { V } from "@/constants/vintage";
 import { FONTS } from "@/constants/typography";
-import { useAudioPlayer } from "expo-audio";
 import { FailStateScreen, type FailAction, type ChargeState } from "@/components/scan/FailStateScreen";
 import { useProPaywall, ProPaywallHost } from "@/components/monetization/paywall/ProPaywallProvider";
 import { scanSoftFail, softFailCanContinue } from "@shared/scanFailure";
@@ -77,40 +79,45 @@ interface HeldResult {
 /** How long Continue anyway waits for the server to confirm the charge before showing the result anyway. */
 const CONFIRM_WAIT_MS = 5_000;
 
-// ─── Assets ───────────────────────────────────────────────────────────────────
-const BG_IMAGE   = require("@/assets/images/scan-loading-bg.png");
-const COIN_SOUND = require("@/assets/images/sounds/coin-pour.mp3");
-
-// ─── Message pool ─────────────────────────────────────────────────────────────
-// Honest messages only — no fake data-source claims.
-// Shuffled on mount so every scan feels different.
-const MESSAGE_POOL = [
+// ─── Status messages ──────────────────────────────────────────────────────────
+// One vision request does all of this work: identification (item, brand,
+// category, era, material, logos), the resale range, demand and competition,
+// and the risk flags. These lines name only that. Nothing here claims a live
+// marketplace lookup: sold comps run after this screen, not during it.
+//
+// The first line is always first and the last two are always last, so the
+// screen never says "Preparing your results" at the start. The middle ones are
+// shuffled, so every scan reads a little differently. The queue stops on the
+// last line rather than looping.
+const FIRST_MESSAGE = "Identifying your find...";
+const MIDDLE_MESSAGES = [
   "Reading item details...",
   "Detecting brand signals...",
-  "Analyzing category...",
-  "Checking condition clues...",
-  "Comparing resale patterns...",
+  "Checking category and era...",
+  "Estimating resale value...",
   "Estimating buyer demand...",
-  "Reviewing style and era...",
-  "Examining material and finish...",
-  "Building resale report...",
-  "Calculating profit potential...",
-  "Assessing market competition...",
-  "Reviewing similar sold items...",
+  "Evaluating the item...",
+];
+const LAST_MESSAGES = [
+  "Building your analysis...",
+  "Preparing your results...",
 ];
 
 const MESSAGE_INTERVAL_MS = 3000; // 3 seconds — premium, unhurried feel
 
-// ─── Confidence config ────────────────────────────────────────────────────────
-// Estimated progress, NOT actual AI result confidence.
-// Rises to ~95% while loading, pauses there until backend responds,
-// then jumps to 100% right before navigation.
-const CONFIDENCE_TICK_MS   = 250;   // how often confidence updates
-const CONFIDENCE_CRUISE_MS = 6000;  // time to reach 95%
-const CONFIDENCE_HOLD      = 95;    // max before backend responds
-// The scan's own time limit is SCAN_BUDGET_MS (45 s, retries included) in
-// lib/scanAttempt.ts. It replaced a 30 s limit per try with three retries.
-const CONFIDENCE_HAPTIC_AT = [25, 50, 75]; // subtle haptics at these milestones
+// ─── Look ─────────────────────────────────────────────────────────────────────
+const FOREST = "#214D2D";
+const GOLD   = "#C4A334";
+const CREAM  = "#F4EED8";
+
+const PULSE_PEAK        = 1.06;  // magnifier scale: 1.0 → 1.06 → 1.0
+const PULSE_HALF_MS     = 1100;
+const BAR_SWEEP_MS      = 1500;
+const BAR_SEGMENT_RATIO = 0.38;  // width of the moving segment, vs the track
+
+function buildMessageQueue(): string[] {
+  return [FIRST_MESSAGE, ...shuffleArray(MIDDLE_MESSAGES), ...LAST_MESSAGES];
+}
 
 function shuffleArray<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -126,15 +133,15 @@ function shuffleArray<T>(arr: T[]): T[] {
 export default function LoadingScreen() {
   const router       = useRouter();
   const { imageUri } = useLocalSearchParams<{ imageUri: string }>();
-  const { width: screenW, height: screenH } = useWindowDimensions();
   const colors       = useColors();
   const { addScan }  = useScanContext();
 
-  // Shuffled message queue — different every scan
-  const [messages]     = useState<string[]>(() => shuffleArray(MESSAGE_POOL));
+  const insets       = useSafeAreaInsets();
+
+  // Message queue: fixed first and last lines, shuffled middle
+  const [messages]     = useState<string[]>(buildMessageQueue);
   const [msgIndex,     setMsgIndex]     = useState(0);
-  const [confidence,   setConfidence]   = useState(0);
-  const [finalizing,   setFinalizing]   = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
   const [scanKey,  setScanKey]   = useState(0);   // increment to re-trigger doScan (manual retry)
   const [retryCount, setRetryCount] = useState(0); // automatic retries made in the last scan
   const [failState, setFailState] = useState<FailState | null>(null);
@@ -159,7 +166,6 @@ export default function LoadingScreen() {
   ).current;
   const hasStartedRef   = useRef(false);
   const scanStartTime   = useRef(Date.now());
-  const lastHapticAt    = useRef(0);
   const timeoutIdRef    = useRef<ReturnType<typeof setTimeout> | null>(null);   // the 45 s clock
   const tryAbortRef     = useRef<AbortController | null>(null);  // the request in flight
   const lastPendingScan = useRef<import('@/lib/pending-scan').PendingScan | null>(null);
@@ -167,8 +173,6 @@ export default function LoadingScreen() {
   const scanActiveRef   = useRef(false);   // a run may have work going on the server
 
   // ── Audio ─────────────────────────────────────────────────────────────────
-  const player       = useAudioPlayer(COIN_SOUND);
-  const soundStarted = useRef(false);
 
   const trpcUtils           = trpc.useUtils();
 
@@ -221,16 +225,13 @@ export default function LoadingScreen() {
     }
     hasStartedRef.current = false;
     hasNavigated.current  = false;
-    soundStarted.current  = false;
-    lastHapticAt.current  = 0;
     heldResultRef.current = null;
     actionLockRef.current = false;
     setAutoPaywall(null);
     setRetryCount(0);
     setFailBusy(null);
     setFailState(null);
-    setConfidence(0);
-    setFinalizing(false);
+    setMsgIndex(0);
     setScanKey(k => k + 1);
   }, []);
 
@@ -273,92 +274,63 @@ export default function LoadingScreen() {
   }, [trpcUtils, scanAttemptId]);
 
   // ── Rotating messages (every 3s) ─────────────────────────────────────────
+  // Stops on the last line instead of looping back to "Identifying".
   useEffect(() => {
     const id = setInterval(() => {
       if (hasNavigated.current) return;
-      setMsgIndex(i => (i + 1) % messages.length);
+      setMsgIndex(i => Math.min(i + 1, messages.length - 1));
     }, MESSAGE_INTERVAL_MS);
     return () => clearInterval(id);
   }, [messages]);
 
-  // ── Estimated confidence bar ──────────────────────────────────────────────
-  const confidenceWidth = useSharedValue(0);
-
+  // ── Reduce Motion ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const id = setInterval(() => {
-      if (hasNavigated.current) return;
-      setConfidence(prev => {
-        if (prev >= CONFIDENCE_HOLD) {
-          if (!finalizing) setFinalizing(true);
-          return prev;
-        }
-        const elapsed    = Date.now() - scanStartTime.current;
-        const target     = Math.min(CONFIDENCE_HOLD, (elapsed / CONFIDENCE_CRUISE_MS) * CONFIDENCE_HOLD);
-        const next       = Math.min(CONFIDENCE_HOLD, prev + (target - prev) * 0.12 + 0.4);
-
-        for (const milestone of CONFIDENCE_HAPTIC_AT) {
-          if (prev < milestone && next >= milestone && lastHapticAt.current !== milestone) {
-            lastHapticAt.current = milestone;
-            if (Platform.OS !== "web") {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-            }
-          }
-        }
-
-        return next;
-      });
-    }, CONFIDENCE_TICK_MS);
-    return () => clearInterval(id);
-  }, [finalizing]);
-
-  // Sync confidence value to Reanimated width
-  useEffect(() => {
-    confidenceWidth.value = withTiming(confidence / 100, {
-      duration: CONFIDENCE_TICK_MS * 1.2,
-      easing:   Easing.out(Easing.ease),
-    });
-  }, [confidence]);
-
-  const barStyle = useAnimatedStyle(() => ({
-    width: `${(confidenceWidth.value * 100).toFixed(1)}%` as any,
-  }));
-
-  // ── Pulse animations ──────────────────────────────────────────────────────
-  const dotScale    = useSharedValue(1);
-  const ringScale   = useSharedValue(0.6);
-  const ringOpacity = useSharedValue(0.7);
-
-  useEffect(() => {
-    dotScale.value = withRepeat(
-      withSequence(
-        withTiming(1.40, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1.00, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-      ),
-      -1,
-      false,
-    );
-    ringScale.value = withRepeat(
-      withSequence(
-        withTiming(2.4, { duration: 1400, easing: Easing.out(Easing.ease) }),
-        withTiming(0.6, { duration: 0 }),
-      ),
-      -1,
-      false,
-    );
-    ringOpacity.value = withRepeat(
-      withSequence(
-        withTiming(0,   { duration: 1400, easing: Easing.out(Easing.ease) }),
-        withTiming(0.65, { duration: 0 }),
-      ),
-      -1,
-      false,
-    );
+    let alive = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then(v => { if (alive) setReduceMotion(v); })
+      .catch(() => {});
+    const sub = AccessibilityInfo.addEventListener("reduceMotionChanged", v => setReduceMotion(v));
+    return () => { alive = false; sub.remove(); };
   }, []);
 
-  const dotStyle  = useAnimatedStyle(() => ({ transform: [{ scale: dotScale.value }] }));
-  const ringStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: ringScale.value }],
-    opacity:   ringOpacity.value,
+  // ── Magnifier pulse: 1.0 → 1.06 → 1.0, slow and smooth ───────────────────
+  const pulse = useSharedValue(1);
+  useEffect(() => {
+    if (reduceMotion) {
+      cancelAnimation(pulse);
+      pulse.value = 1;
+      return;
+    }
+    pulse.value = withRepeat(
+      withSequence(
+        withTiming(PULSE_PEAK, { duration: PULSE_HALF_MS, easing: Easing.inOut(Easing.sin) }),
+        withTiming(1,          { duration: PULSE_HALF_MS, easing: Easing.inOut(Easing.sin) }),
+      ),
+      -1,
+      false,
+    );
+    return () => cancelAnimation(pulse);
+  }, [reduceMotion]);
+  const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
+
+  // ── Indeterminate bar: a gold segment sweeping across the track ───────────
+  // No percentage and no fill: the server reports no progress, so the bar only
+  // shows that work is happening. It never "completes"; success navigates.
+  const [trackW, setTrackW] = useState(0);
+  const sweep = useSharedValue(0);
+  useEffect(() => {
+    if (!trackW) return;
+    sweep.value = 0;
+    sweep.value = withRepeat(
+      withTiming(1, { duration: reduceMotion ? BAR_SWEEP_MS * 2 : BAR_SWEEP_MS, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      false,
+    );
+    return () => cancelAnimation(sweep);
+  }, [trackW, reduceMotion]);
+  const segW = trackW * BAR_SEGMENT_RATIO;
+  const segStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: -segW + sweep.value * (trackW + segW) }],
   }));
 
   // ── Scan pipeline ─────────────────────────────────────────────────────────
@@ -384,16 +356,6 @@ export default function LoadingScreen() {
       scanStartTime.current = Date.now();
       const expiresAt = scanStartTime.current + SCAN_BUDGET_MS;
       const remaining = () => expiresAt - Date.now();
-
-      // Start coin sound
-      if (!soundStarted.current) {
-        soundStarted.current = true;
-        try {
-          player.volume = 0.45;
-          player.loop   = false;
-          player.play();
-        } catch { /* never block analysis */ }
-      }
 
       // The first run takes the photos from the camera; a manual retry reuses
       // them (consumePendingScan() clears the module store).
@@ -557,7 +519,6 @@ export default function LoadingScreen() {
             // "no item" which there was nothing to charge for.
             : softFailCanContinue(soft) ? "used" : "not_used";
           console.log(`[loading] soft fail: ${soft} — charge ${chargePending ? "held" : "already taken"}`);
-          try { player.pause(); } catch { /* ignore */ }
           try {
             logEvent("scan_failed", {
               errorType: legacyErrorType(soft), reason: soft, confidence: matchConf,
@@ -619,20 +580,17 @@ export default function LoadingScreen() {
           });
         } catch { /* never block navigation */ }
 
-        setConfidence(100);
-        try { player.pause(); } catch { /* ignore */ }
-
-        setTimeout(() => {
-          if (hasNavigated.current) return;
-          hasNavigated.current = true;
-          if (isHuntActive()) {
-            // Replace loading with hunt-item-detail — keeps stack clean so
-            // back() from Discovery Analysis returns to hunt-active, not loading
-            router.replace("/hunt-item-detail" as any);
-          } else {
-            router.replace("/results" as any);
-          }
-        }, 600);
+        // Straight to the result. No fill-to-100% and no wait: real results are
+        // never held back for an animation.
+        if (hasNavigated.current) return;
+        hasNavigated.current = true;
+        if (isHuntActive()) {
+          // Replace loading with hunt-item-detail — keeps stack clean so
+          // back() from Discovery Analysis returns to hunt-active, not loading
+          router.replace("/hunt-item-detail" as any);
+        } else {
+          router.replace("/results" as any);
+        }
       };
 
       // Scan-limit identity. Prefer the signed-in account id: it is the same
@@ -757,7 +715,6 @@ export default function LoadingScreen() {
       }
 
       // ── Giving up ─────────────────────────────────────────────────────────
-      try { player.pause(); } catch { /* ignore */ }
       const lastScreen: FailScreen = last?.screen ?? "timeout";
       const outOfTime = lastRaw === SCAN_DEADLINE
         || last?.kind === "server_timeout"
@@ -846,25 +803,11 @@ export default function LoadingScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanKey]);
 
-  // ── Layout constants ──────────────────────────────────────────────────────
-  const HEADER_H                   = 56;
-  const BANNER_TEXT_Y_RATIO        = 0.072;
-  const CLOCK_CENTER_Y_RATIO       = 0.275;
-  const STATUS_TEXT_Y_RATIO        = 0.505;
-  const CANCEL_BUTTON_Y_RATIO      = 0.84;
-
-  const imgH    = screenH - HEADER_H;
-  const bannerY = imgH * BANNER_TEXT_Y_RATIO;
-  const clockY  = imgH * CLOCK_CENTER_Y_RATIO;
-  const statusY = imgH * STATUS_TEXT_Y_RATIO;
-  const cancelY = imgH * CANCEL_BUTTON_Y_RATIO;
-
   // ── Cancel ────────────────────────────────────────────────────────────────
   const handleCancel = () => {
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     }
-    try { player.pause(); } catch { /* ignore */ }
     hasNavigated.current = true;
     // Stop the scan on the server too, so a scan the user walked away from
     // is refunded rather than charged. Fire-and-forget: leaving never waits.
@@ -883,11 +826,7 @@ export default function LoadingScreen() {
   };
 
   // ── Derived display ───────────────────────────────────────────────────────
-  const currentMessage = finalizing
-    ? "Finalizing analysis..."
-    : messages[msgIndex % messages.length];
-
-  const confidencePct = Math.round(confidence);
+  const currentMessage = messages[Math.min(msgIndex, messages.length - 1)];
 
   // ── Fail state ────────────────────────────────────────────────────────────
   if (failState) {
@@ -901,7 +840,6 @@ export default function LoadingScreen() {
     };
 
     const leave = (to: "home" | "camera" | "result") => {
-      try { player.pause(); } catch { /* ignore */ }
       hasNavigated.current = true;
       if (to === "camera") router.replace("/camera" as any);
       else if (to === "result") router.replace((inHunt ? "/hunt-item-detail" : "/results") as any);
@@ -994,70 +932,56 @@ export default function LoadingScreen() {
   }
 
   // ── Loading state ─────────────────────────────────────────────────────────
+  // Layout: the middle block is centred in the space between the safe-area top
+  // and the Cancel button, so nothing is positioned by screen-height ratios.
+  // The status line has a fixed two-line height, so a longer message never
+  // moves the bar.
   return (
-    <View style={s.flex}>
-      <View style={[s.header, { backgroundColor: "transparent" }]}>
-        <Pressable
-          onPress={handleCancel}
-          hitSlop={10}
-          style={({ pressed }) => [s.headerIcon, pressed && { opacity: 0.6 }]}
-        >
-          <MaterialIcons name="arrow-back" size={22} color={V.white} />
-        </Pressable>
-        <Text style={s.headerTitle}>FlipStart</Text>
-        <View style={s.headerIcon} />
-      </View>
-
-      <ImageBackground source={BG_IMAGE} style={s.bg} resizeMode="cover">
-        <View style={s.scrim} />
-
-        {/* ── Banner text ── */}
-        <Animated.View
-          entering={FadeIn.duration(400)}
-          style={[s.bannerOverlay, { top: bannerY }]}
-          pointerEvents="none"
-        >
-          <Text style={s.bannerText}>Analyzing...</Text>
+    <View
+      style={[
+        s.flex,
+        { paddingTop: insets.top + 16, paddingBottom: Math.max(insets.bottom, 16) + 12 },
+      ]}
+    >
+      <View style={s.center}>
+        <Animated.View style={pulseStyle} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <MaterialIcons name="search" size={88} color={GOLD} />
         </Animated.View>
 
-        {/* ── Clock center: pulsing gold dot + glow ring ── */}
-        <View style={[s.clockOverlay, { top: clockY }]} pointerEvents="none">
-          <Animated.View style={[s.glowRing, ringStyle]} />
-          <Animated.View style={[s.dotWrap, dotStyle]}>
-            <View style={s.pulseDot} />
-          </Animated.View>
-        </View>
+        <Text style={s.heading} accessibilityRole="header">Analyzing your find</Text>
 
-        {/* ── Status + confidence bar ── */}
-        <View style={[s.statusOverlay, { top: statusY }]} pointerEvents="none">
-          <Text style={s.statusText}>{currentMessage}</Text>
-
-          {/* Confidence bar */}
-          <View style={s.barTrack}>
-            <Animated.View style={[s.barFill, barStyle]} />
-          </View>
-          <View style={s.confidencePill}>
-            <Text style={s.confidenceLabel}>
-              {/* Progress, not confidence: the old "Estimated confidence: 95%" read
-                  as a statement about the item before the AI had answered. */}
-              {confidencePct < 100
-                ? `Analyzing · ${confidencePct}%`
-                : "Complete"}
-            </Text>
-          </View>
-        </View>
-
-        {/* ── Cancel button ── */}
-        <View style={[s.cancelWrapper, { top: cancelY }]}>
-          <Pressable
-            onPress={handleCancel}
-            style={({ pressed }) => [s.cancelBtn, pressed && { transform: [{ scale: 0.96 }], opacity: 0.85 }]}
+        <View style={s.statusBox}>
+          <Animated.Text
+            key={currentMessage}
+            entering={FadeIn.duration(260)}
+            style={s.statusText}
+            numberOfLines={2}
           >
-            <Text style={s.cancelBtnText}>✕  Cancel scan</Text>
-          </Pressable>
+            {currentMessage}
+          </Animated.Text>
         </View>
 
-      </ImageBackground>
+        <View
+          style={s.barTrack}
+          onLayout={e => setTrackW(e.nativeEvent.layout.width)}
+          accessibilityRole="progressbar"
+          accessibilityLabel="Analyzing your find"
+        >
+          {trackW > 0 && (
+            <Animated.View style={[s.barSegment, { width: segW }, segStyle]} />
+          )}
+        </View>
+      </View>
+
+      <Pressable
+        onPress={handleCancel}
+        hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel="Cancel scan"
+        style={({ pressed }) => [s.cancelBtn, pressed && { opacity: 0.6 }]}
+      >
+        <Text style={s.cancelBtnText}>Cancel scan</Text>
+      </Pressable>
     </View>
   );
 }
@@ -1065,99 +989,37 @@ export default function LoadingScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  flex:  { flex: 1, backgroundColor: "#1A2A10" },
-  bg:    { flex: 1 },
-  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.08)" },
+  flex:   { flex: 1, backgroundColor: FOREST },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 32 },
 
-  header: {
-    height: 56, flexDirection: "row", alignItems: "center",
-    justifyContent: "space-between", paddingHorizontal: 16,
-    backgroundColor: "rgba(0,0,0,0.35)",
-  },
-  headerIcon:  { width: 36, height: 36, justifyContent: "center", alignItems: "center" },
-  headerTitle: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: "700", color: "#FFFEFA", letterSpacing: 0.2 },
-
-  bannerOverlay: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },
-  bannerText: {
-    fontFamily: FONTS.serif, fontSize: 22, fontWeight: "800",
-    color: "#FFFEFA", letterSpacing: 1.2,
-    textShadowColor: "rgba(0,0,0,0.40)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4,
+  heading: {
+    marginTop: 28,
+    fontFamily: FONTS.serif, fontSize: 26, fontWeight: "700",
+    color: CREAM, letterSpacing: 0.2, textAlign: "center",
   },
 
-  // Clock
-  clockOverlay: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },
-  glowRing: {
-    position: "absolute", width: 32, height: 32, borderRadius: 16,
-    backgroundColor: "rgba(190,156,44,0.35)",
-  },
-  dotWrap: { alignItems: "center", justifyContent: "center" },
-  pulseDot: {
-    width: 22, height: 22, borderRadius: 11,
-    backgroundColor: "rgba(190,156,44,0.88)",
-    shadowColor: "#BE9C2C", shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9, shadowRadius: 14, elevation: 6,
-  },
-
-  // Status + bar
-  statusOverlay: {
-    position: "absolute", left: 0, right: 0,
-    alignItems: "center", paddingHorizontal: 32,
-    gap: 10,
-  },
+  // Two lines tall whatever the message, so the bar below never jumps.
+  statusBox: { marginTop: 10, height: 44, width: "100%", alignItems: "center", justifyContent: "flex-start" },
   statusText: {
-    fontFamily: FONTS.serif, fontSize: 15, fontWeight: "600",
-    color: "#F0E8C8", textAlign: "center", letterSpacing: 0.3,
-    textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6,
+    fontFamily: FONTS.serif, fontSize: 16, lineHeight: 22,
+    color: "rgba(244,238,216,0.82)", textAlign: "center",
   },
+
   barTrack: {
-    width: "80%", height: 4, borderRadius: 2,
-    backgroundColor: "rgba(255,255,255,0.15)",
+    marginTop: 18, width: "100%", maxWidth: 260, height: 4, borderRadius: 2,
+    backgroundColor: "rgba(244,238,216,0.18)",
     overflow: "hidden",
   },
-  barFill: {
-    height: "100%", borderRadius: 2,
-    backgroundColor: "rgba(190,156,44,0.85)",
-  },
-  confidencePill: {
-    backgroundColor: "rgba(0,0,0,0.38)",
-    paddingHorizontal: 10,
-    paddingVertical:   3,
-    borderRadius:      20,
-    borderWidth:       0.5,
-    borderColor:       "rgba(190,156,44,0.30)",
-  },
-  confidenceLabel: {
-    fontFamily:    FONTS.serif,
-    fontSize:      11,
-    fontWeight:    "600",
-    color:         "rgba(240,230,190,0.95)",
-    letterSpacing: 0.4,
-    textShadowColor:  "rgba(0,0,0,0.60)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-  },
+  barSegment: { height: "100%", borderRadius: 2, backgroundColor: GOLD },
 
-  // Cancel
-  cancelWrapper: { position: "absolute", left: 0, right: 0, alignItems: "center" },
   cancelBtn: {
-    paddingHorizontal: 22,
-    paddingVertical:    9,
-    borderRadius:      50,
-    backgroundColor:   "rgba(10,15,8,0.52)",
-    borderWidth:       1,
-    borderColor:       "rgba(190,156,44,0.45)",
-    shadowColor:       "#000",
-    shadowOffset:      { width: 0, height: 2 },
-    shadowOpacity:     0.30,
-    shadowRadius:      6,
-    elevation:         4,
+    alignSelf: "center",
+    paddingHorizontal: 26, paddingVertical: 11, borderRadius: 50,
+    borderWidth: 1, borderColor: "rgba(244,238,216,0.35)",
   },
   cancelBtnText: {
-    fontFamily:    FONTS.serif,
-    fontSize:      13,
-    fontWeight:    "600",
-    color:         "rgba(236,231,211,0.88)",
-    letterSpacing: 0.5,
+    fontFamily: FONTS.serif, fontSize: 14, fontWeight: "600",
+    color: "rgba(244,238,216,0.85)", letterSpacing: 0.4,
   },
 
   // Error state (legacy — kept for safety, FailStateScreen handles errors now)

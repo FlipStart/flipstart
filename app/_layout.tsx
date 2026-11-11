@@ -266,6 +266,38 @@ function DiamondNotificationWatcher() {
   return null;
 }
 
+/**
+ * Camera → loading transition.
+ *
+ *   "swoop": loading is a regular card using slide_from_left, so it slides in
+ *            from the left while the camera drifts right underneath. iOS only
+ *            runs this animation for a pushed card, never for a modal.
+ *   "fade":  the previous behaviour — a fullScreenModal cross-dissolve.
+ *
+ * The camera is a fullScreenModal and camera → loading is a router.replace, so
+ * modal → card is the one combination to watch on a device. If it flashes,
+ * layers wrongly or navigates oddly, set this to "fade". Nothing else changes.
+ *
+ * gestureEnabled: false is required on the card. A card gets the iOS edge-swipe
+ * back by default, and a swipe would leave the screen without running its
+ * cancel handler, so the scan would keep running on the server and be charged.
+ * contentStyle paints the screen forest green so no white shows mid-transition.
+ */
+const LOADING_TRANSITION: "swoop" | "fade" = "swoop";
+const LOADING_SCREEN_OPTIONS = LOADING_TRANSITION === "swoop"
+  ? {
+      presentation: "card",
+      animation: "slide_from_left",
+      gestureEnabled: false,
+      contentStyle: { backgroundColor: "#214D2D" },
+    } as const
+  : {
+      presentation: "fullScreenModal",
+      animation: "fade",
+      gestureEnabled: false,
+      contentStyle: { backgroundColor: "#214D2D" },
+    } as const;
+
 // Keep the native splash visible until we explicitly hide it.
 // Called at module level so it runs before the first render —
 // this is the only way to guarantee the splash doesn't flash.
@@ -567,7 +599,7 @@ export default function RootLayout() {
             */}
             <Stack.Screen name="(tabs)" options={{ gestureEnabled: false }} />
             <Stack.Screen name="onboarding" options={{ animation: "fade", headerShown: false, gestureEnabled: false }} />
-            <Stack.Screen name="loading" options={{ presentation: "fullScreenModal", animation: "fade" }} />
+            <Stack.Screen name="loading" options={LOADING_SCREEN_OPTIONS} />
             <Stack.Screen name="results" options={{ animation: "fade", gestureEnabled: false }} />
             <Stack.Screen name="analysis-details" options={{ animation: "fade" }} />
             {/* Scan Store. Pushed, not modal — so the root ProGateHost still

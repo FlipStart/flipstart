@@ -11,10 +11,9 @@ import {
   View, Text, Pressable, StyleSheet,
   ActivityIndicator, Alert, useWindowDimensions,
 } from 'react-native';
-import { Asset } from 'expo-asset';
 import { Image } from 'expo-image';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FONTS } from '@/constants/typography';
@@ -79,13 +78,6 @@ export function PhotoReview({
   const router = useRouter();
   const [viewingSlot,    setViewingSlot]    = useState<PhotoSlot>('front');
   const [removedPhotos, setRemovedPhotos] = useState<Partial<Record<PhotoSlot, CapturedPhoto>>>({});
-
-  useEffect(() => {
-    Asset.loadAsync([
-      require('@/assets/images/scan-loading-bg.png'),
-      require('@/assets/images/sounds/coin-pour.mp3'),
-    ]).catch(() => {});
-  }, []);
 
   const getSlotPhoto = (slot: PhotoSlot): CapturedPhoto | undefined =>
     slot === 'front' ? photoSet.front
