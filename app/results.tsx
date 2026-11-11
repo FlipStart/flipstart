@@ -7,7 +7,7 @@
 
 import {
   Text, View, ScrollView, Pressable, Platform, Modal, Animated,
-  StyleSheet, TextInput, Alert, KeyboardAvoidingView, Clipboard, BackHandler,
+  StyleSheet, TextInput, Alert, KeyboardAvoidingView, Clipboard, BackHandler, Dimensions,
   ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -471,6 +471,26 @@ export default function ResultsScreen() {
   const rec          = calc.recommendation;
   const theme        = REC_THEMES[rec.colorKey];
   const confidence   = getConfidenceDisplay((id as any).v1, ra.match_confidence);
+
+  // Title card sizing. A short title with two or three pills left the info
+  // column floating next to the ~170 tall photo column. Short cards get a small
+  // step up in type ('lg', still modest); everything else keeps the original
+  // sizes. Long titles never grow the card: the title is capped at three lines
+  // and shrinks its font to fit them (adjustsFontSizeToFit on the title).
+  const idTier: 'lg' | 'sm' = (() => {
+    const v1x = (id as any).v1;
+    const dept = v1x?.targetDepartment;
+    const pills = (id.brand ? 1 : 0) + (id.category ? 1 : 0)
+      + (v1x?.modelNumber ? 1 : 0) + (v1x?.productLine ? 1 : 0)
+      + (dept && dept !== 'unknown' && dept !== 'unisex' ? 1 : 0)
+      + (v1x?.sizeLabel ? 1 : 0) + 1; // the era pill always shows
+    const len = (id.item_name || 'Unknown Item').length;
+    const narrow = Dimensions.get('window').width < 370;
+    if (!narrow && len <= 24 && pills <= 4) return 'lg';
+    return 'sm';
+  })();
+  const chipStyle     = idTier === 'lg' ? [s.chip, s.chipLg]         : s.chip;
+  const chipTextStyle = idTier === 'lg' ? [s.chipText, s.chipTextLg] : s.chipText;
   const whyBullets   = rec.bullets;
   const profitColor = calc.profit >= 15 ? '#2A5A2A' : calc.profit >= 0 ? '#7A5C1E' : '#8A3A2A';
 
@@ -1078,14 +1098,20 @@ export default function ResultsScreen() {
               )}
               </View>
 
-              <View style={s.idInfo}>
+              <View style={[s.idInfo, idTier === 'lg' && s.idInfoLg]}>
                 <View style={s.idTitleWrap}>
                   <Pressable onPress={handleOpenDeepAnalysis} hitSlop={4} style={({ pressed }) => [s.idTitlePress, pressed && { opacity: 0.6 }]}>
-                    <Text style={s.idName}>
+                    <Text
+                      style={[s.idName, idTier === 'lg' && s.idNameLg]}
+                      numberOfLines={3}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.72}
+                    >
                       {id.item_name || 'Unknown Item'}
                       <Animated.Text
                         style={[
                           s.idTitleArrow,
+                          idTier === 'lg' && s.idTitleArrowLg,
                           { textShadowColor: GOLD, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: arrowShadowRadius },
                         ]}
                       > ›</Animated.Text>
@@ -1109,20 +1135,20 @@ export default function ResultsScreen() {
                   )}
                 </View>
 
-                <View style={s.chipWrap}>
-                  {!!id.brand && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.brand}</Text></View>}
-                  {!!id.category && <View style={s.chip}><Text style={s.chipText} numberOfLines={1} ellipsizeMode="tail">{id.category}</Text></View>}
+                <View style={[s.chipWrap, idTier === 'lg' && s.chipWrapLg]}>
+                  {!!id.brand && <View style={chipStyle}><Text style={chipTextStyle} numberOfLines={1} ellipsizeMode="tail">{id.brand}</Text></View>}
+                  {!!id.category && <View style={chipStyle}><Text style={chipTextStyle} numberOfLines={1} ellipsizeMode="tail">{id.category}</Text></View>}
                   {/* Transcribed product line / model number. These only exist
                       when the model READ them off the item, so they are worth
                       showing verbatim — the user photographed a tag to get them. */}
                   {!!(id as any).v1?.modelNumber && (
-                    <View style={s.chip}>
-                      <Text style={s.chipText} numberOfLines={1}>#{(id as any).v1.modelNumber}</Text>
+                    <View style={chipStyle}>
+                      <Text style={chipTextStyle} numberOfLines={1}>#{(id as any).v1.modelNumber}</Text>
                     </View>
                   )}
                   {!!(id as any).v1?.productLine && (
-                    <View style={s.chip}>
-                      <Text style={s.chipText} numberOfLines={1}>{(id as any).v1.productLine}</Text>
+                    <View style={chipStyle}>
+                      <Text style={chipTextStyle} numberOfLines={1}>{(id as any).v1.productLine}</Text>
                     </View>
                   )}
                   {/* Department, when it is actually known. unisex and unknown
@@ -1135,16 +1161,16 @@ export default function ResultsScreen() {
                       mens: "Men's", womens: "Women's", kids: 'Kids',
                     };
                     return (
-                      <View style={s.chip}>
-                        <Text style={s.chipText} numberOfLines={1}>{LABEL[d2] ?? d2}</Text>
+                      <View style={chipStyle}>
+                        <Text style={chipTextStyle} numberOfLines={1}>{LABEL[d2] ?? d2}</Text>
                       </View>
                     );
                   })()}
                   {/* Size, when it was actually read off a tag. Never inferred —
                       a wrong size is worse than no size for a reseller. */}
                   {!!(id as any).v1?.sizeLabel && (
-                    <View style={s.chip}>
-                      <Text style={s.chipText} numberOfLines={1}>Size {(id as any).v1.sizeLabel}</Text>
+                    <View style={chipStyle}>
+                      <Text style={chipTextStyle} numberOfLines={1}>Size {(id as any).v1.sizeLabel}</Text>
                     </View>
                   )}
                   {/* Era: prefer the validated decade/status over the free-text
@@ -1185,8 +1211,8 @@ export default function ResultsScreen() {
 
                     const soft = label === 'Era unknown' || label.startsWith('Likely');
                     return (
-                      <View style={[s.chip, soft && s.chipSoft]}>
-                        <Text style={[s.chipText, soft && s.chipSoftText]} numberOfLines={1} ellipsizeMode="tail">
+                      <View style={[chipStyle, soft && s.chipSoft]}>
+                        <Text style={[chipTextStyle, soft && s.chipSoftText]} numberOfLines={1} ellipsizeMode="tail">
                           {label}
                         </Text>
                       </View>
@@ -1731,6 +1757,14 @@ const s = StyleSheet.create({
   chipWrap:  { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
   chip:      { flexDirection: 'row', alignItems: 'center', gap: 3, maxWidth: '100%', backgroundColor: '#F8F7F0', borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 8, paddingVertical: 4 },
   chipText:  { fontSize: 10.5, fontWeight: '600', color: BROWN, flexShrink: 1 },
+  // Title card size for short cards (see idTier); the base styles above are
+  // the compact size. Deliberately a small step, not a big one.
+  idInfoLg:  { gap: 9 },
+  idNameLg:  { fontSize: 23, lineHeight: 28 },
+  idTitleArrowLg: { fontSize: 23 },
+  chipWrapLg: { gap: 6 },
+  chipLg:     { paddingHorizontal: 9, paddingVertical: 5.5 },
+  chipTextLg: { fontSize: 11.5 },
   chipConf:  { borderColor: '#7CA87C', backgroundColor: '#EFF6EC' },
   chipConfText: { color: FOREST, fontWeight: '700' },
   confAuth:   { fontSize: 11.5, color: '#8A3A2A', fontWeight: '600', marginTop: 4, lineHeight: 15 },

@@ -932,8 +932,9 @@ export default function LoadingScreen() {
   }
 
   // ── Loading state ─────────────────────────────────────────────────────────
-  // Layout: the middle block is centred in the space between the safe-area top
-  // and the Cancel button, so nothing is positioned by screen-height ratios.
+  // Layout: one block, centred in the safe area, with Cancel scan under the
+  // bar so it is next to the thing it stops. Nothing is positioned by
+  // screen-height ratios.
   // The status line has a fixed two-line height, so a longer message never
   // moves the bar.
   return (
@@ -971,17 +972,17 @@ export default function LoadingScreen() {
             <Animated.View style={[s.barSegment, { width: segW }, segStyle]} />
           )}
         </View>
-      </View>
 
-      <Pressable
-        onPress={handleCancel}
-        hitSlop={10}
-        accessibilityRole="button"
-        accessibilityLabel="Cancel scan"
-        style={({ pressed }) => [s.cancelBtn, pressed && { opacity: 0.6 }]}
-      >
-        <Text style={s.cancelBtnText}>Cancel scan</Text>
-      </Pressable>
+        <Pressable
+          onPress={handleCancel}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel scan"
+          style={({ pressed }) => [s.cancelBtn, pressed && { opacity: 0.6 }]}
+        >
+          <Text style={s.cancelBtnText}>Cancel scan</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -1013,7 +1014,7 @@ const s = StyleSheet.create({
   barSegment: { height: "100%", borderRadius: 2, backgroundColor: GOLD },
 
   cancelBtn: {
-    alignSelf: "center",
+    alignSelf: "center", marginTop: 28,
     paddingHorizontal: 26, paddingVertical: 11, borderRadius: 50,
     borderWidth: 1, borderColor: "rgba(244,238,216,0.35)",
   },

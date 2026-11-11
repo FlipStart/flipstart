@@ -48,6 +48,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useEntitlement, useRefreshEntitlement } from "@/lib/useEntitlement";
 import { useProGate } from "@/components/monetization/ProGate";
 import { useProPaywall } from "@/components/monetization/paywall/ProPaywallProvider";
+import { deepAnalysisAnalytics } from "@/lib/deepAnalysisAnalytics";
 
 export interface DeepAnalysisOptions {
   /**
@@ -149,7 +150,9 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
       };
 
       const offerPreview = () => {
+        deepAnalysisAnalytics.previewOffered();
         openProGate("deep_analysis", {
+          onDismiss: () => deepAnalysisAnalytics.previewDismissed(),
           /**
            * "Try Deep Analysis", not "View Preview".
            *
@@ -159,8 +162,11 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
            */
           label: "Try Deep Analysis",
           onAccept: async () => {
+            deepAnalysisAnalytics.previewAccepted();
             try {
               const res: any = await consume.mutateAsync();
+              // Logged before the branches below, which stay exactly as they were.
+              deepAnalysisAnalytics.previewResult(previewConsumeOpens(res) ? "granted" : "already_used");
               await refresh();
 
               /**
@@ -190,6 +196,7 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
               previewRefusedRef.current = true;
               openPaywall();
             } catch {
+              deepAnalysisAnalytics.previewResult("error");
               // Network failure. Do NOT open: an unverified grant for a
               // paid-tier feature is worse than making them tap again. The
               // preview is not consumed, so nothing is lost.
@@ -221,6 +228,12 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
        * PLAN alone, so a Free account holding 2,310 pack scans still lands
        * below.
        */
+      // One event per tap, saying what the tap led to. "unresolved" is a tap made
+      // before the plan was known; what follows (offer, paywall, screen) is
+      // logged by its own event, so nothing is counted twice.
+      deepAnalysisAnalytics.tapped(
+        action === "open" || action === "offer_preview" || action === "paywall" ? action : "unresolved",
+      );
       if (action === "open") { openOnce(); return; }
       if (action === "offer_preview") { offerPreview(); return; }
       if (action === "paywall") { openPaywall(); return; }

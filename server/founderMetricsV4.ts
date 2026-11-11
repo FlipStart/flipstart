@@ -1861,6 +1861,105 @@ export function getSessionsV2(d: V4Data) {
   };
 }
 
+// ── Deep Analysis ───────────────────────────────────────────────────────────
+
+/**
+ * Deep Analysis, end to end. Four sources, kept apart on purpose:
+ *
+ *   - Previews used: the database. Free users get ONE lifetime free look, and
+ *     the server stamps deep_analysis_preview_used_at when it is spent. That
+ *     covers every user from day one and needs no app event.
+ *   - Taps and opens: deep_analysis_tapped / deep_analysis_viewed. These exist
+ *     only from the app build that added them, so they are labelled with the
+ *     date they start and are NOT back-filled.
+ *   - The preview offer: shown / accepted / dismissed / result, same build.
+ *   - The paywall: paywall_opened with paywall_source = "deep_analysis".
+ *
+ * Free users see the preview BEFORE the paywall, so the paywall counts only
+ * people who already spent their look. That is why previews are reported on
+ * their own.
+ */
+export function getDeepAnalysis(d: V4Data, c: Cutover) {
+  const win = d.base.events;
+  const all = d.allEvents;
+  const named = (evs: Ev[], n: string) => evs.filter(e => e.event_name === n);
+  const people = (evs: Ev[]) => new Set(evs.map(whoOf).filter(Boolean)).size;
+  const deepPw = (evs: Ev[], n: string) => evs.filter(e => e.event_name === n && metaStr(e, "paywall_source") === "deep_analysis");
+
+  const tracked = all.filter(e => e.event_name.startsWith("deep_analysis_")).map(e => e.created_at).sort();
+  const trackingSince = tracked[0] ?? null;
+
+  // ── Taps: what each tap led to ──────────────────────────────────────────
+  const tapped = named(win, "deep_analysis_tapped");
+  const OUTCOMES = ["open", "offer_preview", "paywall", "unresolved"];
+  const taps = OUTCOMES.map(outcome => {
+    const evs = tapped.filter(e => metaStr(e, "outcome") === outcome);
+    return { outcome, taps: evs.length, users: people(evs) };
+  });
+
+  // ── Opens: the Deep Analysis screen itself ──────────────────────────────
+  const viewed = named(win, "deep_analysis_viewed");
+  const bySource = new Map<string, number>();
+  for (const e of viewed) bump(bySource, metaStr(e, "source") ?? "unknown");
+  const byPlan = { free: 0, monthly: 0, annual: 0, unknown: 0 };
+  for (const e of viewed) byPlan[planOfEvent(e)]++;
+  const opens = {
+    total: viewed.length, users: people(viewed),
+    bySource: [...bySource.entries()].map(([source, views]) => ({ source, views })).sort((a, b) => b.views - a.views),
+    byPlan,
+  };
+
+  // ── The preview offer ───────────────────────────────────────────────────
+  const offered = named(win, "deep_analysis_preview_offered");
+  const accepted = named(win, "deep_analysis_preview_accepted");
+  const dismissed = named(win, "deep_analysis_preview_dismissed");
+  const results = named(win, "deep_analysis_preview_result");
+  const result = (k: string) => results.filter(e => metaStr(e, "result") === k).length;
+  const offer = {
+    offered: offered.length, offeredUsers: people(offered),
+    accepted: accepted.length, dismissed: dismissed.length,
+    acceptRate: derived(accepted.length, offered.length),
+    granted: result("granted"), alreadyUsed: result("already_used"), error: result("error"),
+  };
+
+  // ── Previews actually used (database, all history in scope) ─────────────
+  const used: Array<{ uid: string; at: string }> = [];
+  for (const [uid, u] of d.usage) if (u.deep_analysis_preview_used_at) used.push({ uid, at: u.deep_analysis_preview_used_at });
+  const usedInRange = used.filter(p => inWindow(d.window, p.at));
+  const eventsByUser = new Map<string, Ev[]>();
+  for (const e of all) if (e.user_id) (eventsByUser.get(e.user_id) ?? eventsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+  let sawPaywall = 0, boughtViaDeep = 0, paidNow = 0;
+  for (const p of usedInRange) {
+    const after = (eventsByUser.get(p.uid) ?? []).filter(e => e.created_at >= p.at);
+    if (after.some(e => e.event_name === "paywall_opened" && metaStr(e, "paywall_source") === "deep_analysis")) sawPaywall++;
+    if (after.some(e => e.event_name === "paywall_purchase_completed" && metaStr(e, "paywall_source") === "deep_analysis")) boughtViaDeep++;
+    if (currentPlan(d, p.uid) !== "free") paidNow++;
+  }
+  const previews = {
+    allTime: used.length, inRange: usedInRange.length,
+    laterSawPaywall: derived(sawPaywall, usedInRange.length),
+    laterBoughtViaDeepPaywall: derived(boughtViaDeep, usedInRange.length),
+    paidNow: derived(paidNow, usedInRange.length),
+  };
+
+  // ── The Deep Analysis paywall ───────────────────────────────────────────
+  const opened = deepPw(win, PW_EVENTS.opened);
+  const viewers = people(opened);
+  const purchases = deepPw(win, PW_EVENTS.completed).length;
+  const paywall = {
+    impressions: opened.length, viewers,
+    planSelected: people(deepPw(win, PW_EVENTS.plan)),
+    purchaseStarts: deepPw(win, PW_EVENTS.started).length, purchases,
+    cancelled: deepPw(win, PW_EVENTS.cancelled).length,
+    conversion: derived(people(deepPw(win, PW_EVENTS.completed)), viewers),
+  };
+
+  return {
+    tracking: { available: trackingSince !== null, since: trackingSince, anyInRange: tapped.length + viewed.length + offered.length > 0 },
+    previews, taps, opens, offer, paywall,
+  };
+}
+
 export function getFeatureUsage(d: V4Data) {
   const all = d.base.events;
   const count = (name: string) => all.filter(e => e.event_name === name).length;
@@ -1868,7 +1967,7 @@ export function getFeatureUsage(d: V4Data) {
   const pw = (src: string) => all.filter(e => e.event_name === PW_EVENTS.opened && metaStr(e, "paywall_source") === src).length;
   return [
     { feature: "Generate Listings", accessed: null, paywallTriggered: pw("generate_listings"), completed: count("listing_generated"), completedUsers: users(e => e.event_name === "listing_generated"), note: "completed = listing_generated events" },
-    { feature: "Deep Analysis", accessed: null, paywallTriggered: pw("deep_analysis"), completed: null, completedUsers: null, note: "Only the paywall is tracked. Completion is NOT TRACKED." },
+    { feature: "Deep Analysis", accessed: count("deep_analysis_viewed") || null, paywallTriggered: pw("deep_analysis"), completed: null, completedUsers: users(e => e.event_name === "deep_analysis_viewed") || null, note: "accessed = Deep Analysis screen opens (deep_analysis_viewed), only from the app build that added it; see the Deep Analysis section. Opening it is the whole use, so there is no separate completion." },
     { feature: "Hunt Mode", accessed: count("hunt_mode_opened") || null, paywallTriggered: null, completed: count("hunt_ended"), completedUsers: users(e => e.event_name.startsWith("hunt_")), note: "accessed = hunt_mode_opened; completed = hunt_ended" },
     { feature: "Progress tab", accessed: count("progress_tab_opened") || null, paywallTriggered: null, completed: null, completedUsers: users(e => e.event_name.startsWith("progress_") || e.event_name.startsWith("brand_") || e.event_name.startsWith("diamond_")), note: "accessed only" },
     { feature: "Scan saved", accessed: null, paywallTriggered: null, completed: count("scan_saved") || null, completedUsers: users(e => e.event_name === "scan_saved"), note: "from scan_saved events where present" },
@@ -2245,6 +2344,7 @@ export function getFeatureAdoption(d: V4Data) {
     { key: "listings_paywall", label: "Generate Listings — hit the paywall", test: evs => evs.some(pw("generate_listings")) },
     { key: "listings", label: "Generate Listings — generated", test: evs => evs.some(named("listing_generated")) },
     { key: "deep_paywall", label: "Deep Analysis — hit the paywall", test: evs => evs.some(pw("deep_analysis")) },
+    { key: "deep_opened", label: "Deep Analysis — opened it", test: evs => evs.some(named("deep_analysis_viewed")) },
     { key: "hunt", label: "Hunt Mode", test: evs => evs.some(named("hunt_mode_opened", "hunt_started")) },
     { key: "saved", label: "Saved a scan", test: evs => evs.some(named("scan_saved")) },
     { key: "progress", label: "Progress tab", test: evs => evs.some(named("progress_tab_opened")) },
@@ -3253,8 +3353,8 @@ export function exploreUser(d: V4Data, uid: string, rates: { NORMAL: number; HUN
       huntCompletions: count("hunt_ended"),
       progressOpens: count("progress_tab_opened"),
       scanStoreOpens: count("scan_store_opened"),
-      // Deep Analysis has no "opened" event — only its paywall is tracked.
-      deepAnalysisOpens: null as number | null,
+      // Only from the app build that logs deep_analysis_viewed; null until any user has such an event.
+      deepAnalysisOpens: (d.allEvents.some(e => e.event_name === "deep_analysis_viewed") ? count("deep_analysis_viewed") : null) as number | null,
       deepAnalysisPaywalls: evs.filter(e => e.event_name === "paywall_opened" && metaStr(e, "paywall_source") === "deep_analysis").length,
     },
     monetization: {
@@ -3457,6 +3557,7 @@ export async function getFounderDashboardV4Metrics(
     onboardingOffer: safe("onboardingOffer", () => getOnboardingOffer(d, cutover)),
     scanStore:   safe("scanStore", () => getScanStore(d, cutover)),
     scanStoreInsights: safe("scanStoreInsights", () => getScanStoreInsights(d, cutover)),
+    deepAnalysis: safe("deepAnalysis", () => getDeepAnalysis(d, cutover)),
     cohorts:     safe("cohorts", () => getCohorts(d)),
     freeBehaviour: safe("freeBehaviour", () => getFreeBehaviour(d)),
     retentionV2: safe("retentionV2", () => getRetentionV2(d)),

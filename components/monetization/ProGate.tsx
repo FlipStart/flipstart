@@ -48,6 +48,8 @@ const FEATURE_NAME: Record<ProFeature, string> = {
 export interface ProGateOffer {
   label: string;
   onAccept: () => void;
+  /** Called when the sheet is closed WITHOUT accepting: Not Now, a tap outside, or Back. */
+  onDismiss?: () => void;
 }
 
 interface ProGateContextValue {
@@ -136,6 +138,8 @@ export function ProGateProvider({ children }: { children: React.ReactNode }) {
 export function ProGateHost({ rootHost = false }: { rootHost?: boolean }) {
   const { _feature, _offer, _close, _claimHost, _releaseHost, _topHost } = useContext(Ctx);
   const [id, setId] = useState<number | null>(rootHost ? 0 : null);
+  /** Closing without accepting: close first, then tell the offer, so a slow callback can't hold the sheet open. */
+  const dismiss = () => { const fn = _offer?.onDismiss; _close(); try { fn?.(); } catch { /* never block closing */ } };
 
   useEffect(() => {
     if (rootHost) return;
@@ -153,9 +157,9 @@ export function ProGateHost({ rootHost = false }: { rootHost?: boolean }) {
       visible={_feature !== null}
       transparent
       animationType="fade"
-      onRequestClose={_close}
+      onRequestClose={dismiss}
     >
-      <Pressable style={s.backdrop} onPress={_close}>
+      <Pressable style={s.backdrop} onPress={dismiss}>
         <Pressable style={s.card} onPress={e => e.stopPropagation()}>
           <View style={s.header}>
             <MaterialIcons name="workspace-premium" size={22} color={GOLD} />
@@ -174,7 +178,7 @@ export function ProGateHost({ rootHost = false }: { rootHost?: boolean }) {
 
           <View style={s.actions}>
             <Pressable
-              onPress={_close}
+              onPress={dismiss}
               /* With no offer this is the only button, so it takes the full
                  width as a single confident action rather than a small ghost
                  floating in the corner. */

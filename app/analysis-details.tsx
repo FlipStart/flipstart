@@ -11,7 +11,8 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { deepAnalysisAnalytics } from '@/lib/deepAnalysisAnalytics';
 
 import { ScreenContainer } from '@/components/screen-container';
 import { useFlipStore } from '@/lib/useFlipStore';
@@ -282,6 +283,14 @@ export default function AnalysisDetailsScreen() {
   const router  = useRouter();
   const insets  = useSafeAreaInsets();
   const { scanId, snapshot, source } = useLocalSearchParams<{ scanId: string; snapshot?: string; source?: string }>();
+
+  // Deep Analysis was opened: once per visit to this screen, however often it re-renders.
+  const viewedLogged = useRef(false);
+  useEffect(() => {
+    if (viewedLogged.current) return;
+    viewedLogged.current = true;
+    deepAnalysisAnalytics.viewed(source ?? null);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const { getFlipById, updateFlip } = useFlipStore();
   const { updateScan } = useScanContext();
 
