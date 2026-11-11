@@ -693,6 +693,9 @@ export default function LoadingScreen() {
                 deadlineMs:         deadlineForServer(left),
                 // Hold the charge on a soft fail until the user chooses.
                 chargeOnContinue:   true,
+                // Results will show sold comps: let the server start that
+                // search now. Hunt scans go to their own screen, which has none.
+                prefetchComps:      !isHuntActive(),
               }, { signal: tryAbort.signal }),
               deadline,
               new Promise<never>((_, reject) => {

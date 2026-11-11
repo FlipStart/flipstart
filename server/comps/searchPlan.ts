@@ -8,9 +8,10 @@
  *   B  relaxed   identity and type only — no closure, era word, colour or
  *                material (titles often omit them). Keeps the product line, or
  *                the model when there is no line ("501 Levi's jeans").
- *   C  broad     merch identity + type ("Chicago Bulls jersey"), else brand +
- *                type ("Carhartt hoodie"). Skipped for items with a model or
- *                product line: "Nike sneakers" cannot find a Dunk Low.
+ *   C  broad     merch identity + plain type ("Chicago Bulls jersey"), else
+ *                brand + plain type ("Carhartt jacket", "Brahmin bag"). Skipped
+ *                for items with a model or product line: "Nike sneakers"
+ *                cannot find a Dunk Low.
  *
  * Unbranded items get A only: their comps can never be better than Similar,
  * so a "miss" is guaranteed and a fallback would be paid for nothing.
@@ -27,7 +28,7 @@
  */
 import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
 import { normalizeText } from "./normalize.js";
-import { scanCategory, brandMask, designTokens } from "./taxonomy.js";
+import { scanCategory, brandMask, designTokens, searchTypeText, broadTypeNoun, notStyleTag } from "./taxonomy.js";
 
 export type SearchTier = "A" | "B" | "C";
 
@@ -139,6 +140,17 @@ export function queryPart(value: string | null | undefined, freeText = false): s
 }
 const clean = (parts: string[]) => parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 
+/** Style tags in the product-line or subject field: taxonomy.ts. Re-exported
+ *  here because the searches are where they mattered first. */
+export { notStyleTag };
+
+/** The item type as searched: a repeated type word dropped ("satchel handbag"
+ *  → "satchel"), feeling words stripped. */
+export function searchType(c: CanonicalAnalysisV1): string {
+  const id = c.ai.identification;
+  return queryPart(searchTypeText(id.item_type ?? "", brandMask(id.canonical_brand ?? "")), true);
+}
+
 /** A search as shown to the user: without the excluded words. */
 export const displayQuery = (q: string) => q.replace(/(^|\s)-\S+/g, "").replace(/\s+/g, " ").trim();
 
@@ -199,22 +211,26 @@ export function buildSearchPlan(c: CanonicalAnalysisV1, precise: string, opts: {
     steps.push({ tier, query, normalizedQuery: normalizeText(query), categoryId: cat?.id ?? null,
                  categoryName: cat?.name ?? null, excluded, why });
   };
-  const type = queryPart(id.item_type, true);
+  const type = searchType(c);
   const model = queryPart(id.model_or_product_number);
-  const line = queryPart(id.product_line);
+  const line = queryPart(notStyleTag(id.product_line));
 
   add("A", precise, "precise: every confident detail");
   if (opts.unbranded) return steps;
 
-  add("B", clean([line || model, queryPart(id.canonical_brand), queryPart(id.subject, true), queryPart(id.team),
+  add("B", clean([line || model, queryPart(id.canonical_brand), queryPart(notStyleTag(id.subject), true), queryPart(id.team),
                   queryPart(id.artist), queryPart(id.event), queryPart(id.character_or_license), type]),
       "relaxed: identity and type only — titles often omit closure, era and colour");
   if (!model && !line) {
     // Merch identity before the brand: a Bulls jersey's brand is the blank's
     // maker ("Nike", "Starter"), and "Nike jersey" finds every Nike jersey.
     const anchor = queryPart(id.team) || queryPart(id.artist) || queryPart(id.character_or_license) ||
-                   queryPart(id.canonical_brand) || queryPart(id.subject, true);
-    if (anchor) add("C", clean([anchor, type]), "broad: identity + type");
+                   queryPart(id.canonical_brand) || queryPart(notStyleTag(id.subject), true);
+    // The plain noun ("Brahmin bag", "Carhartt jacket"), not the exact style:
+    // it still finds the item when the style name is off ("chore coat" for a
+    // work jacket) or rarely written. The matcher decides what is shown.
+    const broad = broadTypeNoun(groupOf(c)) ?? type;
+    if (anchor) add("C", clean([anchor, broad]), "broad: identity + plain type");
   }
   return steps;
 }

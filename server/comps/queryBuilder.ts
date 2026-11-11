@@ -11,7 +11,7 @@
 import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
 import type { CompsIneligibleReason } from "./types.js";
 import { QUERY_BUILDER_VERSION, normalizeText, detectClosure } from "./normalize.js";
-import { styleWords, typeIsStyled, queryPart } from "./searchPlan.js";
+import { styleWords, typeIsStyled, queryPart, notStyleTag, searchType } from "./searchPlan.js";
 import { scanCategory, brandMask } from "./taxonomy.js";
 
 export interface QueryComponent {
@@ -42,6 +42,10 @@ export interface IneligibleQuery {
   detail: string;
   builderVersion: string;
 }
+
+/** An obvious colour (black, navy, brown…) at this confidence or more goes in
+ *  the precise search: sellers almost always write it. Was 85. */
+const COLOUR_CONFIDENT_AT = 70;
 
 const GENERIC_ITEM_TYPES = new Set([
   "", "unknown", "item", "clothing", "garment", "apparel", "other", "misc",
@@ -87,8 +91,8 @@ export function buildCompsQuery(c: CanonicalAnalysisV1): BuiltQuery | Ineligible
 
   // Identity strength: at least one thing that narrows the search beyond
   // "a hoodie". Without it the search returns the entire category.
-  const identity = [id.model_or_product_number, id.product_line, id.canonical_brand,
-                    id.subject, id.team, id.artist, id.event, id.character_or_license]
+  const identity = [id.model_or_product_number, notStyleTag(id.product_line), id.canonical_brand,
+                    notStyleTag(id.subject), id.team, id.artist, id.event, id.character_or_license]
                     .filter(x => (x ?? "").trim());
   /*
    * Unbranded items (Phase 3). Most thrift finds have no readable brand, and
@@ -133,16 +137,22 @@ export function buildCompsQuery(c: CanonicalAnalysisV1): BuiltQuery | Ineligible
   };
 
   push("model", id.model_or_product_number, "exact model is the strongest possible signal");
-  push("product_line", id.product_line, "product line narrows within a brand");
+  push("product_line", notStyleTag(id.product_line), "product line narrows within a brand");
+  if (id.product_line && !notStyleTag(id.product_line)) add("product_line", id.product_line, false, "a style tag, not a product line");
   push("brand", id.canonical_brand, "brand anchors the search");
   // Subject / team / artist / event: the thing a collector actually searches.
-  push("subject", id.subject, "recognisable subject drives niche demand", true);
+  push("subject", notStyleTag(id.subject), "recognisable subject drives niche demand", true);
+  if (id.subject && !notStyleTag(id.subject)) add("subject", id.subject, false, "a style tag, not a subject");
   push("team", id.team, "team is a primary search term for sports items");
   push("artist", id.artist, "artist is a primary search term for music items");
   push("event", id.event, "event narrows to a specific print run");
   push("license", id.character_or_license, "licensed IP is a primary search term");
   for (const w of unbrandedWords) push("style", w, "unbranded: a style or material word stands in for a brand");
-  push("item_type", id.item_type, "item type is required for a usable search", true);
+  // One type word per kind: "satchel handbag" would only find listings saying both.
+  const typeQ = searchType(c);
+  push("item_type", typeQ, typeQ.toLowerCase() === (id.item_type ?? "").trim().toLowerCase()
+    ? "item type is required for a usable search"
+    : `item type, with the repeated type word dropped from "${id.item_type}"`);
 
   // ── Closure ────────────────────────────────────────────────────────────────
   // "Polo by Ralph Lauren hoodie" returned pullovers, zip-ups and everything
@@ -188,11 +198,11 @@ export function buildCompsQuery(c: CanonicalAnalysisV1): BuiltQuery | Ineligible
   const OBVIOUS = /^(black|white|red|blue|green|yellow|navy|grey|gray|orange|purple|pink|brown|tan|beige|cream)$/i;
   if (unbrandedWords.includes(colour) && colour) {
     add("color", colour, false, "already the unbranded search word");
-  } else if (colour && colourConf >= 85 && OBVIOUS.test(colour)) {
+  } else if (colour && colourConf >= COLOUR_CONFIDENT_AT && OBVIOUS.test(colour)) {
     push("color", colour, `obvious colour at ${colourConf}% confidence`);
   } else {
     add("color", colour, false,
-        colour ? `colour confidence ${colourConf}% below the 85% bar, or not an unambiguous colour`
+        colour ? `colour confidence ${colourConf}% below the ${COLOUR_CONFIDENT_AT}% bar, or not an unambiguous colour`
                : "no colour determined");
   }
   add("department", (c.ai.visible_attributes as { target_department?: string }).target_department ?? "", false,

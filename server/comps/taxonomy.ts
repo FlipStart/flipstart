@@ -121,7 +121,8 @@ const GROUP_DEFS: Array<[string, string[]]> = [
   ["beanie",    ["beanie", "knit hat", "toboggan", "watch cap"]],
   ["hat",       ["hat", "cap", "snapback", "fitted cap", "fitted hat", "trucker hat", "bucket hat", "visor", "dad hat", "baseball cap", "strapback"]],
   ["backpack",  ["backpack", "rucksack", "daypack"]],
-  ["bag",       ["bag", "tote", "tote bag", "purse", "handbag", "crossbody", "messenger bag", "duffel", "duffle bag", "fanny pack", "shoulder bag", "clutch"]],
+  ["bag",       ["bag", "tote", "tote bag", "purse", "handbag", "crossbody", "messenger bag", "duffel", "duffle bag", "fanny pack", "shoulder bag", "clutch",
+                 "satchel", "hobo bag", "doctor bag", "bucket bag", "top handle bag", "saddle bag", "bowler bag"]],
   ["wallet",    ["wallet", "card holder"]],
   ["scarf",     ["scarf"]],
   ["belt",      ["belt"]],
@@ -138,6 +139,8 @@ const IGNORE_PHRASES = [
   "track suit", "tracksuit", "jump suit", "sweat suit", "tie front", "tie waist",
   // accessories FOR an item are not the item ("Seiko Watch Band")
   "watch band", "watch strap", "replacement band", "shoe laces", "hat clip",
+  // a name, not a bag
+  "satchel paige",
 ];
 
 export const CATEGORY_GROUPS: readonly string[] = GROUP_DEFS.map(([g]) => g);
@@ -208,6 +211,81 @@ const PHRASES: PhraseEntry[] = (() => {
 })();
 
 const GROUP_ORDER = new Map(CATEGORY_GROUPS.map((g, i) => [g, i]));
+
+/**
+ * One item type for a SEARCH. eBay requires every word of a search, so an
+ * item type that names the same kind of thing twice ("satchel handbag",
+ * "crossbody shoulder bag") finds only the few listings that say both. Keeps
+ * the first (most specific) type phrase of each group and every other word
+ * ("woven leather satchel"). Unchanged when nothing is repeated.
+ */
+export function searchTypeText(text: string, masked: string[] = []): string {
+  const w = words(maskPhrases(prep(text ?? ""), masked));
+  const used = new Array(w.length).fill(false);
+  const hits: Array<{ start: number; n: number; group: string }> = [];
+  for (const e of PHRASES) {
+    const n = e.words.length;
+    for (let i = 0; i + n <= w.length; i++) {
+      if (used.slice(i, i + n).some(Boolean)) continue;
+      let ok = true;
+      for (let k = 0; k < n; k++) if (w[i + k] !== e.words[k]) { ok = false; break; }
+      if (!ok) continue;
+      for (let k = 0; k < n; k++) used[i + k] = true;
+      if (e.group && !e.fabric) hits.push({ start: i, n, group: e.group });
+    }
+  }
+  hits.sort((a, b) => a.start - b.start);
+  const seen = new Set<string>();
+  const drop = new Set<number>();
+  for (const h of hits) {
+    if (seen.has(h.group)) for (let k = 0; k < h.n; k++) drop.add(h.start + k);
+    seen.add(h.group);
+  }
+  const original = (text ?? "").trim();
+  if (drop.size === 0) return original;
+  // Rebuilt from the ORIGINAL words, so the lookup aliases ("medium" → "m",
+  // "y2k" → "2000s") never reach a search. When the words don't line up one to
+  // one (an alias changed the count), the type is left as it was.
+  const ow = original.split(/\s+/).filter(Boolean);
+  if (ow.length !== w.length) return original;
+  return ow.filter((_, i) => !drop.has(i)).join(" ");
+}
+
+/**
+ * Style tags the model sometimes puts in the product-line or subject field
+ * ("Carhartt workwear chore coat"). They name a look, not a product, and most
+ * listings never say them: they are never searched on, and the matcher never
+ * asks a listing to state them. Dropped only when the WHOLE field is a tag.
+ * ("Heritage" is also a real Nike line; as a whole field it is far more often
+ * the look.)
+ */
+const STYLE_TAGS = new Set([
+  "workwear", "work wear", "streetwear", "street wear", "outdoor", "outdoors", "heritage", "classic", "casual",
+  "athletic", "athleisure", "sportswear", "preppy", "grunge", "skater", "skate", "boho", "bohemian", "minimalist",
+  "utility", "y2k", "retro", "vintage", "designer", "luxury", "fashion", "everyday", "basic", "basics",
+  "normcore", "gorpcore", "techwear",
+]);
+export function notStyleTag(value: string | null | undefined): string {
+  const v = (value ?? "").trim();
+  return v && !STYLE_TAGS.has(v.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()) ? v : "";
+}
+
+/**
+ * The plain noun a buyer searches for a group: "Brahmin bag", "Carhartt
+ * jacket". Only where the plain noun is what sellers actually write; groups
+ * left out (tees, quarter zips, jerseys…) keep their own type word, because
+ * "Nirvana tee" or "Ralph Lauren pullover" would miss most of their listings.
+ */
+const BROAD_NOUN: Record<string, string> = {
+  bag: "bag", jacket: "jacket", coat: "coat", boots: "boots", button_shirt: "shirt", hat: "hat",
+  dress: "dress", sweater: "sweater", pants: "pants", shorts: "shorts", vest: "vest", fleece: "fleece",
+  hoodie: "hoodie", sweatshirt: "sweatshirt", cardigan: "cardigan", blazer: "blazer", backpack: "backpack",
+  wallet: "wallet", heels: "heels", sandals: "sandals", loafers: "shoes", beanie: "beanie", skirt: "skirt",
+  jeans: "jeans",
+};
+export function broadTypeNoun(group: string | null): string | null {
+  return group ? BROAD_NOUN[group] ?? null : null;
+}
 
 export interface CategoryRead {
   /** The group that decides, or null when the text names no known type. */

@@ -34,11 +34,27 @@ import { reserveRequest, releaseRequest, perUserRemaining, sharedRemaining, type
  * function can promote a listing it was never shown. Ranking was already
  * similarity-first; the candidate pool was not.
  *
- * 240 is the provider's documented maximum, so this is the deepest single-call
- * window available. The budget counts CALLS, not results, so the spend ceiling
- * is unaffected; the cost is a larger response to parse.
+ * 240 is the provider's documented maximum. It is also the slowest: the
+ * provider scrapes eBay live, and a deeper pull takes longer and times out
+ * more. 120 recent sales is plenty for the matcher to pick from.
+ * COMPS_CANDIDATE_COUNT (1-240) overrides it.
  */
-const CANDIDATE_POOL = 240;
+function candidatePool(): number {
+  const n = Number.parseInt(process.env.COMPS_CANDIDATE_COUNT ?? "", 10);
+  return Number.isFinite(n) && n >= 1 && n <= 240 ? n : 120;
+}
+/**
+ * A PAID fallback search starts only if the scan's comps have taken less than
+ * this so far, so a slow first search is never followed by a second slow one.
+ * Cached fallbacks always run. Exception to "reopening is free": on a reopen the
+ * first search is cached (instant), so a fallback skipped the first time can
+ * run and be paid for once; it is cached like any other after that.
+ * COMPS_FALLBACK_START_LIMIT_MS overrides.
+ */
+function fallbackStartLimitMs(): number {
+  const n = Number.parseInt(process.env.COMPS_FALLBACK_START_LIMIT_MS ?? "", 10);
+  return Number.isFinite(n) && n >= 0 ? n : 10_000;
+}
 
 /**
  * Fallback searches (Phase 3). B and C run only while fewer than MIN_CORE
@@ -214,6 +230,13 @@ export async function runCompsForAnalysis(
                  latencyMs: 0, malformed: 0, items: r.items, fetchedAt: Date.now() };
       } catch { /* that call failed; fall through and try our own */ }
     }
+    // A PAID fallback after a slow start is skipped (a cached or in-flight one,
+    // above, costs no time and still runs).
+    if (fallback && Date.now() - t0 >= fallbackStartLimitMs()) {
+      return { ...base, outcome: "budget", cacheHit: false, calledProvider: false, rawCount: 0, latencyMs: 0,
+               malformed: 0, items: [], fetchedAt: null, errorCode: "FALLBACK_TIME_LIMIT",
+               detail: "the first search was slow; not making the user wait for another" };
+    }
     if (fallback) {
       const shared = sharedRemaining();
       if ((ctx.userId && perUserRemaining(ctx.userId) <= FALLBACK_USER_RESERVE) ||
@@ -235,7 +258,7 @@ export async function runCompsForAnalysis(
     // 7. Provider.
     const call = provider().searchSold({
       keyword: step.query, marketplace: "ebay_us",
-      historyDays: built.historyDays, condition: "used", count: CANDIDATE_POOL,
+      historyDays: built.historyDays, condition: "used", count: candidatePool(),
       ...(categoryId ? { categoryId } : {}),
     }).then(r => {
       // Saved durably and shared: the next person whose scan produces this same

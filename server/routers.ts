@@ -12,6 +12,7 @@ import { grantDevScans, revokeDevGrant, devGrantStatus } from "./devGrants.js";
 import { buildServerUserContext, userContextAllowedFor } from "./userContextServer.js";
 import { conditionFactKey } from "./canonical/validate.js";
 import { runCompsForAnalysis } from "./comps/index.js";
+import { startCompsPrefetch, takePrefetchedComps } from "./comps/prefetch.js";
 import { compsFounderAuthorised } from "./comps/auth.js";
 import { monetizationV1EnabledFor } from "./_core/env.js";
 import { resolveSupabaseUserId } from "./monetization/identity.js";
@@ -150,6 +151,10 @@ const appRouter_scan = router({
           // anyway" (shared/scanFailure.ts). App 2.1 doesn't send this and is
           // charged as before.
           chargeOnContinue: z.boolean().optional(),
+          // The app will show this scan's sold comps (not a Hunt scan): start
+          // the comps search as soon as the scan is delivered. Absent from app
+          // 2.2 and older, which ask for comps when the results screen opens.
+          prefetchComps: z.boolean().optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -667,6 +672,15 @@ const appRouter_scan = router({
             if (!useV1 && !ENV.canonicalV1Enabled) console.log("[analyzeV1] allow-list scan — quota NOT consumed");
             const delivered = await settleCharge(v1Payload, "analyzeV1", commit);
             cacheAnalysis(input.scanAttemptId, delivered, userCtx.hash);
+            // Start the sold-comps search now instead of when the results
+            // screen asks; comps.forScan picks up this same run. Only when the
+            // app said it will show comps (not Hunt), the scan was delivered,
+            // and it is not a soft fail — those may never reach comps. Same gate
+            // and per-user budget as forScan.
+            if (input.prefetchComps === true && !scanSoftFail(v1Payload) && muid && canonicalV1EnabledFor(muid)) {
+              startCompsPrefetch(analysisId, muid,
+                () => runCompsForAnalysis(canonical, { founderAuthorised: true, userId: muid }));
+            }
             return delivered;
           } catch (err) {
             const kind = err instanceof ScanV1Error ? err.kind : "transport_error";
@@ -1214,7 +1228,9 @@ const compsRouter = router({
 
       // userId charges this against the caller's per-user daily cap, so one heavy
       // user cannot drain the shared monthly pool.
-      const rec = await runCompsForAnalysis(stored.canonical, { founderAuthorised: true, userId: uid });
+      // Usually already running since the scan finished (comps/prefetch.ts).
+      const rec = (await takePrefetchedComps(stored.analysisId, uid)) ??
+        await runCompsForAnalysis(stored.canonical, { founderAuthorised: true, userId: uid });
       const ai = stored.canonical.derived.pricing;
       const ev = rec.evaluation;
       const diag = buildDiagnostic({
