@@ -40,7 +40,7 @@ import {
 import {
   prep, squash, looseContains, detectCategory, scanCategory, categoryRelation, type CategoryRelation,
   brandInTitle, brandMask, categoryText, colorFamilies, colorRelation, type ColorRelation, isKidsTitle,
-  designTokens, designOverlap, titleDecades, decadeStart,
+  designTokens, designOverlap, titleDecades, decadeStart, notStyleTag,
 } from "./taxonomy.js";
 
 export type RejectionReason =
@@ -157,6 +157,10 @@ const ACCESSORY = ["sticker", "decal", "iron on patch", "sew on patch", "patch o
                    "brake", "sprocket", "drive chain", "mirror", "helmet", "gloves", "windshield", "fairing"];
 /** "new with tags" is NOT here: deadstock vintage is real vintage. "bootleg"
  *  is not either — it is a jeans cut, and 90s bootleg tees trade as vintage. */
+/** Words that make a "jacket" listing a shirt-jacket: the same garment
+ *  sellers also title as a button down shirt. */
+const SHIRT_JACKET = ["shacket", "shirt jacket", "overshirt", "over shirt", "work shirt", "chore", "button down", "button up"];
+const SHIRT_SCANS = new Set(["shirt", "button_shirt", "polo_shirt"]);
 const REPRO     = ["reprint", "reproduction", "repro", "modern reprint", "custom made"];
 /**
  * EXPLICIT era claims in a listing title.
@@ -298,7 +302,8 @@ export function scoreComp(
   ] as Array<[string, string | undefined]>)
     .map(([k, v]) => [k, (v ?? "").trim()] as [string, string])
     .filter(([, v]) => v);
-  const softSubject = (id.subject ?? "").trim();
+  // A style tag ("workwear") is not a subject: never searched, never required.
+  const softSubject = notStyleTag(id.subject);
   const scanSubjects = [softSubject, ...hardIds.map(([, v]) => v)].filter(Boolean);
   /** Words in a title that belong to the scanned brand or subject, and so can't
    *  be read as a garment type, a colour or a kids marker ("Beach Boys"). */
@@ -333,6 +338,13 @@ export function scoreComp(
       penalties.push("item type not stated");
     } else {
       catRel = categoryRelation(scanGroup, listRead.group);
+      // A shirt-jacket ("shacket", "overshirt", "work shirt chore coat") reads
+      // as a jacket, but it is the same garment sellers also list as a button
+      // down shirt. Against a shirt scan it is related, not a different item.
+      if (catRel === "different" && listRead.group === "jacket" && SHIRT_SCANS.has(scanGroup) &&
+          hasAny(title, SHIRT_JACKET)) {
+        catRel = "related";
+      }
       if (catRel === "different") {
         signals.category = { scan: scanGroup, listing: listRead.group, relation: catRel };
         return reject("WRONG_ITEM_TYPE", `different item type (${listRead.group.replace(/_/g, " ")} vs ${scanGroup.replace(/_/g, " ")})`);
@@ -369,7 +381,7 @@ export function scoreComp(
   // Label trades in a different market entirely. Brand is included on the scan
   // side so a Lauren Ralph Lauren scan matches its own line.
   const scanSpecialtyEarly = detectSpecialty(
-    [id.generic_item_name, id.product_line, id.subject, id.team, brand].join(" "),
+    [id.generic_item_name, notStyleTag(id.product_line), notStyleTag(id.subject), id.team, brand].join(" "),
   );
   const listSpecialtyEarly = detectSpecialty(title);
   specDetectedRef = listSpecialtyEarly;
@@ -380,7 +392,7 @@ export function scoreComp(
       `listing line "${listPremium?.match ?? "none"}" vs scan "${scanPremium?.match ?? "none"}"`);
   }
 
-  const productLine = (id.product_line ?? "").trim();
+  const productLine = notStyleTag(id.product_line);
   const lineHit = Boolean(productLine) && looseContains(title, productLine);
   if (lineHit) positives.push(`product line ${productLine}`);
 
@@ -684,7 +696,15 @@ export function scoreComp(
   const anchored = brandHit || hardIdentityHit;
   let tier: Tier;
   let why: string;
-  if (catRel === "related") {
+  if (catRel === "related" && brandHit && (softSubjectHit || hardIdentityHit || designStrong) &&
+      !eraConflict && !colorConflict && !modelConflict) {
+    // Same brand AND same design, but the listing names a neighbouring garment
+    // (polo vs button down, shirt vs shacket). That is almost always the same
+    // piece described differently, so it is shown — as Similar, never Exact
+    // or Strong, so it cannot by itself produce a confident median. Brand
+    // alone is not enough: a Carhartt jacket is not a Carhartt coat.
+    tier = "similar"; why = `same brand and design, listed as ${listRead.group?.replace(/_/g, " ")}`;
+  } else if (catRel === "related") {
     tier = "weak"; why = `related but different item (${listRead.group?.replace(/_/g, " ")})`;
   } else if (!typeCertain) {
     tier = "similar"; why = "listing doesn't say what kind of item it is";

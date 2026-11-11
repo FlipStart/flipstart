@@ -71,6 +71,8 @@ export interface InspectorSearch {
   cacheHit: boolean;
   paid: boolean;
   raw: number;
+  /** Why a search failed or was skipped, e.g. "PROVIDER_UNAVAILABLE: provider returned 502". */
+  error?: string;
 }
 
 export type CompVerdict = "right" | "wrong";

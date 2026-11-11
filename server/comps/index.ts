@@ -67,6 +67,10 @@ function fallbackStartLimitMs(): number {
  */
 const MIN_CORE = 3;
 const MAX_SEARCHES = 3;
+/** Provider failures a run moves past before giving up. Two in a row means
+ *  the provider is down, and a third call would just fail and cost quota. */
+const MAX_PROVIDER_ERRORS = 2;
+const RECOVERABLE = new Set(["PROVIDER_UNAVAILABLE", "INVALID_PROVIDER_RESPONSE"]);
 /**
  * A PAID fallback is refused while the user has this many searches or fewer
  * left today, or the shared pool is down to its reserve — a run of misses can
@@ -95,6 +99,8 @@ export interface SearchRun {
   rawCount: number;
   latencyMs: number;
   errorCode?: string;
+  /** The provider's own failure text ("provider returned 502"). Founder only. */
+  errorDetail?: string;
 }
 
 export interface CompsRunRecord {
@@ -297,7 +303,9 @@ export async function runCompsForAnalysis(
 
   const pool = new Map<string, NormalizedSoldComp>();
   const searches: SearchRun[] = [];
-  const strip = ({ items: _i, fetchedAt: _f, malformed: _m, detail: _d, ...run }: Fetched): SearchRun => run;
+  const strip = ({ items: _i, fetchedAt: _f, malformed: _m, detail, ...run }: Fetched): SearchRun =>
+    run.outcome === "error" && detail ? { ...run, errorDetail: detail } : run;
+  let providerErrors = 0;
   let malformed = 0; let latencyMs = 0;
   let fetchedAt: number | null = null;
   let firstFailure: Fetched | null = null;
@@ -319,6 +327,23 @@ export async function runCompsForAnalysis(
     searches.push(strip(run));
     if (run.outcome !== "ok") {
       firstFailure ??= run;
+      // A provider hiccup on one search used to end the whole run: one 502 on
+      // the precise search meant the relaxed and broad searches never ran, and
+      // an item with dozens of sales on eBay showed "temporarily unavailable".
+      // A quick provider failure now moves on to the next search, at most
+      // twice. Budget refusals, quota, auth and timeouts still stop here — a
+      // timeout already took ~20 s, and the fallback time limit would refuse
+      // the next paid search anyway.
+      if (run.outcome === "error" && RECOVERABLE.has(run.errorCode ?? "") && ++providerErrors < MAX_PROVIDER_ERRORS) {
+        // Next try the BROADEST search, not the next-narrowest. If the failure
+        // was about this query (a scraper erroring on an empty result page),
+        // the relaxed search is the one most likely to fail the same way; the
+        // broad search is the least. The relaxed one still runs after it if a
+        // slot is left and comps are still short.
+        const broadAt = queue.findIndex(s => s.tier === "C");
+        if (broadAt > 0) queue.unshift(...queue.splice(broadAt, 1));
+        continue;
+      }
       break;              // a refused or failed fallback never costs the scan what it already has
     }
     if (run.rawCount === 0 && categoryId) {

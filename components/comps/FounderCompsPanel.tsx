@@ -27,7 +27,7 @@ export interface FounderDebug {
   /** Deepest search that ran: A precise, B relaxed, C broad; D = nothing shown. Newer servers only. */
   searchTier?: string | null;
   searches?: Array<{ tier: string; query: string; categoryId: string | null; outcome: string;
-                     cacheHit: boolean; paid: boolean; raw: number }>;
+                     cacheHit: boolean; paid: boolean; raw: number; error?: string }>;
   counts: { raw: number; rejected: number; weak: number; duplicates: number; exact: number; strong: number; similar: number };
   dataStrength: string | null;
   internalConfidencePercent: number | null;
@@ -86,7 +86,7 @@ export function FounderCompsPanel({
       </Text>
       {(debug.searches ?? []).map((q, i) => (
         <Text key={`q${i}`} style={s.meta} selectable>
-          {q.tier} · “{q.query}”{q.categoryId ? ` · cat ${q.categoryId}` : ''} · {q.cacheHit ? 'cached' : q.outcome !== 'ok' ? q.outcome : q.paid ? 'paid' : 'free'} · {q.raw} back
+          {q.tier} · “{q.query}”{q.categoryId ? ` · cat ${q.categoryId}` : ''} · {q.cacheHit ? 'cached' : q.outcome !== 'ok' ? q.outcome : q.paid ? 'paid' : 'free'} · {q.raw} back{q.error ? ` · ${q.error}` : ''}
         </Text>
       ))}
       {!!debug.searchTier && (

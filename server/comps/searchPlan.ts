@@ -151,6 +151,36 @@ export function searchType(c: CanonicalAnalysisV1): string {
   return queryPart(searchTypeText(id.item_type ?? "", brandMask(id.canonical_brand ?? "")), true);
 }
 
+/**
+ * Sleeve length is the AI describing the photo, not how sellers title the item
+ * ("Tapestry Button Down Shirt", never "Long Sleeve Polo Shirt"). eBay matches
+ * every word, so one of these in a fallback search can empty it. Kept in the
+ * precise search, dropped from the relaxed and broad ones.
+ */
+const SLEEVE = /\b(long|short|3\/4|three quarter)[\s-]*sleeved?\b|\bsleeveless\b|\b(ls|ss)\b/gi;
+export function relaxedSearchType(c: CanonicalAnalysisV1): string {
+  const t = searchType(c);
+  const r = t.replace(SLEEVE, " ").replace(/\s+/g, " ").trim();
+  return r || t;
+}
+
+/**
+ * The subject as a fallback search uses it. The AI describes the design
+ * ("Tiger Graphic", "tiger in tall grass print"); sellers name it ("Tiger").
+ * Filler words dropped; a two-word name is kept, a longer description is cut
+ * to its first word — every extra word is one more that every title has to
+ * contain.
+ */
+const SUBJECT_FILLER = new Set(["graphic", "graphics", "print", "printed", "prints", "design", "designs", "pattern",
+  "motif", "artwork", "image", "logo", "the", "a", "an", "and", "of", "in", "on", "with", "&"]);
+export function searchSubject(c: CanonicalAnalysisV1): string {
+  const s = queryPart(notStyleTag(c.ai.identification.subject), true);
+  const kept = s.split(" ").filter(w => w && !SUBJECT_FILLER.has(w.toLowerCase()));
+  // Two words is a name ("Chicago Bulls", "Bald Eagle"); more is a scene the AI
+  // described ("tiger in tall grass"), and only its first word is the subject.
+  return (kept.length <= 2 ? kept : kept.slice(0, 1)).join(" ");
+}
+
 /** A search as shown to the user: without the excluded words. */
 export const displayQuery = (q: string) => q.replace(/(^|\s)-\S+/g, "").replace(/\s+/g, " ").trim();
 
@@ -212,14 +242,15 @@ export function buildSearchPlan(c: CanonicalAnalysisV1, precise: string, opts: {
                  categoryName: cat?.name ?? null, excluded, why });
   };
   const type = searchType(c);
+  const relaxedType = relaxedSearchType(c);
   const model = queryPart(id.model_or_product_number);
   const line = queryPart(notStyleTag(id.product_line));
 
   add("A", precise, "precise: every confident detail");
   if (opts.unbranded) return steps;
 
-  add("B", clean([line || model, queryPart(id.canonical_brand), queryPart(notStyleTag(id.subject), true), queryPart(id.team),
-                  queryPart(id.artist), queryPart(id.event), queryPart(id.character_or_license), type]),
+  add("B", clean([line || model, queryPart(id.canonical_brand), searchSubject(c), queryPart(id.team),
+                  queryPart(id.artist), queryPart(id.event), queryPart(id.character_or_license), relaxedType]),
       "relaxed: identity and type only — titles often omit closure, era and colour");
   if (!model && !line) {
     // Merch identity before the brand: a Bulls jersey's brand is the blank's
@@ -229,8 +260,19 @@ export function buildSearchPlan(c: CanonicalAnalysisV1, precise: string, opts: {
     // The plain noun ("Brahmin bag", "Carhartt jacket"), not the exact style:
     // it still finds the item when the style name is off ("chore coat" for a
     // work jacket) or rarely written. The matcher decides what is shown.
-    const broad = broadTypeNoun(groupOf(c)) ?? type;
-    if (anchor) add("C", clean([anchor, broad]), "broad: identity + plain type");
+    const broad = broadTypeNoun(groupOf(c)) ?? relaxedType;
+    const brand = queryPart(id.canonical_brand);
+    const subject = searchSubject(c);
+    const merch = queryPart(id.team) || queryPart(id.artist) || queryPart(id.character_or_license);
+    if (brand && subject && !merch) {
+      // A branded GRAPHIC item: brand + design with NO garment word. The
+      // garment word is the part sellers disagree on — the same Rebel
+      // Vengeance tiger piece sells as a "button down shirt", "shacket",
+      // "work shirt chore coat" and "jacket", and the scan called it a polo.
+      // Brand + design finds all of them; the matcher still decides which are
+      // the same kind of item.
+      add("C", clean([brand, subject]), "broad: brand + design, any garment word");
+    } else if (anchor) add("C", clean([anchor, broad]), "broad: identity + plain type");
   }
   return steps;
 }
