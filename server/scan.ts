@@ -591,7 +591,7 @@ function ensureConfirmedFacts<T extends {
     [/\bnavy\b/i,      /\bnavy( blue)?\b/i],
     [/\b1990s?\b/i,    /\b(1990s|90s|'90s|nineties)\b/i],
     [/\b2000s?\b/i,    /\b(2000s|00s|'00s|y2k)\b/i],
-    [/\bvintage\b/i,   /\bvintage\b/i],
+    [/\b(vintage|vtg)\b/i, /\b(vintage|vtg|vntg)\b/i],
   ];
 
   const present = (fact: string, haystack: string): boolean => {

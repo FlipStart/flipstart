@@ -137,6 +137,25 @@ export default function OnboardingScreen() {
 
   useEffect(() => { trackAnalyticsEvent('onboarding_started', {}); }, []);
 
+  /**
+   * One event per screen shown, so the dashboard can see how far each phone
+   * got. Not logged while the screen is resolving an account (hold, username,
+   * existing) — those render a spinner, not a stage. Going back and forward
+   * logs a screen again; the dashboard reads the furthest step.
+   */
+  const loggedStageRef = useRef<Stage | null>(null);
+  useEffect(() => {
+    if (resume === 'hold' || resume === 'username' || resume === 'existing') return;
+    if (loggedStageRef.current === stage) return;
+    loggedStageRef.current = stage;
+    trackAnalyticsEvent('onboarding_step_viewed', {
+      step: stage,
+      step_number: stage === 'welcome' ? 1 : QUIZ_STAGES.indexOf(stage) + 2,
+      total_steps: QUIZ_STAGES.length + 1,
+      onboarding_version: ONBOARDING_VERSION,
+    });
+  }, [stage, resume]);
+
   // ── Resume decision — focused screen only, once per signed-in user ─────
   const decide = useCallback(async () => {
     const uid = user?.id ?? null;

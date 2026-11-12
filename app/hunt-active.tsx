@@ -31,7 +31,7 @@ import {
   toggleHuntItemKept, moveHuntItemToRemoved, type HuntItem, type HuntRating,
   consumeReturningFromHuntItemDetail,
 } from '@/lib/hunt-context';
-import { logHuntScanStarted, logHuntEnded } from '@/lib/analytics';
+import { logHuntScanStarted, logHuntEnded, logHuntXpAwarded } from '@/lib/analytics';
 import { applyHuntXp, setLastCompletionResult } from '@/lib/huntXp';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { isHuntBundle, type HuntBundle, type HuntBundleItem } from '@/types/flip';
@@ -741,6 +741,17 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                 try {
                   xpResult = await applyHuntXp(baseBundle);
                 } catch { /* never block save on XP failure */ }
+                // A repeat apply returns zero XP and an empty breakdown — not an award.
+                if (xpResult && (xpResult.totalXpEarned > 0 || xpResult.breakdown.length > 0)) {
+                  logHuntXpAwarded({
+                    xp_earned:       xpResult.totalXpEarned,
+                    total_xp_before: xpResult.previousTotalXp,
+                    total_xp_after:  xpResult.newTotalXp,
+                    rank_before:     xpResult.previousRank.rank,
+                    rank_after:      xpResult.newRank.rank,
+                    ranked_up:       xpResult.didRankUp,
+                  });
+                }
 
                 // Attach XP to bundle before persisting to history
                 const bundle: HuntBundle = xpResult

@@ -1141,12 +1141,139 @@ export function renderCompsInspector(input: any): string {
     "server");
 }
 
+// ── Last 50 new phones · Hunt XP · Hunt Levels (server/founderHuntJourney.ts) ──
+
+const tick = (b: boolean) => b ? "✓" : `<span class="muted">·</span>`;
+const cnt = (v: number | null | undefined) => v === null || v === undefined ? `<span class="muted">—</span>` : v === 0 ? `<span class="muted">0</span>` : num(v);
+
+function onboardingCell(o: any): string {
+  if (o.skippedSignedIn && !o.started) return `<span class="muted">skipped (signed in)</span>`;
+  const parts: string[] = [];
+  if (o.maxStep !== null) parts.push(`step ${num(o.maxStep)}${o.totalSteps ? `/${num(o.totalSteps)}` : ""}${o.maxStepName ? ` <span class="muted">${esc(o.maxStepName)}</span>` : ""}`);
+  parts.push([
+    o.started ? "started" : `<span class="muted">not started</span>`,
+    o.quiz ? "quiz ✓" : "",
+    o.tapped ? (o.tapped === "login" ? "tapped log in" : "tapped create") : "",
+    o.completed ? `done <span class="muted">${esc(o.completed)}</span>` : "",
+  ].filter(Boolean).join(" → "));
+  return parts.join("<br>");
+}
+
+function accountCell(a: any): string {
+  if (!a) return `<span class="muted">none</span>`;
+  const label = a.name ?? a.userId.slice(0, 8) + "…";
+  const tag = a.sharedWith > 0
+    ? ` <span class="sev sev-warning" title="${a.sharedWith + 1} accounts signed in on this phone">shared ×${a.sharedWith + 1}</span>`
+    : a.kind === "existing"
+      ? ` <span class="sev sev-info" title="Account created ${esc(formatCentralDateTime(a.createdAt) || "earlier")}, before this phone first opened — a reinstall or new device">existing</span>`
+      : "";
+  return userLink(a.userId, label) + tag;
+}
+
+function boughtCell(r: any): string {
+  const parts: string[] = [];
+  if (r.subscriptions.length) parts.push(esc(r.subscriptions.join(", ")));
+  if (r.packs) parts.push(`${num(r.packs)} pack${r.packs === 1 ? "" : "s"}`);
+  if (parts.length) return `<strong>${parts.join(" + ")}</strong>`;
+  if (r.planNow && r.planNow !== "free") return `<span class="muted" title="No purchase event on this phone, but the account is on this plan now">${esc(r.planNow)} now</span>`;
+  return `<span class="muted">no</span>`;
+}
+
+function renderNewPhones(x: any): string {
+  const id = "newphones", title = "3c · Last 50 New Phones";
+  if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(x)) return section(id, title, errorCard("New Phones", x));
+  const s = x.summary;
+  const of = (v: number) => rate(v, s.newPeople);
+  const summary = `<div class="card"><div class="card-h">Of the ${num(s.newPeople)} new people ${badge("EXACT")}
+      <span class="muted">— ${num(s.phones)} phones listed; ${num(s.reinstalls)} reinstall${s.reinstalls === 1 ? "" : "s"} of existing accounts and ${num(s.shared)} shared phone${s.shared === 1 ? "" : "s"} are listed but not counted here</span></div>
+    ${table(["Step", "People"], [
+      ["Started onboarding", of(s.onboardingStarted)], ["Finished the quiz", of(s.quiz)], ["Made an account", of(s.account)],
+      ["Scanned", of(s.scanned)], ["Saved a scan", of(s.saved)], ["Hit a paywall", of(s.paywall)],
+      ["Opened Hunt Mode", of(s.hunted)], ["Unlocked a brand", of(s.brands)], ["Earned Hunt XP", of(s.xp)], ["Paid", of(s.paid)],
+    ], "compact")}</div>`;
+  const rows = x.rows.map((r: any) => [
+    when(r.firstSeen) + (r.firstVersion ? `<br><span class="muted">v${esc(r.firstVersion)}</span>` : ""),
+    esc(r.reached),
+    onboardingCell(r.onboarding),
+    accountCell(r.account),
+    r.paywalls ? `${num(r.paywalls)}${r.firstPaywall ? ` <span class="muted">first ${esc(r.firstPaywall)}</span>` : ""}` : cnt(0),
+    cnt(r.scans), cnt(r.saved),
+    r.huntOpens || r.huntsDone ? `${num(r.huntOpens)} open${r.huntOpens === 1 ? "" : "s"} · ${num(r.huntsDone)} done` : cnt(0),
+    cnt(r.brands),
+    r.xp === null ? cnt(null) : r.xp === 0 ? cnt(0) : `${num(r.xp)}<br><span class="muted">${esc(r.rank ?? "")}</span>`,
+    boughtCell(r),
+    when(r.lastSeen),
+  ]);
+  const warn = [
+    x.brandsError ? `Brands unavailable: ${x.brandsError}` : "",
+    x.xpError ? `XP unavailable: ${x.xpError}` : "",
+  ].filter(Boolean).map((t: string) => `<div class="banner warn">${esc(t)}</div>`).join("");
+  return section(id, title, warn + summary +
+    `<div class="card wide"><div class="card-h">Newest first <span class="muted">— Central Time · a phone is one install (reinstalling makes a new one) · scope and date range do not apply here${x.oldest ? ` · oldest shown first opened ${when(x.oldest)}` : ""}</span></div>
+    ${table(["First open", "Reached", "Onboarding", "Account", "Paywalls", "Scans", "Saved", "Hunt", "Brands", "Hunt XP", "Bought", "Last seen"], rows, "compact")}</div>
+    <div class="muted">${x.stepsTracked
+      ? "Onboarding step = the furthest screen reached (onboarding_step_viewed)."
+      : "Onboarding shows milestones only. The exact screen reached starts with the app build after 2.2 (onboarding_step_viewed)."}
+      Scans, saves, paywalls and Hunt count events on this phone, plus the account's events on other phones after this phone's first open. Brands and XP are the account's current totals.</div>`);
+}
+
+function renderHuntXp(x: any): string {
+  const id = "huntxp", title = "Hunt XP";
+  if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(x)) return section(id, title, errorCard("Hunt XP", x));
+  const ev = x.events;
+  const top = x.top.map((t: any, i: number) => [
+    num(i + 1), userLink(t.userId, t.name ?? t.userId.slice(0, 8) + "…"), num(t.xp),
+    `${num(t.rankNumber)} · ${esc(t.rank)}`, num(t.hunts),
+    t.streak ? `${num(t.streak)}${t.streakLive ? "" : ` <span class="muted">ended</span>`}` : `<span class="muted">0</span>`,
+    t.lastHunt ? esc(String(t.lastHunt).slice(0, 10)) : "—",
+  ]);
+  return section(id, title,
+    `<div class="card"><div class="card-h">Lifetime <span class="muted">— current totals from xp_profiles · the date range does not apply</span></div>${grid([
+      m("Accounts with XP", x.withXp), m("Total XP", x.totalXp), m("Avg XP (with XP)", x.meanXp), m("Median XP (with XP)", x.medianXp),
+      m("Most XP", x.maxXp), m("Hunts completed", x.huntsCompleted), m("Accounts with a hunt", x.hunters),
+      m("Live streaks", x.liveStreaks), m("Longest live streak", x.longestLiveStreak),
+    ])}</div>
+    <div class="card"><div class="card-h">In the selected range</div>${grid([
+      m("XP earned", ev.xpInRange), m("XP awards (hunts)", ev.awardsInRange), m("People who earned XP", ev.earnersInRange), m("XP per hunt", ev.perHunt, { dp: 0 }),
+    ])}</div>
+    <div class="card"><div class="card-h">Top ${num(x.top.length)} hunters by XP</div>${table(["#", "User", "XP", "Rank", "Hunts", "Streak", "Last hunt"], top, "compact")}</div>
+    <div class="muted">Only signed-in accounts have an XP row (${num(x.xpRows)} of ${num(x.accounts)} accounts in scope). A streak is live if the last hunt was ${esc(x.today)} or the day before.${x.staleRankNames ? ` ${num(x.staleRankNames)} stored rank name${x.staleRankNames === 1 ? " is" : "s are"} out of date; ranks here are recomputed from XP.` : ""}</div>`,
+    "source: xp_profiles");
+}
+
+function renderHuntLevels(x: any): string {
+  const id = "huntlevels", title = "Hunt Levels";
+  if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(x)) return section(id, title, errorCard("Hunt Levels", x));
+  const max = Math.max(1, ...x.ladder.map((r: any) => r.users));
+  const rows = x.ladder.map((r: any) => [
+    num(r.number), esc(r.rank),
+    `${num(r.fromXp)}${r.toXp !== null ? `–${num(r.toXp)}` : "+"}`,
+    r.users ? num(r.users) : `<span class="muted">0</span>`,
+    r.share === null ? "—" : pct(r.share),
+    `<div style="min-width:120px">${bar(r.users / max * 100)}</div>`,
+    r.rankUpsInRange === null ? `<span class="muted">—</span>` : r.rankUpsInRange ? num(r.rankUpsInRange) : `<span class="muted">0</span>`,
+  ]);
+  return section(id, title,
+    grid([
+      textCard("Highest rank reached", x.highest ? `${x.highest.number} · ${x.highest.rank}` : null),
+      textCard("Median rank (with XP)", x.medianRank ? `${x.medianRank.number} · ${x.medianRank.rank}` : null, "DERIVED"),
+      m("Accounts at 0 XP", { value: x.zeroXp, trust: "EXACT", d: x.xpRows }),
+      m("Rank-ups in range", x.rankUpsInRange),
+    ]) +
+    `<div class="card"><div class="card-h">Accounts on each rank <span class="muted">— current, recomputed from total XP · share of the ${num(x.xpRows)} accounts with an XP row · rank 1 includes the ${num(x.zeroXp)} at 0 XP</span></div>
+    ${table(["#", "Rank", "XP", "Accounts", "Share", "", "Rank-ups in range"], rows, "compact")}</div>`,
+    "source: xp_profiles");
+}
+
 // ── Composer ─────────────────────────────────────────────────────────────────
 
 const TOC: Array<[string, string]> = [
-  ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
+  ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["newphones", "New phones"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
   ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["deepa", "Deep Analysis"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"],
-  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["progress", "Progress"],
+  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["huntxp", "Hunt XP"], ["huntlevels", "Hunt levels"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
 ];
 
@@ -1165,7 +1292,7 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
   }
   const body = [
     renderExecutive(metrics), renderIntegrity(metrics.dataIntegrity), renderExplorer(metrics.userExplorer),
-    renderAcquisition(metrics.acquisition), renderAcquisitionSource(metrics.acquisitionSource), renderActivation(metrics.activation), renderFunnel(metrics.firstSession),
+    renderAcquisition(metrics.acquisition), renderAcquisitionSource(metrics.acquisitionSource), renderActivation(metrics.activation), renderFunnel(metrics.firstSession), renderNewPhones(metrics.newPhones),
     renderMonetization(metrics.monetization), renderPricing(metrics.pricing), renderFreeToPaid(metrics.freeToPaid),
     renderPaywalls(metrics.paywalls), renderPaywallIntel(metrics.paywallIntel), renderOnboardingOffer(metrics.onboardingOffer),
     renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore, metrics.scanStoreInsights),
@@ -1174,7 +1301,7 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
     renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderRetentionSegments(metrics.retentionSegments), renderSessionsV2(metrics.sessionsV2), renderAppVersions(metrics.appVersions),
     renderScans(metrics.scans), renderScanReliability(metrics.scanReliability), renderCompsInspector(metrics.compsInspector), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
     // V3 product analytics, preserved and demoted below the business funnel.
-    renderTrust(metrics.trust), renderHunt(metrics.hunt), renderProgress(metrics.progress), renderAchievements(metrics.achievements),
+    renderTrust(metrics.trust), renderHunt(metrics.hunt), renderHuntXp(metrics.huntXp), renderHuntLevels(metrics.huntLevels), renderProgress(metrics.progress), renderAchievements(metrics.achievements),
     renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold),
     renderDataQualityV4(metrics.dataQualityV4),
   ].join("");

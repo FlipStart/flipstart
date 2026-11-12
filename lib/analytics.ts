@@ -574,6 +574,18 @@ export function logHuntEnded(meta: {
   logEvent("hunt_ended", meta);
 }
 
+/** XP applied for a finished hunt — feeds the Hunt XP / Hunt Levels dashboard. */
+export function logHuntXpAwarded(meta: {
+  xp_earned: number;
+  total_xp_before: number;
+  total_xp_after: number;
+  rank_before: string;
+  rank_after: string;
+  ranked_up: boolean;
+}): void {
+  logEvent("hunt_xp_awarded", meta);
+}
+
 // ─── Scan record (future AI memory foundation) ────────────────────────────────
 
 export interface ScanRecordPayload {

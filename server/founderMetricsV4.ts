@@ -38,6 +38,7 @@ import { loadBaseData, fetchAll, countRows, type BaseData } from "./founderMetri
 import { getPricingEras, getAppleFeeRate, eraAt, currentEra, eraPrice, ERA_NOTES, type PricingEra } from "./pricingEras";
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { loadScanOutcomes, buildScanReliability } from "./scanReliability";
+import { loadHuntData, getHuntXp, getHuntLevels, getNewPhones, type HuntData } from "./founderHuntJourney";
 import { derivePlan, type AccountUsage, type PlanState,
   FREE_LIFETIME_SCANS, MONTHLY_SCANS, ANNUAL_SCANS } from "./monetization/policy";
 import { PAYWALL_SOURCES } from "../lib/paywallConfig";
@@ -3533,6 +3534,10 @@ export async function getFounderDashboardV4Metrics(
   // Phase 6: every user, the selected dates only — see server/scanReliability.ts.
   const scanReliability = await safeAsync("scanReliability", async () =>
     buildScanReliability(await loadScanOutcomes(window), d.rawEvents ?? [], window));
+  // Hunt XP / Levels / New Phones — two extra reads (xp_profiles, user_brand_discoveries).
+  const hunt = await safeAsync("huntData", () => loadHuntData());
+  const huntSafe = <T,>(name: string, fn: (h: HuntData) => T) =>
+    "error" in hunt ? { error: `${name}: ${hunt.error}` } : safe(name, () => fn(hunt));
   const out: any = {
     ...v3Metrics,
     cutover, cohort, window,
@@ -3543,6 +3548,9 @@ export async function getFounderDashboardV4Metrics(
     distributions: safe("distributions", () => getUsageDistributions(d, rates)),
     powerUsers: safe("powerUsers", () => getPowerUsers(d, rates)),
     firstSession: safe("firstSession", () => getFirstSessionFunnel(d)),
+    newPhones: huntSafe("newPhones", h => getNewPhones(d, h)),
+    huntXp: huntSafe("huntXp", h => getHuntXp(d, h)),
+    huntLevels: huntSafe("huntLevels", h => getHuntLevels(d, h)),
     featureAdoption: safe("featureAdoption", () => getFeatureAdoption(d)),
     paywallIntel: safe("paywallIntel", () => getPaywallIntelligence(d, env)),
     retentionSegments: safe("retentionSegments", () => getRetentionSegments(d)),

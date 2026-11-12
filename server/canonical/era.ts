@@ -211,14 +211,14 @@ export function eraFromNote(note: string | null | undefined, cutoffYear: number)
   const t = ` ${note.toLowerCase().replace(/[’`]/g, "'").replace(/\s+/g, " ")} `;
 
   const modern = /\b(?:modern|brand new|new with tags|nwt|recently made|recent release|current season|reproduction|repro|reprint|remake|not vintage|isn'?t vintage|not actually vintage|not old)\b/.test(t);
-  const negatedVintage = /\b(?:not|isn'?t|not actually)\s+vintage\b/.test(t);
+  const negatedVintage = /\b(?:not|isn'?t|not actually)\s+(?:vintage|vtg|vntg|vint)\b/.test(t);
 
   let vintage = false;
   let decade: ProductionDecade | null = null;
 
-  // The word "vintage", not negated and not "vintage style".
-  for (const m of t.matchAll(/\bvintage\b/g)) {
-    const after = t.slice((m.index ?? 0) + "vintage".length);
+  // The word "vintage" — or seller shorthand vtg / vntg / vint — not negated and not "vintage style".
+  for (const m of t.matchAll(/\b(?:vintage|vtg|vntg|vint)\b/g)) {
+    const after = t.slice((m.index ?? 0) + m[0].length);
     if (!STYLE_AFTER.test(after) && !negatedVintage) vintage = true;
   }
 
