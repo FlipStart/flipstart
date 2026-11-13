@@ -39,6 +39,7 @@ import { getPricingEras, getAppleFeeRate, eraAt, currentEra, eraPrice, ERA_NOTES
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { loadScanOutcomes, buildScanReliability } from "./scanReliability";
 import { loadHuntData, getHuntXp, getHuntLevels, getNewPhones, type HuntData } from "./founderHuntJourney";
+import { loadUserExtras, summarizeOutcomes, storeTimeline, buildGlance } from "./founderUserLookup";
 import { derivePlan, type AccountUsage, type PlanState,
   FREE_LIFETIME_SCANS, MONTHLY_SCANS, ANNUAL_SCANS } from "./monetization/policy";
 import { PAYWALL_SOURCES } from "../lib/paywallConfig";
@@ -3243,7 +3244,10 @@ const UID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** Accept only well-formed input; anything else is ignored, never echoed back raw. */
 export function parseExplorerParams(q: unknown, uid: unknown): ExplorerParams {
   const query = typeof q === "string" ? q.trim().slice(0, 200) : "";
-  const id = typeof uid === "string" && UID_RE.test(uid.trim()) ? uid.trim().toLowerCase() : "";
+  let id = typeof uid === "string" && UID_RE.test(uid.trim()) ? uid.trim().toLowerCase() : "";
+  // A full user ID typed into search opens that user directly — including one
+  // whose account was deleted, which a profile search could never find.
+  if (!id && UID_RE.test(query)) id = query.toLowerCase();
   return { query: query || undefined, uid: id || undefined };
 }
 
@@ -3276,12 +3280,17 @@ export function searchUsers(d: V4Data, query: string) {
  * still be inspected, with its status shown rather than hidden.
  */
 export function exploreUser(d: V4Data, uid: string, rates: { NORMAL: number; HUNT: number; LISTING: number } | null) {
-  const prof = (d.allProfileRows ?? []).find(p => p.id === uid);
-  if (!prof) return null;
+  const real = (d.allProfileRows ?? []).find(p => p.id === uid);
   const evs = (d.rawEvents ?? []).filter(e => e.user_id === uid).sort((a, b) => a.created_at < b.created_at ? -1 : 1);
   const linked = d.link?.byUser.get(uid) ?? [];
   const usage = d.rawUsage?.get(uid);
   const auth = d.auth.get(uid);
+  // No profile row is not "no user": a deleted account (or one that never saved
+  // a username) can still have events. Only nothing at all is not-found.
+  if (!real && !evs.length && !linked.length && !usage && !auth) return null;
+  const firstSeen = [auth?.created_at, evs[0]?.created_at, linked[0]?.created_at].filter((x): x is string => !!x).sort()[0] ?? d.now.toISOString();
+  const prof = real ?? ({ id: uid, created_at: firstSeen, display_name: null, username: null } as NonNullable<typeof real>);
+  const accountState: "active" | "no_profile" | "deleted" = real ? "active" : auth ? "no_profile" : "deleted";
   const plan: PlanState = usage ? derivePlan(usage, d.now) : "free";
   const scans = evs.filter(e => e.event_name === "scan_completed").map(e => e.created_at);
   const saved = (d.rawSaved ?? []).filter(sv => sv.user_id === uid).map(sv => sv.created_at).sort();
@@ -3318,14 +3327,14 @@ export function exploreUser(d: V4Data, uid: string, rates: { NORMAL: number; HUN
     ...linked.map(e => ({ at: e.created_at, event: e.event_name, detail: describe(e), linked: true })),
   ];
   if (auth?.created_at) rows.push({ at: auth.created_at, event: "account_created", detail: "auth account", linked: false });
-  rows.push({ at: prof.created_at, event: "profile_created", detail: "username saved", linked: false });
+  if (real) rows.push({ at: prof.created_at, event: "profile_created", detail: "username saved", linked: false });
   rows.sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : 0);
   const timeline = rows.slice(-EXPLORER_TIMELINE_LIMIT);
 
   return {
     identity: {
       userId: uid, displayName: prof.display_name, username: prof.username, email: auth?.email ?? null,
-      accountCreated: auth?.created_at ?? null, profileCreated: prof.created_at,
+      accountCreated: auth?.created_at ?? null, profileCreated: real ? prof.created_at : null, accountState,
       plan, product: usage?.subscription_product_id ?? null, periodEnd: usage?.subscription_period_end ?? null,
       inScope: d.base.profileIds.has(uid), internal: !!d.internalIds?.has(uid),
       sharedDevice: d.link?.sharedDeviceUsers.has(uid) ?? false,
@@ -3602,16 +3611,41 @@ async function collectionCounts(uid: string) {
 }
 
 async function getExplorer(d: V4Data, params: ExplorerParams, rates: any) {
-  const results = params.query ? searchUsers(d, params.query) : null;
+  // A full ID opens the user directly; listing search matches for it is noise.
+  const results = params.query && params.query.toLowerCase() !== params.uid ? searchUsers(d, params.query) : null;
   const user = params.uid ? exploreUser(d, params.uid, rates) : null;
   const collections = user ? await collectionCounts(params.uid!) : null;
+  if (user) {
+    const purchaseSigns = user.identity.plan !== "free" || !!user.identity.product || user.balance.packBalance > 0
+      || user.monetization.purchaseCompletions > 0 || user.monetization.restores > 0
+      || user.timeline.some(r => /purchase_completed|scan_pack_purchase/.test(r.event));
+    const extras = await loadUserExtras(params.uid!, purchaseSigns);
+    const store = extras.store.ok ? extras.store.data : null;
+    const merged = [
+      ...user.timeline.map(r => ({ ...r, source: r.linked ? "device" : "app" })),
+      ...(store ? storeTimeline(store, d.now).map(r => ({ ...r, linked: false, source: "store" })) : []),
+    ].sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : 0);
+    return {
+      query: params.query ?? null, results, selectedUid: params.uid ?? null, notFound: false,
+      user: {
+        ...user, collections, timeline: merged.slice(-EXPLORER_TIMELINE_LIMIT), timelineTotal: user.timelineTotal + merged.length - user.timeline.length,
+        store: extras.store,
+        outcomes: extras.outcomes.ok ? { ok: true, rows: extras.outcomes.data, summary: summarizeOutcomes(extras.outcomes.data) } : extras.outcomes,
+        saved: extras.saved,
+        xp: extras.xp,
+        glance: buildGlance(
+          [...(d.rawEvents ?? []).filter(e => e.user_id === params.uid), ...(d.link?.byUser.get(params.uid!) ?? [])],
+          user.identity.accountCreated, store?.firstRefundAt ?? null),
+      },
+    };
+  }
   return {
     // The query is echoed back only so the search box keeps its text; it is
     // escaped at render and never placed in a URL.
     query: params.query ?? null,
     results,
     selectedUid: params.uid ?? null,
-    user: user ? { ...user, collections } : null,
-    notFound: !!params.uid && !user,
+    user: null,
+    notFound: !!params.uid,
   };
 }

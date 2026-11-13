@@ -192,10 +192,109 @@ function renderIntegrity(di: any): string {
     di.conflicts ? `${di.conflicts} conflict(s)` : "");
 }
 
+
+// ── User Explorer: refund investigation (server/founderUserLookup.ts) ──────────
+
+const partNote = (p: any, what: string) => p?.skipped
+  ? `<div class="muted">${esc(p.reason)}</div>`
+  : `<div class="banner warn">${esc(what)} unavailable: ${esc(p?.reason ?? "not loaded")}</div>`;
+const dollars = (v: unknown) => { const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN; return Number.isFinite(n) ? `$${n.toFixed(0)}` : "—"; };
+
+function renderStoreCard(store: any): string {
+  const head = `<div class="card-h">Store record <span class="muted">— RevenueCat · what was bought, when auto-renew went off, and refunds. Apple never tells developers why someone refunded.</span></div>`;
+  if (!store) return "";
+  if (!store.ok) return `<div class="card">${head}${partNote(store, "Store record")}</div>`;
+  const r = store.data;
+  const flag = r.refunded ? `<div class="banner warn"><strong>Refunded.</strong> Read the timeline below from the purchase to the refund.</div>` : "";
+  const subs = r.subscriptions.length ? table(["Product", "First bought", "Latest period", "Expires", "Auto-renew off", "Billing issue", "Refunded"], r.subscriptions.map((s: any) => [
+    `${esc(s.product)}${s.sandbox ? ` <span class="sev sev-info">sandbox</span>` : ""}${s.familyShared ? ` <span class="sev sev-info">family</span>` : ""}`,
+    when(s.firstPurchased), when(s.latestPurchased), when(s.expires),
+    s.autoRenewOffAt ? when(s.autoRenewOffAt) : `<span class="muted">—</span>`,
+    s.billingIssueAt ? when(s.billingIssueAt) : `<span class="muted">—</span>`,
+    s.refundedAt ? `<span class="sev sev-conflict">${when(s.refundedAt)}</span>` : `<span class="muted">no</span>`,
+  ]), "compact") : `<div class="muted">No subscriptions on record.</div>`;
+  const packs = r.purchases.length ? table(["Scan pack", "Bought", "Status"], r.purchases.map((p: any) => [
+    `${esc(p.product)}${p.sandbox ? ` <span class="sev sev-info">sandbox</span>` : ""}`, when(p.purchased),
+    p.status ? (/refund/i.test(p.status) ? `<span class="sev sev-conflict">${esc(p.status)}</span>` : esc(p.status)) : `<span class="muted">—</span>`,
+  ]), "compact") : "";
+  const notes = r.notes.map((n: string) => `<div class="muted">${esc(n)}</div>`).join("");
+  return `<div class="card">${head}${flag}${subs}${packs}${notes}</div>`;
+}
+
+function renderOutcomesCard(o: any): string {
+  const head = `<div class="card-h">Every scan the server saw <span class="muted">— scan_outcomes · what each scan ended as, oldest first</span></div>`;
+  if (!o) return "";
+  if (!o.ok) return `<div class="card">${head}${partNote(o, "Scan outcomes")}</div>`;
+  if (!o.rows.length) return `<div class="card">${head}<div class="muted">No scans reached the server for this user.</div></div>`;
+  const s = o.summary;
+  const label = (r: any) => r.kind === "ok" ? `result${r.confidence_tier ? ` · ${esc(r.confidence_tier)}` : ""}`
+    : r.kind === "soft" ? `<span class="sev sev-warning">soft · ${esc(r.reason ?? "?")}</span>`
+    : `<span class="sev sev-conflict">${esc(r.failure_group ?? "failed")} · ${esc(r.reason ?? "?")}</span>`;
+  const rows = o.rows.map((r: any) => [
+    when(r.created_at), label(r),
+    r.match_confidence !== null && r.match_confidence !== undefined ? num(r.match_confidence) : "—",
+    esc([...new Set([r.scan_issue, ...(Array.isArray(r.photo_problems) ? r.photo_problems : [])].filter(Boolean))].join(", ") || "—"),
+    esc(r.charge ?? "—") + (r.resolution ? ` <span class="muted">${esc(r.resolution)}</span>` : ""),
+    r.photo_count ?? "—", r.duration_ms ? `${(r.duration_ms / 1000).toFixed(1)}s` : "—",
+  ]);
+  return `<div class="card wide">${head}${grid([
+      m("Scans", { value: s.total, trust: "EXACT" }), m("Results", { value: s.ok, trust: "EXACT", d: s.total }),
+      m("Soft fails", { value: s.soft, trust: "EXACT", d: s.total }), m("Hard fails", { value: s.hard, trust: "EXACT", d: s.total }),
+      m("Charged", { value: s.charged, trust: "EXACT", d: s.total }),
+      textCard("Confidence (results)", `high ${s.tiers.high} · medium ${s.tiers.medium} · low ${s.tiers.low}`),
+    ])}${s.topReasons.length ? `<div class="muted">Most common problems: ${s.topReasons.map((t: any) => `${esc(t.reason)} ×${num(t.n)}`).join(" · ")}</div>` : ""}
+    ${table(["When", "Ended as", "Match", "Issues", "Charge", "Photos", "Took"], rows, "compact")}</div>`;
+}
+
+function renderSavedCard(sv: any): string {
+  const head = `<div class="card-h">Saved items <span class="muted">— what the app told them about each item they kept</span></div>`;
+  if (!sv) return "";
+  if (!sv.ok) return `<div class="card">${head}${partNote(sv, "Saved items")}</div>`;
+  if (!sv.data.length) return `<div class="card">${head}<div class="muted">Nothing saved.</div></div>`;
+  return `<div class="card wide">${head}${table(["Saved", "Item", "Brand", "Paid", "Est. resale", "Match", "Verdict", "Status"], sv.data.map((r: any) => [
+    when(r.created_at), esc(r.item_name ?? "—"), esc(r.brand ?? "—"), dollars(r.thrift_price),
+    r.low !== null || r.high !== null ? `${dollars(r.resale)} <span class="muted">${dollars(r.low)}–${dollars(r.high)}</span>` : dollars(r.resale),
+    r.confidence !== null && r.confidence !== undefined ? esc(String(r.confidence)) : "—", esc(r.label ?? "—"),
+    esc(r.status ?? "—") + (r.sold_price ? ` <span class="muted">sold ${dollars(r.sold_price)}</span>` : ""),
+  ]), "compact")}</div>`;
+}
+
+const hh = (h: number | null | undefined) => h === null || h === undefined ? "—"
+  : h < 1 ? `${Math.max(0, Math.round(h * 60))} min` : h < 48 ? `${h.toFixed(1)} h` : `${(h / 24).toFixed(1)} days`;
+
+function renderGlanceCard(g: any, xp: any, collections: any): string {
+  if (!g) return "";
+  const o = g.onboarding, s = g.scans, p = g.paywall, b = g.purchase, r = g.refund, f = g.features;
+  const muted = (t: string) => `<span class="muted">${t}</span>`;
+  const onboarding = !o.started && !o.completed ? muted("no onboarding events")
+    : [o.maxStep !== null ? `reached step ${num(o.maxStep)}${o.totalSteps ? ` of ${num(o.totalSteps)}` : ""}` : null,
+       o.quiz ? "finished quiz" : "quiz not finished",
+       o.tapped ? `tapped ${esc(o.tapped)}` : null,
+       o.completed ? `completed (${esc(o.completed)}) ${when(o.completedAt)}` : "never completed"].filter(Boolean).join(" · ");
+  const xpText = !xp ? muted("—") : !xp.ok ? muted(esc(xp.reason)) : !xp.data ? muted("no XP row")
+    : `${num(xp.data.xp)} XP · rank ${num(xp.data.rankNumber)} ${esc(xp.data.rank)} · ${num(xp.data.hunts)} hunts${xp.data.streak ? ` · streak ${num(xp.data.streak)}` : ""}`;
+  const rows: string[][] = [
+    ["First seen", `${when(g.firstSeen)}${g.accountCreated ? ` · account ${when(g.accountCreated)}` : ""}`],
+    ["Last seen", when(g.lastSeen)],
+    ["Onboarding", onboarding],
+    ["Scans", s.total ? `${num(s.total)} completed · ${num(s.failed)} failed · first ${when(s.firstAt)} (${hh(s.hoursToFirst)} after signup)` : `none${s.failed ? ` · ${num(s.failed)} failed` : ""}`],
+    ["First paywall", p.first ? `<strong>${esc(p.first.source)}</strong> · ${when(p.first.at)} · after ${num(p.first.scansBefore)} scan${p.first.scansBefore === 1 ? "" : "s"}` : muted("never saw one")],
+    ["Paywalls seen", p.views ? `${num(p.views)} — ${p.bySource.map((x: any) => `${esc(x.source)} ×${num(x.n)}`).join(" · ")}` : "0"],
+    ["Checkout", `${num(p.planSelections)} plan selections · ${num(p.purchaseStarts)} purchase starts · ${num(p.cancelled)} cancelled at Apple sheet`],
+    ["Paid", b ? `<strong>${esc(b.kind)}</strong>${b.source ? ` from <strong>${esc(b.source)}</strong>` : ""} · ${when(b.at)} · ${hh(b.hoursFromSignup)} after signup · after ${num(b.scansBefore)} scans and ${num(b.paywallsBefore)} paywall views${b.packs ? ` · ${num(b.packs)} pack purchase${b.packs === 1 ? "" : "s"}` : ""}` : muted("never")],
+    ["After paying", b ? `${num(b.scansAfter)} scans${r ? " before the refund" : ""} · last seen ${hh(b.lastSeenAfterHours)} after paying` : muted("—")],
+    ["Refund", r ? `<span class="sev sev-conflict">${when(r.at)}</span> · ${hh(r.hoursAfterPurchase)} after paying · ${r.scansBetween === null ? "—" : num(r.scansBetween)} scans in between · ${r.activeAfter ? "still used the app after" : "never opened the app after"}` : muted("none on record")],
+    ["Features used", `saved ${num(f.saved)} · listings ${num(f.listings)} · Hunt opens ${num(f.huntOpens)} / hunts ${num(f.hunts)} · Deep Analysis opens ${num(f.deepAnalysisOpens)}, paywalls ${num(f.deepAnalysisPaywalls)} · Scan Store ${num(f.scanStore)} · Progress ${num(f.progress)}`],
+    ["Hunt XP", xpText],
+    ["Collections", `brands ${collections?.brands ?? "—"} · diamonds ${collections?.diamonds ?? "—"} · achievements ${collections?.achievements ?? "—"}`],
+  ];
+  return `<div class="card"><div class="card-h">At a glance <span class="muted">— everything this person did, including signed-out activity on their phone · Central Time</span></div>${table(["", ""], rows, "compact kv")}</div>`;
+}
+
 function renderExplorer(ex: any): string {
   if (ex && isErr(ex)) return errorCard("User Explorer", ex);
   const form = `<form class="xsearch" method="post" action="${esc(pageQuery)}#explorer">
-    <input type="search" name="q" value="${esc(ex?.query ?? "")}" placeholder="Name, username, email or user ID" maxlength="200" autocomplete="off">
+    <input type="search" name="q" value="${esc(ex?.query ?? "")}" placeholder="Name, username, email or user ID (a full ID opens them directly)" maxlength="200" autocomplete="off">
     <button type="submit">Search</button>
     <span class="muted">Search runs by form post, so what you type never appears in a URL or a server log.</span></form>`;
   let body = "";
@@ -207,11 +306,13 @@ function renderExplorer(ex: any): string {
           ${ex.results.length >= 25 ? `<div class="muted">First 25 matches — narrow the search.</div>` : ""}</div>`
       : `<div class="card muted">No users match.</div>`;
   }
-  if (ex?.notFound) body += `<div class="card muted">No user with that ID.</div>`;
+  if (ex?.notFound) body += `<div class="card muted">Nothing on record for that ID — no profile, account, ledger row or app events. Check it was copied in full.</div>`;
   const u = ex?.user;
   if (u) {
     const id = u.identity, b = u.balance, us = u.usage, mo = u.monetization, j = mo.journey;
-    const status = id.internal ? "internal account — excluded from every metric" : id.inScope ? "in the current scope" : "outside the current scope — not in the dashboard's numbers";
+    const status = id.accountState === "deleted" ? "account deleted — rebuilt from what's left (events, scans, store)"
+      : id.accountState === "no_profile" ? "signed up but never saved a profile"
+      : id.internal ? "internal account — excluded from every metric" : id.inScope ? "in the current scope" : "outside the current scope — not in the dashboard's numbers";
     const col = (n: number | null) => n === null ? `<span class="muted">n/t</span>` : num(n);
     body += `<div class="card"><div class="card-h">${esc(id.displayName ?? id.username ?? "User")} <span class="muted">— ${esc(status)}${id.sharedDevice ? " · shares a device with another account" : ""}</span></div>
       ${table(["", ""], [
@@ -222,6 +323,8 @@ function renderExplorer(ex: any): string {
         ["App version", id.firstVersion ? `first ${esc(id.firstVersion)} · latest ${esc(id.lastVersion ?? "")}` : `<span class="muted">none recorded</span>`],
         ["Active", `${when(id.firstActive)} → ${when(id.lastActive)}`],
       ], "compact kv")}</div>
+      ${renderGlanceCard(u.glance, u.xp, u.collections)}
+      ${renderStoreCard(u.store)}
       <div class="card"><div class="card-h">Usage</div>${grid([
         m("Lifetime scans", { value: us.lifetimeScans, trust: "EXACT" }), m("Scans 7d", { value: us.scans7, trust: "EXACT" }),
         m("Scans 30d", { value: us.scans30, trust: "EXACT" }), m("Failed scans", { value: us.failedScans, trust: "EXACT" }),
@@ -244,7 +347,9 @@ function renderExplorer(ex: any): string {
         converted on ${esc(j.convertingPaywall ?? "UNKNOWN")} · ${num(j.scansBeforePay)} scans, ${num(j.sessionsBeforePay)} sessions and ${num(j.paywallImpressionsBeforePay)} paywall views before paying · account → pay ${hrs(j.hoursAccountToPay)}
         ${j.qualityReasons.length ? `<br>${j.qualityReasons.map((r: string) => esc(r)).join("<br>")}` : ""}</div>` : `<div class="muted">Not a paying user.</div>`}</div>
       <div class="card wide"><div class="card-h">Timeline <span class="muted">— Central Time, oldest first${u.timelineTotal > u.timeline.length ? ` · last ${num(u.timeline.length)} of ${num(u.timelineTotal)} events` : ""}</span></div>
-      ${table(["When", "Event", "Detail"], u.timeline.map((r: any) => [when(r.at), `${esc(r.event)}${r.linked ? ` <span class="sev sev-info" title="Written while signed out on this user's device; attributed by device">device</span>` : ""}`, `<span class="muted">${esc(r.detail)}</span>`]), "compact")}</div>`;
+      ${table(["When", "Event", "Detail"], u.timeline.map((r: any) => [when(r.at), `${r.event === "store_refunded" ? `<strong>${esc(r.event)}</strong>` : esc(r.event)}${r.linked ? ` <span class="sev sev-info" title="Written while signed out on this user's device; attributed by device">device</span>` : ""}${r.source === "store" ? ` <span class="sev ${r.event === "store_refunded" ? "sev-conflict" : "sev-warning"}" title="From RevenueCat, not the app">store</span>` : ""}`, `<span class="muted">${esc(r.detail)}</span>`]), "compact")}</div>
+      ${renderOutcomesCard(u.outcomes)}
+      ${renderSavedCard(u.saved)}`;
   }
   return section("explorer", "1c · User Explorer", `<div class="card">${form}<div class="muted">Founder-only. Shows any account — pre-launch and internal included — with its whole history; scope and date range do not apply here.</div></div>` + body);
 }
