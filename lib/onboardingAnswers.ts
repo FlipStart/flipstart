@@ -23,13 +23,23 @@
  * Right for preferences. Wrong for entitlements, balances or anything a
  * server decision trusts — none of that goes here.
  *
+ * ── profiles.onboarding_answers is the queryable copy (V2) ───────────────────
+ * user_metadata cannot be queried in bulk, so the same record is also written
+ * to the user's own row in `profiles` — the founder dashboard segments on it
+ * (source, goal, experience, help wanted → conversion, activation, retention).
+ * It is the user's own row, written the same way Edit Profile writes
+ * display_name; it carries preferences only, never anything a server trusts.
+ *
  * ── Failure never traps ─────────────────────────────────────────────────────
- * The write is best-effort. On failure the staged payload stays put and the
- * caller continues; on success the caller clears it. supabase is imported
- * lazily so this module can be loaded (and tested) without it.
+ * Both writes are best-effort. Success means BOTH landed; otherwise the staged
+ * payload stays put (so a retry can finish it) and the caller continues
+ * regardless. supabase is imported lazily so this module can be loaded (and
+ * tested) without it.
  */
-import { isExperienceLevel, isPainPoint, isPrimaryGoal, PAIN_POINTS } from "./onboardingQuiz";
-import type { HuntCategory } from "./onboardingQuiz";
+import {
+  cleanOtherSource, isAcquisitionSource, isExperienceLevel, isPainPoint, isPrimaryGoal, PAIN_POINTS,
+} from "./onboardingQuiz";
+import type { AcquisitionSource, HuntCategory } from "./onboardingQuiz";
 import type { StagedOnboardingAnswers } from "./onboarding-storage";
 
 /** Device clock may run ahead of the server's. */
@@ -45,56 +55,112 @@ export function classifyAccount(userCreatedAt: string | null | undefined, staged
 }
 
 /**
- * The namespaced shape written to user_metadata. snake_case, coded keys,
- * nothing derived.
+ * The record written to BOTH user_metadata (under ONBOARDING_METADATA_KEY)
+ * and profiles.onboarding_answers. snake_case, coded keys, nothing derived.
  *
- * Version 2 drops `hunt_categories` (the question no longer exists) and
- * replaces `primary_pain_point` with `pain_points`. `updateUser` MERGES into
- * user_metadata, so a v1 record written by the earlier build keeps its old
- * fields alongside these; nothing reads them and nothing needs deleting.
+ * Version 3 (V2 onboarding) adds `acquisition_source` — null when the answers
+ * were staged by a build that never asked — and `acquisition_source_other`,
+ * present only for "other" with text. `flow` says which onboarding produced it.
+ * Version 2 dropped `hunt_categories` and replaced `primary_pain_point` with
+ * `pain_points`. `updateUser` MERGES into user_metadata, so older fields
+ * written by earlier builds stay alongside; nothing reads them.
  */
 export interface OnboardingMetadata {
-  schema_version: 2;
+  schema_version: 3;
+  flow: "v2";
   primary_goal: StagedOnboardingAnswers["primaryGoal"];
   experience_level: StagedOnboardingAnswers["experienceLevel"];
   pain_points: StagedOnboardingAnswers["painPoints"];
+  acquisition_source: AcquisitionSource | null;
+  acquisition_source_other?: string;
   answered_at: string;
 }
 
 export const ONBOARDING_METADATA_KEY = "flipstart_onboarding";
 
-export function toOnboardingMetadata(a: Pick<StagedOnboardingAnswers,
-  "primaryGoal" | "experienceLevel" | "painPoints" | "answeredAt">): OnboardingMetadata {
-  return {
-    schema_version: 2,
+export type PersistableAnswers = Pick<StagedOnboardingAnswers,
+  "primaryGoal" | "experienceLevel" | "painPoints" | "answeredAt" | "acquisitionSource" | "acquisitionSourceOther">;
+
+export function toOnboardingMetadata(a: PersistableAnswers): OnboardingMetadata {
+  const source = isAcquisitionSource(a.acquisitionSource) ? a.acquisitionSource : null;
+  const other = source === "other" ? cleanOtherSource(a.acquisitionSourceOther) : "";
+  const out: OnboardingMetadata = {
+    schema_version: 3,
+    flow: "v2",
     primary_goal: a.primaryGoal,
     experience_level: a.experienceLevel,
     pain_points: a.painPoints,
+    acquisition_source: source,
     answered_at: a.answeredAt,
+  };
+  if (other) out.acquisition_source_other = other;
+  return out;
+}
+
+function withTimeout<T>(p: PromiseLike<T>, ms: number, onTimeout: T): Promise<T> {
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise<T>(resolve => setTimeout(() => resolve(onTimeout), ms)),
+  ]);
+}
+
+/**
+ * Write the answers to the signed-in account: user_metadata and the user's
+ * profiles row. Resolves true only when Supabase reported success for BOTH.
+ * Never throws, never blocks longer than `timeoutMs` per write.
+ */
+export async function persistAnswersToAccount(a: PersistableAnswers, timeoutMs = 6000): Promise<boolean> {
+  const record = toOnboardingMetadata(a);
+  try {
+    const { supabase } = await import("@/lib/supabase");
+
+    const meta = await withTimeout(
+      supabase.auth.updateUser({ data: { [ONBOARDING_METADATA_KEY]: record } }),
+      timeoutMs, { error: { message: "timeout" } } as { error: { message: string } | null },
+    );
+    const metaOk = !meta.error;
+    if (!metaOk && __DEV__) console.warn("[onboarding] metadata save failed (kept staged):", meta.error?.message);
+
+    const profileOk = await persistAnswersToProfile(supabase, record, timeoutMs);
+    return metaOk && profileOk;
+  } catch (e) {
+    if (__DEV__) console.warn("[onboarding] preference save threw (kept staged):", (e as Error)?.message);
+    return false;
+  }
+}
+
+/** Minimal surface of the Supabase client this module uses — keeps it testable. */
+export interface ProfileWriter {
+  auth: { getSession(): PromiseLike<{ data: { session: { user: { id: string } } | null } }> };
+  from(table: "profiles"): {
+    update(v: { onboarding_answers: OnboardingMetadata }): {
+      eq(col: "id", id: string): { select(cols: "id"): PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> };
+    };
   };
 }
 
 /**
- * Write the answers to the signed-in account. Resolves true only when
- * Supabase reported success. Never throws.
+ * profiles.onboarding_answers for the signed-in user. True only when a row was
+ * actually updated — an update that matched no row (profile not created yet)
+ * is a failure, not a silent success.
  */
-export async function persistAnswersToAccount(
-  a: Parameters<typeof toOnboardingMetadata>[0],
-  timeoutMs = 6000,
-): Promise<boolean> {
+export async function persistAnswersToProfile(client: unknown, record: OnboardingMetadata, timeoutMs = 6000): Promise<boolean> {
   try {
-    const { supabase } = await import("@/lib/supabase");
-    const write = supabase.auth.updateUser({ data: { [ONBOARDING_METADATA_KEY]: toOnboardingMetadata(a) } });
-    const timeout = new Promise<{ error: { message: string } }>(resolve =>
-      setTimeout(() => resolve({ error: { message: "timeout" } }), timeoutMs));
-    const { error } = await Promise.race([write, timeout]);
-    if (error) {
-      if (__DEV__) console.warn("[onboarding] preference save failed (kept staged):", error.message);
+    const db = client as ProfileWriter;
+    const { data } = await db.auth.getSession();
+    const uid = data.session?.user.id;
+    if (!uid) return false;
+    const res = await withTimeout(
+      db.from("profiles").update({ onboarding_answers: record }).eq("id", uid).select("id"),
+      timeoutMs, { data: null, error: { message: "timeout" } },
+    );
+    if (res.error || !res.data || res.data.length === 0) {
+      if (__DEV__) console.warn("[onboarding] profile answers save failed (kept staged):", res.error?.message ?? "no row");
       return false;
     }
     return true;
   } catch (e) {
-    if (__DEV__) console.warn("[onboarding] preference save threw (kept staged):", (e as Error)?.message);
+    if (__DEV__) console.warn("[onboarding] profile answers save threw (kept staged):", (e as Error)?.message);
     return false;
   }
 }
@@ -116,13 +182,17 @@ export function migrateStagedAnswers(p: unknown): StagedOnboardingAnswers | null
   if (painPoints.length === 0) return null;
 
   const out: StagedOnboardingAnswers = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     primaryGoal: o.primaryGoal,
     experienceLevel: o.experienceLevel,
     painPoints,
+    // Absent from payloads staged before V2 — recorded as none, never guessed.
+    acquisitionSource: isAcquisitionSource(o.acquisitionSource) ? o.acquisitionSource : null,
     answeredAt: typeof o.answeredAt === "string" ? o.answeredAt : new Date(0).toISOString(),
     userId: typeof o.userId === "string" ? o.userId : null,
   };
+  const other = out.acquisitionSource === "other" ? cleanOtherSource(o.acquisitionSourceOther) : "";
+  if (other) out.acquisitionSourceOther = other;
   // Carried through untouched when present. Never fabricated when absent.
   if (Array.isArray(o.huntCategories)) {
     out.huntCategories = o.huntCategories.filter((c): c is HuntCategory => typeof c === "string") as HuntCategory[];

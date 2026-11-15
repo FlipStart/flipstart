@@ -11,8 +11,8 @@
  * app/_layout.tsx already protects.
  *
  * ── The journey ─────────────────────────────────────────────────────────────
- *   Welcome → Motivation → Categories → Experience → Pain point
- *   → Money value → Intelligence value → Gamification value
+ *   Welcome → Walkthrough: analysis → Walkthrough: progress   (V2: value first)
+ *   → Motivation → Experience → Pain points
  *   → Building your profile → Personalized result
  *   → [existing /auth: create account] → Onboarding Pro offer → Enter FlipStart
  *
@@ -51,18 +51,19 @@
  * stays beneath, unfocused, and must not react to the auth change — or two
  * screens would open the offer. Only the focused one decides.
  */
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View, Pressable } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
-import { FONTS } from '@/constants/typography';
-import { PW } from '@/components/monetization/paywall/paywallTheme';
 import { useProPaywall } from '@/components/monetization/paywall/ProPaywallProvider';
 import { OnboardingShell } from '@/components/onboarding/OnboardingShell';
-import { PathCard, LadderRow, HelpCard } from '@/components/onboarding/QuestionCards';
-import { MoneyTeaser, IntelligenceTeaser, GamificationTeaser } from '@/components/onboarding/ValueTeasers';
+import { WelcomeScreen } from '@/components/onboarding/WelcomeScreen';
+import { OnboardingTextLink } from '@/components/onboarding/OnboardingButton';
+import { OB } from '@/components/onboarding/onboardingTheme';
+import { ChoiceRow, IconTile, SourceTile, TwoColumnGrid } from '@/components/onboarding/ChoiceCards';
+import { useOnboardingLayout } from '@/components/onboarding/useOnboardingLayout';
+import { WalkthroughAnalysisMedia, WalkthroughProgressMedia } from '@/components/onboarding/WalkthroughMedia';
 import { ProfileBuilding } from '@/components/onboarding/ProfileBuilding';
 import { ProfileResult } from '@/components/onboarding/ProfileResult';
 import {
@@ -73,14 +74,23 @@ import {
 import { classifyAccount, persistAnswersToAccount } from '@/lib/onboardingAnswers';
 import { setAuthReturnDest, clearAuthReturnDest } from '@/lib/authReturn';
 import {
-  EMPTY_ANSWERS, QUIZ_STAGES, PRIMARY_GOALS, EXPERIENCE_LEVELS, PAIN_POINTS,
-  stageIsComplete, stageProgress, togglePainPoint, answersComplete,
+  EMPTY_ANSWERS, QUIZ_STAGES, PRIMARY_GOALS, EXPERIENCE_LEVELS, PAIN_POINTS, ACQUISITION_SOURCES,
+  QUESTION_STAGES, OTHER_SOURCE_MAX,
+  stageIsComplete, stageProgress, togglePainPoint, answersComplete, questionNumber, cleanOtherSource,
+  questionAnswerEvent,
   type OnboardingAnswers, type QuizStage,
 } from '@/lib/onboardingQuiz';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
 
 type Stage = 'welcome' | QuizStage;
+
+/**
+ * `onboarding_started` once per app session. Auth returns to onboarding by
+ * mounting a NEW instance of this screen, which used to log a second start
+ * for everyone who created an account. Module scope survives that remount.
+ */
+let startedLoggedThisSession = false;
 
 /**
  * What the focused screen decided on arrival.
@@ -127,6 +137,8 @@ export default function OnboardingScreen() {
   const [saving, setSaving] = useState(false);
   const [resume, setResume] = useState<Resume>('undecided');
   const [buildNeedsContinue, setBuildNeedsContinue] = useState(false);
+  const { compact } = useOnboardingLayout();
+  const sourceScrollRef = useRef<ScrollView>(null);
 
   /** Exactly-once guards. */
   const finishingRef = useRef(false);
@@ -135,7 +147,16 @@ export default function OnboardingScreen() {
   /** True once the answers are known to be on the account. */
   const persistedRef = useRef(false);
 
-  useEffect(() => { trackAnalyticsEvent('onboarding_started', {}); }, []);
+  /**
+   * A start is a fresh funnel: logged when the resume decision says there is
+   * nothing pending (resume 'none'), never for a return from auth to the offer,
+   * and never twice in one session.
+   */
+  useEffect(() => {
+    if (resume !== 'none' || startedLoggedThisSession) return;
+    startedLoggedThisSession = true;
+    trackAnalyticsEvent('onboarding_started', { flow: 'v2' });
+  }, [resume]);
 
   /**
    * One event per screen shown, so the dashboard can see how far each phone
@@ -153,6 +174,9 @@ export default function OnboardingScreen() {
       step_number: stage === 'welcome' ? 1 : QUIZ_STAGES.indexOf(stage) + 2,
       total_steps: QUIZ_STAGES.length + 1,
       onboarding_version: ONBOARDING_VERSION,
+      // V2 moved the walkthrough before the questions, so step numbers mean
+      // different screens from here on. The dashboard reads this to tell them apart.
+      flow: 'v2',
     });
   }, [stage, resume]);
 
@@ -240,7 +264,7 @@ export default function OnboardingScreen() {
   }, []);
 
   const back = useCallback(() => {
-    if (stage === 'result') { setStage('gamification'); return; }   // never replay the build
+    if (stage === 'result') { setStage('source'); return; }         // never replay the build
     setStage(stageIndex <= 0 ? 'welcome' : QUIZ_STAGES[stageIndex - 1]);
   }, [stage, stageIndex]);
 
@@ -267,10 +291,14 @@ export default function OnboardingScreen() {
       primaryGoal: answers.primaryGoal,
       experienceLevel: answers.experienceLevel,
       painPoints: answers.painPoints,
+      acquisitionSource: answers.acquisitionSource,
+      acquisitionSourceOther: otherText(answers),
     });
     await setPendingNewUserOffer();
     setAuthReturnDest('/onboarding');
-    trackAnalyticsEvent('onboarding_create_account_tapped', { entry_point: 'onboarding', primary_goal: answers.primaryGoal });
+    trackAnalyticsEvent('onboarding_create_account_tapped', {
+      entry_point: 'onboarding', primary_goal: answers.primaryGoal, acquisition_source: answers.acquisitionSource,
+    });
     setSaving(false);
     router.push({ pathname: '/auth', params: { mode: 'signup', authEntryPoint: 'onboarding' } } as any);
   }, [answers, saving, router]);
@@ -289,12 +317,16 @@ export default function OnboardingScreen() {
         primaryGoal: answers.primaryGoal,
         experienceLevel: answers.experienceLevel,
         painPoints: answers.painPoints,
+        acquisitionSource: answers.acquisitionSource,
+        acquisitionSourceOther: otherText(answers),
         answeredAt: new Date().toISOString(),
       });
     }
     trackAnalyticsEvent('onboarding_completed', {
-      onboarding_version: ONBOARDING_VERSION, outcome: reason,
+      onboarding_version: ONBOARDING_VERSION, outcome: reason, flow: 'v2',
       primary_goal: answers.primaryGoal, experience_level: answers.experienceLevel, pain_points: answers.painPoints,
+      // The dashboard's Acquisition section reads this key from completion events.
+      acquisition_source: answers.acquisitionSource,
     });
     // Legacy UserMode literal — not the quiz's primaryGoal. See the header.
     await completeOnboarding('resell').catch(() => {});
@@ -328,10 +360,11 @@ export default function OnboardingScreen() {
      */
     const recorded = (await readStagedAnswers()) ?? null;
     trackAnalyticsEvent('onboarding_completed', {
-      onboarding_version: ONBOARDING_VERSION, outcome,
+      onboarding_version: ONBOARDING_VERSION, outcome, flow: 'v2',
       primary_goal: recorded?.primaryGoal ?? answers.primaryGoal,
       experience_level: recorded?.experienceLevel ?? answers.experienceLevel,
       pain_points: recorded?.painPoints ?? answers.painPoints,
+      acquisition_source: recorded ? (recorded.acquisitionSource ?? null) : answers.acquisitionSource,
     });
     await finishNewUserOnboarding('resell');       // clears the marker, writes the version
     router.replace('/(tabs)' as any);
@@ -365,11 +398,19 @@ export default function OnboardingScreen() {
 
   const next = useCallback(() => {
     if (!canContinue) return;
-    if (stage === 'pain_points') {
+    if (stage === 'walkthrough_progress') {
+      trackAnalyticsEvent('onboarding_walkthrough_completed', { flow: 'v2' });
+    }
+    if (QUESTION_STAGES.includes(stage as QuizStage)) {
+      trackAnalyticsEvent('onboarding_question_answered', questionAnswerEvent(stage as QuizStage, answers));
+    }
+    if (stage === 'source') {
       trackAnalyticsEvent('onboarding_quiz_completed', {
+        flow: 'v2',
         primary_goal: answers.primaryGoal,
         experience_level: answers.experienceLevel,
         pain_points: answers.painPoints,
+        acquisition_source: answers.acquisitionSource,
       });
     }
     if (stage === 'result') {
@@ -387,6 +428,9 @@ export default function OnboardingScreen() {
   const setExperience = (v: OnboardingAnswers['experienceLevel'])  => setAnswers(a => ({ ...a, experienceLevel: v }));
   const tapPain       = (v: OnboardingAnswers['painPoints'][number]) =>
     setAnswers(a => ({ ...a, painPoints: togglePainPoint(a.painPoints, v) }));
+  /** The typed "Other" text is kept if they switch away and back — only saved when Other is the answer. */
+  const setSource     = (v: OnboardingAnswers['acquisitionSource']) => setAnswers(a => ({ ...a, acquisitionSource: v }));
+  const setSourceOther = (v: string) => setAnswers(a => ({ ...a, acquisitionSourceOther: v.slice(0, OTHER_SOURCE_MAX) }));
 
   // ── Resolving a new account: username, or an existing account finishing ─
   if (resume === 'hold' || resume === 'username' || resume === 'existing') {
@@ -397,149 +441,148 @@ export default function OnboardingScreen() {
         support="One moment."
         centered
         footer={profileError && resume === 'hold' ? (
-          <TextLink prefix="Taking a while?" action="Try again" onPress={() => { void refreshProfile(); }} />
+          <OnboardingTextLink prefix="Taking a while?" action="Try again" onPress={() => { void refreshProfile(); }} />
         ) : null}
       >
-        <View style={w.holding}><ActivityIndicator color={PW.forest} /></View>
+        <View style={w.holding}><ActivityIndicator color={OB.forest} /></View>
       </OnboardingShell>
     );
   }
 
   // ── Welcome ─────────────────────────────────────────────────────────────
   /**
-   * Both actions render on the FIRST FRAME.
+   * Both actions render on the FIRST FRAME. A signed-out user always gets a
+   * new-user path and a returning-user path, so there is nothing to wait for;
+   * the resume effect still overrides the stage the moment it resolves, so an
+   * early tap cannot strand anyone.
    *
-   * They used to wait on two async reads — the completed-version key, to decide
-   * which button should dominate, and the resume decision, to avoid sending a
-   * returning new account into the quiz. Neither is needed now: a signed-out
-   * user always gets both a new-user path and a returning-user path, so there
-   * is nothing to decide, and the resume effect still overrides the stage the
-   * moment it resolves (a pending account is moved to its offer, an existing
-   * one is finished) — so an early tap cannot strand anyone.
-   *
-   * A signed-in user gets Get Started only: they are already authenticated, so
-   * Log In would be nonsense. They are never signed out and no second account
-   * is ever created.
+   * A signed-in user gets Get Started only: Log In would be nonsense. They are
+   * never signed out and no second account is ever created.
    */
   if (stage === 'welcome') {
-    return (
-      <OnboardingShell
-        progress={null}
-        brand
-        brandLine="THRIFT INTELLIGENCE"
-        centered
-        headline={'Spot value.\nFind profitable flips.\nThrift smarter.'}
-        support="FlipStart helps you identify finds, understand resale potential, make smarter buy decisions, and level up every thrift trip."
-        ctaPlacement="content"
-        cta={{ label: 'Get Started', onPress: start, kicker: signedIn ? undefined : 'NEW HERE?', pulse: true }}
-        secondaryCta={signedIn ? undefined : {
-          label: 'Log In', onPress: logIn, kicker: 'ALREADY HAVE A FLIPSTART ACCOUNT?', pulse: true,
-        }}
-      >
-        <Animated.View entering={STAGE_ENTER} style={w.pillars}>
-          <Pillar icon="trending-up"   text="Smarter, more profitable buys" />
-          <Pillar icon="search"        text="Identify and understand your finds" />
-          <Pillar icon="emoji-events"  text="Every thrift trip becomes progress" />
-        </Animated.View>
-
-        {!!notice && (
-          <View style={w.notice} accessibilityLiveRegion="polite">
-            <MaterialIcons name="info-outline" size={15} color={PW.forest} />
-            <Text style={w.noticeText}>{notice}</Text>
-          </View>
-        )}
-      </OnboardingShell>
-    );
+    return <WelcomeScreen onGetStarted={start} onLogIn={signedIn ? undefined : logIn} notice={notice} />;
   }
 
   // ── Questions ───────────────────────────────────────────────────────────
   const progress = stageProgress(stage);
   const cta = { label: 'Continue', onPress: next, disabled: !canContinue };
 
-  /** Three rich path cards. Sparse screen, so the CTA follows the content. */
+  // ── Walkthrough: the real app, before any question ──────────────────────
+  /**
+   * Dylan's own screenshots, shown exactly as supplied. The media fills the
+   * space between the supporting line and Continue and scales to fit, so
+   * nothing scrolls and nothing is cut off on any phone.
+   */
+  if (stage === 'walkthrough_analysis') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta}
+        headline={'Know the flip\nbefore you buy.'} accent="before you buy."
+        support="Snap a find. See what it is, what it sells for, and whether to buy."
+        bodyStyle={q.fill}>
+        <WalkthroughAnalysisMedia />
+      </OnboardingShell>
+    );
+  }
+
+  if (stage === 'walkthrough_progress') {
+    return (
+      <OnboardingShell progress={progress} onBack={back} cta={cta}
+        headline={'Turn every thrift trip\ninto progress.'} accent="into progress."
+        support="Hunts earn XP and ranks. Every find builds your collection."
+        bodyStyle={q.fill}>
+        <WalkthroughProgressMedia />
+      </OnboardingShell>
+    );
+  }
+
+  // ── The four questions (V2) ─────────────────────────────────────────────
+  /**
+   * One question per screen, every screen fits without scrolling on a normal
+   * iPhone. Continue is pinned at the bottom and stays off until the question
+   * has an answer. Answers live in `answers` and survive Back and forward.
+   */
+  const qLabel = `Question ${questionNumber(stage as QuizStage)} of ${QUESTION_STAGES.length}`;
+
   if (stage === 'motivation') {
     return (
-      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
-        eyebrow="QUESTION 1 OF 3" ctaPlacement="content"
-        headline="What brings you to FlipStart?" accent="FlipStart"
-        support="Pick the reason that fits you best.">
-        <Animated.View key={stage} entering={STAGE_ENTER} style={q.stack}>
-          {PRIMARY_GOALS.map(o => (
-            <PathCard key={o.value}
-              eyebrow={o.eyebrow ?? ''} title={o.title} support={o.support}
-              icon={(o.icon ?? 'auto-awesome') as any}
-              selected={answers.primaryGoal === o.value} onPress={() => setGoal(o.value)} />
-          ))}
-        </Animated.View>
+      <OnboardingShell progress={progress} onBack={back} cta={cta}
+        eyebrow={qLabel}
+        lead="A few quick questions before we get you started."
+        headline="What brings you to FlipStart?" accent="FlipStart?">
+        {PRIMARY_GOALS.map(o => (
+          <ChoiceRow key={o.value} title={o.title} support={o.support} minHeight={compact ? 74 : 80}
+            selected={answers.primaryGoal === o.value} onPress={() => setGoal(o.value)} />
+        ))}
       </OnboardingShell>
     );
   }
 
-  /** A connected ladder — a different rhythm from the three cards before it. */
   if (stage === 'experience') {
     return (
-      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
-        eyebrow="QUESTION 2 OF 3" ctaPlacement="content"
-        headline="How confident are you at spotting value?" accent="spotting value"
-        support={'We\u2019ll use this to shape your FlipStart profile.'}>
-        <Animated.View key={stage} entering={STAGE_ENTER} style={q.ladder}>
-          {EXPERIENCE_LEVELS.map((o, i) => (
-            <LadderRow key={o.value} title={o.title} support={o.support}
-              first={i === 0} last={i === EXPERIENCE_LEVELS.length - 1}
-              selected={answers.experienceLevel === o.value} onPress={() => setExperience(o.value)} />
-          ))}
-        </Animated.View>
+      <OnboardingShell progress={progress} onBack={back} cta={cta}
+        eyebrow={qLabel}
+        headline="How confident are you at spotting value?" accent="spotting value?">
+        {EXPERIENCE_LEVELS.map(o => (
+          <ChoiceRow key={o.value} title={o.title} support={o.support} minHeight={compact ? 68 : 74}
+            selected={answers.experienceLevel === o.value} onPress={() => setExperience(o.value)} />
+        ))}
       </OnboardingShell>
     );
   }
 
-  /** A two-column field: all six visible at once, sweepable. Denser, so the
-      CTA stays anchored and the field scrolls beneath it on a small phone. */
   if (stage === 'pain_points') {
+    const picked = answers.painPoints.length;
     return (
-      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
-        eyebrow="QUESTION 3 OF 3"
-        headline="What do you want FlipStart to help with?" accent="FlipStart"
-        support="Choose everything that would make thrifting easier.">
-        <Animated.View key={stage} entering={STAGE_ENTER} style={q.grid}>
+      <OnboardingShell progress={progress} onBack={back} cta={cta}
+        eyebrow={qLabel}
+        headline="What should FlipStart help with?" accent="FlipStart"
+        support="Choose all that apply" supportAccent={picked > 0 ? `${picked} selected` : undefined}>
+        <TwoColumnGrid gap={compact ? 8 : 10}>
           {PAIN_POINTS.map(o => (
-            <HelpCard key={o.value} title={o.title} icon={o.icon as any}
+            <IconTile key={o.value} title={o.title} icon={o.icon as any} height={compact ? 82 : 88} compact={compact}
               selected={answers.painPoints.includes(o.value)} onPress={() => tapPain(o.value)} />
           ))}
-        </Animated.View>
+        </TwoColumnGrid>
       </OnboardingShell>
     );
   }
 
-  // ── Value screens ───────────────────────────────────────────────────────
-  if (stage === 'money') {
+  /**
+   * Picking Other reveals one optional line for where. It is the only text
+   * field in onboarding, so this is the only screen that lifts for the
+   * keyboard — and it scrolls the field into view when focused.
+   */
+  if (stage === 'source') {
+    const other = answers.acquisitionSource === 'other';
     return (
-      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
-        ctaPlacement="content"
-        headline="Know the flip before you buy" accent="before you buy"
-        support="See the numbers that matter before you decide whether a find deserves your money.">
-        <Animated.View key={stage} entering={STAGE_ENTER}><MoneyTeaser /></Animated.View>
-      </OnboardingShell>
-    );
-  }
-
-  if (stage === 'intelligence') {
-    return (
-      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
-        ctaPlacement="content"
-        headline="Spot what others might miss" accent="others might miss"
-        support={'FlipStart helps you understand unfamiliar finds \u2014 what they may be, what they may be worth, and what deserves a closer look.'}>
-        <Animated.View key={stage} entering={STAGE_ENTER}><IntelligenceTeaser /></Animated.View>
-      </OnboardingShell>
-    );
-  }
-
-  if (stage === 'gamification') {
-    return (
-      <OnboardingShell progress={progress} onBack={back} cta={cta} masthead
-        headline="Turn every thrift trip into progress" accent="into progress"
-        support="Hunt, discover, earn XP, climb the ranks, and build a record of what you find.">
-        <Animated.View key={stage} entering={STAGE_ENTER}><GamificationTeaser /></Animated.View>
+      <OnboardingShell progress={progress} onBack={back} cta={cta}
+        eyebrow={qLabel}
+        headline="How did you first hear about FlipStart?" accent="FlipStart?"
+        avoidKeyboard scrollRef={sourceScrollRef}>
+        <TwoColumnGrid>
+          {ACQUISITION_SOURCES.map(o => (
+            <SourceTile key={o.value} title={o.title} compact={compact}
+              selected={answers.acquisitionSource === o.value} onPress={() => setSource(o.value)} />
+          ))}
+        </TwoColumnGrid>
+        {other && (
+          <Animated.View entering={STAGE_ENTER} style={q.otherWrap}>
+            <Text style={q.otherLabel}>Where did you hear about us? (optional)</Text>
+            <TextInput
+              value={answers.acquisitionSourceOther}
+              onChangeText={setSourceOther}
+              placeholder={'A store, a podcast, a blog\u2026'}
+              placeholderTextColor="#6E6A62"
+              maxLength={OTHER_SOURCE_MAX}
+              returnKeyType="done"
+              autoCapitalize="sentences"
+              autoCorrect
+              accessibilityLabel="Where did you hear about FlipStart? Optional."
+              onFocus={() => setTimeout(() => sourceScrollRef.current?.scrollToEnd({ animated: true }), 250)}
+              style={q.otherInput}
+            />
+          </Animated.View>
+        )}
       </OnboardingShell>
     );
   }
@@ -547,7 +590,7 @@ export default function OnboardingScreen() {
   // ── Building the profile ────────────────────────────────────────────────
   if (stage === 'building') {
     return (
-      <OnboardingShell progress={progress} masthead centered ctaPlacement="content"
+      <OnboardingShell progress={progress} centered ctaPlacement="content"
         headline={'Building your FlipStart profile\u2026'} accent="FlipStart"
         support="Putting your answers to work."
         cta={buildNeedsContinue ? { label: 'Continue', onPress: buildDone } : undefined}
@@ -568,7 +611,7 @@ export default function OnboardingScreen() {
       );
     }
     return (
-      <OnboardingShell progress={progress} onBack={back} masthead
+      <OnboardingShell progress={progress} onBack={back}
         headline="Your FlipStart profile is ready" accent="FlipStart"
         support={signedIn ? undefined : 'Save your scans, XP, history, and profile across devices.'}
         cta={{ label: signedIn ? 'Enter FlipStart' : 'Save My Profile', onPress: next, disabled: saving }}
@@ -587,66 +630,35 @@ export default function OnboardingScreen() {
   // ── The offer host: the paywall modal renders over this ─────────────────
   // stage === 'offer'
   return (
-    <OnboardingShell progress={1} centered masthead ctaPlacement="content"
+    <OnboardingShell progress={1} centered ctaPlacement="content"
       headline="Choose how to start"
       support={'Go Pro, or continue on the Free plan \u2014 you\u2019ll be scanning in a moment either way.'}
       cta={offerShown && !isPaywallOpen && !saving ? { label: 'See your options', onPress: openOffer } : undefined}
     >
-      <View style={w.holding}>{saving && <ActivityIndicator color={PW.forest} />}</View>
+      <View style={w.holding}>{saving && <ActivityIndicator color={OB.forest} />}</View>
     </OnboardingShell>
   );
 }
 
-// ── Welcome pieces ──────────────────────────────────────────────────────────
-
-/** One pillar: a forest glyph in the benefits strip's hairline ring, one line. */
-function Pillar({ icon, text }: { icon: ComponentProps<typeof MaterialIcons>['name']; text: string }) {
-  return (
-    <View style={w.pillar}>
-      <View style={w.pillarSeal}>
-        <MaterialIcons name={icon} size={19} color={PW.forest} />
-      </View>
-      <Text style={w.pillarText}>{text}</Text>
-    </View>
-  );
-}
-
-/** "Already have an account? Sign In" — prefix in brown, action in forest. */
-function TextLink({ prefix, action, onPress }: { prefix: string; action: string; onPress: () => void }) {
-  return (
-    <Pressable onPress={onPress} hitSlop={10} accessibilityRole="button" accessibilityLabel={`${prefix} ${action}`}
-      style={({ pressed }) => [w.link, pressed && { opacity: 0.6 }]}>
-      <Text style={w.linkPrefix}>{prefix} <Text style={w.linkAction}>{action}</Text></Text>
-    </Pressable>
-  );
-}
-
 const w = StyleSheet.create({
-  pillars: { gap: 12, marginTop: 6, paddingHorizontal: 6 },
-  pillar: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  pillarSeal: {
-    width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(33,77,45,0.07)', borderWidth: 1, borderColor: 'rgba(33,77,45,0.22)',
-  },
-  pillarText: { flex: 1, fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: '700', color: PW.ink, lineHeight: 21 },
-
-  notice: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14,
-    backgroundColor: PW.goldTint, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(196,163,52,0.45)',
-    paddingHorizontal: 12, paddingVertical: 9,
-  },
-  noticeText: { flex: 1, fontSize: 12.5, lineHeight: 17, color: PW.brown, fontWeight: '600' },
-
-  link: { alignSelf: 'center', paddingVertical: 6, paddingHorizontal: 8 },
-  linkPrefix: { fontSize: 14, color: PW.brown, fontWeight: '600' },
-  linkAction: { fontFamily: FONTS.serif, fontWeight: '800', color: PW.forest },
-
   holding: { alignItems: 'center', paddingTop: 28 },
 });
 
 const q = StyleSheet.create({
-  stack: { gap: 10 },
-  /** Cards breathe like every other list; the rail bridges the gap. */
-  ladder: { gap: 10 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  /** Lets the walkthrough media take every point the shell has left. */
+  fill: { flexGrow: 1 },
+  otherWrap: { gap: 6, marginTop: 2 },
+  otherLabel: { fontSize: 13, lineHeight: 18, fontWeight: '700', color: OB.ink },
+  otherInput: {
+    height: 48, paddingHorizontal: 14, borderRadius: 12,
+    borderWidth: 1.5, borderColor: OB.forest, backgroundColor: '#FFFFFF',
+    fontSize: 16, color: OB.ink,
+  },
 });
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** The Other text, cleaned, and only when Other is actually the answer. */
+function otherText(a: OnboardingAnswers): string {
+  return a.acquisitionSource === 'other' ? cleanOtherSource(a.acquisitionSourceOther) : '';
+}

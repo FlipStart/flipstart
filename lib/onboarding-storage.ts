@@ -39,7 +39,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ExperienceLevel, HuntCategory, PainPoint, PrimaryGoal } from './onboardingQuiz';
+import type { AcquisitionSource, ExperienceLevel, HuntCategory, PainPoint, PrimaryGoal } from './onboardingQuiz';
 
 /**
  * Current onboarding version. Bump to force all users through onboarding once.
@@ -167,18 +167,25 @@ export async function finishNewUserOnboarding(mode: UserMode): Promise<void> {
 // ── Staged answers (pre-account) ────────────────────────────────────────────
 
 /**
- * Schema 2 — the three-question model.
+ * Schema 3 — the V2 four-question model.
  *
- * Changes from schema 1: `primaryPainPoint` (one) became `painPoints` (many),
- * and `huntCategories` is no longer collected. The category field survives as
- * OPTIONAL so a payload written by the earlier v3 build still reads; nothing
- * writes it any more and no default is ever invented for it.
+ * Schema 2 → 3 adds the source question (`acquisitionSource`, plus optional
+ * free text when it is "other"). Both are OPTIONAL on read: a payload staged
+ * by the previous build, mid-funnel, has no source and must still persist —
+ * it simply records none. Nothing ever invents one.
+ *
+ * Schema 1 → 2 (earlier): `primaryPainPoint` became `painPoints`, and
+ * `huntCategories` stopped being collected (still read, never written).
  */
 export interface StagedOnboardingAnswers {
-  schemaVersion: 2;
+  schemaVersion: 3;
   primaryGoal:     PrimaryGoal;
   experienceLevel: ExperienceLevel;
   painPoints:      PainPoint[];
+  /** Null/absent when staged by a build that did not ask. */
+  acquisitionSource?: AcquisitionSource | null;
+  /** Free text, only kept when acquisitionSource is "other". */
+  acquisitionSourceOther?: string;
   /** Legacy, read-only. Absent for anyone onboarded after the question was removed. */
   huntCategories?: HuntCategory[];
   /** ISO timestamp. */
@@ -191,7 +198,7 @@ export async function stageOnboardingAnswers(
   a: Omit<StagedOnboardingAnswers, 'schemaVersion' | 'answeredAt' | 'userId' | 'huntCategories'>,
 ): Promise<void> {
   const payload: StagedOnboardingAnswers = {
-    schemaVersion: 2, ...a, answeredAt: new Date().toISOString(), userId: null,
+    schemaVersion: 3, ...a, answeredAt: new Date().toISOString(), userId: null,
   };
   try { await AsyncStorage.setItem(KEY_STAGED, JSON.stringify(payload)); } catch {}
 }
@@ -207,7 +214,7 @@ export async function stageOnboardingAnswers(
  * null instead of a half-built object.
  *
  * The migration is NOT written back here. The value is returned to the caller,
- * and the next stage/persist writes schema 2 — a read never mutates storage.
+ * and the next stage/persist writes schema 3 — a read never mutates storage.
  */
 export async function readStagedAnswers(): Promise<StagedOnboardingAnswers | null> {
   try {

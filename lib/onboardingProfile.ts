@@ -73,6 +73,8 @@ const BY_PAIN: Record<PainPoint, ToolKey[]> = {
   comp_research:         ["sold_comps", "deep_analysis"],
   slow_selling_buys:     ["demand_sell_speed", "deep_analysis"],
   listing_time:          ["generate_listings", "scan_finds"],
+  learn_brands:          ["brand_compendium", "scan_finds", "hunt_mode"],
+  track_progress:        ["hunt_mode", "brand_compendium", "scan_finds"],
 };
 
 /**
@@ -158,6 +160,8 @@ function opportunityLabelOne(pain: PainPoint): string {
     case "comp_research":         return "Check comps in seconds";
     case "slow_selling_buys":     return "Buy what actually sells";
     case "listing_time":          return "List finds in a fraction of the time";
+    case "learn_brands":          return "Learn the brands worth grabbing";
+    case "track_progress":        return "Turn every trip into progress";
   }
 }
 
