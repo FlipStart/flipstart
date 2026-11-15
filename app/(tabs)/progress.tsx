@@ -52,6 +52,7 @@ import {
   computeUnlockedDiamonds,
   TOTAL_DIAMONDS,
 } from '@/lib/diamonds';
+import { DIAMONDS_ENABLED } from '@/lib/diamondsAvailability';
 import { isProgressHydrated, markProgressHydrated, seedSeenBaselineOnce } from '@/lib/progressHydration';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
@@ -100,14 +101,14 @@ const TOTAL_BRANDS = TOTAL_SUPPORTED_BRANDS;  // 241 supported brands
 const DESTINATIONS = [
   { key: 'achievements', icon: 'emoji-events',  color: '#BE9C2C', title: 'Achievements',         sub: 'Track your achievements'    },
   { key: 'brands',       icon: 'local-offer',   color: '#1A1A1A', title: 'Brand Compendium',      sub: 'Discover brands'            },
-  { key: 'diamonds',     icon: 'auto-awesome',  color: '#3A7EBF', title: 'Diamonds in the Rough', sub: 'Find the rarest treasures' },
+  { key: 'diamonds',     icon: 'auto-awesome',  color: '#3A7EBF', title: 'Diamonds in the Rough', sub: DIAMONDS_ENABLED ? 'Find the rarest treasures' : 'Temporarily unavailable' },
 ] as const;
 
 // Badge text per destination key
 function getBadge(key: string, realUnlocked: number, brands: number | null, diamonds: number): string {
   if (key === 'achievements') return `${realUnlocked} / ${ACHV_TOTAL}`;
   if (key === 'brands')       return brands === null ? `— / ${TOTAL_BRANDS}` : `${brands} / ${TOTAL_BRANDS}`;
-  if (key === 'diamonds')     return `${diamonds} / ${TOTAL_DIAMONDS}`;
+  if (key === 'diamonds')     return DIAMONDS_ENABLED ? `${diamonds} / ${TOTAL_DIAMONDS}` : 'Paused';
   return '—';
 }
 
@@ -311,14 +312,14 @@ export default function ProgressScreen() {
       let unlockedDiamondIds = getUnlockedDiamondIds(flips);
 
       // DEV — merge dev force-unlocked Diamonds so the count matches the collection.
-      if (__DEV__) {
+      if (__DEV__ && DIAMONDS_ENABLED) {
         const { getDevDiamondIds } = await devDiamondMod();
         const devIds = await getDevDiamondIds();
         if (devIds.length > 0) unlockedDiamondIds = Array.from(new Set([...unlockedDiamondIds, ...devIds]));
       }
 
       setDiamondCount(unlockedDiamondIds.length);
-      const unseenDiamonds = await getUnseenDiamondIds(unlockedDiamondIds);
+      const unseenDiamonds = DIAMONDS_ENABLED ? await getUnseenDiamondIds(unlockedDiamondIds) : [];
       if (unseenDiamonds.length > 0) {
         addUnseenDiamonds(unseenDiamonds);
       }
@@ -367,7 +368,7 @@ export default function ProgressScreen() {
   // Loading-aware display: show cached last-known value until fresh data arrives,
   // then the real value. Only shows '—' if there's no cache and nothing loaded yet.
   const brandsDisplay      = brandCount === null ? '—' : String(brands);
-  const diamondsDisplay    = diamondCount === null ? '—' : String(diamonds);
+  const diamondsDisplay    = !DIAMONDS_ENABLED || diamondCount === null ? '—' : String(diamonds);
   const achvLoaded         = achvData !== null;
 
   // Real achievement count — replaces the old completedHunts proxy.
@@ -379,7 +380,10 @@ export default function ProgressScreen() {
   // While achievements are still loading, fall back to the cached count so the
   // ring matches the displayed stat instead of dipping to zero.
   const achvForRing    = achvLoaded ? realUnlocked : (cachedAchv ?? 0);
-  const exploreRaw     = (achvForRing / ACHV_TOTAL + brands / TOTAL_BRANDS + diamonds / TOTAL_DIAMONDS) / 3;
+  // Diamonds join the average only while the feature is live; paused, it would drag the ring down for everyone.
+  const exploreRaw     = DIAMONDS_ENABLED
+    ? (achvForRing / ACHV_TOTAL + brands / TOTAL_BRANDS + diamonds / TOTAL_DIAMONDS) / 3
+    : (achvForRing / ACHV_TOTAL + brands / TOTAL_BRANDS) / 2;
   const explorePercent = Math.min(Math.round(exploreRaw * 100), 100);
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -456,7 +460,7 @@ export default function ProgressScreen() {
                   </View>
                   <Text style={s.statCount}>
                     <Text style={s.statCurrent}>{diamondsDisplay}</Text>
-                    <Text style={s.statTotal}> / {TOTAL_DIAMONDS}</Text>
+                    {DIAMONDS_ENABLED && <Text style={s.statTotal}> / {TOTAL_DIAMONDS}</Text>}
                   </Text>
                   <Text style={s.statLabel}>Diamonds{'\n'}Unlocked</Text>
                 </View>
@@ -512,7 +516,7 @@ export default function ProgressScreen() {
                 </Text>
               </View>
             )}
-            {dest.key === 'diamonds' && unseenDiamondCount > 0 && (
+            {dest.key === 'diamonds' && DIAMONDS_ENABLED && unseenDiamondCount > 0 && (
               <View style={s.notifBadge}>
                 <Text style={s.notifBadgeText}>
                   {unseenDiamondCount > 99 ? '99+' : String(unseenDiamondCount)}

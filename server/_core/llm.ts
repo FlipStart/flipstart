@@ -1,4 +1,5 @@
 import { ENV } from "./env";
+import { outputLimitParams, type ReasoningEffort } from "./modelParams";
 
 // ─── Model pricing (USD per token) ────────────────────────────────────────────
 // Used only for the [llm] cost log line. Verify against OpenAI's pricing page
@@ -10,6 +11,8 @@ const MODEL_PRICING: Record<string, { in: number; cachedIn: number; out: number 
   "gpt-4.1":      { in: 0.000002,   cachedIn: 0.0000005,   out: 0.000008  },
   "gpt-4.1-mini": { in: 0.0000004,  cachedIn: 0.0000001,   out: 0.0000016 },
   "gpt-4.1-nano": { in: 0.0000001,  cachedIn: 0.000000025, out: 0.0000004 },
+  // Reasoning tokens bill as output and are already inside completion_tokens.
+  "gpt-6-luna":   { in: 0.0000001,  cachedIn: 0.00000001,  out: 0.0000005 },
 };
 const FALLBACK_PRICING = MODEL_PRICING["gpt-4o"];
 
@@ -326,7 +329,17 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   // max_tokens is set per-call via InvokeParams.max_tokens so individual
   // callers can tune it. Fall back to 1200 if not specified — enough for
   // any analysis response without the 32K reservation overhead.
-  payload.max_tokens = params.max_tokens ?? params.maxTokens ?? 1200;
+  // Reasoning models (gpt-6-luna etc.) need max_completion_tokens plus an
+  // explicit reasoning_effort; older models keep max_tokens. See modelParams.ts.
+  Object.assign(
+    payload,
+    outputLimitParams(
+      resolvedModel,
+      params.max_tokens ?? params.maxTokens ?? 1200,
+      ENV.openaiReasoningEffort as ReasoningEffort,
+      { hasTools: !!(tools && tools.length > 0) },
+    ),
+  );
   // thinking budget removed — adds latency with no benefit for
   // structured JSON extraction tasks
 
@@ -377,11 +390,21 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       (cachedIn * rates.cachedIn) +
       (completion_tokens * rates.out);
 
+    const reasoningTokens = (result.usage as { completion_tokens_details?: { reasoning_tokens?: number } })
+      .completion_tokens_details?.reasoning_tokens ?? 0;
+
     console.log(
       `[llm] model:${model}${pricing ? "" : " (UNPRICED — using gpt-4o rates)"}` +
       ` | tokens — prompt:${prompt_tokens} (cached:${cachedIn}) completion:${completion_tokens}` +
+      (reasoningTokens ? ` (reasoning:${reasoningTokens})` : "") +
+      ` effort:${(payload.reasoning_effort as string | undefined) ?? "n/a"}` +
       ` total:${total_tokens} | est_cost:$${estimatedCostUSD.toFixed(6)}`
     );
+    // OpenAI has shipped a bug where effort "none" is ignored once a token cap
+    // is set, and the model thinks anyway (slower, and it can empty the reply).
+    if (payload.reasoning_effort === "none" && reasoningTokens > 0) {
+      console.warn(`[llm] WARNING model:${model} reasoned (${reasoningTokens} tokens) despite effort:none`);
+    }
   }
 
   return result;

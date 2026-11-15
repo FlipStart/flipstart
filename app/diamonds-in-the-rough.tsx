@@ -36,6 +36,8 @@ import Svg, {
 } from 'react-native-svg';
 
 import { FONTS } from '@/constants/typography';
+import { DIAMONDS_ENABLED } from '@/lib/diamondsAvailability';
+import { DiamondsUnavailable } from '@/components/DiamondsUnavailable';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
@@ -319,7 +321,16 @@ function MiniSlot({
 // ═══════════════════════════════════════════════════════════════════════════
 // Screen
 // ═══════════════════════════════════════════════════════════════════════════
-export default function DiamondsInTheRoughScreen() {
+/**
+ * While Diamonds are paused (lib/diamondsAvailability.ts) this route shows the
+ * holding screen and the real screen below is never mounted, so none of its
+ * hooks, reads or writes run.
+ */
+export default function DiamondsRoute() {
+  return DIAMONDS_ENABLED ? <DiamondsInTheRoughScreen /> : <DiamondsUnavailable />;
+}
+
+function DiamondsInTheRoughScreen() {
   /**
    * Deep Analysis is Pro. This screen navigated straight to it with no check —
    * one of three history surfaces where the gate did not exist.

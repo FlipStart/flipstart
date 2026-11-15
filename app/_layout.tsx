@@ -28,6 +28,7 @@ import { ForceUpdateGate } from "@/components/ForceUpdateGate";
 import { AchievementNotificationProvider, useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { getUnlockedDiamondIds, getUnseenDiamondIds, computeUnlockedDiamonds } from '@/lib/diamonds';
+import { DIAMONDS_ENABLED } from '@/lib/diamondsAvailability';
 import { markProgressHydrated, resetProgressHydration } from '@/lib/progressHydration';
 import {
   buildUserAchievementData, getAllUnlockedIds, ACHIEVEMENT_CATEGORIES,
@@ -207,7 +208,7 @@ function DiamondNotificationWatcher() {
 
       // ── Authoritative unlocked/discovered sets (local truth) ───────────────
       let diamondUnlockedIds = getUnlockedDiamondIds([...flips, ...activeEntries]);
-      if (__DEV__) {
+      if (__DEV__ && DIAMONDS_ENABLED) {
         try {
           const { getDevDiamondIds } = await import('@/lib/devDiamondOverrides');
           const devIds = await getDevDiamondIds();
@@ -257,7 +258,7 @@ function DiamondNotificationWatcher() {
       }
 
       // ── Surface badges from the (now-hydrated) local SEEN keys ─────────────
-      const dUnseen = await getUnseenDiamondIds(diamondUnlockedIds);
+      const dUnseen = DIAMONDS_ENABLED ? await getUnseenDiamondIds(diamondUnlockedIds) : [];
       if (alive && dUnseen.length > 0) addUnseenDiamonds(dUnseen);
 
       if (achvUnlocked.length > 0) {

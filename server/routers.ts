@@ -722,6 +722,7 @@ const appRouter_scan = router({
               input.mimeType,
               input.detailImageBase64 ? { base64: input.detailImageBase64, mimeType: input.detailMimeType ?? 'image/jpeg' } : undefined,
               input.tagImageBase64    ? { base64: input.tagImageBase64,    mimeType: input.tagMimeType    ?? 'image/jpeg' } : undefined,
+              sid,
             ),
           ])]);
 

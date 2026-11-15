@@ -18,6 +18,7 @@ import React, {
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/lib/auth-context';
+import { DIAMONDS_ENABLED } from '@/lib/diamondsAvailability';
 
 const SEEN_KEY = '@flipstart/seen_achievement_ids';
 
@@ -225,6 +226,7 @@ export function AchievementNotificationProvider({ children }: { children: ReactN
 
   // ── Diamond discovery notifications (mirrors brand tracking) ────────────────
   const addUnseenDiamonds = useCallback((newIds: string[]) => {
+    if (!DIAMONDS_ENABLED) return;   // paused: nothing may be marked new
     setUnseenDiamondIds(prev => {
       const existing = new Set(prev);
       const additions = newIds.filter(id => !existing.has(id));
@@ -295,8 +297,8 @@ export function AchievementNotificationProvider({ children }: { children: ReactN
       addUnseenBrands,
       markBrandsSeen,
       markBrandSeen,
-      unseenDiamondCount: signedIn ? unseenDiamondIds.length : 0,
-      unseenDiamondIds:   signedIn ? unseenDiamondIds : [],
+      unseenDiamondCount: DIAMONDS_ENABLED && signedIn ? unseenDiamondIds.length : 0,
+      unseenDiamondIds:   DIAMONDS_ENABLED && signedIn ? unseenDiamondIds : [],
       addUnseenDiamonds,
       markDiamondsSeen,
       markDiamondSeen,

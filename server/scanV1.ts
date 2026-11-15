@@ -7,7 +7,7 @@
  * repaired result is a fabricated analysis and is worse than no result.
  */
 import { invokeLLM } from "./_core/llm.js";
-import { ENV } from "./_core/env.js";
+import { scanModelFor } from "./_core/env.js";
 import {
   SCAN_PROMPT_VERSION, buildSystemMessage, vintageCutoffYear,
 } from "./prompts/scanPromptV1_11_1.js";
@@ -129,11 +129,12 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
     });
   }
 
+  const model = scanModelFor(input.userId);
   const started = Date.now();
   let raw: Awaited<ReturnType<typeof invokeLLM>>;
   try {
     raw = await invokeLLM({
-      model: ENV.openaiScanModel,
+      model,
       messages: [
         { role: "system", content: system },
         { role: "user", content: content as never },
@@ -155,7 +156,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
     throw new ScanV1Error(
       schemaRejected ? "schema_rejected" : "transport_error",
       message,
-      { duration_ms: Date.now() - started, model: ENV.openaiScanModel },
+      { duration_ms: Date.now() - started, model },
     );
   }
   const duration = Date.now() - started;
@@ -168,7 +169,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
     ((usage.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens) ?? null;
 
   const telemetry: ScanV1Telemetry = {
-    model: raw.model || ENV.openaiScanModel,
+    model: raw.model || model,
     prompt_version: SCAN_PROMPT_VERSION,
     schema_version: SCHEMA_VERSION,
     schema_hash: canonicalSchemaHash(includeFeatures),
@@ -194,7 +195,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
   // attempt repair — a truncated analysis is an incomplete one.
   if (telemetry.finish_reason === "length") {
     throw new ScanV1Error("truncated",
-      `response truncated at max_tokens=${MAX_OUTPUT_TOKENS}`, { telemetry });
+      `response truncated (visible output cap ${MAX_OUTPUT_TOKENS}; finish_reason=length, completion_tokens=${telemetry.completion_tokens})`, { telemetry });
   }
 
   const text = extractText(choice?.message?.content);
@@ -270,6 +271,7 @@ const PRICING: Record<string, { in: number; cachedIn: number; out: number }> = {
   "gpt-4.1":      { in: 0.000002,   cachedIn: 0.0000005,   out: 0.000008  },
   "gpt-4.1-mini": { in: 0.0000004,  cachedIn: 0.0000001,   out: 0.0000016 },
   "gpt-4.1-nano": { in: 0.0000001,  cachedIn: 0.000000025, out: 0.0000004 },
+  "gpt-6-luna":   { in: 0.0000001,  cachedIn: 0.00000001,  out: 0.0000005 },
 };
 
 /**

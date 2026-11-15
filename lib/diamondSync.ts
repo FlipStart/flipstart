@@ -20,6 +20,7 @@
  * Unknown diamond_ids (either direction) are ignored with a dev warning.
  */
 
+import { DIAMONDS_ENABLED } from './diamondsAvailability';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { reportSyncWriteError } from '@/lib/syncDiag';
 import { DIAMONDS, getDiamondById, type UnlockedDiamond, type DiamondDef } from '@/lib/diamonds';
@@ -69,6 +70,7 @@ async function writeSet(key: string, set: Set<string>): Promise<void> {
 
 // ─── Fetch all remote rows for a user ────────────────────────────────────────
 export async function loadRemoteDiamondDiscoveries(userId: string): Promise<RemoteDiamondDiscovery[]> {
+  if (!DIAMONDS_ENABLED) return [];
   try {
     const sb = await getSupabase();
     if (!sb) return [];
@@ -121,6 +123,7 @@ export async function upsertDiamondDiscovery(
   rec: UnlockedDiamond,
   opts: { isUnread?: boolean } = {},
 ): Promise<void> {
+  if (!DIAMONDS_ENABLED) return;
   if (!isCanonical(rec.id)) return;
   const def = getDiamondById(rec.id);
   if (!def) return;
@@ -138,6 +141,7 @@ export async function upsertDiamondDiscovery(
 
 // ─── Mark seen (background, when user views the diamond) ───────────────────────
 export async function markDiamondDiscoverySeenRemote(userId: string, diamondId: string): Promise<void> {
+  if (!DIAMONDS_ENABLED) return;
   if (!isCanonical(diamondId)) return;
   const def = getDiamondById(diamondId);
   if (!def) return;
@@ -165,6 +169,7 @@ export async function markDiamondDiscoverySeenRemote(userId: string, diamondId: 
 
 // ─── Mark reveal seen (forward-compat; no Diamond reveal modal exists yet) ────
 export async function markDiamondRevealSeenRemote(userId: string, diamondId: string): Promise<void> {
+  if (!DIAMONDS_ENABLED) return;
   if (!isCanonical(diamondId)) return;
   const def = getDiamondById(diamondId);
   if (!def) return;
@@ -190,6 +195,7 @@ export async function markDiamondRevealSeenRemote(userId: string, diamondId: str
 
 // ─── Delete a row (dev reset only) ────────────────────────────────────────────
 export async function deleteDiamondDiscoveryRemoteDevOnly(userId: string, diamondId: string): Promise<void> {
+  if (!DIAMONDS_ENABLED) return;
   const def = getDiamondById(diamondId);
   const id = def?.id ?? diamondId;
   try {
@@ -221,6 +227,8 @@ export async function syncDiamondsWithSupabase(
   userId: string,
   records: UnlockedDiamond[],
 ): Promise<void> {
+  // Paused: no read, no write, no delete. A pause must never wipe saved diamonds.
+  if (!DIAMONDS_ENABLED) return;
   try {
     const sb = await getSupabase();
     if (!sb) return;
@@ -274,6 +282,8 @@ export async function reconcileDiamondsToLocalTruth(
   userId: string,
   finalUnlockedIds: string[],
 ): Promise<void> {
+  // Paused: with detection off the 'final' set is empty, and reconciling to it would delete real rows.
+  if (!DIAMONDS_ENABLED) return;
   try {
     const final = new Set(finalUnlockedIds.filter(isCanonical));
 

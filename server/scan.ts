@@ -1,5 +1,5 @@
 import { invokeLLM } from "./_core/llm";
-import { ENV } from "./_core/env";
+import { ENV, scanModelFor, listingModelFor } from "./_core/env";
 import { storagePut } from "./storage";
 import { legacyCategoryLabel } from "./compat/categoryLabel";
 
@@ -368,6 +368,8 @@ export async function analyzeItemFast(
   mimeType:   string,
   detail?:    { base64: string; mimeType: string },
   tag?:       { base64: string; mimeType: string },
+  /** Verified scanner id; only used to pick the trial model. */
+  userId?:    string,
 ): Promise<any> {
   // Build image parts — front always present, detail/tag added when available
   const imageParts: any[] = [
@@ -391,7 +393,7 @@ export async function analyzeItemFast(
 
   const photoCount = 1 + (detail ? 1 : 0) + (tag ? 1 : 0);
   const response = await invokeLLM({
-    model: ENV.openaiScanModel,
+    model: scanModelFor(userId),
     messages: [
       { role: "system", content: FAST_ANALYSIS_PROMPT },
       { role: "user",   content: imageParts },
@@ -496,6 +498,8 @@ interface ListingInput {
    *  appear in the listing text — the raw note is the user's words, these are
    *  the normalised conclusions. */
   userConfirmedFacts?:      string[];
+  /** Verified scanner id; only used to pick the trial model. */
+  scannerId?:               string;
 }
 
 export async function generateItemListings(input: ListingInput): Promise<{
@@ -528,7 +532,7 @@ export async function generateItemListings(input: ListingInput): Promise<{
       : "");
 
   const response = await invokeLLM({
-    model: ENV.openaiListingModel,
+    model: listingModelFor(input.scannerId),
     messages: [
       { role: "system", content: LISTING_PROMPT },
       { role: "user",   content: userMessage },

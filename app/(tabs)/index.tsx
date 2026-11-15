@@ -20,6 +20,7 @@
  *  • honest scans-remaining hook (null until real data; never a fake 7)
  */
 
+import { DIAMONDS_ENABLED } from '@/lib/diamondsAvailability';
 import { navGuard } from '@/lib/navGuard';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -127,7 +128,7 @@ const ROAR_SOUND = require('@/assets/images/lion-roar.m4a');
 const STEPS = [
   { icon: 'photo-camera' as const, title: 'Scan',    desc: 'Take photos of a thrift find.' },
   { icon: 'query-stats' as const,  title: 'Analyze', desc: 'See value, buy rating, and risk flags.' },
-  { icon: 'emoji-events' as const, title: 'Collect', desc: 'Unlock brands, achievements, and Diamonds.' },
+  { icon: 'emoji-events' as const, title: 'Collect', desc: DIAMONDS_ENABLED ? 'Unlock brands, achievements, and Diamonds.' : 'Unlock brands and achievements.' },
 ];
 
 // ─── Home Screen ──────────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@
  * No Supabase imports. Safe to import anywhere.
  */
 
+import { DIAMONDS_ENABLED } from './diamondsAvailability';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { HistoryEntry, StructuredId } from '@/types/flip';
 import { isHuntBundle } from '@/types/flip';
@@ -631,6 +632,7 @@ function candidateMatchesDiamond(def: DiamondDef, c: Candidate): boolean {
 export function computeUnlockedDiamonds(
   flips: HistoryEntry[],
 ): Record<string, UnlockedDiamond> {
+  if (!DIAMONDS_ENABLED) return {};   // paused: nothing can unlock. See lib/diamondsAvailability.ts
   const candidates = flipsToCandidates(flips);
   const result: Record<string, UnlockedDiamond> = {};
 
@@ -682,6 +684,7 @@ export interface DiamondMatchDebugItem {
  * concept — diamonds are never suppressed by one another.
  */
 export function debugDiamondMatching(flips: HistoryEntry[]): DiamondMatchDebugItem[] {
+  if (!DIAMONDS_ENABLED) return [];
   const candidates = flipsToCandidates(flips);
   return candidates.map(c => {
     const st = c.structured;
@@ -738,6 +741,7 @@ async function getSeenSet(): Promise<Set<string>> {
 
 /** Given the currently-unlocked ids, return those the user hasn't viewed yet. */
 export async function getUnseenDiamondIds(unlockedIds: string[]): Promise<string[]> {
+  if (!DIAMONDS_ENABLED) return [];   // paused: nothing can be marked new
   const seen = await getSeenSet();
   return unlockedIds.filter(id => !seen.has(id));
 }

@@ -38,6 +38,24 @@ export const ENV = {
   openaiScanModel:    modelOr(process.env.OPENAI_SCAN_MODEL),
   openaiListingModel: modelOr(process.env.OPENAI_LISTING_MODEL),
 
+  // ── Per-account model trial ─────────────────────────────────────────────
+  // Lets chosen accounts run a different model (scan AND listings) while
+  // everyone else stays on OPENAI_SCAN_MODEL / OPENAI_LISTING_MODEL. Both must
+  // be set for the trial to do anything. Ending the trial = clear either one.
+  openaiTestModel: (process.env.OPENAI_TEST_MODEL ?? "").trim(),
+  openaiTestModelUserIds: (process.env.OPENAI_TEST_MODEL_USER_IDS ?? "")
+    .split(",").map(s => s.trim()).filter(Boolean),
+
+  // How hard a reasoning model (gpt-5.x / gpt-6.x / o-series) thinks before it
+  // answers. Ignored for non-reasoning models (gpt-4.x), which reject the
+  // parameter. Allowed: none | low | medium | high | xhigh | max. Anything else
+  // (including blank) falls back to "none": scans must stay as fast as the old
+  // non-reasoning model. Raise it only if a trial shows quality needs it.
+  openaiReasoningEffort: (() => {
+    const v = (process.env.OPENAI_REASONING_EFFORT ?? "").trim().toLowerCase();
+    return ["none", "low", "medium", "high", "xhigh", "max"].includes(v) ? v : "none";
+  })(),
+
   // ── CanonicalAnalysisV1 rollout ──────────────────────────────────────────
   // Off by default. The legacy scan path stays intact and is the immediate
   // rollback: unset this variable and the old route resumes on restart.
@@ -82,6 +100,22 @@ export const ENV = {
   proContextAllowedUserIds: (process.env.PRO_CONTEXT_USER_IDS ?? "")
     .split(",").map(s => s.trim()).filter(Boolean),
 };
+
+/** True when this account is in the model trial (both trial variables set). */
+export function inModelTrial(userId: string | undefined | null): boolean {
+  if (!ENV.openaiTestModel || !userId) return false;
+  return ENV.openaiTestModelUserIds.includes(userId.trim());
+}
+
+/** Model for the photo scan. Trial accounts get OPENAI_TEST_MODEL. */
+export function scanModelFor(userId: string | undefined | null): string {
+  return inModelTrial(userId) ? ENV.openaiTestModel : ENV.openaiScanModel;
+}
+
+/** Model for listing generation. Trial accounts get OPENAI_TEST_MODEL. */
+export function listingModelFor(userId: string | undefined | null): string {
+  return inModelTrial(userId) ? ENV.openaiTestModel : ENV.openaiListingModel;
+}
 
 /** V1 is on for everyone, or this specific user is on the allow-list. */
 export function canonicalV1EnabledFor(userId: string | undefined | null): boolean {
