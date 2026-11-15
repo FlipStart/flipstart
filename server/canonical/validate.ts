@@ -318,13 +318,11 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
     ai.visible_attributes.size_system = "unknown";
     rejectedFields.push("visible_attributes.size_label");
   }
-  if (ai.visible_attributes.primary_color.trim() && !obsFields.has("primary_color")) {
-    down("ATTR_NO_EVIDENCE", "visible_attributes.primary_color",
-         ai.visible_attributes.primary_color, "", "populated attribute with no observable_field_evidence");
-    ai.visible_attributes.primary_color = "";
-    ai.visible_attributes.color_confidence = 0;
-    rejectedFields.push("visible_attributes.primary_color");
-  }
+  // primary_color is NOT checked here. It is a plainly visible descriptive
+  // field (see above, and the prompt since v1.10.0 says to skip its evidence).
+  // Requiring an evidence object anyway cleared the colour on most scans, so
+  // comps never saw "red plaid" and the colour bar in queryBuilder never fired.
+  // color_confidence still governs whether a colour is used.
   if (ai.visible_attributes.material_composition.length &&
       !obsFields.has("material_composition")) {
     down("ATTR_NO_EVIDENCE", "visible_attributes.material_composition",
