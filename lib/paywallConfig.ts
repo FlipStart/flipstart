@@ -99,6 +99,16 @@ export interface PaywallConfig {
    * their approved spacing on every screen.
    */
   compactAboveFoldActions?: boolean;
+  /**
+   * Which body the modal draws. Absent means the shared contextual layout
+   * (hero, plan cards, CTA, MORE WITH PRO strip) that every gate uses.
+   *
+   * "onboarding_v2" is the new-user offer's own screen: the full Pro feature
+   * list ABOVE the plans, compact plan rows, and both decisions on the first
+   * frame. Only the layout changes; purchase, restore and entitlement run
+   * through exactly the same code as every other source.
+   */
+  layout?: "onboarding_v2";
 }
 
 /**
@@ -329,9 +339,14 @@ export const ANNUAL_SCANS = 4000;
 const ONBOARDING_OFFER: PaywallConfig = {
   source: "onboarding_offer",
   eyebrow: "FLIPSTART PRO",
-  headline: "Unlock the Full FlipStart Experience",
+  /**
+   * One line, outcome first. The V2 layout draws the feature list directly
+   * under it, so the old subtitle has nothing left to say and is not shown.
+   */
+  headline: "Get more from every thrift trip.",
   subtitle: "More scans and the complete toolkit for finding, analyzing, and flipping smarter.",
   ctaLabel: "Start FlipStart Pro",
+  layout: "onboarding_v2",
   showScanStoreAlternative: false,
   /**
    * Renders directly under the free button, small and brown — subordinate by
@@ -364,6 +379,38 @@ const ONBOARDING_OFFER: PaywallConfig = {
    */
   freeContinueLabel: "Continue Free",
   compactAboveFoldActions: true,
+};
+
+/**
+ * What Pro adds, as the onboarding offer lists it BEFORE the plans.
+ *
+ * Every line is a real gate in server/monetization/policy.ts — the scan
+ * allowances, the third photo slot, AI Context, Generate Listings and Deep
+ * Analysis — and nothing else is: Sold Comps and Hunt Mode are free, so they
+ * are not sold here. No promise about profit, sales or accuracy.
+ *
+ * The scan numbers are interpolated from the constants above, never typed.
+ * Free already has two photos (front and tag), so the third is described as
+ * what it actually is: one more angle.
+ */
+export interface ProOfferFeature { key: string; title: string; detail: string }
+
+export const ONBOARDING_PRO_FEATURES: readonly ProOfferFeature[] = [
+  {
+    key: "scans",
+    title: "More scans",
+    detail: `${MONTHLY_SCANS.toLocaleString("en-US")}/mo or ${ANNUAL_SCANS.toLocaleString("en-US")}/yr`,
+  },
+  { key: "photos",   title: "3-photo scans",     detail: "Add another angle" },
+  { key: "context",  title: "AI Context",        detail: "Add your own notes" },
+  { key: "listings", title: "Generate Listings", detail: "For eBay and Depop" },
+];
+
+/** Full width under the grid: the one feature whose value needs a sentence. */
+export const ONBOARDING_DEEP_ANALYSIS: ProOfferFeature = {
+  key: "deep",
+  title: "Deep Analysis",
+  detail: "The full reasoning behind every verdict: confidence breakdown, where to sell, how to list.",
 };
 
 const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {

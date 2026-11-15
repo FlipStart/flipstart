@@ -131,6 +131,20 @@ function AppProviders({ children }: { children: React.ReactNode }) {
     })().catch(() => {});
   }, [user?.id]);
 
+  // Finish an onboarding answers save that did not land the first time. Delayed
+  // so it never competes with launch; gated and backed off inside the helper,
+  // and silent on every failure.
+  useEffect(() => {
+    const uid = user?.id;
+    if (!uid) return;
+    const t = setTimeout(() => {
+      import('@/lib/onboardingAnswersRetry')
+        .then(m => m.retryStagedAnswers(uid))
+        .catch(() => {});
+    }, 5000);
+    return () => clearTimeout(t);
+  }, [user?.id]);
+
   return (
     <FlipStoreProvider userId={user?.id ?? null}>
       <ScanProvider>

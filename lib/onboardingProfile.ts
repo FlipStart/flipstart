@@ -26,10 +26,15 @@ import {
 
 export type Archetype = "profit_hunter" | "treasure_hunter" | "all_around_flipper";
 
+/**
+ * Title case, one sentence. The line is held to two lines on the smallest
+ * phone, so a result screen never has to choose between the description and
+ * the tools below it: keep each under ~76 characters.
+ */
 export const ARCHETYPES: Record<Archetype, { title: string; line: string }> = {
-  profit_hunter:      { title: "THE PROFIT HUNTER",      line: "You buy to sell. FlipStart is built to tell you what a find is worth before you pay for it." },
-  treasure_hunter:    { title: "THE TREASURE HUNTER",    line: "You buy what you love. FlipStart helps you know what it is, what it\u2019s worth, and what deserves a closer look." },
-  all_around_flipper: { title: "THE ALL-AROUND FLIPPER", line: "Some for you, some to sell. FlipStart helps you decide which is which." },
+  profit_hunter:      { title: "The Profit Hunter",      line: "You buy to sell. FlipStart helps you see what a find is worth before you pay." },
+  treasure_hunter:    { title: "The Treasure Hunter",    line: "You hunt for great finds. FlipStart tells you what each one is worth." },
+  all_around_flipper: { title: "The All-Around Flipper", line: "Some for you, some to sell. FlipStart helps you decide which is which." },
 };
 
 export function deriveArchetype(goal: PrimaryGoal): Archetype {
@@ -49,6 +54,7 @@ export type ToolKey =
 export interface RecommendedTool {
   key: ToolKey;
   name: string;
+  /** One line, ~40 characters at most: the result card gives it exactly one. */
   blurb: string;
   /** Pro-only per canUseFeature(). Rendered as a PRO seal; never implied free. */
   pro: boolean;
@@ -56,13 +62,13 @@ export interface RecommendedTool {
 }
 
 export const TOOLS: Record<ToolKey, RecommendedTool> = {
-  scan_finds:        { key: "scan_finds",        name: "Scan Finds",         blurb: "Estimated resale, demand and a buy rating from a photo.", pro: false, icon: "qr-code-scanner" },
-  sold_comps:        { key: "sold_comps",        name: "Sold Comps",         blurb: "Real sold listings to check the number against.",       pro: false, icon: "receipt-long" },
-  deep_analysis:     { key: "deep_analysis",     name: "Deep Analysis",      blurb: "Buy Under, price logic, risk flags and evidence.",         pro: true,  icon: "insights" },
-  hunt_mode:         { key: "hunt_mode",         name: "Hunt Mode",          blurb: "Turn a thrift trip into XP, ranks and discoveries.",      pro: false, icon: "travel-explore" },
-  demand_sell_speed: { key: "demand_sell_speed", name: "Demand & Sell Speed", blurb: "See how fast an item tends to move before you buy.",    pro: false, icon: "speed" },
-  generate_listings: { key: "generate_listings", name: "Generate Listings",  blurb: "Ready-to-edit eBay and Depop drafts from your scan.",     pro: true,  icon: "sell" },
-  brand_compendium:  { key: "brand_compendium",  name: "Brand Compendium",   blurb: "Discover brands as you find them and build your record.", pro: false, icon: "local-offer" },
+  scan_finds:        { key: "scan_finds",        name: "Scan Finds",         blurb: "Estimated resale and a buy rating.", pro: false, icon: "qr-code-scanner" },
+  sold_comps:        { key: "sold_comps",        name: "Sold Comps",         blurb: "Real sold listings behind the number.",       pro: false, icon: "receipt-long" },
+  deep_analysis:     { key: "deep_analysis",     name: "Deep Analysis",      blurb: "The full reasoning behind every verdict.",         pro: true,  icon: "insights" },
+  hunt_mode:         { key: "hunt_mode",         name: "Hunt Mode",          blurb: "Turn a thrift trip into XP and ranks.",      pro: false, icon: "travel-explore" },
+  demand_sell_speed: { key: "demand_sell_speed", name: "Demand & Sell Speed", blurb: "How fast an item tends to sell.",    pro: false, icon: "speed" },
+  generate_listings: { key: "generate_listings", name: "Generate Listings",  blurb: "eBay and Depop drafts from your scan.",     pro: true,  icon: "sell" },
+  brand_compendium:  { key: "brand_compendium",  name: "Brand Compendium",   blurb: "Discover brands as you find them.", pro: false, icon: "local-offer" },
 };
 
 /** What each pain point asks for, most specific first. */
@@ -166,16 +172,36 @@ function opportunityLabelOne(pain: PainPoint): string {
 }
 
 /**
- * The focus chips: at most two, in catalogue order, plus a count of the rest.
+ * Short forms of the Question 3 titles, for the result screen's focus chips.
  *
- * A user may select all six. Rendering six chips turns the profile card into a
- * six-line block on both screens, so the overflow becomes "+4 more" rather
- * than being allowed to grow the layout.
+ * The full titles run to 27 characters; three of them can need three rows on
+ * a 375pt phone. These are held to 18 so ANY three fit in at most two rows,
+ * which is what lets the result screen promise it never scrolls. Same ideas,
+ * same words wherever the title was already short.
  */
-export function painChips(pains: readonly PainPoint[], max = 2): { visible: string[]; moreCount: number } {
+export const CHIP_LABEL: Record<PainPoint, string> = {
+  item_identification:   "Identify items",
+  valuation_uncertainty: "Know the value",
+  missed_opportunities:  "Profitable flips",
+  comp_research:         "Sold comps",
+  slow_selling_buys:     "Avoid slow sellers",
+  listing_time:          "Faster listings",
+  learn_brands:          "Learn brands",
+  track_progress:        "Track progress",
+};
+
+/**
+ * The focus chips: at most three, in catalogue order, plus a count of the rest.
+ *
+ * A user may select all eight. Rendering eight chips would turn the profile
+ * into a block of rows, so the overflow becomes "+5 more" rather than being
+ * allowed to grow the layout. Three labels plus the "+N" chip is four chips of
+ * <= 18 characters: two rows at the very most.
+ */
+export function painChips(pains: readonly PainPoint[], max = 3): { visible: string[]; moreCount: number } {
   const selected = PAIN_POINTS.filter(p => pains.includes(p.value));
   return {
-    visible: selected.slice(0, max).map(p => p.title),
+    visible: selected.slice(0, max).map(p => CHIP_LABEL[p.value]),
     moreCount: Math.max(0, selected.length - max),
   };
 }

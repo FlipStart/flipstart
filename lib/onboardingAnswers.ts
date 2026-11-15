@@ -147,8 +147,10 @@ export interface ProfileWriter {
 export async function persistAnswersToProfile(client: unknown, record: OnboardingMetadata, timeoutMs = 6000): Promise<boolean> {
   try {
     const db = client as ProfileWriter;
-    const { data } = await db.auth.getSession();
-    const uid = data.session?.user.id;
+    // getSession reads local storage and can refresh a token over the network;
+    // bounded like the writes so a dead connection cannot hold the caller.
+    const got = await withTimeout(db.auth.getSession(), timeoutMs, { data: { session: null } });
+    const uid = got.data.session?.user.id;
     if (!uid) return false;
     const res = await withTimeout(
       db.from("profiles").update({ onboarding_answers: record }).eq("id", uid).select("id"),

@@ -183,11 +183,14 @@ export const EMPTY_ANSWERS: OnboardingAnswers = Object.freeze({
  *   walkthrough_analysis,
  *   walkthrough_progress    — the real-product walkthrough, BEFORE any question
  *   motivation … source      — the four questions
- *   building, result         — profile build (removed in V2 Phase 4) and payoff
+ *   result                   — the profile, straight after the last answer
  *   offer                    — the final Pro-or-Free choice, after auth
  *
  * The old money / intelligence / gamification value screens are gone: they
- * were hand-built sample cards, and V2 shows the real app instead.
+ * were hand-built sample cards, and V2 shows the real app instead. So is the
+ * "Building your profile" wait: the profile is a pure function of the answers
+ * (lib/onboardingProfile.ts), so there is nothing to wait for and no stage
+ * pretending there is.
  *
  * Auth happens between `result` and `offer` on a different screen; progress
  * simply pauses there.
@@ -195,7 +198,7 @@ export const EMPTY_ANSWERS: OnboardingAnswers = Object.freeze({
 export type QuizStage =
   | "walkthrough_analysis" | "walkthrough_progress"
   | "motivation" | "experience" | "pain_points" | "source"
-  | "building" | "result"
+  | "result"
   | "offer";
 
 export const QUIZ_STAGES: readonly QuizStage[] = [
@@ -205,7 +208,6 @@ export const QUIZ_STAGES: readonly QuizStage[] = [
   "experience",
   "pain_points",
   "source",
-  "building",
   "result",
   "offer",
 ] as const;
@@ -223,8 +225,8 @@ export function questionNumber(stage: QuizStage): number {
 
 /**
  * Whether Continue may be enabled on a stage. Questions need their answer;
- * walkthrough screens and the result are always complete; the build stage
- * advances itself and the offer is decided in the paywall.
+ * walkthrough screens and the result are always complete; the offer is
+ * decided in the paywall.
  */
 export function stageIsComplete(stage: QuizStage, a: OnboardingAnswers): boolean {
   switch (stage) {
@@ -235,13 +237,12 @@ export function stageIsComplete(stage: QuizStage, a: OnboardingAnswers): boolean
     case "walkthrough_analysis":
     case "walkthrough_progress":
     case "result":       return true;
-    case "building":
     case "offer":        return false;
     default:             return false;
   }
 }
 
-/** All four answers present — the precondition for building a profile. */
+/** All four answers present — the precondition for showing a profile. */
 export function answersComplete(a: OnboardingAnswers): a is OnboardingAnswers & {
   primaryGoal: PrimaryGoal; experienceLevel: ExperienceLevel; acquisitionSource: AcquisitionSource;
 } {
@@ -252,8 +253,8 @@ export function answersComplete(a: OnboardingAnswers): a is OnboardingAnswers & 
 /**
  * Which of the seven progress segments a stage fills (V2):
  *   1–2 walkthrough · 3–6 the four questions · 7 the profile result.
- * `building` shares 6 with the last question only until Phase 4 removes it. The offer keeps the
- * bar full. Explicit, so a stage added later cannot silently shift the rest.
+ * The offer keeps the bar full. Explicit, so a stage added later cannot
+ * silently shift the rest.
  */
 export const PROGRESS_STEPS = 7;
 const STAGE_STEP: Record<QuizStage, number> = {
@@ -263,7 +264,6 @@ const STAGE_STEP: Record<QuizStage, number> = {
   experience: 4,
   pain_points: 5,
   source: 6,
-  building: 6,
   result: 7,
   offer: 7,
 };

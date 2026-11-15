@@ -78,6 +78,8 @@ import { ScanStoreAlternative } from "./ScanStoreAlternative";
 import { planCtaLabel } from "@/lib/paywallPricing";
 import { PaywallHero } from "./PaywallHero";
 import { PaywallPurchaseButton } from "./PaywallPurchaseButton";
+import { PaywallFreeButton } from "./PaywallFreeButton";
+import { OnboardingOffer } from "./OnboardingOffer";
 import { PlanSelector } from "./PlanSelector";
 import { OrnamentRule, ParchmentAging } from "./Ornament";
 import { PW, PW_RADIUS } from "./paywallTheme";
@@ -167,7 +169,12 @@ export function ProPaywallModal({
     if (!request) return;
     setState(INITIAL_STATE);
     setSelected("annual"); // Annual is the default, every time.
-    paywallAnalytics.opened(request.config.source);
+    // The V2 onboarding offer is a different screen from the one that shipped
+    // before it under the same source; the tag lets the dashboard split them.
+    paywallAnalytics.opened(
+      request.config.source,
+      request.config.layout === "onboarding_v2" ? { flow: "v2" } : {},
+    );
   }, [request?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
@@ -450,6 +457,15 @@ export function ProPaywallModal({
     && offerNeedsCompactHeight(windowHeight, insets.top, insets.bottom);
   const bottomPad = Math.max(insets.bottom, 14);
 
+  /**
+   * The onboarding offer draws its own screen (OnboardingOffer): its own
+   * header, which owns the top safe area, and its own gutters. Only the OFFER
+   * does — "Pro unlocked", "Purchase complete" and "already a member" are the
+   * same shared panels every source shows, in the shared column.
+   */
+  const offerLayout =
+    config?.layout === "onboarding_v2" && !isTerminal(state.phase) && !alreadyPro;
+
   const onSelectPlan = useCallback(
     (t: PurchaseTarget) => {
       if (busy || !config) return; // Target must not move mid-transaction.
@@ -472,8 +488,8 @@ export function ProPaywallModal({
       <View style={s.page}>
         {/* Aged paper, in two nearly invisible layers. Grain first, then the
             edge warmth on top of it. */}
-        <ParchmentOverlay opacity={0.05} />
-        <ParchmentAging />
+        {!offerLayout && <ParchmentOverlay opacity={0.05} />}
+        {!offerLayout && <ParchmentAging />}
 
         {/* Outside the ScrollView: dismissal must never require scrolling.
             Absent entirely on a non-dismissible source — see requestClose. */}
@@ -502,12 +518,39 @@ export function ProPaywallModal({
             // The 46pt above the hero exists for the close X. Without an X
             // (the onboarding offer) it is dead space that pushes the free
             // option toward the fold, so it collapses to a margin.
-            { paddingTop: topPad + (dismissible ? 46 : compact ? 6 : 14), paddingBottom: bottomPad + 22 },
+            offerLayout
+              ? { paddingHorizontal: 0, paddingTop: 0, paddingBottom: bottomPad + 6 }
+              : { paddingTop: topPad + (dismissible ? 46 : compact ? 6 : 14), paddingBottom: bottomPad + 22 },
           ]}
           showsVerticalScrollIndicator={false}
           // One scroll container only — no nested scrollables anywhere below.
           keyboardShouldPersistTaps="handled"
         >
+          {offerLayout && config ? (
+            <OnboardingOffer
+              config={config}
+              selected={selected}
+              onSelect={onSelectPlan}
+              annual={products.annual}
+              monthly={products.monthly}
+              productsStatus={products.status}
+              productsMessage={products.message}
+              onReloadProducts={products.reload}
+              notice={state.notice ?? null}
+              ctaLabel={planCtaLabel(selected, selectedProduct.pricing)}
+              onPurchase={runPurchase}
+              purchaseBusy={state.phase === "purchasing" || state.phase === "activating"}
+              purchaseEnabled={purchaseEnabled}
+              blockedLabel={blockedLabel}
+              activating={state.phase === "activating"}
+              busy={busy}
+              onContinueFree={continueFree}
+              disclosure={disclosure}
+              onRestore={runRestore}
+              restoreBusy={state.phase === "restoring"}
+              restoreDisabled={busy && state.phase !== "restoring"}
+            />
+          ) : (
           <View style={[s.column, compact && s.columnCompact]}>
             {isTerminal(state.phase) ? (
               <ResolutionPanel
@@ -592,17 +635,7 @@ export function ProPaywallModal({
                       detail — visible and tappable, but not competing with the
                       forest CTA above it. */}
                   {!!config?.freeContinueLabel && (
-                    <Pressable
-                      onPress={continueFree}
-                      disabled={busy}
-                      accessibilityRole="button"
-                      accessibilityLabel={config.freeContinueLabel}
-                      accessibilityState={{ disabled: busy }}
-                      style={({ pressed }) => [s.freeBtn, busy && { opacity: 0.45 }, pressed && !busy && { opacity: 0.85 }]}
-                    >
-                      <View pointerEvents="none" style={s.freeTrim} />
-                      <Text style={s.freeText} allowFontScaling={false}>{config.freeContinueLabel}</Text>
-                    </Pressable>
+                    <PaywallFreeButton label={config.freeContinueLabel} onPress={continueFree} busy={busy} />
                   )}
 
                   {!!config?.secondaryValueLine && (
@@ -640,6 +673,7 @@ export function ProPaywallModal({
               </>
             )}
           </View>
+          )}
         </ScrollView>
       </View>
     </Modal>
@@ -791,23 +825,6 @@ const s = StyleSheet.create({
   },
 
   scroll: { paddingHorizontal: 20, flexGrow: 1 },
-  /** Outlined, card white, forest text: clearly second to the forest CTA above. */
-  freeBtn: {
-    backgroundColor: PW.card,
-    borderRadius: PW_RADIUS.pill,
-    borderWidth: 1.6,
-    borderColor: PW.forest,
-    minHeight: 50,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 18,
-    overflow: "hidden",
-  },
-  freeTrim: {
-    position: "absolute", top: 3, left: 3, right: 3, bottom: 3,
-    borderRadius: PW_RADIUS.pill - 3, borderWidth: 1, borderColor: "rgba(196,163,52,0.45)",
-  },
-  freeText: { fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: "800", color: PW.forest },
   /** Caps the measure on iPad and Pro Max without affecting phones. */
   column: { width: "100%", maxWidth: 460, alignSelf: "center", gap: 20 },
   /** Short screens: hero → plans 20 → 12. */

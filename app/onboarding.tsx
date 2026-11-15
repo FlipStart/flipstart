@@ -12,9 +12,9 @@
  *
  * ── The journey ─────────────────────────────────────────────────────────────
  *   Welcome → Walkthrough: analysis → Walkthrough: progress   (V2: value first)
- *   → Motivation → Experience → Pain points
- *   → Building your profile → Personalized result
- *   → [existing /auth: create account] → Onboarding Pro offer → Enter FlipStart
+ *   → Motivation → Experience → Pain points → Source
+ *   → Personalized result (straight after the last answer — no wait screen)
+ *   → [existing /auth: create account] → Onboarding Pro offer → Camera
  *
  * ── Account creation is not the end ─────────────────────────────────────────
  * A brand-new account created from this funnel is finished only when the
@@ -64,8 +64,8 @@ import { OB } from '@/components/onboarding/onboardingTheme';
 import { ChoiceRow, IconTile, SourceTile, TwoColumnGrid } from '@/components/onboarding/ChoiceCards';
 import { useOnboardingLayout } from '@/components/onboarding/useOnboardingLayout';
 import { WalkthroughAnalysisMedia, WalkthroughProgressMedia } from '@/components/onboarding/WalkthroughMedia';
-import { ProfileBuilding } from '@/components/onboarding/ProfileBuilding';
 import { ProfileResult } from '@/components/onboarding/ProfileResult';
+import { ARCHETYPES, deriveArchetype } from '@/lib/onboardingProfile';
 import {
   ONBOARDING_VERSION, completeOnboarding, finishNewUserOnboarding, restoreSignedInDevice,
   stageOnboardingAnswers, readStagedAnswers, clearStagedAnswers, bindStagedAnswersToUser,
@@ -102,6 +102,29 @@ let startedLoggedThisSession = false;
  */
 type Resume = 'undecided' | 'none' | 'hold' | 'username' | 'existing' | 'offer';
 
+/**
+ * How long Home is on screen before the Camera opens over it.
+ *
+ * A new user's first screen after the offer is the Camera, with Home
+ * underneath so that closing the camera lands somewhere real. The two cannot
+ * go in the same tick: the paywall sheet is still sliding away and Home is
+ * still arriving, and iOS will not reliably present a full-screen modal (the
+ * camera) in the middle of either. Half a second lets both settle.
+ */
+export const CAMERA_HANDOFF_MS = 500;
+
+/**
+ * The most the exit may wait on the network. Past this the user moves on and
+ * the staged answers are finished by the launch-time retry
+ * (lib/onboardingAnswersRetry.ts). A new user is never held on "Opening your
+ * camera" by a slow connection.
+ */
+export const FINISH_SAVE_BUDGET_MS = 8000;
+
+function withinBudget<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([p.catch(() => fallback), new Promise<T>(r => setTimeout(() => r(fallback), ms))]);
+}
+
 /** The stage transition: a short settle, once per stage. */
 const STAGE_ENTER = FadeInDown.duration(240);
 
@@ -136,7 +159,6 @@ export default function OnboardingScreen() {
   const [answers, setAnswers] = useState<OnboardingAnswers>(() => ({ ...EMPTY_ANSWERS, painPoints: [] }));
   const [saving, setSaving] = useState(false);
   const [resume, setResume] = useState<Resume>('undecided');
-  const [buildNeedsContinue, setBuildNeedsContinue] = useState(false);
   const { compact } = useOnboardingLayout();
   const sourceScrollRef = useRef<ScrollView>(null);
 
@@ -264,7 +286,6 @@ export default function OnboardingScreen() {
   }, []);
 
   const back = useCallback(() => {
-    if (stage === 'result') { setStage('source'); return; }         // never replay the build
     setStage(stageIndex <= 0 ? 'welcome' : QUIZ_STAGES[stageIndex - 1]);
   }, [stage, stageIndex]);
 
@@ -313,14 +334,26 @@ export default function OnboardingScreen() {
     finishingRef.current = true;
     setSaving(true);
     if (answersComplete(answers)) {
-      await persistAnswersToAccount({
+      const saved = await withinBudget(persistAnswersToAccount({
         primaryGoal: answers.primaryGoal,
         experienceLevel: answers.experienceLevel,
         painPoints: answers.painPoints,
         acquisitionSource: answers.acquisitionSource,
         acquisitionSourceOther: otherText(answers),
         answeredAt: new Date().toISOString(),
-      });
+      }), FINISH_SAVE_BUDGET_MS, false);
+      if (!saved && user?.id) {
+        // Slow or failed: keep the answers on the phone, bound to this account,
+        // so the launch-time retry finishes the save instead of losing them.
+        await stageOnboardingAnswers({
+          primaryGoal: answers.primaryGoal,
+          experienceLevel: answers.experienceLevel,
+          painPoints: answers.painPoints,
+          acquisitionSource: answers.acquisitionSource,
+          acquisitionSourceOther: otherText(answers),
+        }).catch(() => {});
+        await bindStagedAnswersToUser(user.id).catch(() => {});
+      }
     }
     trackAnalyticsEvent('onboarding_completed', {
       onboarding_version: ONBOARDING_VERSION, outcome: reason, flow: 'v2',
@@ -331,13 +364,13 @@ export default function OnboardingScreen() {
     // Legacy UserMode literal — not the quiz's primaryGoal. See the header.
     await completeOnboarding('resell').catch(() => {});
     router.replace('/(tabs)' as any);
-  }, [answers, router]);
+  }, [answers, router, user?.id]);
 
   /**
    * The end of a new-user funnel. Called ONLY from the offer, with the outcome
    * that actually happened:
    *   pro                — the SERVER confirmed Pro (onUnlocked)
-   *   free               — the user tapped Continue with 15 Free Scans
+   *   free               — the user tapped Continue Free
    *   activation_pending — the purchase went through, the server has not
    *                        confirmed yet, and the user chose to carry on
    *
@@ -349,7 +382,7 @@ export default function OnboardingScreen() {
     if (finishingRef.current) return;
     finishingRef.current = true;
     setSaving(true);
-    await persistIfStaged();                       // staged copy survives a failed write
+    await withinBudget(persistIfStaged(), FINISH_SAVE_BUDGET_MS, false);   // staged copy survives a failed or slow write
     /**
      * Read the answers from storage rather than state.
      *
@@ -358,16 +391,26 @@ export default function OnboardingScreen() {
      * payload is the truthful record of what they answered, and reading it
      * here is what lets `answers` stay tap-only.
      */
-    const recorded = (await readStagedAnswers()) ?? null;
+    const recorded = (await readStagedAnswers().catch(() => null)) ?? null;
     trackAnalyticsEvent('onboarding_completed', {
       onboarding_version: ONBOARDING_VERSION, outcome, flow: 'v2',
       primary_goal: recorded?.primaryGoal ?? answers.primaryGoal,
       experience_level: recorded?.experienceLevel ?? answers.experienceLevel,
       pain_points: recorded?.painPoints ?? answers.painPoints,
       acquisition_source: recorded ? (recorded.acquisitionSource ?? null) : answers.acquisitionSource,
+      landing: 'camera',
     });
-    await finishNewUserOnboarding('resell');       // clears the marker, writes the version
+    await finishNewUserOnboarding('resell').catch(() => {});   // clears the marker, writes the version
+    /**
+     * Straight to the Camera, whichever way they chose.
+     *
+     * Home goes in first and the Camera opens on top of it, exactly as the
+     * Scan button does, so Close on the camera returns to Home rather than to
+     * nothing. If the camera push were ever lost, the user is simply on Home.
+     * The timer outlives this screen on purpose: replace unmounts it.
+     */
     router.replace('/(tabs)' as any);
+    setTimeout(() => { router.push('/camera' as any); }, CAMERA_HANDOFF_MS);
   }, [answers, persistIfStaged, router]);
 
   // ── The offer: the shared Pro paywall, opened once per arrival ──────────
@@ -420,8 +463,6 @@ export default function OnboardingScreen() {
     }
     setStage(QUIZ_STAGES[stageIndex + 1]);
   }, [canContinue, stage, stageIndex, answers, signedIn, finishExisting, saveProfileAndCreateAccount]);
-
-  const buildDone = useCallback(() => { setStage('result'); }, []);
 
   // ── Answer setters ──────────────────────────────────────────────────────
   const setGoal       = (v: OnboardingAnswers['primaryGoal'])      => setAnswers(a => ({ ...a, primaryGoal: v }));
@@ -539,7 +580,7 @@ export default function OnboardingScreen() {
         support="Choose all that apply" supportAccent={picked > 0 ? `${picked} selected` : undefined}>
         <TwoColumnGrid gap={compact ? 8 : 10}>
           {PAIN_POINTS.map(o => (
-            <IconTile key={o.value} title={o.title} icon={o.icon as any} height={compact ? 82 : 88} compact={compact}
+            <IconTile key={o.value} title={o.title} icon={o.icon as any} height={compact ? 80 : 88} compact={compact}
               selected={answers.painPoints.includes(o.value)} onPress={() => tapPain(o.value)} />
           ))}
         </TwoColumnGrid>
@@ -587,19 +628,6 @@ export default function OnboardingScreen() {
     );
   }
 
-  // ── Building the profile ────────────────────────────────────────────────
-  if (stage === 'building') {
-    return (
-      <OnboardingShell progress={progress} centered ctaPlacement="content"
-        headline={'Building your FlipStart profile\u2026'} accent="FlipStart"
-        support="Putting your answers to work."
-        cta={buildNeedsContinue ? { label: 'Continue', onPress: buildDone } : undefined}
-      >
-        <ProfileBuilding answers={answers} onDone={buildDone} onReduceMotion={setBuildNeedsContinue} />
-      </OnboardingShell>
-    );
-  }
-
   // ── The result ──────────────────────────────────────────────────────────
   if (stage === 'result') {
     if (!answersComplete(answers)) {
@@ -610,18 +638,18 @@ export default function OnboardingScreen() {
           support="A few answers are missing." cta={{ label: 'Back to the quiz', onPress: () => setStage('motivation') }} />
       );
     }
+    // The archetype is the screen's head; the body is what it means for them.
+    // Both are derived from the answers on the spot — there is nothing to wait for.
+    const archetype = ARCHETYPES[deriveArchetype(answers.primaryGoal)];
     return (
       <OnboardingShell progress={progress} onBack={back}
-        headline="Your FlipStart profile is ready" accent="FlipStart"
-        support={signedIn ? undefined : 'Save your scans, XP, history, and profile across devices.'}
-        cta={{ label: signedIn ? 'Enter FlipStart' : 'Save My Profile', onPress: next, disabled: saving }}
+        kicker="YOUR FLIPSTART PROFILE"
+        headline={archetype.title} accent={archetype.title}
+        support={archetype.line}
+        cta={{ label: signedIn ? 'Enter FlipStart' : 'Save my profile', onPress: next, disabled: saving }}
       >
         <Animated.View key={stage} entering={STAGE_ENTER}>
-          <ProfileResult
-            primaryGoal={answers.primaryGoal}
-            experienceLevel={answers.experienceLevel}
-            painPoints={answers.painPoints}
-          />
+          <ProfileResult primaryGoal={answers.primaryGoal} painPoints={answers.painPoints} />
         </Animated.View>
       </OnboardingShell>
     );
@@ -631,8 +659,8 @@ export default function OnboardingScreen() {
   // stage === 'offer'
   return (
     <OnboardingShell progress={1} centered ctaPlacement="content"
-      headline="Choose how to start"
-      support={'Go Pro, or continue on the Free plan \u2014 you\u2019ll be scanning in a moment either way.'}
+      headline={saving ? 'Opening your camera\u2026' : 'Choose how to start'}
+      support={saving ? 'One moment.' : 'Go Pro or continue free. You\u2019ll be scanning in a moment either way.'}
       cta={offerShown && !isPaywallOpen && !saving ? { label: 'See your options', onPress: openOffer } : undefined}
     >
       <View style={w.holding}>{saving && <ActivityIndicator color={OB.forest} />}</View>

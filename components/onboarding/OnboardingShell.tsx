@@ -8,8 +8,9 @@
  *                      the back button in the header row — the live Home
  *                      header, so onboarding looks like the app it opens into.
  *   OnboardingProgress segmented bar BELOW the brand, never above it.
- *   Head               a readable step label, the headline (one phrase may be
- *                      forest), one supporting line in ink.
+ *   Head               a readable step label (or, on the result screen, a small
+ *                      gold kicker), the headline (one phrase may be forest),
+ *                      one supporting line in ink.
  *   Body               the screen's content. It scrolls only if it must (large
  *                      accessibility text); screens are designed to fit.
  *   Actions            one filled OnboardingButton, plus an optional footer
@@ -48,6 +49,11 @@ export interface OnboardingShellProps {
   onBack?: () => void;
   /** A readable step label above the title, e.g. "Question 1 of 4". */
   eyebrow?: string;
+  /**
+   * A small tracked label in readable gold above the title ("YOUR FLIPSTART
+   * PROFILE"). The same job as `eyebrow` for a screen that is not a question.
+   */
+  kicker?: string;
   /** A one-line lead-in above the title, in italic serif. */
   lead?: string;
   headline: string;
@@ -81,7 +87,7 @@ export interface OnboardingShellProps {
 }
 
 export function OnboardingShell({
-  progress, onBack, eyebrow, lead, headline, accent, support, supportAccent, children, cta, footer,
+  progress, onBack, eyebrow, kicker, lead, headline, accent, support, supportAccent, children, cta, footer,
   centered = false, ctaPlacement = "bottom", bodyStyle, avoidKeyboard = false, scrollRef,
 }: OnboardingShellProps) {
   const insets = useSafeAreaInsets();
@@ -108,6 +114,7 @@ export function OnboardingShell({
 
       <View style={[s.head, compact && s.headCompact, centered && s.headCentered]}>
         {!!eyebrow && <Text style={[s.eyebrow, centered && s.textCentered]} maxFontSizeMultiplier={1.3}>{eyebrow}</Text>}
+        {!!kicker && <Text style={[s.kicker, centered && s.textCentered]} maxFontSizeMultiplier={1.3}>{kicker}</Text>}
         {!!lead && <Text style={[s.lead, centered && s.textCentered]} maxFontSizeMultiplier={1.3}>{lead}</Text>}
         <Headline text={headline} accent={accent} centered={centered} compact={compact} />
         {!!support && (
@@ -180,6 +187,8 @@ const s = StyleSheet.create({
 
   /** "Question 1 of 4": readable, green, sentence case — not tiny tracked caps. */
   eyebrow: { fontSize: 13, lineHeight: 18, fontWeight: "700", color: OB.forest },
+  /** The readable gold (4.7:1), small and tracked — the one place gold carries words. */
+  kicker: { fontSize: 10.5, lineHeight: 14, fontWeight: "800", letterSpacing: 1.6, color: OB.goldText },
   /** Hunt Mode's italic-serif lead line. */
   lead: { fontFamily: FONTS.serif, fontStyle: "italic", fontSize: 16, lineHeight: 22, color: OB.ink },
   headline: { fontFamily: FONTS.serif, fontSize: 28, lineHeight: 34, fontWeight: "700", color: OB.ink },

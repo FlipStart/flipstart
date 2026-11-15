@@ -2317,6 +2317,174 @@ export function getFirstSessionFunnel(d: V4Data) {
   };
 }
 
+// ── Onboarding V2 ───────────────────────────────────────────────────────────
+
+/**
+ * The screens of the V2 onboarding, in the order the app shows them. Copied
+ * from QUIZ_STAGES in lib/onboardingQuiz.ts (the server cannot import app
+ * code); change both together. A test keeps them in step.
+ */
+export const ONBOARDING_V2_STEPS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "welcome",              label: "Welcome" },
+  { key: "walkthrough_analysis", label: "Walkthrough · analysis" },
+  { key: "walkthrough_progress", label: "Walkthrough · progress" },
+  { key: "motivation",           label: "Q1 · goal" },
+  { key: "experience",           label: "Q2 · experience" },
+  { key: "pain_points",          label: "Q3 · what to help with" },
+  { key: "source",               label: "Q4 · where they heard of FlipStart" },
+  { key: "result",               label: "Profile result" },
+];
+
+/** Display names for the coded answers. Mirrors lib/onboardingQuiz.ts; a test keeps the keys in step. */
+export const ONBOARDING_V2_LABELS = {
+  source: {
+    tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube", app_store: "App Store search",
+    facebook: "Facebook", reddit: "Reddit", friend: "Friend or word of mouth", other: "Other",
+  } as Record<string, string>,
+  goal: {
+    resell_profit: "Make more money reselling", personal_finds: "Find valuable items for myself", both: "A little of both",
+  } as Record<string, string>,
+  experience: {
+    beginner: "New to this", basic: "Knows the basics", experienced: "Pretty experienced", regular_reseller: "Resells regularly",
+  } as Record<string, string>,
+  pain: {
+    item_identification: "Identify unfamiliar items", valuation_uncertainty: "Know what it's worth",
+    missed_opportunities: "Find profitable flips", comp_research: "Check sold comps faster",
+    slow_selling_buys: "Avoid items that won't sell", listing_time: "Create listings faster",
+    learn_brands: "Learn brands", track_progress: "Track finds and progress",
+  } as Record<string, string>,
+};
+
+const OFFER_OUTCOMES = ["pro", "free", "activation_pending"] as const;
+type OfferOutcome = typeof OFFER_OUTCOMES[number];
+
+/**
+ * The V2 onboarding, read two ways.
+ *
+ *   SCREENS — by device, before and around the account. One row per phone
+ *   that started V2 (onboarding_started with flow "v2"), followed screen by
+ *   screen through onboarding_step_viewed. A skipped event is implied by a
+ *   later one (the same rule as the First-Session Funnel) and shown as such.
+ *
+ *   OFFER BY ANSWER — by user. How each person answered the Pro offer
+ *   (onboarding_completed, flow "v2", outcome pro / free / activation_pending),
+ *   grouped by what they told us: where they heard of the app, their goal,
+ *   their experience, and what they want help with. A person who picked
+ *   several things to be helped with is counted under each.
+ *
+ * Accounts that already existed (outcome existing_account / signed_in_quiz)
+ * never saw the offer and are counted apart, never inside a rate. Older-flow
+ * completions (no flow "v2") are counted apart too. `landing: "camera"` is
+ * the event's own claim about where the user was sent, counted as recorded.
+ *
+ * Every user is counted: nothing here excludes anyone but what the dashboard
+ * scope and date range already removed. Whether answers reached the account
+ * row is NOT measured here (that needs profiles.onboarding_answers, which
+ * this loader does not read); the late-save count shows only how many had to
+ * be finished by the launch-time retry.
+ */
+export function getOnboardingV2(d: V4Data) {
+  // ── Screens, by device ───────────────────────────────────────────────
+  const launchAt = d.cohort?.at ?? null;
+  const devices = new Map<string, Ev[]>();
+  for (const e of d.rawEvents ?? []) {
+    if (!e.anonymous_id) continue;
+    (devices.get(e.anonymous_id) ?? devices.set(e.anonymous_id, []).get(e.anonymous_id)!).push(e);
+  }
+  const isV2 = (e: Ev) => metaStr(e, "flow") === "v2";
+  const rows: Array<Record<string, string | null>> = [];
+  let olderFlowDevices = 0;
+  for (const evs of devices.values()) {
+    const started = firstOf(evs, e => e.event_name === "onboarding_started");
+    if (!started) continue;
+    if (launchAt && started < launchAt) continue;
+    if (d.window.startMs !== null && !inWindow(d.window, started)) continue;
+    if (!firstOf(evs, e => e.event_name === "onboarding_started" && isV2(e))) { olderFlowDevices++; continue; }
+    const row: Record<string, string | null> = {};
+    for (const st of ONBOARDING_V2_STEPS) {
+      row[st.key] = firstOf(evs, e => e.event_name === "onboarding_step_viewed" && isV2(e) && metaStr(e, "step") === st.key);
+    }
+    row.tapped = firstOf(evs, e => e.event_name === "onboarding_create_account_tapped");
+    row.account = firstOf(evs, e => !!e.user_id);
+    row.offer = firstOf(evs, e => e.event_name === "onboarding_step_viewed" && isV2(e) && metaStr(e, "step") === "offer");
+    rows.push(row);
+  }
+  const screens = nestedFunnel([
+    ...ONBOARDING_V2_STEPS.map(st => ({ key: st.key, label: st.label, tracked: true })),
+    { key: "tapped", label: "Create account tapped", tracked: true },
+    { key: "account", label: "Signed in to an account", tracked: true, note: "the device later wrote an event as a signed-in user" },
+    { key: "offer", label: "Pro offer shown", tracked: true },
+  ], rows);
+
+  // ── Offer by answer, by user ─────────────────────────────────────────
+  const cohort = d.window.startMs === null ? d.base.profiles : d.base.profiles.filter(p => inWindow(d.window, p.created_at));
+  const evsByUser = new Map<string, Ev[]>();
+  for (const e of d.allEvents) if (e.user_id) (evsByUser.get(e.user_id) ?? evsByUser.set(e.user_id, []).get(e.user_id)!).push(e);
+
+  type Rec = { outcome: OfferOutcome; goal: string | null; experience: string | null; source: string | null; pains: string[] };
+  const recs: Rec[] = [];
+  let existing = 0, olderFlow = 0, landingCamera = 0, noOutcome = 0;
+  for (const p of cohort) {
+    const done = (evsByUser.get(p.id) ?? []).filter(e => e.event_name === "onboarding_completed")
+      .sort((a, b) => a.created_at < b.created_at ? -1 : 1)[0];
+    if (!done) continue;
+    const outcome = metaStr(done, "outcome");
+    if (outcome === "existing_account" || outcome === "signed_in_quiz") { existing++; continue; }
+    if (!isV2(done)) { olderFlow++; continue; }
+    if (!outcome || !(OFFER_OUTCOMES as readonly string[]).includes(outcome)) { noOutcome++; continue; }
+    if (metaStr(done, "landing") === "camera") landingCamera++;
+    const raw = done.metadata && typeof done.metadata === "object" ? (done.metadata as Record<string, unknown>).pain_points : null;
+    recs.push({
+      outcome: outcome as OfferOutcome,
+      goal: metaStr(done, "primary_goal"), experience: metaStr(done, "experience_level"),
+      source: metaStr(done, "acquisition_source"),
+      pains: Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [],
+    });
+  }
+
+  const outcomes = { pro: 0, free: 0, activation_pending: 0 };
+  for (const r of recs) outcomes[r.outcome]++;
+
+  const NONE = "(not answered)";
+  const group = (pick: (r: Rec) => string[], labels: Record<string, string>) => {
+    const g = new Map<string, Rec[]>();
+    for (const r of recs) {
+      const keys = pick(r); const list = keys.length ? keys : [NONE];
+      for (const k of new Set(list)) (g.get(k) ?? g.set(k, []).get(k)!).push(r);
+    }
+    return [...g.entries()].map(([key, rs]) => {
+      const pro = rs.filter(r => r.outcome === "pro").length;
+      return {
+        key, label: labels[key] ?? key, users: rs.length,
+        proRate: derived(pro, rs.length),
+        pro, pending: rs.filter(r => r.outcome === "activation_pending").length,
+        free: rs.filter(r => r.outcome === "free").length,
+      };
+    }).sort((a, b) => b.users - a.users || a.key.localeCompare(b.key));
+  };
+
+  const lateUsers = new Set<string>();
+  for (const e of d.allEvents) if (e.event_name === "onboarding_answers_synced_late" && e.user_id) lateUsers.add(e.user_id);
+
+  return {
+    screens, devices: rows.length, olderFlowDevices,
+    offer: {
+      users: recs.length, outcomes,
+      subscribeRate: derived(outcomes.pro, recs.length),
+      landingCamera: exact(landingCamera, "completions whose event says the user was sent to the camera"),
+      existingAccounts: exact(existing, "signed-in accounts that never saw the offer"),
+      olderFlow: exact(olderFlow, "completions from before the V2 flow"),
+      outcomeNotRecorded: exact(noOutcome),
+    },
+    bySource: group(r => r.source ? [r.source] : [], ONBOARDING_V2_LABELS.source),
+    byGoal: group(r => r.goal ? [r.goal] : [], ONBOARDING_V2_LABELS.goal),
+    byExperience: group(r => r.experience ? [r.experience] : [], ONBOARDING_V2_LABELS.experience),
+    byPain: group(r => r.pains, ONBOARDING_V2_LABELS.pain),
+    answersSavedLate: exact(lateUsers.size, "users whose quiz answers were saved by the launch-time retry, not at the offer"),
+    note: "Screens count devices that started the V2 flow; the offer tables count users acquired in the selected range. Subscribe rate is confirmed Pro at the offer over everyone who answered it; activation pending is shown apart, never counted as subscribed.",
+  };
+}
+
 // ── Feature adoption & conversion ───────────────────────────────────────────
 
 /**
@@ -3565,6 +3733,7 @@ export async function getFounderDashboardV4Metrics(
     retentionSegments: safe("retentionSegments", () => getRetentionSegments(d)),
     appVersions: safe("appVersions", () => getAppVersions(d)),
     acquisitionSource: safe("acquisitionSource", () => getAcquisitionSource(d, env)),
+    onboardingV2: safe("onboardingV2", () => getOnboardingV2(d)),
     costByPlan: safe("costByPlan", () => getCostByPlan(d, rates, env)),
     userExplorer: explorer,
     acquisition: safe("acquisition", () => getAcquisition(d)),

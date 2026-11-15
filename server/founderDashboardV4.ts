@@ -659,6 +659,31 @@ export function renderScanReliability(input: any): string {
     "server + app");
 }
 
+export function renderOnboardingV2(o: any): string {
+  const id = "onv2", title = "3c · Onboarding V2";
+  if (!o || typeof o !== "object") return section(id, title, absent("Onboarding V2", o));
+  // Wrapped in its section so the contents link still lands somewhere.
+  if (isErr(o)) return section(id, title, errorCard("Onboarding V2", o));
+  const of = o.offer;
+  const seg = (rows: any[], head: string) => table([head, "Answered the offer", "Subscribed", "Subscribe rate", "Pending", "Continue Free"],
+    rows.map((r: any) => [esc(r.label), num(r.users), num(r.pro), cell(r.proRate), num(r.pending), num(r.free)]), "compact");
+  const none = `<div class="muted">No V2 offer answers in this range yet.</div>`;
+  return section(id, title,
+    `<div class="card"><div class="card-h">Screen by screen <span class="muted">— by device, ${num(o.devices)} that started the V2 flow</span></div>${o.devices ? funnelTable(o.screens, "Devices") : `<div class="muted">No device has started the V2 flow in this range yet.</div>`}
+     ${o.olderFlowDevices ? `<div class="muted">${num(o.olderFlowDevices)} device(s) started the older flow and are not counted here.</div>` : ""}</div>
+     <div class="two"><div class="card"><div class="card-h">How the offer was answered <span class="muted">— ${num(of.users)} new users</span></div>${grid([
+        m("Subscribed at the offer", of.subscribeRate), m("Sent to the camera (recorded)", of.landingCamera),
+        m("Quiz answers saved late", o.answersSavedLate)])}
+       ${table(["Outcome", "Users"], [["Subscribed", num(of.outcomes.pro)], ["Activation pending", num(of.outcomes.activation_pending)], ["Continue Free", num(of.outcomes.free)]], "compact")}
+       <div class="muted">Existing accounts that never saw the offer: ${num(of.existingAccounts.value)}. Older-flow completions: ${num(of.olderFlow.value)}. Outcome not recorded: ${num(of.outcomeNotRecorded.value)}. None of these are inside a rate.</div></div>
+     <div class="card"><div class="card-h">By where they heard of FlipStart</div>${of.users ? seg(o.bySource, "Source") : none}</div></div>
+     <div class="two"><div class="card"><div class="card-h">By stated goal</div>${of.users ? seg(o.byGoal, "Goal") : none}</div>
+     <div class="card"><div class="card-h">By stated experience</div>${of.users ? seg(o.byExperience, "Experience") : none}</div></div>
+     <div class="card"><div class="card-h">By what they want help with <span class="muted">— several can be picked; a person counts under each</span></div>${of.users ? seg(o.byPain, "Help with") : none}</div>
+     <div class="muted">${esc(o.note)}</div>`,
+    "where V2 loses people, and who converts");
+}
+
 function renderAcquisitionSource(as: any): string {
   if (!as || typeof as !== "object") return section("source", "2b · Acquisition Source", absent("Acquisition Source", as));
   // Wrapped in its section so the contents link still lands somewhere.
@@ -1376,7 +1401,7 @@ function renderHuntLevels(x: any): string {
 // ── Composer ─────────────────────────────────────────────────────────────────
 
 const TOC: Array<[string, string]> = [
-  ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["newphones", "New phones"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
+  ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["onv2", "Onboarding V2"], ["newphones", "New phones"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
   ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["deepa", "Deep Analysis"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"],
   ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["huntxp", "Hunt XP"], ["huntlevels", "Hunt levels"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
@@ -1397,7 +1422,7 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
   }
   const body = [
     renderExecutive(metrics), renderIntegrity(metrics.dataIntegrity), renderExplorer(metrics.userExplorer),
-    renderAcquisition(metrics.acquisition), renderAcquisitionSource(metrics.acquisitionSource), renderActivation(metrics.activation), renderFunnel(metrics.firstSession), renderNewPhones(metrics.newPhones),
+    renderAcquisition(metrics.acquisition), renderAcquisitionSource(metrics.acquisitionSource), renderActivation(metrics.activation), renderFunnel(metrics.firstSession), renderOnboardingV2(metrics.onboardingV2), renderNewPhones(metrics.newPhones),
     renderMonetization(metrics.monetization), renderPricing(metrics.pricing), renderFreeToPaid(metrics.freeToPaid),
     renderPaywalls(metrics.paywalls), renderPaywallIntel(metrics.paywallIntel), renderOnboardingOffer(metrics.onboardingOffer),
     renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore, metrics.scanStoreInsights),
