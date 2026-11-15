@@ -331,6 +331,7 @@ export async function runCompsForAnalysis(
    */
   let dropCategory = false;
   const queue: SearchStep[] = [...plan];
+  const titleLed = plan[0]?.why.startsWith("title:") ?? false;
   /** Move the broad search to the front of the queue. */
   const broadNext = () => {
     const at = queue.findIndex(s => s.tier === "C");
@@ -369,7 +370,9 @@ export async function runCompsForAnalysis(
     // shirt" after "…Tiger long sleeve polo shirt"); the broad one is the
     // search with a real chance. It goes next; relaxed still runs after it if
     // there is a slot and comps are still short.
-    if (run.tier === "A" && run.rawCount === 0) broadNext();
+    // Title-led plans skip this: after the title, the precise query is the
+    // closer search, so it keeps its place.
+    if (run.tier === "A" && run.rawCount === 0 && !titleLed) broadNext();
     if (run.rawCount === 0 && categoryId) {
       dropCategory = true;
       if (searches.length + queue.length < MAX_SEARCHES) queue.unshift(step);

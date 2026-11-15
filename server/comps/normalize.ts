@@ -11,7 +11,7 @@
 
 /** Query-builder version. Bump on any behaviour change — it is part of the
  *  cache key, so old entries invalidate automatically. */
-export const QUERY_BUILDER_VERSION = "qb-3";
+export const QUERY_BUILDER_VERSION = "qb-4";
 /** Matching-algorithm version. Same contract. */
 export const MATCH_ALGO_VERSION = "match-5";
 

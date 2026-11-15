@@ -63,6 +63,7 @@ import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice,
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
+import { pickTitleSize, titleColumnWidth } from '@/lib/resultsTitleSize';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
@@ -477,7 +478,9 @@ export default function ResultsScreen() {
   // column floating next to the ~170 tall photo column. Short cards get a small
   // step up in type ('lg', still modest); everything else keeps the original
   // sizes. Long titles never grow the card: the title is capped at three lines
-  // and shrinks its font to fit them (adjustsFontSizeToFit on the title).
+  // and steps down through fixed sizes to fit them (pickTitleSize, floor 17).
+  // It never auto-shrinks: adjustsFontSizeToFit took long names to ~72%, which
+  // looked far too small.
   const idTier: 'lg' | 'sm' = (() => {
     const v1x = (id as any).v1;
     const dept = v1x?.targetDepartment;
@@ -490,6 +493,11 @@ export default function ResultsScreen() {
     if (!narrow && len <= 24 && pills <= 4) return 'lg';
     return 'sm';
   })();
+  const titleFit = pickTitleSize(
+    id.item_name || 'Unknown Item',
+    titleColumnWidth(Dimensions.get('window').width),
+    idTier === 'lg' ? 23 : 21,
+  );
   const chipStyle     = idTier === 'lg' ? [s.chip, s.chipLg]         : s.chip;
   const chipTextStyle = idTier === 'lg' ? [s.chipText, s.chipTextLg] : s.chipText;
   const whyBullets   = rec.bullets;
@@ -1103,16 +1111,15 @@ export default function ResultsScreen() {
                 <View style={s.idTitleWrap}>
                   <Pressable onPress={handleOpenDeepAnalysis} hitSlop={4} style={({ pressed }) => [s.idTitlePress, pressed && { opacity: 0.6 }]}>
                     <Text
-                      style={[s.idName, idTier === 'lg' && s.idNameLg]}
+                      style={[s.idName, { fontSize: titleFit.fontSize, lineHeight: titleFit.lineHeight }]}
                       numberOfLines={3}
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.72}
+                      allowFontScaling={false}
                     >
-                      {id.item_name || 'Unknown Item'}
+                      {titleFit.text}
                       <Animated.Text
                         style={[
                           s.idTitleArrow,
-                          idTier === 'lg' && s.idTitleArrowLg,
+                          { fontSize: titleFit.fontSize },
                           { textShadowColor: GOLD, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: arrowShadowRadius },
                         ]}
                       > ›</Animated.Text>
@@ -1765,8 +1772,6 @@ const s = StyleSheet.create({
   // Title card size for short cards (see idTier); the base styles above are
   // the compact size. Deliberately a small step, not a big one.
   idInfoLg:  { gap: 9 },
-  idNameLg:  { fontSize: 23, lineHeight: 28 },
-  idTitleArrowLg: { fontSize: 23 },
   chipWrapLg: { gap: 6 },
   chipLg:     { paddingHorizontal: 9, paddingVertical: 5.5 },
   chipTextLg: { fontSize: 11.5 },

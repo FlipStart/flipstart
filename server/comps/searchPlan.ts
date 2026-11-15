@@ -282,6 +282,46 @@ export function typeIsStyled(c: CanonicalAnalysisV1): boolean {
 }
 
 /**
+ * The FlipStart title as a search, or "" when the title is too weak to lead.
+ *
+ * The title the user sees ("Polo Ralph Lauren Colorblock Pullover Hoodie") is
+ * the most specific description FlipStart has: it carries the colourway,
+ * pattern, style and model words that the rule-built query throws away. A
+ * rule-built "Polo Ralph Lauren pullover hoodie" finds every Polo hoodie ever
+ * sold; the title finds THIS one.
+ *
+ * Strong enough to lead when it:
+ *   - is at least 3 words, and
+ *   - names something that identifies the item: the brand, a model number,
+ *     product line, team, artist, event, licence or subject.
+ * Otherwise ("Plaid Flannel Shirt", "Unknown Item") the rule-built query leads.
+ *
+ * Feeling words are stripped and the title is cut to 9 words: eBay requires
+ * every keyword in a listing title, so a 14-word search finds nothing.
+ */
+export const TITLE_MAX_WORDS = 9;
+export function titleQuery(c: CanonicalAnalysisV1): string {
+  const id = c.ai.identification;
+  const raw = (c.derived as { identification?: { display_item_name?: string } }).identification?.display_item_name ?? "";
+  const cleaned = queryPart(raw, true)
+    .replace(/[()[\]{}"“”|]/g, " ")
+    .replace(/[–—]+/g, " ")
+    .replace(/\s+/g, " ").trim();
+  const words = cleaned.split(" ").filter(Boolean);
+  if (words.length < 3) return "";
+  if (/^unknown\b/i.test(cleaned)) return "";
+  const norm = ` ${normalizeText(cleaned)} `;
+  const anchors = [id.canonical_brand, id.model_or_product_number, notStyleTag(id.product_line), id.team,
+                   id.artist, id.event, id.character_or_license, notStyleTag(id.subject)]
+    .map(a => normalizeText(a ?? "").trim()).filter(a => a.length >= 2);
+  // An anchor counts when its first word appears in the title ("Polo" for
+  // "Polo Ralph Lauren", "Levi's" for "Levi Strauss").
+  const named = anchors.some(a => norm.includes(` ${a} `) || norm.includes(` ${a.split(" ")[0]} `));
+  if (!named) return "";
+  return words.slice(0, TITLE_MAX_WORDS).join(" ");
+}
+
+/**
  * The ordered searches for an eligible item. `precise` is the query
  * buildCompsQuery already produced; B and C are added only when they differ
  * from what came before and are still at least two words.
@@ -304,6 +344,22 @@ export function buildSearchPlan(c: CanonicalAnalysisV1, precise: string, opts: {
   const relaxedType = relaxedSearchType(c);
   const model = queryPart(id.model_or_product_number);
   const line = queryPart(notStyleTag(id.product_line));
+
+  // Title first (the default for any identified item):
+  //   A  the FlipStart title
+  //   B  the rule-built precise query, when it differs
+  //   C  the relaxed query (identity + type)
+  // No brand-only "broad" search: "Polo Ralph Lauren hoodie" never finds the
+  // right item, it only fills the screen with near-misses.
+  const title = opts.unbranded ? "" : titleQuery(c);
+  if (title) {
+    add("A", title, "title: the FlipStart analysis title");
+    add("B", precise, "precise: every confident detail, built by rule");
+    add("C", clean([line || model, queryPart(id.canonical_brand), searchSubject(c), queryPart(id.team),
+                    queryPart(id.artist), queryPart(id.event), queryPart(id.character_or_license), relaxedType]),
+        "relaxed: identity and type only");
+    return steps;
+  }
 
   add("A", precise, "precise: every confident detail");
   if (opts.unbranded) return steps;
