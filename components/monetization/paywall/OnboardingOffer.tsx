@@ -131,7 +131,7 @@ export function OnboardingOffer(p: OnboardingOfferProps) {
 
   const percent = annualSavingsPercent(p.monthly.pricing, p.annual.pricing);
   const perMonth = annualMonthlyEquivalent(p.annual.pricing);
-  const annualScans = `${ANNUAL_SCANS.toLocaleString("en-US")} scans a year`;
+  const annualScans = `${ANNUAL_SCANS.toLocaleString("en-US")} scans/yr`;
 
   const [lead, accent] = splitHeadline(p.config.headline);
 
@@ -417,7 +417,7 @@ function PlanRow({
             <View style={r.badge}><Text style={r.badgeText} allowFontScaling={false}>{badge}</Text></View>
           )}
         </View>
-        <Text style={r.detail} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85} allowFontScaling={false}>
+        <Text style={r.detail} numberOfLines={1} allowFontScaling={false}>
           {unavailable ? "Not available right now" : detail}
         </Text>
       </View>
@@ -533,12 +533,13 @@ const r = StyleSheet.create({
   mark: { width: 24, height: 24, borderRadius: 12, borderWidth: 1.5, borderColor: OB.goldText },
   markOn: { width: 24, height: 24, borderRadius: 12, backgroundColor: OB.forest, alignItems: "center", justifyContent: "center" },
 
-  mid: { flex: 1, gap: 2 },
+  mid: { flex: 1, minWidth: 0, gap: 2 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   name: { fontFamily: FONTS.serif, fontSize: 17, lineHeight: 21, fontWeight: "800", color: OB.ink },
   badge: { backgroundColor: OB.forest, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
   badgeText: { fontSize: 10.5, lineHeight: 13, fontWeight: "800", letterSpacing: 0.3, color: OB.cream },
-  detail: { fontSize: 12.5, lineHeight: 16, color: OB.ink },
+  /** Fixed size, no shrink-to-fit: iOS can collapse an auto-fitted line to its minimum inside a flex row. */
+  detail: { fontSize: 13, lineHeight: 17, color: OB.ink },
 
   priceCol: { alignItems: "flex-end", minWidth: 62 },
   price: { fontFamily: FONTS.serif, fontSize: 19, lineHeight: 23, fontWeight: "800", color: OB.ink },
