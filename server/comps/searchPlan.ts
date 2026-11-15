@@ -215,6 +215,65 @@ export function styleWords(c: CanonicalAnalysisV1): string[] {
   return found.sort((a, b) => a[0] - b[0]).map(([, w]) => w).slice(0, 2);
 }
 
+/**
+ * Surface patterns a buyer types into the search box. Deliberately NOT the
+ * whole STYLE_VOCAB: leather, wool and the like are fabrics, and a fabric word
+ * the AI guessed from a photo can empty a search. A pattern is read straight
+ * off the photo ("plaid" is hard to get wrong) and sellers always write it.
+ * Longest first so "buffalo check" wins over "check".
+ */
+const PATTERN_VOCAB = [
+  "buffalo check", "buffalo plaid", "tie dye", "fair isle", "polka dot",
+  "plaid", "tartan", "gingham", "argyle", "houndstooth", "camouflage", "camo",
+  "striped", "floral", "paisley",
+];
+
+/**
+ * The one pattern word for a BRANDED search ("L.L.Bean plaid jacket"), or "".
+ *
+ * Looked for in the item's own words first (type, subtype, name, subject,
+ * style labels), then in the colour fields — the AI often writes "plaid" or
+ * "red plaid" as the colour, and plaid is its own colour to a buyer. A pattern
+ * found only in the colour fields needs the same confidence the colour bar
+ * asks for; one in the item's own words does not.
+ */
+export function patternWord(c: CanonicalAnalysisV1, colourBar: number): string {
+  const id = c.ai.identification;
+  const va = c.ai.visible_attributes;
+  const own = ` ${normalizeText([id.generic_item_name, id.subtype, id.item_type, id.subject,
+                                  ...(va.style_labels ?? [])].filter(Boolean).join(" ")).replace(/-/g, " ")} `;
+  const colourText = ` ${normalizeText([va.primary_color, ...(va.secondary_colors ?? [])]
+                                         .filter(Boolean).join(" ")).replace(/-/g, " ")} `;
+  const colourOk = (va.color_confidence ?? 0) >= colourBar;
+  for (const w of PATTERN_VOCAB) {
+    if (own.includes(` ${w} `)) return normalizeSearchPattern(w);
+    if (colourOk && colourText.includes(` ${w} `)) return normalizeSearchPattern(w);
+  }
+  return "";
+}
+/** "buffalo plaid" sells as "buffalo check" less often than plain "plaid"; keep
+ *  the shorter, more common word when the longer one adds nothing. */
+function normalizeSearchPattern(w: string): string {
+  return w === "buffalo plaid" ? "plaid" : w === "camouflage" ? "camo" : w;
+}
+
+/** Garments where "hooded" is a real buyer search word ("hooded jacket").
+ *  A hoodie already says it; a sweater almost never does. */
+const HOODED_GROUPS = new Set(["jacket", "coat", "vest", "fleece"]);
+
+/** "hooded" when the item has a hood and its searched type does not already say so. */
+export function hoodedWord(c: CanonicalAnalysisV1): string {
+  const g = groupOf(c);
+  if (!g || !HOODED_GROUPS.has(g)) return "";
+  const id = c.ai.identification;
+  const typeNow = ` ${normalizeText(searchType(c))} `;
+  if (/\bhood|\bparka\b|\banorak\b/.test(typeNow)) return "";
+  const own = ` ${normalizeText([id.generic_item_name, id.subtype, id.item_type].filter(Boolean).join(" ")).replace(/-/g, " ")} `;
+  const said = /\bhooded\b|\bhoodie\b|\bwith hood\b|\bhood\b/.test(own);
+  const feature = (c.ai.features as { hood_present?: string } | undefined)?.hood_present === "yes";
+  return said || feature ? "hooded" : "";
+}
+
 /** True when the item type itself carries a style word ("wool peacoat",
  *  "leather jacket", "hawaiian shirt") — narrow enough to search on alone. */
 export function typeIsStyled(c: CanonicalAnalysisV1): boolean {

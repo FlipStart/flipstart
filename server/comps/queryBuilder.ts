@@ -11,7 +11,7 @@
 import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
 import type { CompsIneligibleReason } from "./types.js";
 import { QUERY_BUILDER_VERSION, normalizeText, detectClosure } from "./normalize.js";
-import { styleWords, typeIsStyled, queryPart, notStyleTag, searchType } from "./searchPlan.js";
+import { styleWords, typeIsStyled, queryPart, notStyleTag, searchType, patternWord, hoodedWord } from "./searchPlan.js";
 import { scanCategory, brandMask } from "./taxonomy.js";
 
 export interface QueryComponent {
@@ -148,6 +148,18 @@ export function buildCompsQuery(c: CanonicalAnalysisV1): BuiltQuery | Ineligible
   push("event", id.event, "event narrows to a specific print run");
   push("license", id.character_or_license, "licensed IP is a primary search term");
   for (const w of unbrandedWords) push("style", w, "unbranded: a style or material word stands in for a brand");
+  // A surface pattern ("plaid") for a branded item. Unbranded items already
+  // carry theirs above as a style word, so it is added here only when it is not
+  // already in the query. Sits just before the type: "L.L.Bean plaid jacket".
+  if (!unbranded) {
+    const pat = patternWord(c, COLOUR_CONFIDENT_AT);
+    if (pat) push("pattern", pat, "a visible pattern sellers always write; the relaxed search drops it if it over-narrows");
+    else add("pattern", "", false, "no pattern read");
+  }
+  // "hooded jacket": a hood is a real buyer search word for outerwear, and the
+  // single item-type word below would otherwise throw it away.
+  const hood = hoodedWord(c);
+  if (hood) push("hood", hood, "hooded outerwear: buyers search it, and the type word alone drops it");
   // One type word per kind: "satchel handbag" would only find listings saying both.
   const typeQ = searchType(c);
   push("item_type", typeQ, typeQ.toLowerCase() === (id.item_type ?? "").trim().toLowerCase()
