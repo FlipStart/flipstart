@@ -7,11 +7,14 @@
  * Asks only for ADD-ONLY access (writeOnly): FlipStart never reads the library
  * here. A hosted photo (https://) is downloaded to the cache first, because
  * the Photos library only accepts a local file.
+ *
+ * The native modules are loaded LAZILY, on tap. A build made before
+ * expo-media-library was added has no such native module; a top-level import
+ * crashed the whole app at launch (Expo Router loads every screen up front).
+ * Loaded here instead, an older build runs normally and the button reports
+ * 'unavailable'.
  */
-import * as MediaLibrary from 'expo-media-library';
-import * as FileSystem from 'expo-file-system/legacy';
-
-export type SavePhotoResult = 'saved' | 'denied' | 'failed';
+export type SavePhotoResult = 'saved' | 'denied' | 'failed' | 'unavailable';
 
 /** Extension for the temporary download: Photos needs a real image suffix. */
 export function photoExt(uri: string): string {
@@ -21,6 +24,17 @@ export function photoExt(uri: string): string {
 
 export async function savePhotoToLibrary(uri: string): Promise<SavePhotoResult> {
   if (!uri) return 'failed';
+
+  let MediaLibrary: typeof import('expo-media-library');
+  let FileSystem: typeof import('expo-file-system/legacy');
+  try {
+    MediaLibrary = await import('expo-media-library');
+    FileSystem = await import('expo-file-system/legacy');
+    if (typeof MediaLibrary.saveToLibraryAsync !== 'function') return 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
+
   try {
     const perm = await MediaLibrary.requestPermissionsAsync(true);
     if (!perm.granted) return 'denied';
@@ -36,7 +50,9 @@ export async function savePhotoToLibrary(uri: string): Promise<SavePhotoResult> 
     }
     await MediaLibrary.saveToLibraryAsync(local);
     return 'saved';
-  } catch {
-    return 'failed';
+  } catch (e) {
+    // A missing native module can also surface on first CALL rather than on import.
+    const msg = String((e as Error)?.message ?? e);
+    return /native module|ExpoMediaLibrary|not available|Cannot find/i.test(msg) ? 'unavailable' : 'failed';
   }
 }

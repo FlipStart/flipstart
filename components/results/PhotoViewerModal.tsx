@@ -65,6 +65,8 @@ export function PhotoViewerModal({
         'FlipStart needs permission to add photos to your library. You can turn it on in Settings.',
         [{ text: 'Not now', style: 'cancel' }, { text: 'Open Settings', onPress: () => Linking.openSettings() }],
       );
+    } else if (r === 'unavailable') {
+      Alert.alert('Update FlipStart to save photos', 'Saving photos needs the latest version of the app.');
     } else {
       Alert.alert('Couldn\'t save photo', 'Check your connection and try again.');
     }
