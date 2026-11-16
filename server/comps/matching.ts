@@ -35,7 +35,7 @@ import type { CanonicalAnalysisV1 } from "../../shared/canonical.types.js";
 import type { NormalizedSoldComp } from "./types.js";
 import {
   canonicalPhrase, containsPhrase, containsAny, detectClosure, detectSpecialty, closureFromEnum,
-  MATCH_ALGO_VERSION,
+  MATCH_ALGO_VERSION, normalizeText,
 } from "./normalize.js";
 import {
   prep, squash, looseContains, detectCategory, scanCategory, categoryRelation, type CategoryRelation,
@@ -568,7 +568,36 @@ export function scoreComp(
    *  listed exactly that way. */
   let eraUnconfirmed = false;
 
-  if (era === "confirmed_vintage" || era === "likely_vintage") {
+  /**
+   * Does FlipStart itself call this item vintage (or Y2K)?
+   *
+   * Founder rule: a "vintage" listing is only a comp for an item FlipStart
+   * calls vintage - its era verdict, or the title the user sees. An item whose
+   * era is unknown, modern or vintage-inspired never gets vintage comps: they
+   * sell for different money and drag the median the wrong way. A Y2K item
+   * (Y2K in the title, or a Y2K style era) may use vintage and Y2K listings.
+   *
+   * Only the explicit word counts on the listing side ("vintage", "antique";
+   * "vtg" is normalised to vintage first). A bare decade ("1996 Retro Nuptse")
+   * is often a modern product name, so it still only softens, as before.
+   */
+  const scanTitle = ` ${normalizeText(
+    (c.derived as { identification?: { display_item_name?: string } }).identification?.display_item_name ?? "",
+  )} `;
+  const itemVintage = era === "confirmed_vintage" || era === "likely_vintage" ||
+    / (vintage|vtg|vntg) /.test(scanTitle);
+  const itemY2k = / y2k /.test(scanTitle) || (c.ai.era as { style_era?: string } | undefined)?.style_era === "y2k";
+  let eraScored = era !== "unknown";
+
+  if (titleVintageWord && !itemVintage && !itemY2k) {
+    return reject("WRONG_ERA", "listing claims vintage, FlipStart does not call this item vintage");
+  }
+
+  if (itemY2k && !itemVintage && titleVintage) {
+    // A Y2K item: vintage and Y2K listings are fair comps. Neutral, not scored.
+    parts.era = 0; eraScored = false;
+    positives.push("Y2K item, vintage/Y2K listing");
+  } else if (era === "confirmed_vintage" || era === "likely_vintage") {
     if (titleRepro) return reject("REPRODUCTION_MISMATCH", "listing is a reprint, item is vintage");
     if (titleModern && !titleVintage) {
       if (eraConfident) return reject("WRONG_ERA", "listing claims modern/reissue, item is vintage");
@@ -604,8 +633,8 @@ export function scoreComp(
     parts.era = W.era;
     positives.push("era consistent");
   }
-  if (era !== "unknown") canScore("era");
-  signals.era = era === "unknown" ? "unknown" : eraConflict ? "conflict" : "consistent";
+  if (eraScored) canScore("era");
+  signals.era = !eraScored ? "unknown" : eraConflict ? "conflict" : "consistent";
 
   // ── Department ─────────────────────────────────────────────────────────────
   const dept = (va as { target_department?: string }).target_department ?? "unknown";

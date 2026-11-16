@@ -8,12 +8,14 @@
  * than the 10.5pt pills' neighbours looked, and different on every title.
  *
  * Now the size is picked from a few fixed steps by estimating how the name
- * wraps in the column, with a hard floor of 17pt. A name that still does not fit
- * in three lines at the floor is cut at a word and given an ellipsis HERE, so
- * the tappable "›" after the title is never the thing that gets clipped.
+ * wraps in the column, with a hard floor of 17pt. The estimate is only the
+ * STARTING size: components/results/FitTitle.tsx re-measures the real layout
+ * and steps down if iOS needs more than three lines.
  *
- * Pure and deterministic: no layout pass, no flicker, the same name always gets
- * the same size.
+ * The title is NEVER shortened or given "...". A name too long for three lines
+ * at 17pt takes a fourth. (A word-cut used to happen here; real Georgia Bold is
+ * wider than the estimate, so iOS also cut names mid-word - "...Waterproof
+ * Jack...". Both are gone.)
  */
 
 /** Largest first. 23 and 21 are the card's existing two sizes. */
@@ -21,7 +23,7 @@ export const TITLE_STEPS = [23, 21, 19.5, 18, 17] as const;
 export const TITLE_MAX_LINES = 3;
 /** Average width of a Georgia Bold character, in ems. Slightly pessimistic on
  *  purpose: a title may be cut a word early, never clipped mid-glyph. */
-const CHAR_EM = 0.58;
+const CHAR_EM = 0.62;
 
 export const titleLineHeight = (size: number) => Math.round(size * 1.24);
 
@@ -48,9 +50,10 @@ export function countTitleLines(text: string, size: number, width: number): numb
 export interface TitleFit {
   fontSize: number;
   lineHeight: number;
-  /** The name to render. Equals the input unless it had to be cut. */
+  /** The name to render: the full name, whitespace tidied. Never shortened. */
   text: string;
-  truncated: boolean;
+  /** Always false. Kept so callers written against the old shape still compile. */
+  truncated: false;
 }
 
 /**
@@ -69,19 +72,14 @@ export function pickTitleSize(name: string, columnWidth: number, startSize: numb
   for (const size of sizes) {
     if (fits(text, size)) return { fontSize: size, lineHeight: titleLineHeight(size), text, truncated: false };
   }
-
-  // Nothing fits: stay at the floor and cut at a word.
   const floor = sizes[sizes.length - 1];
-  const words = text.split(" ");
-  while (words.length > 1) {
-    words.pop();
-    const t = `${words.join(" ")}…`;
-    if (fits(t, floor)) return { fontSize: floor, lineHeight: titleLineHeight(floor), text: t, truncated: true };
-  }
-  // One enormous word: cut characters.
-  let t = words[0] ?? text;
-  while (t.length > 1 && !fits(`${t}…`, floor)) t = t.slice(0, -1);
-  return { fontSize: floor, lineHeight: titleLineHeight(floor), text: `${t}…`, truncated: true };
+  return { fontSize: floor, lineHeight: titleLineHeight(floor), text, truncated: false };
+}
+
+/** The next smaller size step, or null at the floor. */
+export function nextTitleStepDown(size: number): number | null {
+  const next = TITLE_STEPS.find(s => s < size);
+  return next ?? null;
 }
 
 /** Width the title column gets on the results screen: the screen, minus the

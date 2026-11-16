@@ -23,6 +23,9 @@ const config: ExpoConfig = {
         "FlipStart uses your camera to photograph thrifted items and estimate their resale value.",
       NSPhotoLibraryUsageDescription:
         "FlipStart uses your photo library so you can upload saved item photos for resale analysis.",
+      // Add-only access, for the photo viewer's download button (expo-media-library).
+      NSPhotoLibraryAddUsageDescription:
+        "FlipStart saves item photos you download to your photo library.",
       NSLocationWhenInUseUsageDescription:
         "FlipStart uses your location in Hunt Mode to help label thrift sessions by store or area.",
     },
@@ -69,6 +72,17 @@ const config: ExpoConfig = {
 
   plugins: [
     "expo-router",
+    [
+      "expo-media-library",
+      {
+        // Same wording as infoPlist above, so the plugin can't overwrite it
+        // with its generic default.
+        photosPermission:
+          "FlipStart uses your photo library so you can upload saved item photos for resale analysis.",
+        savePhotosPermission: "FlipStart saves item photos you download to your photo library.",
+        isAccessMediaLocationEnabled: false,
+      },
+    ],
     "expo-font",
     "expo-audio",
     "expo-web-browser",

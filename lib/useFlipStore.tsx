@@ -38,8 +38,9 @@ function collectRemoteImageUrls(entry: HistoryEntry): string[] {
   if (isHuntBundle(entry)) {
     const items = [...(entry.keptItems ?? []), ...(entry.removedItems ?? [])] as any[];
     for (const it of items) if (it?.imageUri) urls.push(it.imageUri);
-  } else if ((entry as FlipResult).imageUri) {
-    urls.push((entry as FlipResult).imageUri);
+  } else {
+    if ((entry as FlipResult).imageUri) urls.push((entry as FlipResult).imageUri);
+    for (const p of (entry as FlipResult).extraPhotos ?? []) if (p?.uri) urls.push(p.uri);
   }
   return urls.filter(u => typeof u === 'string' && /^https?:\/\//.test(u));
 }

@@ -12,6 +12,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useMemo, useRef, useEffect } from 'react';
+import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { viewerPhotosFor } from '@/lib/viewerPhotos';
 import { deepAnalysisAnalytics } from '@/lib/deepAnalysisAnalytics';
 
 import { ScreenContainer } from '@/components/screen-container';
@@ -21,7 +23,7 @@ import { trpc } from '@/lib/trpc';
 import { FlipResult, ListingData } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
 import { computeFlipCalc, resolveEffectiveThriftPrice,
-         findMaxBuyPriceForRating, findBuyThresholdPrice } from '@/utils/flipCalculations';
+         findMaxBuyPriceForRating, findBuyUnderPrice } from '@/utils/flipCalculations';
 import { REC_THEMES, normalizeBuyRating } from '@/utils/recommendation';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import {
@@ -250,25 +252,6 @@ function platformNote(p: string): string {
   return 'This item performs similarly on both platforms. List on both eBay and Depop for maximum exposure.';
 }
 
-// ─── Image Viewer Modal ───────────────────────────────────────────────────────
-
-function ImageViewerModal({ uri, visible, onClose }: { uri: string; visible: boolean; onClose: () => void }) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={im.backdrop} onPress={onClose}>
-        <Pressable style={im.closeBtn} onPress={onClose}>
-          <MaterialIcons name="close" size={22} color={CREAM} />
-        </Pressable>
-        <Image source={{ uri }} style={im.image} contentFit="contain" transition={200} />
-      </Pressable>
-    </Modal>
-  );
-}
-const im = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center', alignItems: 'center' },
-  closeBtn: { position: 'absolute', top: 52, right: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
-  image:    { width: '90%', height: '75%' },
-});
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -483,7 +466,7 @@ export default function AnalysisDetailsScreen() {
     baseFlip.resaleValue, baseFlip.matchConfidence, baseFlip.competitionLevel,
     baseFlip.demand ?? '', baseFlip.sellSpeed ?? '', v1Sig,
   );
-  const buyThreshold = findBuyThresholdPrice(
+  const buyThreshold = findBuyUnderPrice(
     baseFlip.resaleValue, baseFlip.matchConfidence, baseFlip.competitionLevel,
     baseFlip.demand ?? '', baseFlip.sellSpeed ?? '', v1Sig,
   );
@@ -518,9 +501,14 @@ export default function AnalysisDetailsScreen() {
 
   return (
     <ScreenContainer edges={['left', 'right']}>
-      {baseFlip.imageUri && (
-        <ImageViewerModal uri={baseFlip.imageUri} visible={imageOpen} onClose={() => setImageOpen(false)} />
-      )}
+      {/* Swipe through every saved photo (front, tag, detail); download + close top right. */}
+      {baseFlip.imageUri ? (
+        <PhotoViewerModal
+          photos={viewerPhotosFor(baseFlip.id, baseFlip.imageUri, (baseFlip as any).extraPhotos)}
+          visible={imageOpen}
+          onClose={() => setImageOpen(false)}
+        />
+      ) : null}
 
       {/* Header outside ScrollView — prevents double safe-area stacking */}
       <View style={[d.header, { paddingTop: insets.top + 4 }]}>
@@ -725,41 +713,6 @@ export default function AnalysisDetailsScreen() {
               </View>
             ))}
           </View>
-
-          {/* Per-area confidence. The single headline number hid that the model
-              can be sure of the brand and unsure of the condition — very
-              different situations for someone standing in a shop.
-              No Brand row: what the item is (brand included) is the
-              identification confidence above, and the model's own brand
-              number could contradict it — e.g. a brand only guessed from
-              styling, which the tier above does not count. */}
-          {(() => {
-            const rows = ([
-              ['Era',         v1?.eraConfidence],
-              ['Condition',   v1?.conditionConfidence],
-              ['Market read', v1?.marketConfidence],
-              ['Price',       v1?.priceConfidence],
-            ] as [string, number | undefined][]).filter(([, n]) => typeof n === 'number' && n > 0);
-            if (rows.length === 0) return null;
-            return (
-              <View style={d.card}>
-                <DeepHead icon="tune" title="Confidence by Area" />
-                {rows.map(([label, n]) => (
-                  <View key={label} style={d.confBarRow}>
-                    <Text style={d.confBarLabel}>{label}</Text>
-                    <View style={d.confBarTrack}>
-                      <View style={[d.confBarFill, {
-                        width: `${Math.max(3, Math.min(100, n as number))}%`,
-                        backgroundColor: (n as number) >= 70 ? FOREST
-                          : (n as number) >= 50 ? GOLD : '#8A3A2A',
-                      }]} />
-                    </View>
-                    <Text style={d.confBarVal}>{n}%</Text>
-                  </View>
-                ))}
-              </View>
-            );
-          })()}
 
           {/* ── 7. Where to sell (platform strategy) ── */}
           <View style={d.card}>
@@ -1273,11 +1226,6 @@ const d = StyleSheet.create({
   evidenceLabel: { width: 90, fontSize: 12, fontWeight: '800', color: FOREST },
   sawHeader:    { flexDirection: 'row', alignItems: 'center', gap: 6 },
   sawHint:      { fontSize: 12, color: MUTED, fontStyle: 'italic', marginTop: 6 },
-  confBarRow:   { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8 },
-  confBarLabel: { fontSize: 12, color: BROWN, fontWeight: '700', width: 88 },
-  confBarTrack: { flex: 1, height: 7, borderRadius: 4, backgroundColor: 'rgba(190,156,44,0.18)', overflow: 'hidden' },
-  confBarFill:  { height: '100%', borderRadius: 4 },
-  confBarVal:   { fontSize: 11.5, color: BROWN, fontWeight: '800', width: 38, textAlign: 'right' },
   marketBlock:  { marginTop: 12, gap: 8 },
   marketGrid:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   marketCell:   { flexGrow: 1, flexBasis: '46%', backgroundColor: '#FBF6E6', borderRadius: 10,

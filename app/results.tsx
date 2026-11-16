@@ -27,6 +27,7 @@ import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
 import { DeepAnalysisButton } from '@/components/results/DeepAnalysisButton';
 import { scanPhotosFor } from '@/lib/scanSessionPhotos';
+import { viewerPhotosFor } from '@/lib/viewerPhotos';
 import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
 import { useRefreshEntitlement } from '@/lib/useEntitlement';
 import { useGenerateListingsGate } from '@/lib/useGenerateListingsGate';
@@ -59,11 +60,12 @@ import { setDiscoveryMeta } from '@/lib/devBrandOverrides';
 import { useAchievementNotifications } from '@/lib/AchievementNotificationContext';
 import { useAuth } from '@/lib/auth-context';
 import { trackAnalyticsEvent } from '@/lib/analytics';
-import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice, findBuyThresholdPrice } from '@/utils/flipCalculations';
+import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice, findBuyUnderPrice } from '@/utils/flipCalculations';
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { pickTitleSize, titleColumnWidth } from '@/lib/resultsTitleSize';
+import { FitTitle } from '@/components/results/FitTitle';
 
 // ─── Listings helper ─────────────────────────────────────────────────────────
 
@@ -268,11 +270,10 @@ export default function ResultsScreen() {
   const [imageModalOpen,  setImageModalOpen]  = useState(false);
   // The photos for the full-screen viewer: every photo taken for this scan when
   // this session took them, else just the scan's main photo.
-  const viewerPhotos = useMemo(() => {
-    const session = scanPhotosFor(currentScan?.id);
-    if (session && session.length > 0) return session;
-    return currentScan?.imageUri ? [{ uri: currentScan.imageUri }] : [];
-  }, [currentScan?.id, currentScan?.imageUri]);
+  const viewerPhotos = useMemo(
+    () => viewerPhotosFor(currentScan?.id, currentScan?.imageUri, (currentScan as any)?.extraPhotos),
+    [currentScan?.id, currentScan?.imageUri],
+  );
   const [listingsOpen,    setListingsOpen]    = useState(false);
   const [isSaved,         setIsSaved]         = useState(false);
   // ── Reward queue — ensures brand reveals + achievement celebrations never overlap ──
@@ -498,6 +499,8 @@ export default function ResultsScreen() {
     titleColumnWidth(Dimensions.get('window').width),
     idTier === 'lg' ? 23 : 21,
   );
+  // titleFit is only the STARTING size; FitTitle corrects it from the real
+  // layout and never truncates (see components/results/FitTitle.tsx).
   const chipStyle     = idTier === 'lg' ? [s.chip, s.chipLg]         : s.chip;
   const chipTextStyle = idTier === 'lg' ? [s.chipText, s.chipTextLg] : s.chipText;
   const whyBullets   = rec.bullets;
@@ -532,7 +535,8 @@ export default function ResultsScreen() {
   );
   // Aspirational: the price at which it would become a solid BUY. Null when the
   // risk factors cap it below BUY at any price, which is common and fine.
-  const buyThreshold = findBuyThresholdPrice(
+  // Realistic "buy under" (never the useless $1 — see findBuyUnderPrice).
+  const buyThreshold = findBuyUnderPrice(
     resaleValue, ra.match_confidence, md.competition_level ?? '', md.demand ?? '', md.sell_speed ?? '', v1Sig,
   );
   // The price actually used in the breakdown + shown in the editor. Defaults to
@@ -586,8 +590,8 @@ export default function ResultsScreen() {
       // actually recommend. Leading with the ceiling encourages overpaying by
       // three times the recommended price.
       return (buyThreshold !== null && buyThreshold > 0 && buyThreshold < suggestedMax - 1)
-        ? `Buy under ${fmtMoney(buyThreshold)} for a strong margin. Absolute ceiling ${fmtMoney(suggestedMax)}.`
-        : `Absolute ceiling ${fmtMoney(suggestedMax)} — above that it is a skip.`;
+        ? `Buy under ${fmtMoney(buyThreshold)} for a solid margin. Skip above ${fmtMoney(suggestedMax)}.`
+        : `Skip above ${fmtMoney(suggestedMax)}.`;
     }
     return `Worth grabbing if you can buy at ${fmtMoney(suggestedMax)} or less.`;
   })();
@@ -673,6 +677,25 @@ export default function ResultsScreen() {
         if (!cloudUrl) return;
         updateFlip(flipId, { imageUri: cloudUrl });
         if (isHuntActive()) updateHuntItemImage(flipId, cloudUrl);
+      }).catch(() => {});
+    }
+
+    // The tag and detail photos, so Scan Record and Deep Analysis can swipe
+    // through them later. Only this session has them (memory), and only hosted
+    // URLs are saved: the local camera files may be gone next launch. A failed
+    // upload just leaves that photo out; the scan itself is unaffected.
+    const extras = (scanPhotosFor(currentScan.id) ?? []).filter(
+      (p): p is { uri: string; label: 'Tag' | 'Detail' } => p.label === 'Tag' || p.label === 'Detail',
+    );
+    if (user?.id && extras.length > 0) {
+      const uid = user.id;
+      const flipId = flip.id;
+      Promise.all(extras.map(async p => {
+        const url = isRemoteUri(p.uri) ? p.uri : await uploadImageToStorage(p.uri, 'scan-photos', uid);
+        return url ? { uri: url, label: p.label } : null;
+      })).then(list => {
+        const saved = list.filter((x): x is { uri: string; label: 'Tag' | 'Detail' } => !!x);
+        if (saved.length) updateFlip(flipId, { extraPhotos: saved });
       }).catch(() => {});
     }
 
@@ -1110,20 +1133,20 @@ export default function ResultsScreen() {
               <View style={[s.idInfo, idTier === 'lg' && s.idInfoLg]}>
                 <View style={s.idTitleWrap}>
                   <Pressable onPress={handleOpenDeepAnalysis} hitSlop={4} style={({ pressed }) => [s.idTitlePress, pressed && { opacity: 0.6 }]}>
-                    <Text
-                      style={[s.idName, { fontSize: titleFit.fontSize, lineHeight: titleFit.lineHeight }]}
-                      numberOfLines={3}
-                      allowFontScaling={false}
-                    >
-                      {titleFit.text}
-                      <Animated.Text
-                        style={[
-                          s.idTitleArrow,
-                          { fontSize: titleFit.fontSize },
-                          { textShadowColor: GOLD, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: arrowShadowRadius },
-                        ]}
-                      > ›</Animated.Text>
-                    </Text>
+                    <FitTitle startSize={titleFit.fontSize} style={s.idName}>
+                      {(size) => (
+                        <>
+                          {titleFit.text}
+                          <Animated.Text
+                            style={[
+                              s.idTitleArrow,
+                              { fontSize: size },
+                              { textShadowColor: GOLD, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: arrowShadowRadius },
+                            ]}
+                          > ›</Animated.Text>
+                        </>
+                      )}
+                    </FitTitle>
                   </Pressable>
 
                   {/* First-scan coach mark for Deep Analysis — shows until user taps the title */}
@@ -1287,7 +1310,8 @@ export default function ResultsScreen() {
                   minimumFontScale={0.7}
                   ellipsizeMode="clip"
                 >{canonicalRating}</Text>
-                <Text style={s.ratingRec} numberOfLines={2} ellipsizeMode="tail">{buyLine}</Text>
+                {/* Never truncated: it wraps instead. This line is the advice. */}
+                <Text style={s.ratingRec}>{buyLine}</Text>
               </View>
             </View>
             <View style={s.ratingDivider} />

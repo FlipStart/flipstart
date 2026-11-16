@@ -288,6 +288,40 @@ export function findBuyThresholdPrice(
   return null;
 }
 
+/** Below this a "buy under" price is not advice anyone can use. */
+export const MIN_USEFUL_BUY_UNDER = 3;
+/** Profit (after fees) the margin-based buy-under target leaves you. Matches
+ *  the $15 "healthy margin" tier in utils/recommendation.ts. */
+export const TARGET_MARGIN_PROFIT = 15;
+
+/**
+ * The "Buy under $X" price shown to the user.
+ *
+ * findBuyThresholdPrice() answers "at what price does the rating become BUY".
+ * For a risky item that is often only true at $1: the risk factors demand
+ * $25+ profit before BUY, so a $27 jacket only qualifies at $1, and every
+ * Risky Buy said "Buy under $1". Mathematically right, useless as advice.
+ *
+ * So: use that rating threshold when it is a real price ($3+). Otherwise fall
+ * back to the price that leaves a healthy $15 profit after fees. Null when
+ * neither is a usable price (a cheap item with no room for a margin) — the
+ * screen then shows only the ceiling.
+ */
+export function findBuyUnderPrice(
+  resaleValue:      number,
+  matchConfidence:  number,
+  competitionLevel: string,
+  demandLevel:      string = '',
+  sellSpeed:        string = '',
+  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
+               priceConfidence?: number } = {},
+): number | null {
+  const byRating = findBuyThresholdPrice(resaleValue, matchConfidence, competitionLevel, demandLevel, sellSpeed, v1Signals);
+  if (byRating != null && byRating >= MIN_USEFUL_BUY_UNDER) return byRating;
+  const byMargin = Math.floor(resaleValue - calculateFees(resaleValue) - TARGET_MARGIN_PROFIT);
+  return byMargin >= MIN_USEFUL_BUY_UNDER ? byMargin : null;
+}
+
 /**
  * The single source of truth for "what price are we rating this at".
  *

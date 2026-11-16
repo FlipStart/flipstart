@@ -1,43 +1,74 @@
 /**
  * components/results/PhotoViewerModal.tsx
  *
- * Full-screen viewer for the photos taken for a scan, on the results screen.
+ * Full-screen viewer for a scan's photos, on the results screen, Scan Record
+ * and Deep Analysis.
  *
  *   - opens on the main (front) photo
  *   - swipe left/right between the photos (front, tag, detail)
  *   - arrows on the left and right edges do the same, shown only when there is
  *     a photo that way
  *   - a label and counter at the bottom ("Tag · 2 of 3")
+ *   - top right: a download button (saves the photo on screen to Photos) and,
+ *     to its right, the X. Both forest green with gold, the app's colours.
  *   - close with the X, by tapping the dark area, or the Android back button
  *
  * One photo behaves exactly like the old viewer, minus the arrows and counter.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
-  Modal, View, Text, Pressable, ScrollView, StyleSheet, useWindowDimensions,
+  Modal, View, Text, Pressable, ScrollView, StyleSheet, useWindowDimensions, ActivityIndicator, Alert, Linking,
   type NativeSyntheticEvent, type NativeScrollEvent,
 } from 'react-native';
 import { Image } from 'expo-image';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { savePhotoToLibrary } from '@/lib/savePhoto';
+import type { ViewerPhoto } from '@/lib/viewerPhotos';
 
-const CREAM = '#F4EED8';
+const CREAM  = '#F4EED8';
+const FOREST = '#2A4A2A';
+const GOLD   = '#BE9C2C';
 
-export interface ViewerPhoto {
-  uri: string;
-  label?: string;
-}
+export type { ViewerPhoto };
 
 export function PhotoViewerModal({
   photos, visible, onClose,
 }: { photos: ViewerPhoto[]; visible: boolean; onClose: () => void }) {
   const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const scroller = useRef<ScrollView>(null);
   const [index, setIndex] = useState(0);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const count = photos.length;
   const many = count > 1;
 
   // Every open starts on the first photo.
-  useEffect(() => { if (visible) setIndex(0); }, [visible]);
+  useEffect(() => { if (visible) { setIndex(0); setSaveState('idle'); } }, [visible]);
+  // A new photo on screen gets a fresh download button.
+  useEffect(() => { setSaveState('idle'); }, [index]);
+
+  const onDownload = async () => {
+    const photo = photos[Math.min(index, count - 1)];
+    if (!photo || saveState === 'saving') return;
+    setSaveState('saving');
+    const r = await savePhotoToLibrary(photo.uri);
+    if (r === 'saved') {
+      setSaveState('saved');
+      setTimeout(() => setSaveState(s => (s === 'saved' ? 'idle' : s)), 1800);
+      return;
+    }
+    setSaveState('idle');
+    if (r === 'denied') {
+      Alert.alert(
+        'Allow Photos access',
+        'FlipStart needs permission to add photos to your library. You can turn it on in Settings.',
+        [{ text: 'Not now', style: 'cancel' }, { text: 'Open Settings', onPress: () => Linking.openSettings() }],
+      );
+    } else {
+      Alert.alert('Couldn\'t save photo', 'Check your connection and try again.');
+    }
+  };
 
   const goTo = (i: number) => {
     const next = Math.max(0, Math.min(count - 1, i));
@@ -89,9 +120,34 @@ export function PhotoViewerModal({
           ))}
         </ScrollView>
 
-        <Pressable style={st.closeBtn} onPress={onClose} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close">
-          <MaterialIcons name="close" size={22} color={CREAM} />
-        </Pressable>
+        <View style={[st.topBar, { top: Math.max(insets.top, 20) + 8 }]}>
+          <Pressable
+            style={({ pressed }) => [st.topBtn, pressed && st.topBtnPressed]}
+            onPress={onDownload}
+            disabled={saveState === 'saving'}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={saveState === 'saved' ? 'Saved to Photos' : 'Save photo to Photos'}
+          >
+            {saveState === 'saving'
+              ? <ActivityIndicator size="small" color={GOLD} />
+              : <MaterialIcons name={saveState === 'saved' ? 'check' : 'file-download'} size={22} color={GOLD} />}
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [st.topBtn, pressed && st.topBtnPressed]}
+            onPress={onClose}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
+            <MaterialIcons name="close" size={22} color={GOLD} />
+          </Pressable>
+        </View>
+        {saveState === 'saved' && (
+          <View style={[st.toast, { top: Math.max(insets.top, 20) + 60 }]} pointerEvents="none">
+            <Text style={st.toastText}>Saved to Photos</Text>
+          </View>
+        )}
 
         {many && index > 0 && (
           <Pressable
@@ -136,12 +192,19 @@ const st = StyleSheet.create({
   page: { justifyContent: 'center', alignItems: 'center' },
   imageWrap: { width: '90%', height: '75%' },
   image: { width: '100%', height: '100%' },
-  closeBtn: {
-    position: 'absolute', top: 52, right: 20,
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+  topBar: { position: 'absolute', right: 16, flexDirection: 'row', gap: 10 },
+  topBtn: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: FOREST, borderWidth: 1.5, borderColor: GOLD,
     justifyContent: 'center', alignItems: 'center',
   },
+  topBtnPressed: { opacity: 0.7 },
+  toast: {
+    position: 'absolute', right: 16,
+    backgroundColor: FOREST, borderWidth: 1, borderColor: GOLD, borderRadius: 14,
+    paddingHorizontal: 12, paddingVertical: 6,
+  },
+  toastText: { color: CREAM, fontSize: 12.5, fontWeight: '700' },
   arrow: {
     position: 'absolute', top: '50%', marginTop: -22,
     width: 44, height: 44, borderRadius: 22,

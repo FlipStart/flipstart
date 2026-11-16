@@ -13,7 +13,7 @@
  *  cache key, so old entries invalidate automatically. */
 export const QUERY_BUILDER_VERSION = "qb-4";
 /** Matching-algorithm version. Same contract. */
-export const MATCH_ALGO_VERSION = "match-5";
+export const MATCH_ALGO_VERSION = "match-6";
 
 export function normalizeText(s: string): string {
   return s.toLowerCase()

@@ -11,6 +11,8 @@
  * existing history-mode behavior is unchanged.
  */
 
+import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { viewerPhotosFor } from '@/lib/viewerPhotos';
 import { navGuard } from '@/lib/navGuard';
 import {
   Text, View, ScrollView, Pressable, Platform, Modal,
@@ -90,23 +92,6 @@ const JOURNEY: { key: Status; label: string; icon: string }[] = [
   { key: 'sold',    label: 'Sold',    icon: 'paid' },
 ];
 
-// ─── Image viewer ─────────────────────────────────────────────────────────────
-function ImageViewerModal({ uri, visible, onClose }: { uri: string; visible: boolean; onClose: () => void }) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={iv.backdrop} onPress={onClose}>
-        <Image source={{ uri }} style={iv.img} contentFit="contain" />
-        <View style={iv.closeHint}><MaterialIcons name="close" size={16} color={CREAM} /><Text style={iv.closeText}>Tap anywhere to close</Text></View>
-      </Pressable>
-    </Modal>
-  );
-}
-const iv = StyleSheet.create({
-  backdrop:  { flex: 1, backgroundColor: 'rgba(20,14,6,0.94)', justifyContent: 'center', alignItems: 'center' },
-  img:       { width: '94%', height: '78%' },
-  closeHint: { position: 'absolute', bottom: 48, flexDirection: 'row', alignItems: 'center', gap: 6, opacity: 0.85 },
-  closeText: { color: CREAM, fontSize: 12, fontWeight: '600' },
-});
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -855,7 +840,12 @@ export default function ScanDetailScreen() {
         </Pressable>
       </ScrollView>
 
-      <ImageViewerModal uri={flip.imageUri} visible={imageOpen} onClose={() => setImageOpen(false)} />
+      {/* Swipe through every saved photo (front, tag, detail); download + close top right. */}
+      <PhotoViewerModal
+        photos={viewerPhotosFor(flip.id, flip.imageUri, (flip as any).extraPhotos)}
+        visible={imageOpen}
+        onClose={() => setImageOpen(false)}
+      />
     </View>
   );
 }

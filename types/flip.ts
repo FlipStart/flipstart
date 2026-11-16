@@ -109,6 +109,10 @@ export interface FlipResult {
   /** Matches ScanResult.id from scan-context */
   id:           string;
   imageUri:     string;
+  /** Tag and detail photos, uploaded when the scan was saved (hosted URLs
+   *  only), so the photo viewer can swipe through them later. Absent on scans
+   *  saved before this existed, and on scans taken with the front photo only. */
+  extraPhotos?: Array<{ uri: string; label: 'Tag' | 'Detail' }>;
   timestamp:    number;
 
   // Identification
