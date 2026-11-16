@@ -12,6 +12,7 @@
  */
 
 import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { listingExtras } from '@/lib/listingHints';
 import { viewerPhotosFor } from '@/lib/viewerPhotos';
 import { navGuard } from '@/lib/navGuard';
 import {
@@ -335,6 +336,8 @@ export default function ScanDetailScreen() {
         estimated_era: flip.era ?? 'Unknown', material_guess: flip.material ?? 'Unknown',
         style_labels: flip.styleLabels ?? [],
         adjusted_estimated_value: flip.resaleValue, demand: flip.demand ?? 'Medium',
+        // Lets the server use the scan's real size / fit / condition / era.
+        ...listingExtras(flip.structured?.v1, user?.id),
       });
       const listingData: ListingData = {
         ebay:  { title: result.ebay.title,  description: result.ebay.description  },

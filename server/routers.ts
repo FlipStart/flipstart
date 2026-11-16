@@ -883,6 +883,19 @@ const appRouter_scan = router({
           // client is never trusted.
           scannerId:                z.string().optional(),
           analysisId:               z.string().optional(),
+          // Saved-scan fields, used ONLY when the stored analysis has expired
+          // (older scans). Plain descriptive values, length-capped; they only
+          // shape the caller's own listing.
+          hints: z.object({
+            eraStatus:         z.string().max(40).optional(),
+            productionDecade:  z.string().max(20).optional(),
+            styleEra:          z.string().max(20).optional(),
+            sizeLabel:         z.string().max(24).optional(),
+            targetDepartment:  z.string().max(20).optional(),
+            primaryColor:      z.string().max(40).optional(),
+            obviousDamage:     z.array(z.string().max(80)).max(5).optional(),
+            assessmentLimited: z.boolean().optional(),
+          }).optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -929,10 +942,17 @@ const appRouter_scan = router({
         // Item 4: the confirmed facts must actually reach the listing text, not
         // just the raw note. The note is the user's words; the facts are what
         // the model concluded from them, already normalised and validated.
+        // The full analysis, for size / fit / colour / condition / era. Same
+        // ownership rule as the context store: someone else's scan is null.
+        const analysis = input.analysisId && sid ? getAnalysis(input.analysisId, sid) : null;
+        console.log(`[listings] facts from ${analysis ? "stored analysis" : input.hints ? "app hints" : "basic fields only"}`);
+
         const result = await generateItemListings({
           ...input,
           userContext,
           userConfirmedFacts: stored?.confirmedFacts ?? [],
+          canonical: analysis?.canonical ?? null,
+          hints: input.hints,
         });
         console.log(`[listings] complete — ${Date.now() - start}ms`);
         return result;

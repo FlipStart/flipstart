@@ -20,6 +20,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 
 import { ScreenContainer } from '@/components/screen-container';
+import { listingExtras } from '@/lib/listingHints';
 import { useScanContext } from '@/lib/scan-context';
 import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt, updateHuntItemImage } from '@/lib/hunt-context';
 import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
@@ -939,9 +940,13 @@ export default function ResultsScreen() {
         style_labels: id.style_labels,
         adjusted_estimated_value: md.adjusted_estimated_value, demand: md.demand,
         // Identity + analysis reference so the server can load the confirmed
-        // context itself. The context text is deliberately NOT sent from here.
-        scannerId:  (currentScan as any)?.scannerId ?? undefined,
-        analysisId: (id as any)?.v1?.analysisId ?? (currentScan as any)?.analysisId ?? undefined,
+        // context and the full analysis itself (size, fit, condition, era).
+        // The context text is deliberately NOT sent from here.
+        ...listingExtras(
+          (id as any)?.v1,
+          (currentScan as any)?.scannerId ?? user?.id,
+          (id as any)?.v1?.analysisId ?? (currentScan as any)?.analysisId,
+        ),
       });
       updateScan(currentScan.id, { listings: result });
       trackAnalyticsEvent('listing_generated', {

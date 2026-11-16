@@ -13,6 +13,8 @@ import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { listingExtras } from '@/lib/listingHints';
+import { useAuth } from '@/lib/auth-context';
 import { viewerPhotosFor } from '@/lib/viewerPhotos';
 import { deepAnalysisAnalytics } from '@/lib/deepAnalysisAnalytics';
 
@@ -294,6 +296,7 @@ export default function AnalysisDetailsScreen() {
   const [copiedKey,     setCopiedKey]     = useState<string | null>(null);
 
   const generateListingsMutation = trpc.scan.generateListings.useMutation();
+  const { user } = useAuth();
 
   const copy = (text: string, key: string) => {
     Clipboard.setString(text);
@@ -375,6 +378,8 @@ export default function AnalysisDetailsScreen() {
         estimated_era: baseFlip.era ?? 'Unknown', material_guess: baseFlip.material ?? 'Unknown',
         style_labels: baseFlip.styleLabels ?? [],
         adjusted_estimated_value: baseFlip.resaleValue, demand: baseFlip.demand ?? 'Medium',
+        // Lets the server use the scan's real size / fit / condition / era.
+        ...listingExtras((baseFlip.structured as any)?.v1 ?? (baseFlip as any)?.identification?.v1, user?.id),
       });
       const listingData: ListingData = {
         ebay:  { title: result.ebay.title,  description: result.ebay.description  },
