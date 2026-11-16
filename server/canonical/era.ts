@@ -63,6 +63,9 @@ const UNION_ERAS: Array<{ pattern: RegExp; supports: string; note: string }> = [
 
 /** Dates the physical object. The only types that can be `hard`. */
 const MANUFACTURING_DATE_TYPES = new Set(["manufacturing_date", "model_or_date_code"]);
+/** Brand label/logo GENERATIONS. Never hard (no trusted registry), but one the
+ *  model is SURE of may name the production decade - see validateEra step 8. */
+const SURE_TAG_TYPES = new Set(["documented_tag_format", "logo_version"]);
 
 /** Dates the artwork or licence, NOT the object. Capped at strong_supporting.
  *  A 1994 copyright appears on shirts printed in 2020. */
@@ -722,7 +725,23 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
            e.type !== "style_only" &&
            e.supports === decade,
     );
-    if (!supported && !userStated) {
+    // A brand tag or logo GENERATION the model is SURE of (founder rule, Nov
+    // 2026: "fairly sure" must not set a decade, "sure" may). Sure = proposed
+    // hard. deriveEffectiveStrength still demotes it to strong_supporting, so
+    // it can never open a confirmed-vintage route; it only names the decade.
+    // A generic trait typed as a tag format is demoted to weak there and never
+    // qualifies here. It must be seen in a real photo, not reported.
+    const sureTag = effective.find(
+      e => SURE_TAG_TYPES.has(e.type) &&
+           e.proposed_strength === "hard" &&
+           e.effective_strength === "strong_supporting" &&
+           e.photo_slot !== "user_confirmed" &&
+           e.supports === decade,
+    );
+    if (!supported && !userStated && sureTag) {
+      log("DECADE_SURE_TAG_GENERATION", "era.production_decade", decade, decade,
+          `decade from a ${sureTag.type} the model is sure of: ${sureTag.observation}`, "", false);
+    } else if (!supported && !userStated) {
       log("DECADE_NO_HARD_EVIDENCE", "era.production_decade", decade, "unknown",
           "no hard manufacturing evidence supports this decade");
       decade = "unknown";
@@ -733,6 +752,28 @@ export function validateEra(input: EraValidationInput): EraValidationResult {
   }
 
   // 9. Cutoff reconciliation.
+  // A decade set from a sure tag generation must agree with the broad call.
+  // Pre-cutoff decade + unknown status: the tag dates it, so likely_vintage.
+  // A decade that contradicts the broad call is dropped rather than shown.
+  // Decades containing the cutoff (straddle) never move the status.
+  {
+    const fromTag = logs.some(l => l.rule_id === "DECADE_SURE_TAG_GENERATION");
+    const bounds = decade !== "unknown" ? DECADE_BOUNDS[decade] : undefined;
+    if (fromTag && bounds && decade !== straddleDecade(vintageCutoffYear)) {
+      const old = bounds[1] <= vintageCutoffYear;
+      const vintageStatus = status === "likely_vintage" || status === "confirmed_vintage";
+      if (old && status === "unknown") {
+        log("ERA_STATUS_FROM_TAG_DECADE", "era.era_status", status, "likely_vintage",
+            `sure ${decade} tag generation, status was unknown`, "", false);
+        status = "likely_vintage";
+      } else if ((old && !vintageStatus) || (!old && vintageStatus)) {
+        log("DECADE_TAG_CONFLICTS_STATUS", "era.production_decade", decade, "unknown",
+            `tag-generation decade ${decade} disagrees with era_status ${status}`);
+        decade = "unknown";
+      }
+    }
+  }
+
   const straddle = straddleDecade(vintageCutoffYear);
   if (yearRes.year != null) {
     if (yearRes.year > vintageCutoffYear && status === "confirmed_vintage") {

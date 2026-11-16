@@ -29,8 +29,7 @@ import { computeFlipCalc, resolveEffectiveThriftPrice,
 import { REC_THEMES, normalizeBuyRating } from '@/utils/recommendation';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import {
-  buildDeepInputs, whyThisRating, ratingQuestion, priceLogicText,
-  riskAssessment, confidenceBreakdown, platformStrategy, listingStrategy,
+  buildDeepInputs, confidenceBreakdown, platformStrategy, listingStrategy,
   itemEvidence, whatCouldChange,
 } from '@/utils/deepAnalysis';
 import { trackAnalyticsEvent } from '@/lib/analytics';
@@ -220,17 +219,7 @@ function DeepHead({ icon, title }: { icon: string; title: string }) {
   );
 }
 
-/** Deep Analysis section head for the dark-green premium card (cream text/icon). */
-function DeepHeadPremium({ icon, title }: { icon: string; title: string }) {
-  return (
-    <View style={d.deepHead}>
-      <View style={d.deepHeadIconPrem}><MaterialIcons name={icon as any} size={15} color={GOLD} /></View>
-      <Text style={d.deepHeadTitlePrem}>{title}</Text>
-    </View>
-  );
-}
-
-/** Small compact stat used in Price Logic / Listing Strategy recaps. */
+/** Small compact stat used in the Listing Strategy recap. */
 function PriceStat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <View style={d.priceStat}>
@@ -256,6 +245,11 @@ function platformNote(p: string): string {
 
 
 // ─── Main Component ───────────────────────────────────────────────────────────
+
+/** "RISKY BUY" -> "Risky Buy", for the "What could change the ... rating" title. */
+function ratingTitle(r: string): string {
+  return String(r || '').toLowerCase().replace(/\b\w/g, m => m.toUpperCase());
+}
 
 export default function AnalysisDetailsScreen() {
   const openGenerateListings = useGenerateListingsGate();
@@ -488,8 +482,6 @@ export default function AnalysisDetailsScreen() {
   // buildDeepInputs already received the live rating; no override needed.
   // The previous assignment here silently replaced it with the stored value,
   // which is why the explanation never followed the badge.
-  const whyBullets   = whyThisRating(di);
-  const priceText    = priceLogicText(di);
   // Canonical V1 values, absent on older scans. Every section below treats a
   // missing block as "nothing to show" rather than rendering empty scaffolding.
   const v1: any = (baseFlip.structured as any)?.v1;
@@ -497,7 +489,6 @@ export default function AnalysisDetailsScreen() {
   // percentage (matchConfidence is ordinal, not a probability).
   const confidence = getConfidenceDisplay(v1, baseFlip.matchConfidence);
   const [sawOpen, setSawOpen] = useState(false);
-  const risk         = riskAssessment(di);
   const confB        = confidenceBreakdown(di);
   const platStrat    = platformStrategy(di);
   const listStrat    = listingStrategy(di);
@@ -572,154 +563,59 @@ export default function AnalysisDetailsScreen() {
             </View>
           </View>
 
-          {/* History: editable thrift price — not shown for hunt_history */}
-          {isHistory && !isHuntHistory && (
-            <View style={d.card}>
-              <DeepHead icon="edit" title="Update Thrift Price" />
-              <View style={d.priceRow}>
-                <Text style={d.dataLabel}>What you paid</Text>
-                {thriftEditing ? (
-                  <View style={d.priceInputWrap}>
-                    <Text style={d.priceDollar}>$</Text>
-                    <TextInput
-                      style={d.priceInput} value={thriftStr}
-                      onChangeText={t => { if (/^\d*\.?\d*$/.test(t)) setThriftStr(t); }}
-                      keyboardType="decimal-pad" autoFocus returnKeyType="done"
-                      onSubmitEditing={handleSaveThrift} onBlur={handleSaveThrift}
-                    />
-                  </View>
-                ) : (
-                  <Pressable onPress={() => { setThriftEditing(true); haptic(Haptics.ImpactFeedbackStyle.Light); }} style={d.priceDisplay}>
-                    <Text style={d.priceDisplayText}>${editedThrift}</Text>
-                    <MaterialIcons name="edit" size={13} color={FOREST} />
-                  </Pressable>
-                )}
-              </View>
-            </View>
-          )}
-
-          {/* ── 3. Why this rating? (premium dark-green card) ── */}
-          <View style={d.premiumCard}>
-            <View style={d.premiumAccent} />
-            <DeepHeadPremium icon="verified" title={ratingQuestion(canonicalRating)} />
-            {whyBullets.map((b, i) => (
-              <View key={i} style={d.premiumBulletRow}>
-                <MaterialIcons name="chevron-right" size={16} color={GOLD} style={{ marginTop: 1 }} />
-                <Text style={d.premiumBulletText}>{b}</Text>
-              </View>
-            ))}
-          </View>
-
-          {/* ── 4. Price logic ── */}
-          <View style={d.card}>
-            <DeepHead icon="payments" title="Price Logic" />
-            <View style={d.priceLogicStats}>
-              {/* Four cards, every label semantically accurate.
-                  "Max Buy $7" is gone — that $7 was the user's own price, and
-                  labelling it as a recommendation was the worst offender in
-                  the app. Buy Under is the real recommendation; the Absolute
-                  Ceiling lives in the prose below so the row stays at four. */}
-              <PriceStat label="Est. Resale" value={baseFlip.resaleValue > 0 ? `$${baseFlip.resaleValue}` : '—'} />
-              <PriceStat label="Buy Under"   value={buyThreshold != null && buyThreshold > 0 ? `$${buyThreshold}` : '—'} />
-              <PriceStat label="Your Price"  value={`$${userPriceShown}`} />
-              <PriceStat label="Profit"      value={calc.profit >= 0 ? `+$${calc.profit}` : `-$${Math.abs(calc.profit)}`} color={profitColor} />
-            </View>
-            <Text style={d.paragraph}>{priceText}</Text>
-
-            {/* Market signals sit here rather than in their own card: they are
-                the "why" behind the price above, and splitting them would make
-                the user reconcile two cards answering one question. */}
-            {(() => {
-              const speed  = baseFlip.sellSpeed;
-              const demand = baseFlip.demand;
-              const comp   = baseFlip.competitionLevel;
-              const pool   = v1?.buyerPool;
-              const reasons: string[] = v1?.marketabilityReasons ?? [];
-              if (!speed && !demand && !comp && !pool) return null;
-              const cap = (x?: string) =>
-                x ? String(x).replace(/_/g, ' ').replace(/^./, (m: string) => m.toUpperCase()) : '';
-              // buyer_pool is an enum whose raw values ("broad", "very_narrow")
-              // do not read as an answer to "who buys it".
-              const POOL: Record<string, string> = {
-                broad:        'Almost anyone',
-                moderate:     'A decent range',
-                narrow:       'A specific type',
-                very_narrow:  'A rare buyer',
-              };
-              const poolLabel = pool ? (POOL[String(pool)] ?? cap(pool)) : '';
-              return (
-                <View style={d.marketBlock}>
-                  <Text style={d.confSubHead}>Market signals</Text>
-                  <View style={d.marketGrid}>
-                    {/* "Buyers" alone was ambiguous — buyers of what, how many?
-                        Each cell now carries a one-line explanation, and a cell
-                        with no data is skipped rather than showing an em dash. */}
-                    {([
-                      ['How fast it sells', cap(speed),  'Typical time to find a buyer'],
-                      ['How wanted it is',  cap(demand), 'How actively people search for this'],
-                      ['Who buys it',       poolLabel,   'How wide the audience is'],
-                      ['Similar listings',  cap(comp),   'How much you are competing against'],
-                    ] as [string,string,string][])
-                      .filter(([, val]) => val && val !== '—')
-                      .map(([k, val, hint]) => (
-                        <View key={k} style={d.marketCell}>
-                          <Text style={d.marketKey}>{k}</Text>
-                          <Text style={d.marketVal} numberOfLines={1}>{val}</Text>
-                          <Text style={d.marketHint} numberOfLines={2}>{hint}</Text>
-                        </View>
-                      ))}
-                  </View>
-                  {reasons.slice(0, 3).map((r, i) => (
-                    <View key={i} style={d.bulletRow}>
-                      <MaterialIcons name="chevron-right" size={14} color={GOLD} style={{ marginTop: 2 }} />
-                      <Text style={d.bulletText}>{r}</Text>
-                    </View>
-                  ))}
+          {/* ── 1. Market signals (first: what a reseller acts on) ── */}
+          {(() => {
+            const speed  = baseFlip.sellSpeed;
+            const demand = baseFlip.demand;
+            const comp   = baseFlip.competitionLevel;
+            const pool   = v1?.buyerPool;
+            const reasons: string[] = v1?.marketabilityReasons ?? [];
+            if (!speed && !demand && !comp && !pool) return null;
+            // First card on the screen (founder order, Nov 2026): what the
+            // market for this item looks like is what a reseller acts on.
+            const cap = (x?: string) =>
+              x ? String(x).replace(/_/g, ' ').replace(/^./, (m: string) => m.toUpperCase()) : '';
+            // buyer_pool is an enum whose raw values ("broad", "very_narrow")
+            // do not read as an answer to "who buys it".
+            const POOL: Record<string, string> = {
+              broad:        'Almost anyone',
+              moderate:     'A decent range',
+              narrow:       'A specific type',
+              very_narrow:  'A rare buyer',
+            };
+            const poolLabel = pool ? (POOL[String(pool)] ?? cap(pool)) : '';
+            return (
+              <View style={[d.card, d.marketCard]}>
+                <DeepHead icon="trending-up" title="Market Signals" />
+                <View style={d.marketGrid}>
+                  {/* "Buyers" alone was ambiguous — buyers of what, how many?
+                      Each cell now carries a one-line explanation, and a cell
+                      with no data is skipped rather than showing an em dash. */}
+                  {([
+                    ['How fast it sells', cap(speed),  'Typical time to find a buyer'],
+                    ['How wanted it is',  cap(demand), 'How actively people search for this'],
+                    ['Who buys it',       poolLabel,   'How wide the audience is'],
+                    ['Similar listings',  cap(comp),   'How much you are competing against'],
+                  ] as [string,string,string][])
+                    .filter(([, val]) => val && val !== '—')
+                    .map(([k, val, hint]) => (
+                      <View key={k} style={d.marketCell}>
+                        <Text style={d.marketKey}>{k}</Text>
+                        <Text style={d.marketVal} numberOfLines={1}>{val}</Text>
+                        <Text style={d.marketHint} numberOfLines={2}>{hint}</Text>
+                      </View>
+                    ))}
                 </View>
-              );
-            })()}
-          </View>
-
-          {/* ── 5. Risk flags ── */}
-          <View style={d.card}>
-            <View style={d.riskHeadRow}>
-              <View style={d.riskHeadLeft}><DeepHead icon="shield" title="Risk Flags" /></View>
-              <View style={[d.riskLevelPill, { backgroundColor: risk.color + '18', borderColor: risk.color + '55' }]}>
-                <Text style={[d.riskLevelText, { color: risk.color }]} numberOfLines={1}>{risk.level}</Text>
+                {reasons.slice(0, 3).map((r, i) => (
+                  <View key={i} style={d.bulletRow}>
+                    <MaterialIcons name="chevron-right" size={14} color={GOLD} style={{ marginTop: 2 }} />
+                    <Text style={d.bulletText}>{r}</Text>
+                  </View>
+                ))}
               </View>
-            </View>
-            {risk.bullets.map((b, i) => (
-              <View key={i} style={d.bulletRow}>
-                <MaterialIcons name="fiber-manual-record" size={7} color={risk.color} style={{ marginTop: 6 }} />
-                <Text style={d.bulletText}>{b}</Text>
-              </View>
-            ))}
-          </View>
-
-          {/* ── 6. Confidence breakdown ── */}
-          <View style={d.card}>
-            <View style={d.riskHeadRow}>
-              <View style={d.riskHeadLeft}><DeepHead icon="insights" title="Confidence Breakdown" /></View>
-              <Text style={[d.confTier, confidence && { color: confidence.color }]} numberOfLines={1}>{confidence ? confidence.label : '—'}</Text>
-            </View>
-            {!!confidence?.reason && <Text style={d.confReason}>{confidence.reason}</Text>}
-            <Text style={d.confSubHead}>Confident because</Text>
-            {confB.confident.map((c, i) => (
-              <View key={`c${i}`} style={d.bulletRow}>
-                <MaterialIcons name="check-circle" size={13} color="#2A5A2A" style={{ marginTop: 2 }} />
-                <Text style={d.bulletText}>{c}</Text>
-              </View>
-            ))}
-            <Text style={[d.confSubHead, { marginTop: 10 }]}>Lower confidence because</Text>
-            {confB.uncertain.map((c, i) => (
-              <View key={`u${i}`} style={d.bulletRow}>
-                <MaterialIcons name="help-outline" size={13} color={MUTED} style={{ marginTop: 2 }} />
-                <Text style={d.bulletText}>{c}</Text>
-              </View>
-            ))}
-          </View>
-
-          {/* ── 7. Where to sell (platform strategy) ── */}
+            );
+          })()}
+          {/* ── 2. Where to sell (platform strategy) ── */}
           <View style={d.card}>
             <DeepHead icon="storefront" title="Where to Sell" />
             <Text style={d.confSubHead}>Best Bets</Text>
@@ -742,7 +638,7 @@ export default function AnalysisDetailsScreen() {
             )}
           </View>
 
-          {/* ── 8. Listing strategy ── */}
+          {/* ── 3. Listing strategy ── */}
           <View style={d.card}>
             <DeepHead icon="sell" title="Listing Strategy" />
             <View style={d.priceLogicStats}>
@@ -761,7 +657,7 @@ export default function AnalysisDetailsScreen() {
             <Text style={d.inlineList}>{listStrat.mention.join(' · ')}</Text>
           </View>
 
-          {/* ── 9. Item evidence ── */}
+          {/* ── 4. Item evidence ── */}
           <View style={d.card}>
             <DeepHead icon="fact-check" title="Item Evidence" />
             {evidence.present.map((f, i) => (
@@ -810,7 +706,7 @@ export default function AnalysisDetailsScreen() {
             )}
           </View>
 
-          {/* ── 9b. Era & Authenticity ─────────────────────────────────────
+          {/* ── 5. Era & Authenticity ─────────────────────────────────────
               Everything here is the VALIDATED conclusion, never the model's raw
               claim — era_status survives evidence checks, so "confirmed
               vintage" shown here has actually earned it. */}
@@ -896,9 +792,58 @@ export default function AnalysisDetailsScreen() {
             );
           })()}
 
-          {/* ── 10. What could change this rating? ── */}
+          {/* ── 6. Confidence breakdown ── */}
           <View style={d.card}>
-            <DeepHead icon="tips-and-updates" title="What Could Change This Rating?" />
+            <View style={d.riskHeadRow}>
+              <View style={d.riskHeadLeft}><DeepHead icon="insights" title="Confidence Breakdown" /></View>
+              <Text style={[d.confTier, confidence && { color: confidence.color }]} numberOfLines={1}>{confidence ? confidence.label : '—'}</Text>
+            </View>
+            {!!confidence?.reason && <Text style={d.confReason}>{confidence.reason}</Text>}
+            <Text style={d.confSubHead}>Confident because</Text>
+            {confB.confident.map((c, i) => (
+              <View key={`c${i}`} style={d.bulletRow}>
+                <MaterialIcons name="check-circle" size={13} color="#2A5A2A" style={{ marginTop: 2 }} />
+                <Text style={d.bulletText}>{c}</Text>
+              </View>
+            ))}
+            <Text style={[d.confSubHead, { marginTop: 10 }]}>Lower confidence because</Text>
+            {confB.uncertain.map((c, i) => (
+              <View key={`u${i}`} style={d.bulletRow}>
+                <MaterialIcons name="help-outline" size={13} color={MUTED} style={{ marginTop: 2 }} />
+                <Text style={d.bulletText}>{c}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* History: editable thrift price — not shown for hunt_history */}
+          {isHistory && !isHuntHistory && (
+            <View style={d.card}>
+              <DeepHead icon="edit" title="Update Thrift Price" />
+              <View style={d.priceRow}>
+                <Text style={d.dataLabel}>What you paid</Text>
+                {thriftEditing ? (
+                  <View style={d.priceInputWrap}>
+                    <Text style={d.priceDollar}>$</Text>
+                    <TextInput
+                      style={d.priceInput} value={thriftStr}
+                      onChangeText={t => { if (/^\d*\.?\d*$/.test(t)) setThriftStr(t); }}
+                      keyboardType="decimal-pad" autoFocus returnKeyType="done"
+                      onSubmitEditing={handleSaveThrift} onBlur={handleSaveThrift}
+                    />
+                  </View>
+                ) : (
+                  <Pressable onPress={() => { setThriftEditing(true); haptic(Haptics.ImpactFeedbackStyle.Light); }} style={d.priceDisplay}>
+                    <Text style={d.priceDisplayText}>${editedThrift}</Text>
+                    <MaterialIcons name="edit" size={13} color={FOREST} />
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* ── 7. What could change the rating ── named, e.g. "Risky Buy" ── */}
+          <View style={d.card}>
+            <DeepHead icon="tips-and-updates" title={`What Could Change the "${ratingTitle(canonicalRating)}" Rating?`} />
             {changeItems.map((c, i) => (
               <View key={i} style={d.bulletRow}>
                 <MaterialIcons name="chevron-right" size={15} color={GOLD} style={{ marginTop: 2 }} />
@@ -907,7 +852,7 @@ export default function AnalysisDetailsScreen() {
             ))}
           </View>
 
-          {/* ── 11. What the AI saw ────────────────────────────────────────
+          {/* ── 8. What the AI saw ────────────────────────────────────────
               Collapsed by default. This is "show your work" for a sceptical
               user, not something anyone needs on a normal read — expanded by
               default it would bury the actionable sections above it. */}
@@ -958,7 +903,7 @@ export default function AnalysisDetailsScreen() {
             );
           })()}
 
-          {/* Listings (generate / view) */}
+          {/* ── 9. Listings (generate / view) ── */}
           <View style={d.card}>
             <DeepHead icon="description" title="Listings" />
             {hasListings ? (
@@ -1000,7 +945,7 @@ export default function AnalysisDetailsScreen() {
             )}
           </View>
 
-          {/* ── 11. Back to Analysis ── */}
+          {/* ── 10. Back to Analysis ── */}
           <Pressable
             onPress={() => router.back()}
             style={({ pressed }) => [d.backToSummaryBtn, { marginTop: 24 }, pressed && { opacity: 0.88 }]}
@@ -1036,6 +981,7 @@ const d = StyleSheet.create({
   headerSub:     { fontSize: 14, fontWeight: '700', color: GOLD, letterSpacing: 2.0, textTransform: 'uppercase' },
   headerStar:    { fontSize: 14, color: GOLD },
 
+  marketCard: { gap: 8 },
   card: {
     backgroundColor: CARD, borderRadius: 14, borderWidth: 1, borderColor: CARD_B,
     marginHorizontal: 14, marginTop: 12, padding: 16,
@@ -1166,8 +1112,6 @@ const d = StyleSheet.create({
   deepHead:        { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
   deepHeadIcon:    { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(190,156,44,0.14)', borderWidth: 1, borderColor: 'rgba(190,156,44,0.4)', alignItems: 'center', justifyContent: 'center' },
   deepHeadTitle:   { fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: '800', color: FOREST, flex: 1 },
-  deepHeadIconPrem:{ width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(255,255,255,0.12)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center' },
-  deepHeadTitlePrem:{ fontFamily: FONTS.serif, fontSize: 15.5, fontWeight: '800', color: CREAM, flex: 1 },
 
   recapCard: {
     flexDirection: 'row', gap: 12, backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: CARD_B,
@@ -1188,14 +1132,6 @@ const d = StyleSheet.create({
   recapResale:    { fontSize: 11, color: MUTED, fontWeight: '600' },
   recapResaleVal: { color: GOLD, fontWeight: '800', fontFamily: FONTS.serif },
 
-  premiumCard: {
-    backgroundColor: '#1E3A20', borderRadius: 16, marginHorizontal: 14, marginTop: 12,
-    paddingTop: 0, paddingBottom: 14, paddingHorizontal: 15, overflow: 'hidden',
-    shadowColor: '#0A1A0A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 6,
-  },
-  premiumAccent:  { height: 3, backgroundColor: GOLD, marginHorizontal: -15, marginBottom: 14 },
-  premiumBulletRow:{ flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginBottom: 8 },
-  premiumBulletText:{ flex: 1, fontSize: 13, lineHeight: 19, color: '#EDE6D2' },
 
   bulletRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 7 },
   bulletText: { flex: 1, fontSize: 13, lineHeight: 19, color: BROWN },
@@ -1208,8 +1144,6 @@ const d = StyleSheet.create({
 
   riskHeadRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 },
   riskHeadLeft:  { flex: 1, minWidth: 0 },
-  riskLevelPill: { flexShrink: 0, borderWidth: 1, borderRadius: 50, paddingHorizontal: 10, paddingVertical: 3, marginBottom: 4 },
-  riskLevelText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
 
   confBig:     { flexShrink: 0, fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: GOLD, marginBottom: 4 },
   confTier:    { flexShrink: 0, fontSize: 12, fontWeight: '800', letterSpacing: 0.5, color: GOLD, marginBottom: 4 },
@@ -1231,7 +1165,6 @@ const d = StyleSheet.create({
   evidenceLabel: { width: 90, fontSize: 12, fontWeight: '800', color: FOREST },
   sawHeader:    { flexDirection: 'row', alignItems: 'center', gap: 6 },
   sawHint:      { fontSize: 12, color: MUTED, fontStyle: 'italic', marginTop: 6 },
-  marketBlock:  { marginTop: 12, gap: 8 },
   marketGrid:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   marketCell:   { flexGrow: 1, flexBasis: '46%', backgroundColor: '#FBF6E6', borderRadius: 10,
                   borderWidth: 1, borderColor: GOLD + '33', paddingHorizontal: 10, paddingVertical: 8 },

@@ -1161,7 +1161,7 @@ export default function ResultsScreen() {
                       <View style={s.deepTipRow}>
                         <MaterialIcons name="lightbulb" size={15} color={GOLD} style={{ marginTop: 1 }} />
                         <Text style={s.deepTipText}>
-                          Tap the item name to open <Text style={s.deepTipBold}>Deep Analysis</Text> — full price reasoning, risks, and platform strategy.
+                          Tap the item name to open <Text style={s.deepTipBold}>Deep Analysis</Text> — market signals, where to sell, and listing strategy.
                         </Text>
                         <Pressable onPress={() => setShowDeepTip(false)} hitSlop={8} style={s.deepTipClose}>
                           <MaterialIcons name="close" size={15} color={MUTED} />

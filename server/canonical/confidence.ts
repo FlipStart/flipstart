@@ -352,7 +352,39 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceResult {
   // (prompt v1.11.0), so the user telling us is as good as reading it.
   const inPhoto = (f: IdField) => populated(f) && evidence.some(e =>
     e.field === f && e.evidence_mode !== "inference" && e.photo_slot !== "user_confirmed");
-  const tier = tierForLevel(level);
+  let tier = tierForLevel(level);
+
+  // ── Brand-level HIGH has to be earned (Nov 2026) ──────────────────────────
+  // Level "brand" used to mean HIGH unconditionally, so a logo glimpsed on the
+  // front read exactly like a brand read off the tag, and nearly every scan was
+  // HIGH. Now HIGH at brand level needs one of:
+  //   - the brand read (transcribed) off a label photo: the tag or a detail shot
+  //   - a licensed identity (team, artist, event, licence) read off any photo:
+  //     that identity lives on the graphic, not the tag
+  //   - the user's note (AI Context is trusted, prompt v1.11.0)
+  // and photos without a visible problem. Otherwise MEDIUM, with a reason that
+  // says what would confirm it.
+  //
+  // Only ever HIGH -> MEDIUM. Never LOW: LOW opens the soft-fail screen and
+  // holds the scan charge, which this must not change.
+  const brandOnLabel = evidence.some(e =>
+    e.field === "canonical_brand" && e.evidence_mode === "direct_transcription" &&
+    (e.photo_slot === "tag" || e.photo_slot === "detail"));
+  const licensedRead = evidence.some(e =>
+    (LICENSED_FIELDS as readonly string[]).includes(e.field) && e.evidence_mode === "direct_transcription" &&
+    e.photo_slot !== "user_confirmed");
+  const brandFromNote = evidence.some(e =>
+    (e.field === "canonical_brand" || (LICENSED_FIELDS as readonly string[]).includes(e.field)) &&
+    e.photo_slot === "user_confirmed");
+  const brandEarned = brandOnLabel || licensedRead || brandFromNote;
+  let brandMediumReason: string | null = null;
+  if (level === "brand" && tier === "high" && (!brandEarned || visualProblems.length > 0)) {
+    tier = "medium";
+    const name = String(id.canonical_brand ?? "").trim() || "Brand";
+    brandMediumReason = visualProblems.length > 0
+      ? `${name.length > 30 ? name.slice(0, 29) + "…" : name} identified, but the photo isn't clear (${visualProblems.map(p => PROBLEM_TEXT[p]).join(", ")})`
+      : `${name.length > 30 ? name.slice(0, 29) + "…" : name} seen on the item - a tag photo would confirm it`;
+  }
   const clip = (s: string) => (s.length > 48 ? `${s.slice(0, 47).trimEnd()}…` : s);
   const value = (f: IdField) => String((id as unknown as Record<string, unknown>)[f] ?? "").trim();
   /** The strongest sighting of a field: a photo beats the user's note, read
@@ -383,6 +415,8 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceResult {
     } else {
       tierReason = "Matched a known product from its details";
     }
+  } else if (level === "brand" && brandMediumReason) {
+    tierReason = brandMediumReason;
   } else if (level === "brand") {
     // Name the identity a photo actually shows, when there is one.
     const f: IdField = inPhoto("canonical_brand") ? "canonical_brand"

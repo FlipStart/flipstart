@@ -837,7 +837,7 @@ export default function ScanDetailScreen() {
           <View style={s.deepIconWrap}><MaterialIcons name="psychology" size={20} color={GOLD} /></View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.deepTitle}>Deep Analysis</Text>
-            <Text style={s.deepSub}>Why this rating, risks, where to sell & listing strategy</Text>
+            <Text style={s.deepSub}>Market signals, where to sell, listing strategy & more</Text>
           </View>
           <MaterialIcons name="chevron-right" size={22} color={GOLD} />
         </Pressable>

@@ -5,18 +5,17 @@
  * under seal.
  *
  * ── What is teased, and why these three ─────────────────────────────────────
- * Deep Analysis has twelve sections. A paywall that showed six of them would be
- * a shrunken report, not a teaser — and the reference mockup showed exactly
- * why that fails. So the card opens three, chosen as a single argument:
+ * The card opens the first three sections of the real screen, in its real
+ * order (Nov 2026 reorder: "Why this rating", "Price Logic" and "Risk Flags"
+ * were removed from Deep Analysis, so they can no longer be teased):
  *
- *   WHY STRONG BUY?   the verdict, and the reasons behind it
- *   PRICE LOGIC       the numbers that verdict rests on
- *   RISK FLAGS        what could still go wrong
+ *   MARKET SIGNALS    how fast it sells, how wanted it is, who buys it
+ *   WHERE TO SELL     the platform to list it on first
+ *   LISTING STRATEGY  what to list it at, and the lowest offer to take
  *
- * Together they answer the question every reseller has at the rack: "should I
- * buy this, at what price, and what am I missing?" The remaining sections are
- * named but sealed beneath a gold lock, which is the actual pitch: you have
- * seen the shape of the reasoning; the rest of it is one tap away.
+ * Together they answer what a reseller does next with the find. The remaining
+ * sections are named but sealed beneath a gold lock: you have seen the shape
+ * of it; the rest is one tap away.
  *
  * ── Everything shown is a SAMPLE ────────────────────────────────────────────
  * The figures are fixed and illustrative. The card is stamped SAMPLE and the
@@ -48,18 +47,15 @@ import { PW, PW_RADIUS } from "../paywallTheme";
 const COMPACT_BELOW = 740;
 
 /** Real section titles from app/analysis-details.tsx — pinned by test. */
-const SEALED_SECTIONS = ["Confidence Breakdown", "Where to Sell", "Listing Strategy", "Item Evidence"];
+const SEALED_SECTIONS = ["Item Evidence", "Era & Authenticity", "Confidence Breakdown", "What the AI Saw"];
 
 /** Illustrative. A generic item so it cannot be mistaken for the user's scan. */
 const SAMPLE = {
   item: "Vintage Leather Jacket",
   verdict: "STRONG BUY",
-  confidence: "74%",
   resale: "$150",
-  buyUnder: "$62",
-  profit: "+$88",
-  risk: "Low",
-  toVerify: 2,
+  listRange: "$140-160",
+  acceptAbove: "$125",
 } as const;
 
 export function DeepAnalysisHero({ config }: PaywallHeroProps) {
@@ -146,7 +142,7 @@ export function DeepAnalysisHero({ config }: PaywallHeroProps) {
       {/* ── The dossier ───────────────────────────────────────────────── */}
       <View
         style={[s.dossier, compact && s.dossierCompact]}
-        accessibilityLabel="Sample Deep Analysis: a strong buy verdict with price logic and risk flags shown, and Confidence Breakdown, Where to Sell, Listing Strategy and Item Evidence available with Pro."
+        accessibilityLabel="Sample Deep Analysis: market signals, where to sell and listing strategy shown, and Item Evidence, Era & Authenticity, Confidence Breakdown and What the AI Saw available with Pro."
       >
         {/* Letterhead */}
         <View style={s.letterhead}>
@@ -165,13 +161,13 @@ export function DeepAnalysisHero({ config }: PaywallHeroProps) {
         <View style={s.hairline} />
 
         {/* Three open insights */}
-        <InsightRow index={0} progress={rows} icon="verified" title="Why Strong Buy?"
-          body={`Strong margin \u00b7 ${SAMPLE.confidence} confidence \u00b7 steady demand`} compact={compact} />
-        <InsightRow index={1} progress={rows} icon="show-chart" title="Price Logic"
-          body={`Resale ${SAMPLE.resale} \u00b7 Buy under ${SAMPLE.buyUnder} \u00b7 Profit ${SAMPLE.profit}`}
+        <InsightRow index={0} progress={rows} icon="trending-up" title="Market Signals"
+          body={`Sells fast \u00b7 High demand \u00b7 Few similar listings`} compact={compact} />
+        <InsightRow index={1} progress={rows} icon="storefront" title="Where to Sell"
+          body={`Depop first \u00b7 eBay as a backup`}
           accent compact={compact} />
-        <InsightRow index={2} progress={rows} icon="shield" title="Risk Flags"
-          body={`${SAMPLE.risk} risk \u00b7 ${SAMPLE.toVerify} things to verify`} compact={compact} />
+        <InsightRow index={2} progress={rows} icon="sell" title="Listing Strategy"
+          body={`List ${SAMPLE.listRange} \u00b7 Accept above ${SAMPLE.acceptAbove}`} compact={compact} />
 
         {/* Sealed remainder */}
         <Animated.View style={[s.sealed, sealStyle]}>
