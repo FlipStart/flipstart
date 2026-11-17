@@ -4,8 +4,8 @@
  * ONE hook for opening Deep Analysis, used by every entry point.
  *
  * ── Why this exists ─────────────────────────────────────────────────────────
- * Deep Analysis is reachable from FOUR screens: results, scan-detail,
- * diamonds-in-the-rough and hunt-history. Only results was gated originally —
+ * Deep Analysis is reachable from FIVE screens: results, scan-detail,
+ * diamonds-in-the-rough, hunt-history and Hunt's hunt-item-detail. Only results was gated originally —
  * the other three opened it freely for anyone, which made the gate decorative.
  * Four copies of the same check would drift the same way again.
  *

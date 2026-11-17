@@ -41,6 +41,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ScanResult } from './types';
+import type { HuntErrorStage } from './analytics';
 import {
   huntEconomics, parseThriftPrice, provisionalEconomics,
   type HuntRating,
@@ -54,15 +55,19 @@ export { recLabelToHuntRating } from './huntEconomics';
 export interface HuntPhoto { uri: string; label: 'Tag' | 'Detail' }
 
 /**
- * Lightweight sold-comps evidence saved with a Hunt item (filled in Phase 3).
- * Only what the comp cards read — never the raw provider response.
+ * Lightweight sold-comps evidence saved with a Hunt item.
+ *
+ * `response` is the production comps PUBLIC contract (what SoldCompsSection
+ * reads), trimmed to at most 3 cards and with every debug / founder field
+ * stripped by lib/huntComps.toCompsSnapshot — never the raw provider data.
+ * It survives restart, Hunt completion (copied into the bundle), server cache
+ * expiry and redeploys, because nothing on the server is needed to show it.
  */
 export interface HuntCompsSnapshot {
-  savedAt:       number;
-  availability:  string | null;
-  publicStats:   unknown;
-  marketplaces:  string[];
-  matches:       unknown[];   // ≤ 3, card fields only
+  v:           1;
+  savedAt:     number;
+  analysisId?: string;
+  response:    Record<string, unknown>;
 }
 
 export type HuntItemStatus = 'pending' | 'kept' | 'removed';
@@ -169,6 +174,28 @@ function _enqueue(op: () => Promise<void>): Promise<void> {
   return _writeChain;
 }
 
+// ─── Reliability reporting ────────────────────────────────────────────────────
+// A Hunt problem the user never sees still gets counted (stage + hunt id only —
+// no message, name or item data), once per stage per hunt so a broken disk
+// cannot flood analytics. Analytics is loaded lazily so this module stays free
+// of it; tests install a sink instead.
+type HuntErrorSink = (stage: HuntErrorStage, huntId: string | null) => void;
+let _errorSink: HuntErrorSink | null = null;
+const _reportedErrors = new Set<string>();
+
+export function setHuntErrorSink(fn: HuntErrorSink | null): void { _errorSink = fn; }
+
+export function reportHuntError(stage: HuntErrorStage, huntId?: string | null): void {
+  const id = huntId ?? _activeHunt?.id ?? null;
+  const key = `${stage}:${id ?? ''}`;
+  if (_reportedErrors.has(key)) return;
+  _reportedErrors.add(key);
+  try {
+    if (_errorSink) { _errorSink(stage, id); return; }
+    void import('./analytics').then(m => m.logHuntError(stage, id)).catch(() => {});
+  } catch { /* reporting never breaks the hunt */ }
+}
+
 function _persist(): Promise<void> {
   const owner = _ownerId;
   if (!owner) return Promise.resolve();          // Hunt Mode requires an account
@@ -179,7 +206,7 @@ function _persist(): Promise<void> {
   };
   return _enqueue(async () => {
     try { await AsyncStorage.setItem(ACTIVE_HUNT_KEY(owner), JSON.stringify(record)); }
-    catch (e) { if (__DEV__) console.warn('[hunt] persist failed', e); }
+    catch (e) { reportHuntError('persist_write', session.id); if (__DEV__) console.warn('[hunt] persist failed', e); }
   });
 }
 
@@ -237,7 +264,7 @@ export async function hydrateActiveHunt(uid: string): Promise<HuntSession | null
   try {
     const raw = await AsyncStorage.getItem(ACTIVE_HUNT_KEY(uid));
     rec = raw ? JSON.parse(raw) as PersistedHunt : null;
-  } catch { rec = null; }
+  } catch { rec = null; reportHuntError('hydrate_read', null); }
   if (!rec || rec.version !== 1 || rec.ownerId !== uid || !rec.session?.id) return null;
 
   if (rec.endedBundleId) {
@@ -446,6 +473,21 @@ export function setHuntItemPhotos(scanId: string, photos: { imageUri?: string; e
   _notify();
 }
 
+/**
+ * Save the sold-comps snapshot on an item (any status). Works after the user
+ * has already decided, so a search that lands late is never lost. No-op when
+ * the item is gone (hunt finished / discarded). Never touches money fields.
+ */
+export function setHuntItemComps(huntItemId: string, snapshot: HuntCompsSnapshot): boolean {
+  if (!_activeHunt) return false;
+  const it = _activeHunt.items.find(i => i.huntItemId === huntItemId);
+  if (!it) return false;
+  it.compsSnapshot = snapshot;
+  _touch();
+  _notify();
+  return true;
+}
+
 /** Back-compat alias: main photo only. */
 export function updateHuntItemImage(scanId: string, cloudUri: string): void {
   setHuntItemPhotos(scanId, { imageUri: cloudUri });
@@ -567,4 +609,5 @@ export function __resetHuntForTests(): void {
   _pendingEndedBundleId = null; _writeChain = Promise.resolve();
   _scanDestination = 'normal';
   _listeners.clear();
+  _reportedErrors.clear(); _errorSink = null;
 }

@@ -5,7 +5,7 @@
  *
  * Four contexts, decided from the route and the live hunt:
  *
- *   new      — a scan that just finished (no mode param). Save to Hunt / Remove.
+ *   new      — a scan that just finished (no mode param). Save to Hunt / Skip.
  *              A thrift price is REQUIRED to save: tapping Save without one
  *              focuses the price field with guidance, never a popup.
  *   kept     — mode=readonly&huntItemId=…, item is in the live hunt and kept.
@@ -26,7 +26,7 @@
 
 import {
   View, Text, Pressable, StyleSheet, Alert,
-  Platform, Modal, TouchableWithoutFeedback, Keyboard,
+  Platform, Modal, Keyboard, ScrollView, useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter, useNavigation, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
@@ -40,8 +40,12 @@ import { useScanContext }       from '@/lib/scan-context';
 import {
   isHuntActive, getHuntItemById, keepScanInHunt, removeScanFromHunt,
   setHuntItemPrice, restoreHuntItem, markReturningFromHuntItemDetail,
-  subscribeToHunt, addPendingScanToHunt, itemStatus, type HuntItem, type HuntRating,
+  subscribeToHunt, addPendingScanToHunt, itemStatus, getActiveHunt, type HuntItem, type HuntRating,
 } from '@/lib/hunt-context';
+import { useHuntComps } from '@/lib/useHuntComps';
+import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
+import { huntItemToFlip } from '@/utils/huntItemToFlip';
+import type { HuntBundleItem } from '@/types/flip';
 import {
   huntEconomics, provisionalEconomics, parseThriftPrice, formatThriftPrice,
 } from '@/lib/huntEconomics';
@@ -54,35 +58,36 @@ import { FONTS }                from '@/constants/typography';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { logHuntItemSaved, logHuntItemRemoved, logEvent } from '@/lib/analytics';
 import { HuntPriceField, type HuntPriceFieldHandle } from '@/components/hunt/HuntPriceField';
+import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { H } from '@/components/hunt/discovery/theme';
+import { HuntRatingBadge } from '@/components/hunt/discovery/HuntRatingBadge';
+import { WhyThisRating } from '@/components/hunt/discovery/WhyThisRating';
+import { MarketSnapshot } from '@/components/hunt/discovery/MarketSnapshot';
+import { ItemDetails } from '@/components/hunt/discovery/ItemDetails';
+import { SectionCard } from '@/components/hunt/discovery/SectionCard';
+import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
+import { DeepAnalysisButton } from '@/components/results/DeepAnalysisButton';
+import {
+  huntBuyGuidance, buildWhyRating, buildMarketSnapshot, buildItemDetails, huntMetaLine, HUNT_RATING_LABEL,
+} from '@/lib/huntDiscovery';
 
-// ─── Palette ──────────────────────────────────────────────────────────────────
+// ─── Palette (Hunt theme) ─────────────────────────────────────────────────────
 
-const BG     = '#F0E8D4';
-const CARD   = '#FFF9EE';
-const CARD_B = '#DDD0B0';
-const FOREST = '#2A4A2A';
-const BROWN  = '#5A3A1A';
-const MUTED  = '#8A7050';
-const GOLD   = '#BE9C2C';
-const CREAM  = '#F4EED8';
-const RED    = '#8A2A1A';
-
-// ─── Hunt badge config (by Hunt rating) ───────────────────────────────────────
-
-const HUNT_BADGE: Record<HuntRating, {
-  label: string; emoji: string;
-  bg: string; border: string; text: string; glow?: string;
-}> = {
-  legendary: { label: 'Legendary Loot', emoji: '👑', bg: '#2A1E04', border: '#D4A72C', text: '#D4A72C', glow: '#D4A72C44' },
-  treasure:  { label: 'Treasure',       emoji: '💰', bg: '#1A2A06', border: '#BE9C2C', text: '#BE9C2C' },
-  risky:     { label: 'Risky Buy',      emoji: '⚠️', bg: '#2A1A04', border: '#C89020', text: '#C89020' },
-  trash:     { label: 'Skip',           emoji: '✕',  bg: '#6B1414', border: '#E05555', text: '#FFDADA', glow: '#E0555522' },
-};
+const BG     = H.bg;
+const CARD   = H.card;
+const CARD_B = H.cardB;
+const FOREST = H.forest;
+const BROWN  = H.brown;
+const MUTED  = H.muted;
+const GOLD   = H.gold;
+const CREAM  = H.cream;
+const RED    = H.red;
 
 const SAVE_HELPER    = 'Enter the thrift price to calculate your profit and save this find.';
 const RESTORE_HELPER = 'Enter the thrift price to restore this find.';
 const KEPT_HELPER    = 'A kept find needs a thrift price of at least $0.01.';
 const MIN_HELPER     = 'Enter a price of at least $0.01.';
+const DEEP_HELPER    = 'Enter your thrift price to open Deep Analysis at your price.';
 
 type Context = 'new' | 'kept' | 'removed' | 'history';
 
@@ -165,6 +170,17 @@ export default function HuntItemDetailScreen() {
   const [, setTick]                         = useState(0);
   const allowNavRef = useRef(false);
   const priceRef    = useRef<HuntPriceFieldHandle>(null);
+  const scrollRef   = useRef<ScrollView>(null);
+  const { height: winH } = useWindowDimensions();
+
+  // The action bar steps aside while the keyboard is up (the Done bar is the
+  // way out), so it can never sit on top of the price field or the content.
+  const [keyboardUp, setKeyboardUp] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboardUp(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardUp(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   // Re-render when the live hunt changes (price edits, restore, photo uploads).
   useEffect(() => subscribeToHunt(() => setTick(n => n + 1)), []);
@@ -179,6 +195,16 @@ export default function HuntItemDetailScreen() {
       if (!isHuntBundle(entry)) continue;
       const found = [...entry.keptItems, ...entry.removedItems].find(i => i.huntItemId === huntItemId);
       if (found) return found as unknown as HuntItem;
+    }
+    return null;
+  }, [isReadOnlyRoute, huntItemId, flips, liveItem]);
+
+  // The saved Hunt this item belongs to (History only) — its id is the Hunt id.
+  const savedBundleId = useMemo(() => {
+    if (!isReadOnlyRoute || !huntItemId || liveItem) return null;
+    for (const entry of flips) {
+      if (!isHuntBundle(entry)) continue;
+      if ([...entry.keptItems, ...entry.removedItems].some(i => i.huntItemId === huntItemId)) return entry.id;
     }
     return null;
   }, [isReadOnlyRoute, huntItemId, flips, liveItem]);
@@ -240,6 +266,47 @@ export default function HuntItemDetailScreen() {
     return list.length ? list : [main].filter(Boolean);
   }, [scanId, item?.imageUri, item?.extraPhotos, scan?.imageUri]);
 
+  // ── Deep Analysis ─────────────────────────────────────────────────────────
+  // The production gate (Pro → open, Free → the one-time preview, then the
+  // paywall) and the production screen. Never opened automatically.
+  const openDeepAnalysis = useDeepAnalysisGate();
+  // Which find is on screen right now: the gate re-checks it before it opens, so
+  // a paywall answered late can never open Deep Analysis for a different item.
+  const itemContextRef = useRef<string | null>(null);
+  itemContextRef.current = scan?.id ?? null;
+
+  // ── Sold Comps ────────────────────────────────────────────────────────────
+  // The production comps system. A saved snapshot wins and nothing is searched;
+  // otherwise one search (the server already started it when the scan finished).
+  // History never searches: it shows the snapshot or the honest unavailable
+  // state. The search never blocks the rest of the screen.
+  const compsItemId = item?.huntItemId ?? (scan ? `hi_${scan.id}` : null);
+  const comps = useHuntComps({
+    huntItemId: compsItemId,
+    scanId:     scan?.id ?? null,
+    analysisId: item?.analysisId ?? (scan?.identification as any)?.v1?.analysisId ?? null,
+    snapshot:   item?.compsSnapshot,
+    allowFetch: context !== 'history',
+    huntId:     context === 'history' ? savedBundleId : (getActiveHunt()?.id ?? null),
+  });
+
+  // hunt_sold_comps_viewed — once per item per visit, when the section actually
+  // scrolls into view (not on every render, not just because it exists).
+  const compsY       = useRef<number | null>(null);
+  const scrollViewH  = useRef(0);
+  const compsViewedFor = useRef<string | null>(null);
+  const checkCompsViewed = (offsetY: number) => {
+    if (compsY.current === null || !compsItemId || compsViewedFor.current === compsItemId) return;
+    if (offsetY + scrollViewH.current < compsY.current + 60) return;
+    compsViewedFor.current = compsItemId;
+    try {
+      logEvent('hunt_sold_comps_viewed', {
+        hunt_id: context === 'history' ? savedBundleId : (getActiveHunt()?.id ?? null),
+        hunt_item_id: compsItemId, scan_id: scan?.id ?? null, context,
+      });
+    } catch { /* analytics never breaks the screen */ }
+  };
+
   // Record the finished scan in the hunt as PENDING straight away, so closing
   // the app before Keep / Remove can't lose a scan that was already charged.
   // Idempotent per scan. Photos are backed up now too (this session holds the
@@ -300,9 +367,19 @@ export default function HuntItemDetailScreen() {
   const md  = scan.market_data;
   const id  = scan.identification;
   const ra  = scan.risk_analysis;
-  const badge = HUNT_BADGE[shownRating] ?? HUNT_BADGE.trash;
-  const resaleValue = md?.adjusted_estimated_value ?? 0;
   const editable = context !== 'history';
+  const provisional = econ.provisional && context !== 'history';
+  const conf = getConfidenceDisplay((id as any)?.v1, ra?.match_confidence);
+  const guidance = huntBuyGuidance(scan);
+  const enteredPrice = context === 'history'
+    ? (item && item.thriftPrice > 0 ? item.thriftPrice : null)
+    : typedPrice;
+  const why = buildWhyRating(econ, shownRating, guidance, enteredPrice);
+  const tiles = buildMarketSnapshot(scan, { ...econ, provisional: econ.provisional });
+  const details = buildItemDetails(scan, conf?.authenticity ?? null);
+  const meta = huntMetaLine(scan);
+  // Photo a bit shorter than before (248), a touch more on small phones.
+  const photoH = winH < 700 ? 176 : 204;
 
   const profit$ = shownProfit !== null
     ? `${shownProfit >= 0 ? '+' : '-'}$${Math.abs(Math.round(shownProfit))}`
@@ -322,6 +399,8 @@ export default function HuntItemDetailScreen() {
     setEmphasize(true);
     setHelper(message);
     haptic('light');
+    // The price lives in the decision card near the top: bring it into view.
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
     priceRef.current?.focus();
   };
 
@@ -347,7 +426,7 @@ export default function HuntItemDetailScreen() {
     setItemDraft(null);
     if (p !== item.thriftPrice) {
       setHuntItemPrice(item.huntItemId, p);
-      logEvent('hunt_item_price_edited', { context, rating: HUNT_BADGE[huntEconomics(scan, p).huntRating]?.label ?? null });
+      logEvent('hunt_item_price_edited', { hunt_id: getActiveHunt()?.id ?? null, hunt_item_id: item.huntItemId, context, rating: HUNT_RATING_LABEL[huntEconomics(scan, p).huntRating] ?? null });
     }
   };
 
@@ -356,6 +435,52 @@ export default function HuntItemDetailScreen() {
     markReturningFromHuntItemDetail();
     allowNavRef.current = true;
     router.replace('/hunt-active' as any);
+  };
+
+  // ── Deep Analysis ─────────────────────────────────────────────────────────
+  // Deep Analysis talks about "your price", so it opens at a real price: the one
+  // in the field (or saved with the item). With none, the price field is focused
+  // with guidance — BEFORE the gate, so a free user's one-time preview is never
+  // spent on a half answer. History is read-only: an item that was never priced
+  // has no honest price to analyse at, so it offers no entry.
+  const handleDeepAnalysis = () => {
+    if (!scan) return;
+    const savedPrice = item && item.thriftPrice > 0 ? item.thriftPrice : null;
+    const price = context === 'history' ? savedPrice : (typedPrice ?? savedPrice);
+    if (price === null) { if (context !== 'history') askForPrice(DEEP_HELPER); return; }
+    Keyboard.dismiss();
+    const e = huntEconomics(scan, price);
+    const money = context === 'history' && item
+      ? { thriftPrice: item.thriftPrice, fees: item.fees, profit: item.profit, roi: item.roi }
+      : { thriftPrice: e.thriftPrice, fees: e.fees, profit: e.profit, roi: e.roi };
+    // The same projection Hunt History and the Flip Record use. A live item's
+    // pending / kept / removed status is NOT a Flip Record status, so it is left out.
+    const flip = huntItemToFlip({
+      ...(item ?? {}),
+      huntItemId: compsItemId ?? `hi_${scan.id}`,
+      scanId:     scan.id,
+      itemName:   id.item_name ?? item?.itemName ?? '',
+      brand:      id.brand ?? item?.brand ?? '',
+      category:   id.category ?? item?.category ?? '',
+      imageUri:   images[0] ?? scan.imageUri,
+      extraPhotos: item?.extraPhotos,
+      ...money,
+      huntRating: shownRating,
+      kept:       true,
+      status:     undefined,
+      scanSnapshot: scan,
+    } as unknown as HuntBundleItem, Date.now());
+    openDeepAnalysis(
+      () => router.push({
+        pathname: '/analysis-details' as any,
+        params: {
+          scanId:   scan.id,
+          snapshot: JSON.stringify(flip),
+          source:   context === 'history' ? 'hunt_history' : 'hunt',
+        },
+      }),
+      { contextRef: itemContextRef },
+    );
   };
 
   // ── New scan: Save / Remove ───────────────────────────────────────────────
@@ -372,6 +497,8 @@ export default function HuntItemDetailScreen() {
         profit:         e.profit,
         recommendation: e.calc.recommendation?.label ?? 'UNKNOWN',
         category:       id.category ?? '',
+        hunt_id:        getActiveHunt()?.id ?? null,
+        hunt_item_id:   compsItemId,
       });
     } catch {}
     leaveToHunt();
@@ -386,6 +513,8 @@ export default function HuntItemDetailScreen() {
         logHuntItemRemoved({
           recommendation: econ.calc.recommendation?.label ?? 'UNKNOWN',
           category:       id.category ?? '',
+          hunt_id:        getActiveHunt()?.id ?? null,
+          hunt_item_id:   compsItemId,
         });
       } catch {}
     }
@@ -401,7 +530,7 @@ export default function HuntItemDetailScreen() {
     const r = restoreHuntItem(item.huntItemId);
     if (r === 'needs_price') { askForPrice(RESTORE_HELPER); return; }
     haptic('success');
-    logEvent('hunt_item_restored', { huntItemId: item.huntItemId, category: item.category, from: 'analysis' });
+    logEvent('hunt_item_restored', { hunt_id: getActiveHunt()?.id ?? null, hunt_item_id: item.huntItemId, huntItemId: item.huntItemId, category: item.category, from: 'analysis' });
     router.back();
   };
 
@@ -411,29 +540,19 @@ export default function HuntItemDetailScreen() {
     router.back();
   };
 
-  const marketRows = [
-    {
-      label: 'Est. Resale',
-      value: md.estimated_resale_range
-        ? `$${md.estimated_resale_range.low}–$${md.estimated_resale_range.high}`
-        : `$${resaleValue}`,
-    },
-    { label: 'Sell-Through Rate', value: md.demand ? `${md.demand}${md.sell_speed ? ` (${md.sell_speed})` : ''}` : '—' },
-    { label: 'Risk',          value: ra.match_confidence >= 70 ? 'Low' : ra.match_confidence >= 45 ? 'Medium' : 'High' },
-    { label: 'Best Platform', value: String(econ.calc.bestPlatform ?? '—') },
-    ...(md.competition_level ? [{ label: 'Competition', value: md.competition_level }] : []),
-  ];
-
   const historyPrice = context === 'history' && item ? item.thriftPrice : 0;
+  const showActions = !keyboardUp;
+  const barPad = Math.max(insets.bottom + 12, 24);
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
 
-      {/* ── Header ── */}
+      {/* ── Header (fixed) ── */}
       <View style={s.header}>
         <Pressable
           onPress={() => context === 'new' ? setConfirmVisible(true) : goBack()}
           hitSlop={12} style={s.headerBtn}
+          accessibilityLabel="Back"
         >
           <MaterialIcons name="arrow-back" size={22} color={BROWN} />
         </Pressable>
@@ -444,213 +563,189 @@ export default function HuntItemDetailScreen() {
         <View style={{ width: 36 }} />
       </View>
 
-      {/* Tapping anywhere outside the price field closes the keyboard (which commits). */}
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-        <View style={{ flex: 1 }}>
+      {/* ── Scrolling analysis: quick answer first, evidence underneath ──
+          Tapping outside the price field or dragging closes the keyboard (which
+          commits the price). iOS keeps the focused field above the keyboard. */}
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 132 + insets.bottom }}
+        keyboardShouldPersistTaps="handled"
+        scrollEventThrottle={120}
+        onScroll={e => checkCompsViewed(e.nativeEvent.contentOffset.y)}
+        onLayout={e => { scrollViewH.current = e.nativeEvent.layout.height; checkCompsViewed(0); }}
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        automaticallyAdjustKeyboardInsets
+        showsVerticalScrollIndicator={false}
+        testID="hunt-discovery-scroll"
+      >
 
-      {/* ── Image — multi-photo carousel ── */}
-      <Pressable onPress={() => setPreviewVisible(true)} style={s.imageWrap}>
-        <Image
-          source={{ uri: images[imgIndex] }}
-          style={s.image}
-          contentFit="cover"
-        />
-        {images.length > 0 && (
-          <View style={s.imageBadge}>
-            <Text style={s.imageBadgeText}>{imgIndex + 1} / {images.length}</Text>
-          </View>
-        )}
-        {images.length > 1 && imgIndex > 0 && (
-          <Pressable
-            onPress={e => { e.stopPropagation(); setImgIndex(i => i - 1); }}
-            style={[s.imgArrow, s.imgArrowL]} hitSlop={8}
-          >
-            <MaterialIcons name="chevron-left" size={24} color={BROWN} />
-          </Pressable>
-        )}
-        {images.length > 1 && imgIndex < images.length - 1 && (
-          <Pressable
-            onPress={e => { e.stopPropagation(); setImgIndex(i => i + 1); }}
-            style={[s.imgArrow, s.imgArrowR]} hitSlop={8}
-          >
-            <MaterialIcons name="chevron-right" size={24} color={BROWN} />
-          </Pressable>
-        )}
-      </Pressable>
-
-      {/* ── Item identity ── */}
-      <View style={s.identity}>
-        <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
-        <Text style={s.itemMeta} numberOfLines={1}>
-          {[id.brand, id.category, id.estimated_era].filter(Boolean).join(' · ')}
-        </Text>
-      </View>
-
-      {/* ── Decision row ── */}
-      <View style={s.decisionRow}>
-        <View style={[
-          s.badge,
-          { backgroundColor: badge.bg, borderColor: badge.border },
-          econ.provisional && context !== 'history' && s.badgeProvisional,
-          badge.glow && { shadowColor: badge.glow, shadowOpacity: 1, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 4 },
-        ]}>
-          {econ.provisional && context !== 'history' && (
-            <Text style={[s.badgeEst, { color: badge.text }]}>ESTIMATED</Text>
+        {/* 1 · Photo */}
+        <Pressable onPress={() => setPreviewVisible(true)} style={[s.imageWrap, { height: photoH }]} accessibilityLabel="View photos">
+          <Image source={{ uri: images[imgIndex] }} style={s.image} contentFit="cover" />
+          {images.length > 0 && (
+            <View style={s.imageBadge}>
+              <Text style={s.imageBadgeText}>{imgIndex + 1} / {images.length}</Text>
+            </View>
           )}
-          <Text style={s.badgeEmoji}>{badge.emoji}</Text>
-          <Text style={[s.badgeLabel, { color: badge.text }]}>{badge.label.toUpperCase()}</Text>
-        </View>
-
-        <View style={[s.priceBox, emphasize && { borderColor: GOLD, borderWidth: 2 }]}>
-          <Text style={s.boxLabel}>Thrift Price</Text>
-          {editable ? (
-            <HuntPriceField
-              ref={priceRef}
-              value={priceText}
-              onChange={setPriceText}
-              onCommit={commitPrice}
-              emphasize={emphasize}
-              accessoryId="hunt-price-accessory"
-              color={RED}
-              placeholderColor={RED + '88'}
-              accentColor={GOLD}
-              barColor={CARD}
-            />
-          ) : (
-            <Text style={s.priceReadOnly}>
-              {historyPrice > 0 ? `-$${historyPrice.toFixed(2)}` : '—'}
-            </Text>
+          {images.length > 1 && imgIndex > 0 && (
+            <Pressable onPress={e => { e.stopPropagation(); setImgIndex(i => i - 1); }} style={[s.imgArrow, s.imgArrowL]} hitSlop={8}>
+              <MaterialIcons name="chevron-left" size={24} color={BROWN} />
+            </Pressable>
           )}
-          {editable && !priceText && (
-            <Text style={s.priceHint}>Tap to enter</Text>
+          {images.length > 1 && imgIndex < images.length - 1 && (
+            <Pressable onPress={e => { e.stopPropagation(); setImgIndex(i => i + 1); }} style={[s.imgArrow, s.imgArrowR]} hitSlop={8}>
+              <MaterialIcons name="chevron-right" size={24} color={BROWN} />
+            </Pressable>
           )}
-        </View>
+        </Pressable>
 
-        <View style={s.profitBox}>
-          <Text style={s.boxLabel}>Est. Profit</Text>
-          <Text style={[s.profitValue, { color: profitColor }]}>{profit$}</Text>
-          {shownProfit !== null && <Text style={s.profitSub}>after fees</Text>}
-        </View>
-      </View>
-
-      {/* Guidance (Save / Restore without a price) or the provisional note. */}
-      {helper ? (
-        <Text style={s.helper}>{helper}</Text>
-      ) : econ.provisional && context !== 'history' ? (
-        <Text style={s.provisionalNote}>
-          {econ.basis
-            ? `Estimated at FlipStart's suggested buy price ($${econ.basis.toFixed(2)}). Enter your price for the final rating.`
-            : 'Estimated rating. Enter your thrift price for the final rating.'}
-        </Text>
-      ) : null}
-
-      {/* ── Market data card ── */}
-      <View style={s.marketCard}>
-        {marketRows.map(({ label, value }, i) => (
-          <View key={label} style={[s.marketRow, i === marketRows.length - 1 && { borderBottomWidth: 0 }]}>
-            <Text style={s.marketLabel}>{label}</Text>
-            <Text style={s.marketValue}>{value}</Text>
-          </View>
-        ))}
-        {(() => {
-          // Words, not a percentage: match_confidence is ordinal, not a
-          // probability. The tier is the server's when the scan has one.
-          const conf = getConfidenceDisplay((id as any)?.v1, ra.match_confidence);
-          if (!conf) return null;
-          return (
-            <View style={{ alignItems: 'center', paddingVertical: 8, gap: 2 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
-                <MaterialIcons name="verified-user" size={12} color={conf.color} />
-                <Text style={[s.confidence, { color: conf.color, fontWeight: '700' }]}>{conf.short}</Text>
+        {/* 2 · Identity */}
+        <View style={s.identity}>
+          <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
+          {!!meta && <Text style={s.itemMeta} numberOfLines={1}>{meta}</Text>}
+          {!!conf && (
+            <View style={s.confRow}>
+              <View style={[s.confChip, { borderColor: conf.color + '66', backgroundColor: conf.color + '14' }]}>
+                <MaterialIcons name="verified-user" size={11} color={conf.color} />
+                <Text style={[s.confChipText, { color: conf.color }]}>{conf.short.toUpperCase()}</Text>
               </View>
-              {!!conf.reason && <Text style={s.confidence} numberOfLines={2}>{conf.reason}</Text>}
-              {!!conf.authenticity && (
-                <Text style={[s.confidence, { color: '#8A3A2A', fontWeight: '600' }]} numberOfLines={2}>
-                  Authenticity not verified — {conf.authenticity}
+              {!!conf.reason && <Text style={s.confReason} numberOfLines={1}>{conf.reason}</Text>}
+            </View>
+          )}
+        </View>
+
+        {/* 3 · Decision card: rating · thrift price · profit, then buy guidance */}
+        <View style={s.decisionCard}>
+          <View style={s.decisionRow}>
+            <HuntRatingBadge rating={shownRating} provisional={provisional} />
+
+            <View style={[s.priceBox, emphasize && { borderColor: GOLD, borderWidth: 2 }]}>
+              <Text style={s.boxLabel}>THRIFT PRICE</Text>
+              {editable ? (
+                <HuntPriceField
+                  ref={priceRef}
+                  value={priceText}
+                  onChange={setPriceText}
+                  onCommit={commitPrice}
+                  emphasize={emphasize}
+                  accessoryId="hunt-price-accessory"
+                  color={RED}
+                  placeholderColor={RED + '88'}
+                  accentColor={GOLD}
+                  barColor={CARD}
+                />
+              ) : (
+                <Text style={s.priceReadOnly}>
+                  {historyPrice > 0 ? `-$${historyPrice.toFixed(2)}` : '—'}
                 </Text>
               )}
+              {editable && !priceText && <Text style={s.priceHint}>Tap to enter</Text>}
             </View>
-          );
-        })()}
-      </View>
 
-      <View style={{ flex: 1 }} />
+            <View style={s.profitBox}>
+              <Text style={s.boxLabel}>EST. PROFIT</Text>
+              <Text style={[s.profitValue, { color: profitColor }]}>{profit$}</Text>
+              {shownProfit !== null && <Text style={s.profitSub}>after fees</Text>}
+            </View>
+          </View>
+
+          {!!guidance.line && (
+            <View style={s.guideRow}>
+              <MaterialIcons name="sell" size={13} color={FOREST} />
+              <Text style={s.guideText}>{guidance.line}</Text>
+            </View>
+          )}
+
+          {helper ? (
+            <Text style={s.helper}>{helper}</Text>
+          ) : provisional ? (
+            <Text style={s.provisionalNote}>
+              {econ.basis
+                ? `Estimated rating at FlipStart's suggested buy price ($${econ.basis.toFixed(2)}). Enter your price for the final rating.`
+                : 'Estimated rating. Enter your thrift price for the final rating.'}
+            </Text>
+          ) : null}
         </View>
-      </TouchableWithoutFeedback>
 
-      {/* ── Actions ── */}
-      {context === 'new' && (
-        <View style={[s.actions, { paddingBottom: Math.max(insets.bottom + 24, 40) }]}>
-          <Pressable
-            onPress={handleSave}
-            style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}
-          >
+        {/* ── Below the fold: evidence ── */}
+        <WhyThisRating why={why} />
+        <MarketSnapshot tiles={tiles} />
+        {/* Real sold listings behind the estimate — the production Sold Comps
+            system (same search, tiers and filtering as normal Analysis). */}
+        <View onLayout={e => { compsY.current = e.nativeEvent.layout.y; checkCompsViewed(0); }}>
+          <SectionCard title="Sold Comps" testID="hunt-sold-comps">
+            <SoldCompsSection
+              embedded
+              subtitle="Real sold listings behind the estimate."
+              loading={comps.loading}
+              data={comps.data}
+            />
+          </SectionCard>
+        </View>
+        <ItemDetails rows={details} />
+
+        {/* Deep Analysis — the production entry, last: decision, evidence, then the
+            full reasoning. Always visible (free users must see it exists); the
+            gate decides what a tap does. Never opens by itself. */}
+        {(context !== 'history' || (item && item.thriftPrice > 0)) && (
+          <View style={{ marginHorizontal: 2, marginTop: 10 }} testID="hunt-deep-analysis">
+            <DeepAnalysisButton onPress={handleDeepAnalysis} />
+          </View>
+        )}
+      </ScrollView>
+
+      {/* ── Sticky actions (hidden while the keyboard is up) ── */}
+      {showActions && context === 'new' && (
+        <View style={[s.actions, { paddingBottom: barPad }]}>
+          <Pressable onPress={handleSave} style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}>
             <MaterialIcons name="add-circle-outline" size={18} color={CREAM} />
             <Text style={s.saveBtnText}>SAVE TO HUNT</Text>
           </Pressable>
           <Pressable
             onPress={() => Alert.alert(
-              'Remove Item?',
+              'Skip this find?',
               'It moves to Removed Items, where you can restore it later.',
               [
                 { text: 'Cancel', style: 'cancel' },
-                { text: 'Remove', style: 'destructive', onPress: handleRemove },
+                { text: 'Skip', style: 'destructive', onPress: handleRemove },
               ]
             )}
             style={({ pressed }) => [s.removeBtn, pressed && { opacity: 0.75 }]}
           >
-            <MaterialIcons name="delete-outline" size={16} color={CREAM} />
-            <Text style={s.removeBtnText}>Remove</Text>
+            <MaterialIcons name="block" size={16} color={CREAM} />
+            <Text style={s.removeBtnText}>Skip</Text>
           </Pressable>
         </View>
       )}
 
-      {context === 'removed' && (
-        <View style={[s.actions, { paddingBottom: Math.max(insets.bottom + 24, 40) }]}>
-          <Pressable
-            onPress={handleRestore}
-            style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}
-          >
+      {showActions && context === 'removed' && (
+        <View style={[s.actions, { paddingBottom: barPad }]}>
+          <Pressable onPress={handleRestore} style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}>
             <MaterialIcons name="restore" size={18} color={CREAM} />
             <Text style={s.saveBtnText}>RESTORE TO KEPT</Text>
           </Pressable>
-          <Pressable
-            onPress={goBack}
-            style={({ pressed }) => [s.saveBtn, { backgroundColor: BROWN }, pressed && { opacity: 0.85 }]}
-          >
-            <MaterialIcons name="arrow-back" size={18} color={CREAM} />
-            <Text style={s.saveBtnText}>Back</Text>
+          <Pressable onPress={goBack} style={({ pressed }) => [s.backBtn, pressed && { opacity: 0.85 }]}>
+            <Text style={s.backBtnText}>Back</Text>
           </Pressable>
         </View>
       )}
 
-      {(context === 'kept' || context === 'history') && (
-        <View style={[s.actions, { paddingBottom: Math.max(insets.bottom + 24, 40) }]}>
-          <Pressable
-            onPress={goBack}
-            style={({ pressed }) => [s.saveBtn, { backgroundColor: BROWN }, pressed && { opacity: 0.85 }]}
-          >
+      {showActions && (context === 'kept' || context === 'history') && (
+        <View style={[s.actions, { paddingBottom: barPad }]}>
+          <Pressable onPress={goBack} style={({ pressed }) => [s.saveBtn, { backgroundColor: BROWN }, pressed && { opacity: 0.85 }]}>
             <MaterialIcons name="arrow-back" size={18} color={CREAM} />
-            <Text style={s.saveBtnText}>Back to Hunt</Text>
+            <Text style={s.saveBtnText}>{context === 'history' ? 'BACK' : 'BACK TO HUNT'}</Text>
           </Pressable>
         </View>
       )}
 
-      {/* ── Fullscreen image preview ── */}
-      <Modal visible={previewVisible} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setPreviewVisible(false)}>
-        <TouchableWithoutFeedback onPress={() => setPreviewVisible(false)}>
-          <View style={s.previewOverlay}>
-            <Image
-              source={{ uri: images[imgIndex] }}
-              style={s.previewImage}
-              contentFit="contain"
-            />
-            <Pressable onPress={() => setPreviewVisible(false)} style={s.previewClose}>
-              <MaterialIcons name="close" size={22} color={CREAM} />
-            </Pressable>
-          </View>
-        </TouchableWithoutFeedback>
-      </Modal>
+      {/* ── Photos: the shared swipe + Save-to-Photos viewer ── */}
+      <PhotoViewerModal
+        visible={previewVisible}
+        onClose={() => setPreviewVisible(false)}
+        photos={images.map(uri => ({ uri }))}
+      />
 
       {/* ── Back confirm modal (new scans only) ── */}
       <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)}>
@@ -662,7 +757,7 @@ export default function HuntItemDetailScreen() {
               <Text style={s.modalSaveText}>Save to Hunt</Text>
             </Pressable>
             <Pressable onPress={() => { setConfirmVisible(false); handleRemove(); }} style={s.modalRemove}>
-              <Text style={s.modalRemoveText}>Remove Item</Text>
+              <Text style={s.modalRemoveText}>Skip This Find</Text>
             </Pressable>
             <Pressable onPress={() => setConfirmVisible(false)} style={s.modalCancel}>
               <Text style={s.modalCancelText}>Cancel</Text>
@@ -686,7 +781,7 @@ const s = StyleSheet.create({
   headerMode:   { fontSize: 10, fontWeight: '700', color: GOLD, letterSpacing: 2 },
   headerTitle:  { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800', color: BROWN },
 
-  imageWrap:      { marginHorizontal: 8, marginTop: 12, borderRadius: 16, overflow: 'hidden', height: 248, backgroundColor: CARD_B, position: 'relative' },
+  imageWrap:      { marginHorizontal: 12, marginTop: 12, borderRadius: 16, overflow: 'hidden', backgroundColor: CARD_B, position: 'relative', borderWidth: 1, borderColor: GOLD + '40' },
   image:          { width: '100%', height: '100%' },
   imageBadge:     { position: 'absolute', bottom: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.60)', borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4 },
   imageBadgeText: { fontSize: 11, color: '#FFF', fontWeight: '600' },
@@ -694,57 +789,44 @@ const s = StyleSheet.create({
   imgArrowL:      { left: 10 },
   imgArrowR:      { right: 10 },
 
-  identity: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6, gap: 3 },
-  itemName: { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: BROWN },
-  itemMeta: { fontSize: 13, color: MUTED },
+  identity:     { paddingHorizontal: 16, paddingTop: 12, gap: 4 },
+  itemName:     { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: BROWN, lineHeight: 25 },
+  itemMeta:     { fontSize: 13, color: MUTED },
+  confRow:      { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  confChip:     { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
+  confChipText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
+  confReason:   { flex: 1, fontSize: 11, color: MUTED },
 
-  decisionRow: { flexDirection: 'row', alignItems: 'stretch', marginHorizontal: 16, marginTop: 10, gap: 8 },
-  badge:       { width: 90, alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderRadius: 12, borderWidth: 1.5, gap: 5 },
-  badgeEmoji:  { fontSize: 20 },
-  badgeLabel:  { fontSize: 9, fontWeight: '800', letterSpacing: 0.8, textAlign: 'center' },
-  // Provisional rating (no price yet): dashed edge + ESTIMATED tag, never mistaken for final.
-  badgeProvisional: { borderStyle: 'dashed', opacity: 0.9 },
-  badgeEst:    { fontSize: 7, fontWeight: '800', letterSpacing: 1 },
+  decisionCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: CARD, borderRadius: 16, borderWidth: 1.5, borderColor: GOLD + '70', padding: 10, gap: 8,
+                  shadowColor: '#3A2A10', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.10, shadowRadius: 6, elevation: 2 },
+  decisionRow:  { flexDirection: 'row', alignItems: 'stretch', gap: 8 },
+  priceBox:     { flex: 1, backgroundColor: BG + '80', borderWidth: 1, borderColor: CARD_B, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  boxLabel:     { fontSize: 9, fontWeight: '800', color: MUTED, letterSpacing: 1, marginBottom: 6, textAlign: 'center' },
+  priceReadOnly:{ fontSize: 20, fontWeight: '800', color: RED, textAlign: 'center' },
+  priceHint:    { fontSize: 9, color: MUTED, marginTop: 3 },
+  profitBox:    { flex: 1, backgroundColor: BG + '80', borderWidth: 1, borderColor: CARD_B, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  profitValue:  { fontFamily: FONTS.serif, fontSize: 22, fontWeight: '800' },
+  profitSub:    { fontSize: 9, color: MUTED, marginTop: 3 },
 
-  // B: Price box — centered, negative red display
-  priceBox:      { flex: 1, backgroundColor: CARD, borderWidth: 1, borderColor: CARD_B, borderRadius: 12, padding: 12, alignItems: 'center' },
-  boxLabel:      { fontSize: 9, fontWeight: '700', color: MUTED, letterSpacing: 0.8, marginBottom: 6, textAlign: 'center' },
-  priceInputRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  priceMinus:    { fontSize: 17, fontWeight: '800', color: RED },
-  priceInput:    { fontSize: 20, fontWeight: '800', color: RED, padding: 0, minWidth: 60, textAlign: 'center' },
-  priceReadOnly: { fontSize: 20, fontWeight: '800', color: RED, textAlign: 'center' },
-  priceHint:     { fontSize: 9, color: MUTED, marginTop: 3 },
+  guideRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingTop: 2 },
+  guideText:    { fontSize: 12, fontWeight: '700', color: FOREST, textAlign: 'center', flexShrink: 1 },
+  helper:          { fontSize: 12, fontWeight: '700', color: '#7A5C1E', textAlign: 'center' },
+  provisionalNote: { fontSize: 11, color: MUTED, textAlign: 'center', lineHeight: 15 },
 
-  profitBox:   { flex: 1, backgroundColor: CARD, borderWidth: 1, borderColor: CARD_B, borderRadius: 12, padding: 12, alignItems: 'center', justifyContent: 'center' },
-  profitValue: { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800' },
-  profitSub:   { fontSize: 9, color: MUTED, marginTop: 3 },
-
-  helper:          { marginHorizontal: 16, marginTop: 8, fontSize: 12, fontWeight: '600', color: '#7A5C1E', textAlign: 'center' },
-  provisionalNote: { marginHorizontal: 16, marginTop: 8, fontSize: 11, color: MUTED, textAlign: 'center' },
-
-  marketCard:  { marginHorizontal: 16, marginTop: 10, backgroundColor: CARD, borderWidth: 1, borderColor: CARD_B, borderRadius: 12 },
-  marketRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: CARD_B + '70' },
-  marketLabel: { fontSize: 13, color: MUTED },
-  marketValue: { fontSize: 13, fontWeight: '700', color: BROWN },
-  confidence:  { fontSize: 10, color: MUTED },
-
-  actions:      { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 10, backgroundColor: BG },
-  saveBtn:      { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: FOREST, borderRadius: 12, paddingVertical: 15, shadowColor: '#0A1A0A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 3 },
+  actions:      { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 10,
+                  backgroundColor: BG, borderTopWidth: 1, borderTopColor: CARD_B,
+                  shadowColor: '#3A2A10', shadowOffset: { width: 0, height: -2 }, shadowOpacity: 0.08, shadowRadius: 6, elevation: 8 },
+  saveBtn:      { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: FOREST, borderRadius: 12, paddingVertical: 15, borderWidth: 1, borderColor: GOLD + '55' },
   saveBtnText:  { fontFamily: FONTS.serif, fontSize: 13, fontWeight: '800', color: CREAM, letterSpacing: 0.8 },
-  removeBtn:    { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#7A1F1F', borderRadius: 12, paddingVertical: 15, shadowColor: '#3A0808', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 3 },
+  removeBtn:    { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#7A1F1F', borderRadius: 12, paddingVertical: 15 },
   removeBtnText:{ fontFamily: FONTS.serif, fontSize: 13, fontWeight: '800', color: CREAM, letterSpacing: 0.8 },
-
-  previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.93)', justifyContent: 'center', alignItems: 'center' },
-  previewImage:   { width: '100%', height: '80%' },
-  previewClose:   { position: 'absolute', top: 52, right: 20, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(60,40,20,0.80)', justifyContent: 'center', alignItems: 'center' },
+  backBtn:      { paddingHorizontal: 22, alignItems: 'center', justifyContent: 'center', borderRadius: 12, borderWidth: 1.5, borderColor: BROWN + '55' },
+  backBtnText:  { fontSize: 14, fontWeight: '700', color: BROWN },
 
   modalOverlay:    { flex: 1, backgroundColor: 'rgba(10,6,2,0.65)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
   modalCard:       { width: '100%', backgroundColor: CARD, borderRadius: 20, padding: 24, gap: 12, borderWidth: 1, borderColor: CARD_B },
   modalTitle:      { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: BROWN, textAlign: 'center' },
   modalSub:        { fontSize: 13, color: MUTED, textAlign: 'center', marginBottom: 4 },
-  modalPriceRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: BG, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 16, borderWidth: 1, borderColor: CARD_B },
-  modalPriceMinus: { fontSize: 22, fontWeight: '800', color: RED },
-  modalPriceInput: { flex: 1, fontSize: 26, fontWeight: '800', color: RED, padding: 0, textAlign: 'center' },
   modalSave:       { backgroundColor: FOREST, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   modalSaveText:   { fontFamily: FONTS.serif, fontSize: 15, fontWeight: '800', color: CREAM, letterSpacing: 1 },
   modalRemove:     { borderWidth: 1.5, borderColor: RED + '55', borderRadius: 12, paddingVertical: 13, alignItems: 'center' },

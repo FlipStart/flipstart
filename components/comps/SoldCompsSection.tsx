@@ -67,8 +67,17 @@ const CARD_MIN = 132;
 const CARD_MAX = 210;
 
 export function SoldCompsSection({
-  loading, data,
-}: { loading: boolean; data: SoldCompsResponse | null }) {
+  loading, data, embedded = false, subtitle,
+}: {
+  loading: boolean;
+  data: SoldCompsResponse | null;
+  /** Hunt Discovery Analysis hosts the section inside its own titled card: no
+   *  outer card chrome and no "Recent Sold Comps" title (the host supplies the
+   *  heading). Every state, card, metric and rule below is unchanged. */
+  embedded?: boolean;
+  /** Left-hand line of the header row when embedded. */
+  subtitle?: string;
+}) {
   const { width: screenW } = useWindowDimensions();
   const [infoOpen, setInfoOpen] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
@@ -120,10 +129,12 @@ export function SoldCompsSection({
   const sourceLabels = markets.map(marketplaceLabel).filter(Boolean) as string[];
 
   return (
-    <View style={s.section}>
+    <View style={embedded ? s.sectionEmbedded : s.section}>
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <View style={s.headerRow}>
-        <Text style={s.title}>Recent Sold Comps</Text>
+        {embedded
+          ? <Text style={s.subtitle}>{subtitle ?? ''}</Text>
+          : <Text style={s.title}>Recent Sold Comps</Text>}
         <View style={s.headerRight}>
           {/* Real eBay logo, replacing the text pill.
               Still driven by server source metadata — an unknown marketplace
@@ -281,6 +292,8 @@ const s = StyleSheet.create({
   section: { backgroundColor: C.card, borderRadius: 16, borderWidth: 1.25, borderColor: C.gold + '55',
              paddingHorizontal: PAD, paddingTop: 13, paddingBottom: 14,
              marginTop: 10, marginHorizontal: PAD },
+  sectionEmbedded: { paddingTop: 2 },
+  subtitle: { fontSize: 12, color: C.muted, fontStyle: 'italic', flexShrink: 1, flex: 1 },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   title: { fontSize: 15.5, fontWeight: '800', color: C.forest, flexShrink: 1 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 7 },

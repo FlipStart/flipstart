@@ -154,7 +154,7 @@ export default function HuntScreen() {
 
     startedHereRef.current = true;
     const session = startHunt(huntName);
-    logHuntStarted(huntName || 'Unnamed Hunt');
+    logHuntStarted(session.id, huntName);
     if (__DEV__) console.log(`[hunt] session started — id:${session.id} name:"${session.name}"`);
 
     router.replace('/hunt-active' as any);

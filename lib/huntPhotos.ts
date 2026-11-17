@@ -13,7 +13,7 @@
  *   picks up anything still local after the hunt is saved.
  */
 import { scanPhotosFor } from './scanSessionPhotos';
-import { setHuntItemPhotos, type HuntPhoto } from './hunt-context';
+import { setHuntItemPhotos, reportHuntError, type HuntPhoto } from './hunt-context';
 
 const isRemote = (u: string | null | undefined) => !!u && /^https?:\/\//.test(u);
 
@@ -47,6 +47,7 @@ export async function backUpHuntItemPhotos(
     if (mainUri && !isRemote(mainUri)) {
       const url = await upload(mainUri, 'scan-photos', userId).catch(() => null);
       if (url) setHuntItemPhotos(scanId, { imageUri: url });
+      else reportHuntError('photo_backup');
     }
     if (extras.length > 0) {
       const done = await Promise.all(extras.map(async p => {
@@ -56,5 +57,5 @@ export async function backUpHuntItemPhotos(
       }));
       setHuntItemPhotos(scanId, { extraPhotos: done });
     }
-  } catch { /* never breaks the hunt */ }
+  } catch { reportHuntError('photo_backup'); /* never breaks the hunt */ }
 }

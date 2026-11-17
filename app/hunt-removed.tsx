@@ -68,7 +68,7 @@ export default function HuntRemovedScreen() {
     if (Platform.OS !== 'web') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     }
-    logEvent('hunt_item_restored', { huntItemId: item.huntItemId, category: item.category, from: 'removed_list' });
+    logEvent('hunt_item_restored', { hunt_id: getActiveHunt()?.id ?? null, hunt_item_id: item.huntItemId, huntItemId: item.huntItemId, category: item.category, from: 'removed_list' });
   };
 
   const handleViewItem = (item: HuntItem) => {

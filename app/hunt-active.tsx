@@ -24,7 +24,6 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useEffect, useRef } from 'react';
 
 // Hunt scan icon — the marksman/crosshair image
-const HUNT_SCAN_ICON = require('@/assets/images/hunt-scan-icon.png');
 
 import {
   getActiveHunt, finishHunt, discardHunt, getHuntStats, subscribeToHunt,
@@ -37,6 +36,7 @@ import { applyHuntXp, setLastCompletionResult } from '@/lib/huntXp';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { isHuntBundle, type HuntBundle, type HuntBundleItem } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
+import { V } from '@/constants/vintage';
 import { useScanGate } from '@/lib/useScanGate';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -286,41 +286,13 @@ function PawPrints() {
 // Three-layer sonar glow, permanent compass/trail decoration, paw prints,
 // and a warm safari terrain wash behind the scan button.
 
-const SCAN_BTN = 96;
+// Same look as the tab bar's camera button (green disc, page-colour rim,
+// white camera glyph), a little larger because it is this screen's main action.
+const SCAN_BTN = 76;
 
 function HuntBottomZone({ onPress }: { onPress: () => void }) {
   const insets     = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, 0);
-
-  // Three sonar rings — staggered 0ms / 460ms / 920ms offsets
-  const ring1 = useRef(new Animated.Value(0)).current;
-  const ring2 = useRef(new Animated.Value(0)).current;
-  const ring3 = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const makeRing = (a: Animated.Value, delay: number) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(a, { toValue: 1, duration: 1380, useNativeDriver: true }),
-          Animated.timing(a, { toValue: 0, duration: 0,    useNativeDriver: true }),
-        ])
-      );
-    makeRing(ring1, 0).start();
-    makeRing(ring2, 460).start();
-    makeRing(ring3, 920).start();
-  }, []);
-
-  const ringStyle = (a: Animated.Value) => ({
-    position:        'absolute' as const,
-    width:           SCAN_BTN,
-    height:          SCAN_BTN,
-    borderRadius:    SCAN_BTN / 2,
-    borderWidth:     1.5,
-    borderColor:     GOLD,
-    transform:       [{ scale: a.interpolate({ inputRange: [0, 1], outputRange: [1.0, 2.8] }) }],
-    opacity:         a.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0.55, 0.20, 0] }),
-  });
 
   return (
     <View style={{
@@ -331,39 +303,33 @@ function HuntBottomZone({ onPress }: { onPress: () => void }) {
       alignItems:      'center',
     }}>
 
-      {/* ── Scan button: sonar rings + permanent ring + pressable ── */}
+      {/* ── Scan button ── */}
       <View style={{ width: SCAN_BTN, height: SCAN_BTN, alignItems: 'center', justifyContent: 'center' }}>
-
-        {/* Three staggered sonar expansion rings */}
-        <Animated.View pointerEvents="none" style={ringStyle(ring1)} />
-        <Animated.View pointerEvents="none" style={ringStyle(ring2)} />
-        <Animated.View pointerEvents="none" style={ringStyle(ring3)} />
-
-        {/* Permanent gold border */}
-        <View pointerEvents="none" style={{
-          position:     'absolute',
-          top: -3, left: -3, right: -3, bottom: -3,
-          borderRadius: (SCAN_BTN + 6) / 2,
-          borderWidth:  2,
-          borderColor:  GOLD + '70',
-        }} />
 
         <Pressable
           onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel="Scan an item"
+          testID="hunt-scan-button"
           style={({ pressed }) => ({
-            width:        SCAN_BTN,
-            height:       SCAN_BTN,
-            borderRadius: SCAN_BTN / 2,
-            overflow:     'hidden' as const,
-            opacity:      pressed ? 0.88 : 1,
-            transform:    pressed ? [{ scale: 0.93 }] : [],
+            width:           SCAN_BTN,
+            height:          SCAN_BTN,
+            borderRadius:    SCAN_BTN / 2,
+            backgroundColor: V.green,
+            alignItems:      'center' as const,
+            justifyContent:  'center' as const,
+            borderWidth:     3,
+            borderColor:     BG,          // this screen's page colour, like the tab bar's rim
+            shadowColor:     '#1A3020',
+            shadowOffset:    { width: 0, height: 4 },
+            shadowOpacity:   0.35,
+            shadowRadius:    10,
+            elevation:       8,
+            opacity:         pressed ? 0.9 : 1,
+            transform:       pressed ? [{ scale: 0.93 }] : [],
           })}
         >
-          <Image
-            source={HUNT_SCAN_ICON}
-            style={{ width: SCAN_BTN, height: SCAN_BTN }}
-            resizeMode="contain"
-          />
+          <MaterialIcons name="photo-camera" size={32} color={V.white} />
         </Pressable>
       </View>
 
@@ -589,7 +555,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
     startScan({
       origin: 'hunt',
       run: () => {
-        logHuntScanStarted(stats.scanned);
+        logHuntScanStarted(stats.scanned, getActiveHunt()?.id);
         // Every scan started from Live Hunt belongs to the hunt.
         setScanDestination('hunt');
         router.push('/camera' as any);
@@ -676,13 +642,19 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
 
       {/* ── Kept Items header ── */}
       <View style={s.sectionRow}>
-        <Text style={s.sectionTitle}>KEPT ITEMS</Text>
-        {keptItems.length > 0 && (
-          <View style={s.sectionLink}>
-            <Text style={s.sectionCount}>{keptItems.length}</Text>
-            <MaterialIcons name="chevron-right" size={18} color={GOLD} />
-          </View>
-        )}
+        <Text style={s.sectionTitle}>{`KEPT ITEMS · ${keptItems.length}`}</Text>
+        {/* Always there, even at 0: the way to Removed Items never disappears. */}
+        <Pressable
+          onPress={() => router.push('/hunt-removed' as any)}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
+          style={({ pressed }) => [s.sectionLink, pressed && { opacity: 0.6 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Removed items, ${removedItems.length}`}
+          testID="hunt-removed-link"
+        >
+          <Text style={s.removedLinkText}>{`Removed · ${removedItems.length}`}</Text>
+          <MaterialIcons name="chevron-right" size={16} color={MUTED} />
+        </Pressable>
       </View>
 
       {/* ── Kept item list or empty state ── */}
@@ -704,19 +676,6 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
           keptItems.map(item => <ItemCard key={item.huntItemId} item={item} />)
         )}
       </ScrollView>
-
-      {/* I: Removed items row — subtle but tappable */}
-      {removedItems.length > 0 && (
-        <Pressable
-          onPress={() => router.push('/hunt-removed' as any)}
-          style={({ pressed }) => [s.removedRow, pressed && { opacity: 0.75 }]}
-        >
-          <MaterialIcons name="remove-circle-outline" size={16} color={MUTED} />
-          <Text style={s.removedRowText}>Removed Items</Text>
-          <Text style={s.removedRowCount}>{removedItems.length} skipped</Text>
-          <MaterialIcons name="chevron-right" size={16} color={MUTED} />
-        </Pressable>
-      )}
 
       {/* ── Hunt bottom zone: sonar glow + safari details + scan button ── */}
       <HuntBottomZone onPress={handleScan} />
@@ -801,6 +760,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                 // A repeat apply returns zero XP and an empty breakdown — not an award.
                 if (xpResult && (xpResult.totalXpEarned > 0 || xpResult.breakdown.length > 0)) {
                   logHuntXpAwarded({
+                    hunt_id:         hunt.id,
                     xp_earned:       xpResult.totalXpEarned,
                     total_xp_before: xpResult.previousTotalXp,
                     total_xp_after:  xpResult.newTotalXp,
@@ -817,6 +777,8 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
 
                 addHuntBundle(bundle);
                 logHuntEnded({
+                  hunt_id:         hunt.id,
+                  outcome:         'saved',
                   durationMs,
                   scannedCount:    hunt.items.length,
                   keptCount:       keptItems.length,
@@ -863,6 +825,8 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                 setEndConfirmVisible(false);
                 allowNavRef.current = true;
                 logHuntEnded({
+                  hunt_id:         getActiveHunt()?.id ?? null,
+                  outcome:         'discarded',
                   durationMs:      Date.now() - (getActiveHunt()?.startedAt ?? Date.now()),
                   scannedCount:    stats.scanned,
                   keptCount:       stats.kept,
@@ -975,10 +939,7 @@ const s = StyleSheet.create({
   sectionRow:      { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginTop: 14, marginBottom: 8 },
   sectionTitle:    { flex: 1, fontFamily: FONTS.serif, fontSize: 11, fontWeight: '700', color: MUTED, letterSpacing: 1.2 },
   sectionLink:     { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  removedRow:      { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginTop: 8, paddingVertical: 11, paddingHorizontal: 14, backgroundColor: CARD_BG, borderRadius: 10, borderWidth: 1, borderColor: CARD_B + '80' },
-  removedRowText:  { flex: 1, fontSize: 13, color: MUTED, fontWeight: '600' },
-  removedRowCount: { fontSize: 12, color: MUTED + 'AA' },
-  sectionCount:    { fontSize: 11, fontWeight: '700', color: GOLD },
+  removedLinkText: { fontFamily: FONTS.serif, fontSize: 12, fontWeight: '700', color: MUTED },
 
   itemScroll:      { flex: 1 },
   itemList:        { paddingHorizontal: 16, paddingBottom: 8, gap: 8 },

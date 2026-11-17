@@ -138,6 +138,8 @@ export default function HuntHistoryScreen() {
    */
   const handleKeptPress = (item: HuntBundleItem) => {
     logEvent('hunt_history_item_opened', {
+      hunt_id:    bundle.id,
+      hunt_item_id: item.huntItemId,
       category:   item.category,
       huntRating: item.huntRating,
       destination: 'flip_record',
@@ -154,6 +156,8 @@ export default function HuntHistoryScreen() {
 
   const handleItemPress = (item: HuntBundleItem) => {
     logEvent('hunt_history_item_opened', {
+      hunt_id:    bundle.id,
+      hunt_item_id: item.huntItemId,
       category:   item.category,
       huntRating: item.huntRating,
     });

@@ -535,15 +535,28 @@ export function logHuntModeOpened(): void {
   logEvent("hunt_mode_opened");
 }
 
-/** User confirmed hunt name and started an active hunt */
-export function logHuntStarted(huntName: string): void {
-  logEvent("hunt_started", { huntName });
+/**
+ * User confirmed hunt name and started an active hunt.
+ *
+ * The name is free text the user typed, so it is NOT sent: only whether one was
+ * given and how long it is. Every Hunt event carries `hunt_id` (the session id,
+ * an opaque value) so a Hunt can be followed from start to finish.
+ */
+export function logHuntStarted(huntId: string, huntName: string): void {
+  const name = (huntName ?? "").trim();
+  logEvent("hunt_started", { hunt_id: huntId, name_provided: name.length > 0, name_length: name.length });
 }
 
-/** Scan button pressed inside active hunt */
-export function logHuntScanStarted(scannedCount: number): void {
+/**
+ * Scan button pressed inside active hunt.
+ *
+ * No model or provider is claimed here: this app does not know which model the
+ * server used (it is a server setting), and a hardcoded name would silently go
+ * stale. Hunt scans run the same analysis as normal scans.
+ */
+export function logHuntScanStarted(scannedCount: number, huntId?: string | null): void {
   incrementSessionCount("huntScansCount");
-  logEvent("hunt_scan_started", { scannedCount, scan_type: "hunt", model_name: "gpt-4o", api_provider: "openai" });
+  logEvent("hunt_scan_started", { scannedCount, scan_type: "hunt", hunt_id: huntId ?? null });
 }
 
 /** Item saved to hunt from Hunt Item Detail */
@@ -551,6 +564,8 @@ export function logHuntItemSaved(meta: {
   profit: number;
   recommendation: string;
   category: string;
+  hunt_id?: string | null;
+  hunt_item_id?: string | null;
 }): void {
   incrementSessionCount("huntItemsSavedCount");
   logEvent("hunt_item_saved", meta);
@@ -560,6 +575,8 @@ export function logHuntItemSaved(meta: {
 export function logHuntItemRemoved(meta: {
   recommendation: string;
   category: string;
+  hunt_id?: string | null;
+  hunt_item_id?: string | null;
 }): void {
   logEvent("hunt_item_removed", meta);
 }
@@ -570,12 +587,16 @@ export function logHuntEnded(meta: {
   scannedCount: number;
   keptCount: number;
   estimatedProfit: number;
+  hunt_id?: string | null;
+  /** saved = bundled into history; discarded = the user left without saving. */
+  outcome?: "saved" | "discarded";
 }): void {
   logEvent("hunt_ended", meta);
 }
 
 /** XP applied for a finished hunt — feeds the Hunt XP / Hunt Levels dashboard. */
 export function logHuntXpAwarded(meta: {
+  hunt_id?: string | null;
   xp_earned: number;
   total_xp_before: number;
   total_xp_after: number;
@@ -584,6 +605,18 @@ export function logHuntXpAwarded(meta: {
   ranked_up: boolean;
 }): void {
   logEvent("hunt_xp_awarded", meta);
+}
+
+/** Where a Hunt problem happened. A closed list: no free text ever goes in. */
+export type HuntErrorStage = "persist_write" | "hydrate_read" | "photo_backup";
+
+/**
+ * A Hunt reliability problem the user never sees (a save that did not write, a
+ * saved hunt that would not load, a photo that did not upload). Stage and hunt
+ * id only; no message, name, path or item data.
+ */
+export function logHuntError(stage: HuntErrorStage, huntId?: string | null): void {
+  logEvent("hunt_error", { stage, hunt_id: huntId ?? null });
 }
 
 // ─── Scan record (future AI memory foundation) ────────────────────────────────
