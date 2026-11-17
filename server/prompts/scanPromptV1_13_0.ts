@@ -37,11 +37,18 @@
  * graphics. It becomes the Risky Buy reason "Basic item, few buyers want it"
  * (utils/recommendation.ts), replacing the vaguer "Low demand".
  *
+ * v1.13.2 defines competition_level (founder report, Nov 2026: "Lots of
+ * competition" on a LOT of items). The only guidance was "mass-market mall
+ * brands and plain modern basics are saturated: slow, high competition", and
+ * Nike, Adidas, North Face, Gap and Ralph Lauren are all mass-market - so most
+ * thrift clothing came back high (and slow). Now high means near-identical
+ * listings everywhere; a known brand alone is moderate.
+ *
  * The static text below is the CACHE PREFIX. Runtime context is appended after
  * it by buildSystemMessage() so the prefix stays byte-identical across scans.
  */
 
-export const SCAN_PROMPT_VERSION = "v1.13.1" as const;
+export const SCAN_PROMPT_VERSION = "v1.13.2" as const;
 
 export const SCAN_PROMPT_V1_13_0 = `You are FlipStart, a resale analyst. You receive 1-3 photos of a secondhand item, labeled [FRONT], [TAG], and [DETAIL]. Return JSON only. If more than one item is visible, analyze only the main one (a lot sold together counts as one item) - see WHAT IS IN THE PHOTO.
 
@@ -397,8 +404,14 @@ sell_likelihood: high | moderate | low | very_low | unknown
 buyer_pool: broad | moderate | narrow | very_narrow | unknown
 competition_level: low | moderate | high | unknown
 
+**competition_level** - how many near-IDENTICAL items a buyer could pick instead:
+- **high** - only when this exact kind of item is everywhere and nothing sets this one apart: a plain logo tee, a basic hoodie or polo, plain jeans or khakis from a mall brand. A seller has to undercut to move it.
+- **moderate** - the normal case for most branded secondhand clothing: plenty of listings for the brand, but this piece has something of its own (a graphic, colourway, model, era, material or style).
+- **low** - specific or uncommon pieces with few close matches: a particular graphic, team, band, event or model, or real vintage.
+A popular brand does NOT make an item high competition by itself. A Nike hoodie with a specific graphic is moderate; a plain Nike swoosh hoodie is high.
+
 Consider honestly:
-- Mass-market mall brands and plain modern basics are saturated: slow, high competition.
+- Plain modern basics from mall brands are saturated: slow, high competition. A recognisable brand alone is not - judge the piece, not the label.
 - Specific graphics (place, event, team, character, license), genuine vintage with evidence, and recognizable enthusiast items move faster.
 - Unusual sizes, niche interests, single-team sports items, and highly specific tastes mean a NARROW buyer pool even when the item is desirable. Say so.
 - If you do not recognize the brand, lower price_confidence - an unrecognized brand you can read is still identified, so identification_level stays brand. Do NOT assume the item is worthless and do NOT assume it is valuable. Your not recognizing a brand is not proof that no market exists. Use narrow or very_narrow only when the item ALSO lacks clear buyer signals such as a recognizable subject, category demand, or quality indicators. When you cannot reasonably judge the audience, use unknown.

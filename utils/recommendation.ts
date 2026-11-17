@@ -159,11 +159,14 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   const rawSpeed = (input.sellSpeed ?? '').toLowerCase();
   if (rawSpeed.includes('very slow') || rawSpeed === 'very_slow') add('VERY_SLOW_SELL');
   else if (s === 'slow')                add('SLOW_SELL');
-  if (c === 'high')                     add('HIGH_COMPETITION');
-  // "Basic item, few buyers want it" is the specific form of low demand, so it
-  // replaces LOW_DEMAND rather than counting the same problem twice.
+  // "Basic item, few buyers want it" is the specific form of low demand AND of
+  // a saturated market (a plain basic is both), so it replaces LOW_DEMAND and
+  // HIGH_COMPETITION rather than counting the same problem two or three times.
   if (input.basicItem)                  add('BASIC_ITEM');
-  else if (d === 'low')                 add('LOW_DEMAND');
+  else {
+    if (c === 'high')                   add('HIGH_COMPETITION');
+    if (d === 'low')                    add('LOW_DEMAND');
+  }
   if (matchConfidence > 0 && matchConfidence < 55) add('LOW_CONFIDENCE');
   const pool = (input.buyerPool ?? '').toLowerCase();
   if (pool === 'narrow' || pool === 'very_narrow') add('NARROW_POOL');
@@ -183,7 +186,16 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
 
   // ── Demotion ────────────────────────────────────────────────────────────────
   // Margin buys tolerance: a big enough spread absorbs one or two risk factors.
-  const substantive = factors.filter(f => f.code !== 'ERA_UNCONFIRMED');
+  // High competition on its own is not a reason to hesitate once the margin is
+  // healthy ($15+): it means "price it to sell", and the resale estimate
+  // already sits at a competitive price. It fired on most branded thrift
+  // clothing and dragged ordinary BUYs to RISKY BUY (founder report, Nov 2026).
+  // It still counts when the margin is thin, or alongside another real risk.
+  const onlyCompetition =
+    factors.filter(f => f.code !== 'ERA_UNCONFIRMED').every(f => f.code === 'HIGH_COMPETITION');
+  const softCompetition = onlyCompetition && netProfit >= 15;
+  const substantive = factors.filter(f =>
+    f.code !== 'ERA_UNCONFIRMED' && !(softCompetition && f.code === 'HIGH_COMPETITION'));
 
   // Era-unconfirmed does not count toward demotion on its own. On a front-only
   // scan it fires almost every time, and letting it drag every item to RISKY
