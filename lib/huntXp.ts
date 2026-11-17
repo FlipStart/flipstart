@@ -254,6 +254,12 @@ export function calculateHuntXp(
   }
 
   // ── Rarity (per kept item) ───────────────────────────────────────────────────
+  // ── LEADERBOARD BLOCKER (documented Nov 2026, deliberately NOT fixed yet) ──
+  // The user types the thrift price. Price → profit → Hunt rating → this XP
+  // (and the profit tiers below). Typing unrealistically low prices farms
+  // Legendary Loot XP. Harmless while XP is personal; MUST be designed out
+  // before any competitive leaderboard ships (caps, diminishing returns,
+  // XP independent of typed profit, anomaly checks, realized outcomes).
   const rarityXp: Record<string, number> = { legendary: 20, treasure: 8, risky: 1, trash: 0 };
   const rarityLabel: Record<string, string> = {
     legendary: 'Legendary Loot item',

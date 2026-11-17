@@ -11,7 +11,8 @@
 import {
   View, Text, TextInput, Pressable, StyleSheet,
   ImageBackground, Animated, Platform, Keyboard,
-  Modal, TouchableWithoutFeedback, Dimensions,
+  Modal, TouchableWithoutFeedback, Dimensions, Alert, Image,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,7 +21,7 @@ import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRef, useState, useEffect } from 'react';
 
-import { startHunt } from '@/lib/hunt-context';
+import { startHunt, isHuntActive, subscribeToHunt } from '@/lib/hunt-context';
 import { useAuth } from '@/lib/auth-context';
 import { logHuntModeOpened, logHuntStarted } from '@/lib/analytics';
 import { FONTS } from '@/constants/typography';
@@ -28,6 +29,17 @@ import { FONTS } from '@/constants/typography';
 // ─── Assets ───────────────────────────────────────────────────────────────────
 
 const BG_IMAGE   = require('@/assets/images/hunt-mode-bg.png');
+// "HUNT MODE" + paw divider, drawn as its own layer on top of the background
+// (the background no longer contains them). Rendered at 3x for crisp edges.
+const TITLE_IMAGE = require('@/assets/images/hunt-mode-title.png');
+
+// Background image size, and where the title layer sits on it (in background
+// image pixels). The background uses resizeMode="cover", so the title is placed
+// with the same cover math to stay locked to the artwork on every iPhone size.
+// If either image is ever re-exported at a different size, update these.
+const BG_W = 853;
+const BG_H = 1844;
+const TITLE_RECT = { x: 215, y: 640, w: 430, h: 425 };
 const ROAR_SOUND = require('@/assets/images/lion-roar.m4a');
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -41,6 +53,10 @@ const CARD_BG     = 'rgba(242, 232, 208, 0.96)';
 const TEXT_DARK   = '#2A1A0A';
 const TEXT_MUTED  = '#6A5030';
 const SCREEN_H    = Dimensions.get('window').height;
+// Short phones (iPhone SE class). The leaderboard button + card would otherwise
+// crowd up into the HUNT MODE title, so spacing tightens a little on these only.
+// Normal iPhones are unaffected.
+const COMPACT    = SCREEN_H < 700;
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -49,6 +65,7 @@ export default function HuntScreen() {
   const navigation = useNavigation();
   const { user, loading: authLoading } = useAuth();
   const insets  = useSafeAreaInsets();
+  const { width: winW, height: winH } = useWindowDimensions();
   const player  = useAudioPlayer(ROAR_SOUND);
 
   // Confirmed hunt name shown on the card
@@ -59,11 +76,33 @@ export default function HuntScreen() {
   const [starting, setStarting]   = useState(false);
 
   const inputRef = useRef<TextInput>(null);
+  const startedHereRef = useRef(false);
 
   // Track Hunt Mode screen open — fires once on mount
   useEffect(() => {
     logHuntModeOpened();
   }, []);
+
+  // A hunt is already running (including one restored after the app was
+  // closed): go straight back to it. Starting a new one here would overwrite it.
+  useEffect(() => {
+    if (isHuntActive()) { router.replace('/hunt-active' as any); return; }
+    return subscribeToHunt(() => {
+      // startedHereRef: our own START HUNT already navigates — don't do it twice.
+      if (isHuntActive() && !startedHereRef.current) router.replace('/hunt-active' as any);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Title layer position (same cover scaling as the background) ──────────
+  const coverScale = Math.max(winW / BG_W, winH / BG_H);
+  const titleStyle = {
+    position: 'absolute' as const,
+    left:   (winW - BG_W * coverScale) / 2 + TITLE_RECT.x * coverScale,
+    top:    (winH - BG_H * coverScale) / 2 + TITLE_RECT.y * coverScale,
+    width:  TITLE_RECT.w * coverScale,
+    height: TITLE_RECT.h * coverScale,
+  };
 
   // ── Screen entrance animation ──────────────────────────────────────────────
   const screenFade = useRef(new Animated.Value(0)).current;
@@ -113,12 +152,26 @@ export default function HuntScreen() {
 
     try { player.seekTo(0); player.play(); } catch { /* never crash */ }
 
+    startedHereRef.current = true;
     const session = startHunt(huntName);
     logHuntStarted(huntName || 'Unnamed Hunt');
     if (__DEV__) console.log(`[hunt] session started — id:${session.id} name:"${session.name}"`);
 
     router.replace('/hunt-active' as any);
     setStarting(false);
+  };
+
+  // ── Hunt Leaderboard ──────────────────────────────────────────────────────
+  // PLACEHOLDER: the leaderboard screen is not built yet, so this only shows a
+  // notice. When the screen exists, replace the Alert with
+  //   router.push('/hunt-leaderboard' as any);
+  // (do NOT route to '/leaderboard' — app/(tabs)/leaderboard.tsx is a stale
+  // copy of an old tab layout, not a real screen.)
+  const handleLeaderboard = () => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+    Alert.alert('Hunt Leaderboard', 'Coming soon.');
   };
 
   // Always return to Home. Hunt Mode is a stack route pushed over the tabs.
@@ -168,6 +221,17 @@ export default function HuntScreen() {
         resizeMode="cover"
         onLoad={handleImageLoad}
       >
+        {/* HUNT MODE title + paw divider — separate layer, full opacity */}
+        <View
+          style={titleStyle}
+          pointerEvents="none"
+          accessible
+          accessibilityRole="header"
+          accessibilityLabel="Hunt Mode"
+        >
+          <Image source={TITLE_IMAGE} style={s.titleImg} resizeMode="stretch" />
+        </View>
+
         {/* Back button */}
         <Pressable
           onPress={handleBack}
@@ -179,11 +243,46 @@ export default function HuntScreen() {
 
         <View style={s.spacer} />
 
+        {/* ── Hunt Leaderboard button — sits just above the card, where the old
+            "Every find is an adventure" tagline used to be. In normal flow (not
+            absolutely positioned) so it can never overlap the card on short
+            phones. Slides in with the card. ── */}
+        <Animated.View
+          style={[
+            s.lbWrap,
+            COMPACT && s.lbWrapCompact,
+            { transform: [{ translateY: cardSlide }] },
+          ]}
+        >
+          <Pressable
+            onPress={handleLeaderboard}
+            accessibilityRole="button"
+            accessibilityLabel="Hunt Leaderboard"
+            style={({ pressed }) => [
+              s.lbBtn,
+              COMPACT && s.lbBtnCompact,
+              pressed && { transform: [{ scale: 0.97 }], opacity: 0.92 },
+            ]}
+          >
+            <MaterialIcons name="emoji-events" size={22} color={GOLD} />
+            <Text
+              style={s.lbBtnText}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+            >
+              HUNT LEADERBOARD
+            </Text>
+            <MaterialIcons name="emoji-events" size={22} color={GOLD} />
+          </Pressable>
+        </Animated.View>
+
         {/* ── Card ── */}
         <Animated.View
           style={[
             s.card,
-            { marginBottom: insets.bottom + 40 },
+            { marginBottom: insets.bottom + (COMPACT ? 16 : 40) },
+            COMPACT && s.cardCompact,
             { transform: [{ translateY: cardSlide }] },
           ]}
         >
@@ -302,6 +401,46 @@ const s = StyleSheet.create({
   backBtnText: { color: '#F2E8D0', fontSize: 16, fontWeight: '600' },
 
   spacer: { flex: 1 },
+
+  // Fills the title layer's box (the box itself is positioned in the component)
+  titleImg: { width: '100%', height: '100%' },
+
+  // ── Hunt Leaderboard button (above the card) ───────────────────────────────
+  // Matches the card directly beneath it (same cream fill, gold hairline and
+  // shadow) with green serif caps and gold trophies, so START HUNT — the one
+  // green button — stays the primary action.
+  lbWrap: {
+    marginHorizontal: 16,
+    marginBottom:     14,
+  },
+  lbBtn: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    justifyContent:  'center',
+    gap:             10,
+    backgroundColor: CARD_BG,
+    borderRadius:    14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderWidth:     2,
+    borderColor:     GOLD,
+    shadowColor:     '#0A1A0A',
+    shadowOffset:    { width: 0, height: -2 },
+    shadowOpacity:   0.18,
+    shadowRadius:    10,
+    elevation:       8,
+  },
+  lbWrapCompact: { marginBottom: 10 },
+  lbBtnCompact:  { paddingVertical: 10 },
+  cardCompact:   { padding: 16, paddingBottom: 18 },
+  lbBtnText: {
+    flexShrink:    1,
+    fontFamily:    FONTS.serif,
+    fontSize:      16,
+    fontWeight:    '800',
+    color:         FOREST,
+    letterSpacing: 1.8,
+  },
 
   // ── Main entry card ────────────────────────────────────────────────────────
   card: {

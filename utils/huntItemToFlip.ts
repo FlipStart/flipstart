@@ -20,6 +20,7 @@ import type {
   FlipResult, HuntBundleItem, HistoryEntry, BuyLabel, Platform,
 } from '@/types/flip';
 import { isHuntBundle } from '@/types/flip';
+import { getBestPlatform } from '@/utils/flipCalculations';
 
 /**
  * A FlipResult projected out of a hunt bundle, tagged with where it came from.
@@ -45,6 +46,8 @@ export function huntItemToFlip(item: HuntBundleItem, timestamp?: number): FlipRe
   return {
     id:        item.scanId,
     imageUri:  item.imageUri,
+    // Tag / Detail photos, so the viewer and Deep Analysis keep the evidence.
+    extraPhotos: (item.extraPhotos ?? []).filter(p => /^https?:\/\//.test(p?.uri ?? '')),
     timestamp: timestamp ?? Date.now(),
 
     // Identification — prefer the full AI snapshot, fall back to the summary
@@ -70,7 +73,7 @@ export function huntItemToFlip(item: HuntBundleItem, timestamp?: number): FlipRe
 
     // User-confirmed + derived
     thriftPrice,
-    fees:   0,
+    fees:   item.fees ?? 0,
     profit,
     roi:    item.roi ?? (thriftPrice > 0 ? Math.round((profit / thriftPrice) * 100) : 0),
 
@@ -80,7 +83,8 @@ export function huntItemToFlip(item: HuntBundleItem, timestamp?: number): FlipRe
     buyScore:     0,
     buyLabel:     '✅ BUY' as BuyLabel,
     stars:        3,
-    bestPlatform: 'eBay' as Platform,
+    // Same rule normal scans use, instead of a hard-coded eBay.
+    bestPlatform: getBestPlatform(id?.style_labels ?? [], id?.estimated_era ?? '', md?.adjusted_estimated_value ?? 0),
 
     // ── Flip Record state ─────────────────────────────────────────────────────
     // Persisted on the bundle item. Absent on bundles saved before Flip Record

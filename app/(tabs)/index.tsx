@@ -52,6 +52,8 @@ import { useEntitlement } from '@/lib/useEntitlement';
 import { ScanCircleLabel } from '@/components/home/ScanCircleLabel';
 import { useScanPillAffordance } from '@/components/home/ScanPillAffordance';
 import { useScanGate } from '@/lib/useScanGate';
+import { chooseScanDestination } from '@/lib/huntScanChoice';
+import { shouldRestorePendingFind, subscribeToHunt } from '@/lib/hunt-context';
 import { clearScanStoreIntent } from '@/lib/scanStoreIntent';
 import {
   includedHeading, includedCount,
@@ -409,11 +411,26 @@ export default function HomeScreen() {
   /** Shared scan preflight — see lib/useScanGate.ts. */
   const startScan = useScanGate();
 
+  // The app closed while a hunt find was waiting for Keep / Remove: take the
+  // user straight back to it (Live Hunt opens its Discovery Analysis). Once per
+  // launch; the restored hunt may finish loading after Home mounts.
+  useEffect(() => {
+    let cancelled = false;
+    const check = () => {
+      if (!cancelled && shouldRestorePendingFind()) router.push('/hunt-active' as any);
+    };
+    check();
+    const unsub = subscribeToHunt(check);
+    return () => { cancelled = true; unsub(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleScanItem = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     startScan({
       origin: 'home',
-      run: () => router.push('/camera' as any),
+      // With a hunt running, ask which mode this scan belongs to (never silent).
+      run: () => chooseScanDestination(() => router.push('/camera' as any), 'home'),
       goToScanStore: () => router.push('/scan-store?from=home_gate' as any),
     });
   };

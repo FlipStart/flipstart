@@ -25,6 +25,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useFlipStore }                from '@/lib/useFlipStore';
 import { isHuntBundle, HuntBundleItem } from '@/types/flip';
 import { calculateFees } from '@/utils/flipCalculations';
+import { huntItemToFlip } from '@/utils/huntItemToFlip';
 import { FONTS }                        from '@/constants/typography';
 import { logEvent }                     from '@/lib/analytics';
 import { useEffect, useRef }            from 'react';
@@ -156,40 +157,11 @@ export default function HuntHistoryScreen() {
       category:   item.category,
       huntRating: item.huntRating,
     });
-    // Convert ScanResult scanSnapshot into a FlipResult-compatible shape
-    // so analysis-details can render market data, identification, etc.
-    const snap = item.scanSnapshot;
-    const flipLike = {
-      id:              item.scanId,
-      imageUri:        item.imageUri,
-      timestamp:       bundle.endedAt,
-      itemName:        snap.identification?.item_name  ?? item.itemName,
-      brand:           snap.identification?.brand       ?? item.brand,
-      category:        snap.identification?.category    ?? item.category,
-      era:             snap.identification?.estimated_era ?? '',
-      styleLabels:     snap.identification?.style_labels  ?? [],
-      material:        snap.identification?.material_guess ?? '',
-      resaleValue:     snap.market_data?.adjusted_estimated_value ?? 0,
-      resaleRangeLow:  snap.market_data?.estimated_resale_range?.low  ?? 0,
-      resaleRangeHigh: snap.market_data?.estimated_resale_range?.high ?? 0,
-      avgSoldPrice:    snap.market_data?.average_sold_price ?? 0,
-      demand:          snap.market_data?.demand        ?? 'Medium',
-      sellSpeed:       snap.market_data?.sell_speed    ?? 'Moderate',
-      competitionLevel:snap.market_data?.competition_level ?? '',
-      matchConfidence: snap.risk_analysis?.match_confidence ?? 0,
-      riskFlags:       snap.risk_analysis?.risk_flags   ?? [],
-      thriftPrice:     item.thriftPrice,
-      fees:            0,
-      profit:          item.profit,
-      roi:             item.thriftPrice > 0 ? Math.round((item.profit / item.thriftPrice) * 100) : 0,
-      buyScore:        0,
-      buyLabel:        '✅ BUY' as const,
-      stars:           3,
-      bestPlatform:    'eBay' as const,
-      listingsGenerated: false,
-      generatedAt:     null,
-      listingData:     null,
-    };
+    // The shared projection (utils/huntItemToFlip) — the same one the Flip
+    // Record uses. The old inline copy dropped the canonical v1 block, so Deep
+    // Analysis hid Era & Authenticity, Market Signals and What the AI Saw for
+    // hunt finds, ignored their risk signals and always said eBay.
+    const flipLike = huntItemToFlip(item, bundle.endedAt);
     openDeepAnalysis(
       () => router.push({
         pathname: '/analysis-details' as any,

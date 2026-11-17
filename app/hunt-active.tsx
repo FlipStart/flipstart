@@ -14,7 +14,7 @@
  */
 
 import {
-  View, Text, Pressable, StyleSheet, Alert, Platform, Image, Animated, PanResponder, Modal,
+  View, Text, Pressable, StyleSheet, Alert, Platform, Image, Animated, PanResponder, Modal, ScrollView,
 } from 'react-native';
 import { useRouter, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -27,8 +27,9 @@ import { useState, useEffect, useRef } from 'react';
 const HUNT_SCAN_ICON = require('@/assets/images/hunt-scan-icon.png');
 
 import {
-  getActiveHunt, endHunt, getHuntStats, subscribeToHunt,
-  toggleHuntItemKept, moveHuntItemToRemoved, type HuntItem, type HuntRating,
+  getActiveHunt, finishHunt, discardHunt, getHuntStats, subscribeToHunt,
+  moveHuntItemToRemoved, type HuntItem, type HuntRating,
+  keptItemsOf, removedItemsOf, pendingItemOf, setScanDestination,
   consumeReturningFromHuntItemDetail,
 } from '@/lib/hunt-context';
 import { logHuntScanStarted, logHuntEnded, logHuntXpAwarded } from '@/lib/analytics';
@@ -51,6 +52,22 @@ const CARD_BG  = '#FFF9EE';
 const CARD_B   = '#DDD0B0';
 const BROWN    = '#5A3A1A';
 const MUTED    = '#8A7050';
+
+/**
+ * Fields added with hunt persistence, copied into the saved bundle so history
+ * keeps the photos, fees and ids. Undefined values are left out entirely.
+ */
+function huntItemExtras(i: HuntItem): Partial<HuntBundleItem> {
+  const out: Partial<HuntBundleItem> = {};
+  if (i.analysisId)              out.analysisId     = i.analysisId;
+  if (i.allImageUris?.length)    out.allImageUris   = i.allImageUris;
+  if (i.extraPhotos?.length)     out.extraPhotos    = i.extraPhotos;
+  if (typeof i.fees === 'number') out.fees          = i.fees;
+  if (typeof i.roi === 'number')  out.roi           = i.roi;
+  if (i.priceUpdatedAt)          out.priceUpdatedAt = i.priceUpdatedAt;
+  if (i.compsSnapshot)           out.compsSnapshot  = i.compsSnapshot;
+  return out;
+}
 
 // ─── Rating config ────────────────────────────────────────────────────────────
 
@@ -513,6 +530,26 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
     return unsub;
   }, [navigation]);
 
+  // An analysed-but-undecided find (e.g. the app closed on Discovery Analysis):
+  // take the user straight back to it, once per find. Never re-scanned.
+  // Only while THIS screen is on top: during a normal hunt scan the pending
+  // find is already open in Discovery Analysis above us.
+  const openedPendingRef = useRef<string | null>(null);
+  useEffect(() => {
+    const open = () => {
+      if (!(navigation as any).isFocused?.()) return;
+      const p = pendingItemOf(getActiveHunt());
+      if (!p || openedPendingRef.current === p.huntItemId) return;
+      openedPendingRef.current = p.huntItemId;
+      router.push(`/hunt-item-detail?mode=pending&huntItemId=${p.huntItemId}` as any);
+    };
+    open();
+    const unsubFocus = (navigation as any).addListener('focus', open);
+    const unsubHunt  = subscribeToHunt(open);
+    return () => { unsubFocus?.(); unsubHunt(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation]);
+
   const session = getActiveHunt();
 
   // Safety: no active hunt (e.g. app reload cleared state)
@@ -530,13 +567,12 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
   }
 
   const stats       = getHuntStats(session);
-  const recentItems = session.items.slice(0, 4);
   const profitColor = stats.estimatedProfit >= 0 ? '#3A7A3A' : '#8A2A1A';
 
   // H/I: split into kept and removed lists
-  const keptItems    = session.items.filter(i => i.kept);
-  const removedItems = session.items.filter(i => !i.kept);
-  const recentKept   = keptItems.slice(0, 4);
+  const keptItems    = keptItemsOf(session);
+  const removedItems = removedItemsOf(session);
+  const pendingItem  = pendingItemOf(session);
 
   /**
    * Hunt scan.
@@ -554,6 +590,8 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
       origin: 'hunt',
       run: () => {
         logHuntScanStarted(stats.scanned);
+        // Every scan started from Live Hunt belongs to the hunt.
+        setScanDestination('hunt');
         router.push('/camera' as any);
       },
       goToScanStore: () => router.push('/scan-store?from=hunt_active' as any),
@@ -578,6 +616,15 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
         </View>
         <Pressable
           onPress={() => {
+            if (pendingItem) {
+              // A find is still waiting for Keep / Remove: decide it first so
+              // the saved hunt never silently drops or includes it.
+              Alert.alert('Decide on your last find', 'Keep or remove it before saving the hunt.', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Open it', onPress: () => router.push(`/hunt-item-detail?mode=pending&huntItemId=${pendingItem.huntItemId}` as any) },
+              ]);
+              return;
+            }
             if (keptItems.length === 0) {
               // No kept items — show subtle feedback, block save
               if (Platform.OS !== 'web') {
@@ -639,17 +686,24 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
       </View>
 
       {/* ── Kept item list or empty state ── */}
-      <View style={s.itemList}>
-        {recentKept.length === 0 ? (
+      {/* Every kept find is reachable: the list scrolls inside its own area
+          (header, stats and the scan button stay put). It used to show only
+          the 4 newest and the rest were unreachable during the hunt. */}
+      <ScrollView
+        style={s.itemScroll}
+        contentContainerStyle={[s.itemList, keptItems.length === 0 && { flexGrow: 1 }]}
+        showsVerticalScrollIndicator={keptItems.length > 4}
+      >
+        {keptItems.length === 0 ? (
           <View style={s.emptyState}>
             <PawPrints />
             <Text style={s.emptyTitle}>No treasures found yet.</Text>
             <Text style={s.emptySub}>Tap scan to start the hunt.</Text>
           </View>
         ) : (
-          recentKept.map(item => <ItemCard key={item.huntItemId} item={item} />)
+          keptItems.map(item => <ItemCard key={item.huntItemId} item={item} />)
         )}
-      </View>
+      </ScrollView>
 
       {/* I: Removed items row — subtle but tappable */}
       {removedItems.length > 0 && (
@@ -686,7 +740,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                 const now      = Date.now();
                 const hunt     = getActiveHunt();
                 if (!hunt) return;
-                const keptItems: HuntBundleItem[]    = hunt.items.filter(i => i.kept).map(i => ({
+                const keptItems: HuntBundleItem[]    = keptItemsOf(hunt).map(i => ({
                   huntItemId:   i.huntItemId,
                   scanId:       i.scanId,
                   itemName:     i.itemName,
@@ -698,8 +752,9 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                   huntRating:   i.huntRating,
                   kept:         true,
                   scanSnapshot: i.scanSnapshot,
+                  ...huntItemExtras(i),
                 }));
-                const removedItems: HuntBundleItem[] = hunt.items.filter(i => !i.kept).map(i => ({
+                const removedItems: HuntBundleItem[] = removedItemsOf(hunt).map(i => ({
                   huntItemId:   i.huntItemId,
                   scanId:       i.scanId,
                   itemName:     i.itemName,
@@ -711,8 +766,10 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                   huntRating:   i.huntRating,
                   kept:         false,
                   scanSnapshot: i.scanSnapshot,
+                  ...huntItemExtras(i),
                 }));
-                const totalCost    = keptItems.reduce((s, i) => s + i.thriftPrice, 0);
+                // Rounded to cents so float sums never show $12.300000001.
+                const totalCost    = Math.round(keptItems.reduce((s, i) => s + i.thriftPrice, 0) * 100) / 100;
                 const totalProfit  = keptItems.reduce((s, i) => s + i.profit, 0);
                 const estimatedROI = totalCost > 0 ? Math.round((totalProfit / totalCost) * 100) : 0;
                 const durationMs   = now - hunt.startedAt;
@@ -767,7 +824,9 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                 });
                 // Store XP result for hunt-complete to consume on mount
                 if (xpResult) setLastCompletionResult(xpResult);
-                endHunt();
+                // Clears the live hunt, but its saved record is only deleted once
+                // the bundle is confirmed in history (lib/hunt-context).
+                finishHunt(bundle.id);
                 allowNavRef.current = true;
                 // Navigate to XP reveal screen first — then user continues to hunt-complete
                 router.replace(`/hunt-xp-reveal?bundleId=${bundle.id}` as any);
@@ -809,7 +868,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                   keptCount:       stats.kept,
                   estimatedProfit: stats.estimatedProfit,
                 });
-                endHunt();
+                discardHunt();
                 router.replace('/(tabs)' as any);
               }}
               style={({ pressed }) => [s.modalLeave, pressed && { opacity: 0.85 }]}
@@ -921,7 +980,8 @@ const s = StyleSheet.create({
   removedRowCount: { fontSize: 12, color: MUTED + 'AA' },
   sectionCount:    { fontSize: 11, fontWeight: '700', color: GOLD },
 
-  itemList:        { flex: 1, paddingHorizontal: 16, paddingBottom: 8, gap: 8 },
+  itemScroll:      { flex: 1 },
+  itemList:        { paddingHorizontal: 16, paddingBottom: 8, gap: 8 },
 
   emptyState:  { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
   emptyTitle:  { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800', color: BROWN, textAlign: 'center' },

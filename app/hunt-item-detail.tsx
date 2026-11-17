@@ -1,34 +1,32 @@
 /**
  * app/hunt-item-detail.tsx
  *
- * Hunt Mode Discovery Analysis screen.
+ * Hunt Mode Discovery Analysis.
  *
- * Modes:
- *   - Active scan (default): mode undefined / mode=active
- *     Shows Save to Hunt + Remove buttons.
- *     Requires thrift price before saving.
+ * Four contexts, decided from the route and the live hunt:
  *
- *   - Read-only: mode=readonly&huntItemId=<id>
- *     Looks up HuntItem from active hunt by huntItemId.
- *     Hides Save/Remove buttons.
- *     Shows all photos captured during the hunt scan.
+ *   new      — a scan that just finished (no mode param). Save to Hunt / Remove.
+ *              A thrift price is REQUIRED to save: tapping Save without one
+ *              focuses the price field with guidance, never a popup.
+ *   kept     — mode=readonly&huntItemId=…, item is in the live hunt and kept.
+ *              Price is editable; Done recalculates profit, ROI and rating.
+ *   removed  — same, item is in the live hunt and removed. Price editable;
+ *              Restore to Kept returns the identical item (needs a price).
+ *   history  — the item is in a SAVED hunt bundle. Read-only; shows the price
+ *              and rating exactly as they were saved.
+ *
+ * Price entry never keeps or removes anything. Money and rating always come
+ * from lib/huntEconomics — the same engine and risk signals as normal Analysis.
  *
  * Navigation:
- *   - Save to Hunt → router.replace('/hunt-active') — explicit, never goBack()
- *   - Remove       → router.replace('/hunt-active') — explicit, never goBack()
- *   - Back arrow   → shows "Keep this find?" confirmation modal (active mode)
- *                  → router.back() (read-only mode — safe, no modal stack issue)
- *
- * Why router.replace not router.back():
- *   loading.tsx uses router.replace("/hunt-item-detail") which puts hunt-item-detail
- *   inside loading's fullScreenModal stack. router.back() from inside a modal stack
- *   dismisses the whole modal group → lands on Home. router.replace('/hunt-active')
- *   exits the modal stack and lands on the correct screen unconditionally.
+ *   new: Save / Remove → router.replace('/hunt-active') (loading.tsx put this
+ *        screen inside a fullScreenModal stack, so back() would land on Home).
+ *   kept / removed / history: router.back().
  */
 
 import {
   View, Text, Pressable, StyleSheet, Alert,
-  TextInput, Platform, Modal, TouchableWithoutFeedback,
+  Platform, Modal, TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter, useNavigation, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
@@ -40,16 +38,22 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 
 import { useScanContext }       from '@/lib/scan-context';
 import {
-  isHuntActive, addItemToHunt, recLabelToHuntRating,
-  markReturningFromHuntItemDetail, getHuntItemById,
-  type HuntItem,
+  isHuntActive, getHuntItemById, keepScanInHunt, removeScanFromHunt,
+  setHuntItemPrice, restoreHuntItem, markReturningFromHuntItemDetail,
+  subscribeToHunt, addPendingScanToHunt, itemStatus, type HuntItem, type HuntRating,
 } from '@/lib/hunt-context';
+import {
+  huntEconomics, provisionalEconomics, parseThriftPrice, formatThriftPrice,
+} from '@/lib/huntEconomics';
+import { backUpHuntItemPhotos } from '@/lib/huntPhotos';
+import { viewerPhotosFor }      from '@/lib/viewerPhotos';
+import { useAuth }              from '@/lib/auth-context';
 import { useFlipStore }         from '@/lib/useFlipStore';
 import { isHuntBundle }         from '@/types/flip';
 import { FONTS }                from '@/constants/typography';
-import { computeFlipCalc }      from '@/utils/flipCalculations';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
-import { logHuntItemSaved, logHuntItemRemoved } from '@/lib/analytics';
+import { logHuntItemSaved, logHuntItemRemoved, logEvent } from '@/lib/analytics';
+import { HuntPriceField, type HuntPriceFieldHandle } from '@/components/hunt/HuntPriceField';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
@@ -63,19 +67,24 @@ const GOLD   = '#BE9C2C';
 const CREAM  = '#F4EED8';
 const RED    = '#8A2A1A';
 
-// ─── Hunt badge config ────────────────────────────────────────────────────────
-// C: SKIP replaces TRASH (label + emoji + color)
-// D: LEGENDARY LOOT replaces LEGENDARY
+// ─── Hunt badge config (by Hunt rating) ───────────────────────────────────────
 
-const HUNT_BADGE: Record<string, {
+const HUNT_BADGE: Record<HuntRating, {
   label: string; emoji: string;
   bg: string; border: string; text: string; glow?: string;
 }> = {
-  STRONG_BUY: { label: 'Legendary Loot', emoji: '👑', bg: '#2A1E04', border: '#D4A72C', text: '#D4A72C', glow: '#D4A72C44' },
-  BUY:        { label: 'Treasure',       emoji: '💰', bg: '#1A2A06', border: '#BE9C2C', text: '#BE9C2C' },
-  RISKY_BUY:  { label: 'Risky',          emoji: '⚠️', bg: '#2A1A04', border: '#C89020', text: '#C89020' },
-  SKIP:       { label: 'Skip',           emoji: '✕',  bg: '#6B1414', border: '#E05555', text: '#FFDADA', glow: '#E0555522' },
+  legendary: { label: 'Legendary Loot', emoji: '👑', bg: '#2A1E04', border: '#D4A72C', text: '#D4A72C', glow: '#D4A72C44' },
+  treasure:  { label: 'Treasure',       emoji: '💰', bg: '#1A2A06', border: '#BE9C2C', text: '#BE9C2C' },
+  risky:     { label: 'Risky Buy',      emoji: '⚠️', bg: '#2A1A04', border: '#C89020', text: '#C89020' },
+  trash:     { label: 'Skip',           emoji: '✕',  bg: '#6B1414', border: '#E05555', text: '#FFDADA', glow: '#E0555522' },
 };
+
+const SAVE_HELPER    = 'Enter the thrift price to calculate your profit and save this find.';
+const RESTORE_HELPER = 'Enter the thrift price to restore this find.';
+const KEPT_HELPER    = 'A kept find needs a thrift price of at least $0.01.';
+const MIN_HELPER     = 'Enter a price of at least $0.01.';
+
+type Context = 'new' | 'kept' | 'removed' | 'history';
 
 // ─── Early-return error styles (defined before component — s is after) ────────
 
@@ -136,244 +145,270 @@ export default function HuntItemDetailScreen() {
   const router     = useRouter();
   const navigation = useNavigation();
   const insets     = useSafeAreaInsets();
-  const params     = useLocalSearchParams<{ mode?: string; huntItemId?: string }>();
+  const params     = useLocalSearchParams<{ mode?: string; huntItemId?: string; focusPrice?: string }>();
+  const { user }   = useAuth();
 
-  const isReadOnly  = params.mode === 'readonly';
-  const huntItemId  = params.huntItemId ?? null;
+  const isReadOnlyRoute = params.mode === 'readonly';
+  // mode=pending: an analysed-but-undecided find restored after an app close.
+  const isPendingRoute  = params.mode === 'pending';
+  const huntItemId      = params.huntItemId ?? null;
 
   const { currentScan, setCurrentScan } = useScanContext();
   const { pendingThriftPrices, setPendingThriftPrice, flips } = useFlipStore();
 
   // ── ALL hooks before any conditional return ──────────────────────────────
-  const [imgIndex,          setImgIndex]          = useState(0);
-  const [confirmVisible,    setConfirmVisible]    = useState(false);
-  const [previewVisible,    setPreviewVisible]    = useState(false);
-  const [priceModalVisible, setPriceModalVisible] = useState(false);
+  const [imgIndex,       setImgIndex]       = useState(0);
+  const [confirmVisible, setConfirmVisible] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [helper,         setHelper]         = useState<string | null>(null);
+  const [emphasize,      setEmphasize]      = useState(false);
+  const [, setTick]                         = useState(0);
   const allowNavRef = useRef(false);
+  const priceRef    = useRef<HuntPriceFieldHandle>(null);
 
-  // Read-only: look up hunt item by stable ID.
-  // Checks active hunt first, then falls back to saved bundles in flip history
-  // so diamonds found in completed hunts can still be viewed.
-  const readOnlyItem: HuntItem | null = useMemo(() => {
-    if (!isReadOnly || !huntItemId) return null;
-    const fromActive = getHuntItemById(huntItemId);
-    if (fromActive) return fromActive;
-    // Search completed hunt bundles in saved history.
+  // Re-render when the live hunt changes (price edits, restore, photo uploads).
+  useEffect(() => subscribeToHunt(() => setTick(n => n + 1)), []);
+
+  // Item from the LIVE hunt (editable) or from a SAVED bundle (read-only).
+  const liveItem: HuntItem | null = (isReadOnlyRoute || isPendingRoute) && huntItemId
+    ? getHuntItemById(huntItemId)
+    : (currentScan ? getHuntItemById(`hi_${currentScan.id}`) : null);
+  const savedItem = useMemo(() => {
+    if (!isReadOnlyRoute || !huntItemId || liveItem) return null;
     for (const entry of flips) {
-      if (isHuntBundle(entry)) {
-        const found = [...entry.keptItems, ...entry.removedItems]
-          .find(i => i.huntItemId === huntItemId);
-        if (found) return found as unknown as HuntItem;
-      }
+      if (!isHuntBundle(entry)) continue;
+      const found = [...entry.keptItems, ...entry.removedItems].find(i => i.huntItemId === huntItemId);
+      if (found) return found as unknown as HuntItem;
     }
     return null;
-  }, [isReadOnly, huntItemId, flips]);
+  }, [isReadOnlyRoute, huntItemId, flips, liveItem]);
 
-  // Derive the scan data source: read-only uses stored snapshot, active uses currentScan
-  const scan = isReadOnly ? readOnlyItem?.scanSnapshot ?? null : currentScan;
+  const item = liveItem ?? savedItem;
+  const liveStatus = liveItem ? itemStatus(liveItem) : null;
+  // A fresh scan and a restored pending find are both "new": Save / Remove.
+  const context: Context =
+      (!isReadOnlyRoute && !isPendingRoute) ? (liveStatus && liveStatus !== 'pending' ? liveStatus : 'new')
+    : isPendingRoute ? (liveStatus === 'pending' ? 'new' : liveStatus ?? 'new')
+    : liveItem ? (liveStatus === 'kept' ? 'kept' : liveStatus === 'removed' ? 'removed' : 'new')
+    : 'history';
 
-  const scanId         = scan?.id ?? '';
-  const thriftPriceStr = pendingThriftPrices[scanId] ?? '';
-  const thriftPrice    = parseFloat(thriftPriceStr) || 0;
-  const resaleValue    = scan?.market_data?.adjusted_estimated_value ?? 0;
+  const scan   = context === 'new'
+    ? (currentScan ?? liveItem?.scanSnapshot ?? null)
+    : item?.scanSnapshot ?? null;
+  const scanId = scan?.id ?? '';
 
-  // D: Price formatting — always 2 decimals, no more
-  const handlePriceChange = (t: string) => {
-    // Strip anything that's not a digit or single decimal point
-    const cleaned = t.replace(/[^0-9.]/g, '');
-    // Only allow one decimal point
-    const parts = cleaned.split('.');
-    if (parts.length > 2) return;
-    // Max 2 digits after decimal
-    if (parts[1] !== undefined && parts[1].length > 2) return;
-    setPendingThriftPrice(scanId, cleaned);
+  // ── Thrift price text ─────────────────────────────────────────────────────
+  // New scans keep the draft in the flip store (survives a remount); existing
+  // items edit a local draft that is committed with Done.
+  const storedPriceText = item && item.thriftPrice > 0 ? formatThriftPrice(item.thriftPrice) : '';
+  const [itemDraft, setItemDraft] = useState<string | null>(null);
+  const priceText = context === 'new'
+    ? (pendingThriftPrices[scanId] ?? storedPriceText)
+    : (itemDraft ?? storedPriceText);
+  const setPriceText = (t: string) => {
+    if (context === 'new') setPendingThriftPrice(scanId, t);
+    else setItemDraft(t);
+    if (helper && parseThriftPrice(t) !== null) { setHelper(null); setEmphasize(false); }
   };
+  const typedPrice = parseThriftPrice(priceText);
 
-  const handlePriceBlur = () => {
-    if (!thriftPriceStr) return;
-    const n = parseFloat(thriftPriceStr);
-    if (!isNaN(n) && n > 0) {
-      setPendingThriftPrice(scanId, n.toFixed(2));
+  // ── Money + rating ────────────────────────────────────────────────────────
+  // history: exactly as saved. Otherwise live from the shared engine: at the
+  // user's price when there is one, else provisional at the suggested price.
+  const econ = useMemo(() => {
+    if (!scan) return null;
+    if (typedPrice !== null) return { ...huntEconomics(scan, typedPrice), provisional: false as const, basis: typedPrice };
+    if (context === 'history' && item && item.thriftPrice > 0) {
+      return { ...huntEconomics(scan, item.thriftPrice), provisional: false as const, basis: item.thriftPrice };
     }
-  };
+    return provisionalEconomics(scan);
+  }, [scan, typedPrice, context, item]);
 
-  // B: price display uses thriftPrice.toFixed(2) directly in JSX
+  // A saved hunt keeps the rating it was saved with (historical snapshot).
+  const shownRating: HuntRating = context === 'history' && item
+    ? item.huntRating
+    : (econ?.huntRating ?? 'trash');
+  const shownProfit: number | null = context === 'history' && item
+    ? (item.thriftPrice > 0 ? item.profit : null)
+    : (econ && !econ.provisional ? econ.profit : null);
 
-  const calc = useMemo(() => computeFlipCalc(
-    resaleValue,
-    thriftPrice || (isReadOnly ? (readOnlyItem?.thriftPrice ?? 0) : (scan?.market_data?.suggested_buy_price ?? 0)),
-    scan?.risk_analysis?.match_confidence ?? 0,
-    scan?.market_data?.competition_level ?? '',
-    scan?.identification?.style_labels ?? [],
-    scan?.identification?.estimated_era ?? '',
-    scan?.market_data?.demand ?? '',
-    scan?.market_data?.sell_speed ?? '',
-  ), [thriftPrice, resaleValue, scanId, isReadOnly]);
-
-  const profit = thriftPrice > 0
-    ? calc.profit
-    : (isReadOnly && readOnlyItem && readOnlyItem.thriftPrice > 0)
-      ? readOnlyItem.profit
-      : null;
-
-  // E: Multi-photo — use allImageUris if present, fall back to single imageUri
+  // Photos: this session's front / tag / detail, else the saved set.
   const images: string[] = useMemo(() => {
-    if (isReadOnly && readOnlyItem) {
-      return readOnlyItem.allImageUris?.length
-        ? readOnlyItem.allImageUris
-        : [readOnlyItem.imageUri].filter(Boolean);
-    }
-    return (scan?.allImageUris?.length
-      ? scan.allImageUris
-      : [scan?.imageUri].filter(Boolean)) as string[];
-  }, [isReadOnly, readOnlyItem, scan]);
+    const main = item?.imageUri ?? scan?.imageUri ?? '';
+    const extras = (item?.extraPhotos ?? []) as Array<{ uri: string; label: 'Tag' | 'Detail' }>;
+    const list = viewerPhotosFor(scanId, main, extras).map(p => p.uri);
+    return list.length ? list : [main].filter(Boolean);
+  }, [scanId, item?.imageUri, item?.extraPhotos, scan?.imageUri]);
 
-  // Navigation guard — only in active mode
+  // Record the finished scan in the hunt as PENDING straight away, so closing
+  // the app before Keep / Remove can't lose a scan that was already charged.
+  // Idempotent per scan. Photos are backed up now too (this session holds the
+  // tag / detail files only in memory).
+  const pendingRecordedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (isReadOnly) return; // read-only: no guard needed
+    if (context !== 'new' || !scan || !isHuntActive()) return;
+    if (pendingRecordedRef.current === scan.id) return;
+    pendingRecordedRef.current = scan.id;
+    const before = getHuntItemById(`hi_${scan.id}`);
+    addPendingScanToHunt(scan);
+    if (!before) void backUpHuntItemPhotos(scan.id, scan.imageUri, user?.id);
+  }, [context, scan?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Back-gesture guard — new scans only (a decision is pending).
+  useEffect(() => {
+    if (context !== 'new') return;
     const unsub = (navigation as any).addListener('beforeRemove', (e: any) => {
       if (allowNavRef.current) return;
       e.preventDefault();
       setConfirmVisible(true);
     });
     return unsub;
-  }, [navigation, isReadOnly]);
+  }, [navigation, context]);
 
-  // Redirect if scan gone (hot reload etc) — only in active mode
+  // Scan vanished (hot reload etc.) and no pending record to fall back on.
   useEffect(() => {
-    if (isReadOnly) return;
-    if (!currentScan) {
+    if (context !== 'new') return;
+    if (!scan) {
       allowNavRef.current = true;
       router.back();
     }
-  }, [currentScan, isReadOnly]);
+  }, [scan, context]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Arrived from Removed Items to price an item before restoring it.
+  useEffect(() => {
+    if (params.focusPrice !== '1' || context !== 'removed') return;
+    setEmphasize(true);
+    setHelper(RESTORE_HELPER);
+    const id = requestAnimationFrame(() => priceRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [params.focusPrice, context]);
 
   // ── Guard — after all hooks ────────────────────────────────────────────────
-  if (isReadOnly) {
-    if (!readOnlyItem || !scan) {
-      return (
-        <View style={es.wrap}>
-          <MaterialIcons name="search-off" size={40} color={MUTED} />
-          <Text style={es.text}>Item not found</Text>
-          <Pressable onPress={() => router.back()} style={es.btn}>
-            <Text style={es.btnText}>Back to Hunt</Text>
-          </Pressable>
-        </View>
-      );
-    }
-  } else {
-    if (!currentScan) return null;
+  if (context !== 'new' && (!item || !scan)) {
+    return (
+      <View style={es.wrap}>
+        <MaterialIcons name="search-off" size={40} color={MUTED} />
+        <Text style={es.text}>Item not found</Text>
+        <Pressable onPress={() => router.back()} style={es.btn}>
+          <Text style={es.btnText}>Back to Hunt</Text>
+        </Pressable>
+      </View>
+    );
   }
+  if (!scan || !econ) return null;
 
-  const md  = scan!.market_data;
-  const id  = scan!.identification;
-  const ra  = scan!.risk_analysis;
-  const rec = calc.recommendation;
-  const badge = HUNT_BADGE[rec?.label ?? 'SKIP'] ?? HUNT_BADGE.SKIP;
+  const md  = scan.market_data;
+  const id  = scan.identification;
+  const ra  = scan.risk_analysis;
+  const badge = HUNT_BADGE[shownRating] ?? HUNT_BADGE.trash;
+  const resaleValue = md?.adjusted_estimated_value ?? 0;
+  const editable = context !== 'history';
 
-  // B: Thrift price — show as negative red cost
-  const displayThriftPrice = isReadOnly && readOnlyItem
-    ? readOnlyItem.thriftPrice
-    : thriftPrice;
-  const profit$ = profit !== null
-    ? `${profit >= 0 ? '+' : ''}$${Math.abs(profit)}`
+  const profit$ = shownProfit !== null
+    ? `${shownProfit >= 0 ? '+' : '-'}$${Math.abs(Math.round(shownProfit))}`
     : '—';
-  const profitColor = profit !== null
-    ? (profit >= 0 ? '#2A6A2A' : '#8A2A2A')
+  const profitColor = shownProfit !== null
+    ? (shownProfit >= 0 ? '#2A6A2A' : '#8A2A2A')
     : MUTED;
 
-  const goBack = () => {
+  const haptic = (kind: 'success' | 'medium' | 'light') => {
+    if (Platform.OS === 'web') return;
+    if (kind === 'success') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    else Haptics.impactAsync(kind === 'medium' ? Haptics.ImpactFeedbackStyle.Medium : Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  };
+
+  /** Point the user at the price field — guidance, not an error. */
+  const askForPrice = (message: string) => {
+    setEmphasize(true);
+    setHelper(message);
+    haptic('light');
+    priceRef.current?.focus();
+  };
+
+  // ── Price commit (Done / keyboard closed) ─────────────────────────────────
+  const commitPrice = (text: string) => {
+    const p = parseThriftPrice(text);
+    if (context === 'new') {
+      if (p !== null) {
+        setPendingThriftPrice(scanId, formatThriftPrice(p));
+        // Saved on the pending item too, so an app close keeps the typed price.
+        if (getHuntItemById(`hi_${scanId}`)) setHuntItemPrice(`hi_${scanId}`, p);
+      } else if (text.trim() !== '') setHelper(MIN_HELPER);
+      return;
+    }
+    if (!item || context === 'history') return;
+    if (p === null) {
+      if (text.trim() === '' && context === 'removed' && item.thriftPrice <= 0) { setItemDraft(null); return; }
+      // A kept find always keeps a price: put the stored one back.
+      setItemDraft(null);
+      setHelper(context === 'kept' ? KEPT_HELPER : MIN_HELPER);
+      return;
+    }
+    setItemDraft(null);
+    if (p !== item.thriftPrice) {
+      setHuntItemPrice(item.huntItemId, p);
+      logEvent('hunt_item_price_edited', { context, rating: HUNT_BADGE[huntEconomics(scan, p).huntRating]?.label ?? null });
+    }
+  };
+
+  const leaveToHunt = () => {
+    setCurrentScan(null);
+    markReturningFromHuntItemDetail();
     allowNavRef.current = true;
+    router.replace('/hunt-active' as any);
+  };
+
+  // ── New scan: Save / Remove ───────────────────────────────────────────────
+  const handleSave = () => {
+    if (!scan) return;
+    if (!isHuntActive()) { leaveToHunt(); return; }
+    Keyboard.dismiss();
+    const result = keepScanInHunt(scan, priceText);
+    if (result === 'needs_price') { askForPrice(SAVE_HELPER); return; }
+    haptic('success');
+    const e = huntEconomics(scan, typedPrice ?? 0);
+    try {
+      logHuntItemSaved({
+        profit:         e.profit,
+        recommendation: e.calc.recommendation?.label ?? 'UNKNOWN',
+        category:       id.category ?? '',
+      });
+    } catch {}
+    leaveToHunt();
+  };
+
+  const handleRemove = () => {
+    if (!scan) return;
+    haptic('medium');
+    if (isHuntActive()) {
+      removeScanFromHunt(scan, priceText);
+      try {
+        logHuntItemRemoved({
+          recommendation: econ.calc.recommendation?.label ?? 'UNKNOWN',
+          category:       id.category ?? '',
+        });
+      } catch {}
+    }
+    leaveToHunt();
+  };
+
+  // ── Removed item: Restore ─────────────────────────────────────────────────
+  const handleRestore = () => {
+    if (!item) return;
+    Keyboard.dismiss();
+    // Apply a price typed but not yet committed, then restore.
+    if (typedPrice !== null && typedPrice !== item.thriftPrice) setHuntItemPrice(item.huntItemId, typedPrice);
+    const r = restoreHuntItem(item.huntItemId);
+    if (r === 'needs_price') { askForPrice(RESTORE_HELPER); return; }
+    haptic('success');
+    logEvent('hunt_item_restored', { huntItemId: item.huntItemId, category: item.category, from: 'analysis' });
     router.back();
   };
 
-  // A: Require thrift price before saving
-  const handleSave = () => {
-    if (!thriftPriceStr || parseFloat(thriftPriceStr) <= 0) {
-      setPriceModalVisible(true);
-      return;
-    }
-    _doSave();
-  };
-
-  const _doSave = () => {
-    if (Platform.OS !== 'web') {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    }
-
-    const finalThriftPrice = parseFloat(thriftPriceStr) || 0;
-    const finalProfit      = computeFlipCalc(
-      resaleValue, finalThriftPrice,
-      ra.match_confidence, md.competition_level ?? '',
-      id.style_labels ?? [], id.estimated_era ?? '',
-      md.demand ?? '', md.sell_speed ?? '',
-    ).profit;
-
-    // F: Do NOT add to normal scan history (addFlip) during hunt mode
-    if (isHuntActive()) {
-      try {
-        addItemToHunt({
-          huntItemId:     `hi_${currentScan!.id}`,   // stable — scanId is unique per scan
-          scanId:         currentScan!.id,
-          itemName:       id.item_name,
-          brand:          id.brand,
-          category:       id.category,
-          imageUri:       currentScan!.imageUri,
-          allImageUris:   currentScan!.allImageUris ?? [currentScan!.imageUri],
-          estimatedValue: resaleValue,
-          thriftPrice:    finalThriftPrice,
-          profit:         finalProfit,
-          kept:           true,
-          huntRating:     recLabelToHuntRating(rec?.label),
-          addedAt:        Date.now(),
-          scanSnapshot:   currentScan!,
-        });
-        logHuntItemSaved({
-          profit:         finalProfit,
-          recommendation: rec?.label ?? 'UNKNOWN',
-          category:       id.category ?? '',
-        });
-      } catch {}
-    }
-    setCurrentScan(null);
-    markReturningFromHuntItemDetail();
-    console.log('[HUNT SAVE] navigating to hunt-active');
-    router.replace('/hunt-active' as any);
-  };
-
-  // G: Remove — add to hunt removed list, go back to hunt-active
-  const handleRemove = () => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    }
-    if (isHuntActive() && currentScan) {
-      try {
-        addItemToHunt({
-          huntItemId:     `hi_${currentScan.id}`,   // stable — same scanId = same hunt item
-          scanId:         currentScan.id,
-          itemName:       id.item_name,
-          brand:          id.brand,
-          category:       id.category,
-          imageUri:       currentScan.imageUri,
-          allImageUris:   currentScan.allImageUris ?? [currentScan.imageUri],
-          estimatedValue: resaleValue,
-          thriftPrice:    0,
-          profit:         0,
-          kept:           false,
-          huntRating:     recLabelToHuntRating(rec?.label),
-          addedAt:        Date.now(),
-          scanSnapshot:   currentScan,
-        });
-        logHuntItemRemoved({
-          recommendation: rec?.label ?? 'UNKNOWN',
-          category:       id.category ?? '',
-        });
-      } catch {}
-    }
-    setCurrentScan(null);
-    markReturningFromHuntItemDetail();
-    console.log('[HUNT SAVE] navigating to hunt-active (remove)');
-    router.replace('/hunt-active' as any);
+  const goBack = () => {
+    Keyboard.dismiss();
+    allowNavRef.current = true;
+    router.back();
   };
 
   const marketRows = [
@@ -385,9 +420,11 @@ export default function HuntItemDetailScreen() {
     },
     { label: 'Sell-Through Rate', value: md.demand ? `${md.demand}${md.sell_speed ? ` (${md.sell_speed})` : ''}` : '—' },
     { label: 'Risk',          value: ra.match_confidence >= 70 ? 'Low' : ra.match_confidence >= 45 ? 'Medium' : 'High' },
-    { label: 'Best Platform', value: String(calc.bestPlatform ?? '—') },
+    { label: 'Best Platform', value: String(econ.calc.bestPlatform ?? '—') },
     ...(md.competition_level ? [{ label: 'Competition', value: md.competition_level }] : []),
   ];
+
+  const historyPrice = context === 'history' && item ? item.thriftPrice : 0;
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
@@ -395,7 +432,7 @@ export default function HuntItemDetailScreen() {
       {/* ── Header ── */}
       <View style={s.header}>
         <Pressable
-          onPress={() => isReadOnly ? goBack() : setConfirmVisible(true)}
+          onPress={() => context === 'new' ? setConfirmVisible(true) : goBack()}
           hitSlop={12} style={s.headerBtn}
         >
           <MaterialIcons name="arrow-back" size={22} color={BROWN} />
@@ -407,7 +444,11 @@ export default function HuntItemDetailScreen() {
         <View style={{ width: 36 }} />
       </View>
 
-      {/* ── Image — E: multi-photo carousel ── */}
+      {/* Tapping anywhere outside the price field closes the keyboard (which commits). */}
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <View style={{ flex: 1 }}>
+
+      {/* ── Image — multi-photo carousel ── */}
       <Pressable onPress={() => setPreviewVisible(true)} style={s.imageWrap}>
         <Image
           source={{ uri: images[imgIndex] }}
@@ -439,7 +480,7 @@ export default function HuntItemDetailScreen() {
 
       {/* ── Item identity ── */}
       <View style={s.identity}>
-        <Text style={s.itemName} numberOfLines={1}>{id.item_name}</Text>
+        <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
         <Text style={s.itemMeta} numberOfLines={1}>
           {[id.brand, id.category, id.estimated_era].filter(Boolean).join(' · ')}
         </Text>
@@ -447,50 +488,61 @@ export default function HuntItemDetailScreen() {
 
       {/* ── Decision row ── */}
       <View style={s.decisionRow}>
-        {/* C: SKIP badge — red bg */}
         <View style={[
           s.badge,
           { backgroundColor: badge.bg, borderColor: badge.border },
+          econ.provisional && context !== 'history' && s.badgeProvisional,
           badge.glow && { shadowColor: badge.glow, shadowOpacity: 1, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 4 },
         ]}>
+          {econ.provisional && context !== 'history' && (
+            <Text style={[s.badgeEst, { color: badge.text }]}>ESTIMATED</Text>
+          )}
           <Text style={s.badgeEmoji}>{badge.emoji}</Text>
           <Text style={[s.badgeLabel, { color: badge.text }]}>{badge.label.toUpperCase()}</Text>
         </View>
 
-        {/* B: Thrift price — negative, red, centered */}
-        <View style={s.priceBox}>
+        <View style={[s.priceBox, emphasize && { borderColor: GOLD, borderWidth: 2 }]}>
           <Text style={s.boxLabel}>Thrift Price</Text>
-          {isReadOnly ? (
-            <Text style={s.priceReadOnly}>
-              {displayThriftPrice > 0 ? `-$${displayThriftPrice.toFixed(2)}` : '-$0.00'}
-            </Text>
+          {editable ? (
+            <HuntPriceField
+              ref={priceRef}
+              value={priceText}
+              onChange={setPriceText}
+              onCommit={commitPrice}
+              emphasize={emphasize}
+              accessoryId="hunt-price-accessory"
+              color={RED}
+              placeholderColor={RED + '88'}
+              accentColor={GOLD}
+              barColor={CARD}
+            />
           ) : (
-            <View style={s.priceInputRow}>
-              <Text style={s.priceMinus}>-$</Text>
-              <TextInput
-                style={s.priceInput}
-                value={thriftPriceStr}
-                onChangeText={handlePriceChange}
-                onBlur={handlePriceBlur}
-                keyboardType="decimal-pad"
-                placeholder="0.00"
-                placeholderTextColor={RED + '88'}
-                returnKeyType="done"
-              />
-            </View>
+            <Text style={s.priceReadOnly}>
+              {historyPrice > 0 ? `-$${historyPrice.toFixed(2)}` : '—'}
+            </Text>
           )}
-          {!thriftPriceStr && !isReadOnly && (
-            <Text style={s.priceHint}>Enter price</Text>
+          {editable && !priceText && (
+            <Text style={s.priceHint}>Tap to enter</Text>
           )}
         </View>
 
-        {/* Est. Profit */}
         <View style={s.profitBox}>
           <Text style={s.boxLabel}>Est. Profit</Text>
           <Text style={[s.profitValue, { color: profitColor }]}>{profit$}</Text>
-          {profit !== null && <Text style={s.profitSub}>after fees</Text>}
+          {shownProfit !== null && <Text style={s.profitSub}>after fees</Text>}
         </View>
       </View>
+
+      {/* Guidance (Save / Restore without a price) or the provisional note. */}
+      {helper ? (
+        <Text style={s.helper}>{helper}</Text>
+      ) : econ.provisional && context !== 'history' ? (
+        <Text style={s.provisionalNote}>
+          {econ.basis
+            ? `Estimated at FlipStart's suggested buy price ($${econ.basis.toFixed(2)}). Enter your price for the final rating.`
+            : 'Estimated rating. Enter your thrift price for the final rating.'}
+        </Text>
+      ) : null}
 
       {/* ── Market data card ── */}
       <View style={s.marketCard}>
@@ -512,7 +564,6 @@ export default function HuntItemDetailScreen() {
                 <Text style={[s.confidence, { color: conf.color, fontWeight: '700' }]}>{conf.short}</Text>
               </View>
               {!!conf.reason && <Text style={s.confidence} numberOfLines={2}>{conf.reason}</Text>}
-              {/* Authenticity is its own question, never folded into the tier. */}
               {!!conf.authenticity && (
                 <Text style={[s.confidence, { color: '#8A3A2A', fontWeight: '600' }]} numberOfLines={2}>
                   Authenticity not verified — {conf.authenticity}
@@ -524,9 +575,11 @@ export default function HuntItemDetailScreen() {
       </View>
 
       <View style={{ flex: 1 }} />
+        </View>
+      </TouchableWithoutFeedback>
 
-      {/* K: Actions — hidden in read-only mode */}
-      {!isReadOnly && (
+      {/* ── Actions ── */}
+      {context === 'new' && (
         <View style={[s.actions, { paddingBottom: Math.max(insets.bottom + 24, 40) }]}>
           <Pressable
             onPress={handleSave}
@@ -538,7 +591,7 @@ export default function HuntItemDetailScreen() {
           <Pressable
             onPress={() => Alert.alert(
               'Remove Item?',
-              'This item will not be saved to your hunt.',
+              'It moves to Removed Items, where you can restore it later.',
               [
                 { text: 'Cancel', style: 'cancel' },
                 { text: 'Remove', style: 'destructive', onPress: handleRemove },
@@ -552,8 +605,26 @@ export default function HuntItemDetailScreen() {
         </View>
       )}
 
-      {/* Read-only: back button */}
-      {isReadOnly && (
+      {context === 'removed' && (
+        <View style={[s.actions, { paddingBottom: Math.max(insets.bottom + 24, 40) }]}>
+          <Pressable
+            onPress={handleRestore}
+            style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}
+          >
+            <MaterialIcons name="restore" size={18} color={CREAM} />
+            <Text style={s.saveBtnText}>RESTORE TO KEPT</Text>
+          </Pressable>
+          <Pressable
+            onPress={goBack}
+            style={({ pressed }) => [s.saveBtn, { backgroundColor: BROWN }, pressed && { opacity: 0.85 }]}
+          >
+            <MaterialIcons name="arrow-back" size={18} color={CREAM} />
+            <Text style={s.saveBtnText}>Back</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {(context === 'kept' || context === 'history') && (
         <View style={[s.actions, { paddingBottom: Math.max(insets.bottom + 24, 40) }]}>
           <Pressable
             onPress={goBack}
@@ -581,44 +652,7 @@ export default function HuntItemDetailScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* ── A: Require thrift price modal ── */}
-      <Modal visible={priceModalVisible} transparent animationType="fade" onRequestClose={() => setPriceModalVisible(false)}>
-        <View style={s.modalOverlay}>
-          <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Enter your thrift price first</Text>
-            <Text style={s.modalSub}>Add what this item costs so FlipStart can calculate hunt profit.</Text>
-            <View style={s.modalPriceRow}>
-              <Text style={s.modalPriceMinus}>-$</Text>
-              <TextInput
-                style={s.modalPriceInput}
-                value={thriftPriceStr}
-                onChangeText={handlePriceChange}
-                onBlur={handlePriceBlur}
-                keyboardType="decimal-pad"
-                placeholder="0.00"
-                placeholderTextColor={RED + '88'}
-                returnKeyType="done"
-                autoFocus
-              />
-            </View>
-            <Pressable
-              onPress={() => {
-                if (!thriftPriceStr || parseFloat(thriftPriceStr) <= 0) return;
-                setPriceModalVisible(false);
-                _doSave();
-              }}
-              style={[s.modalSave, (!thriftPriceStr || parseFloat(thriftPriceStr) <= 0) && { opacity: 0.45 }]}
-            >
-              <Text style={s.modalSaveText}>Save to Hunt</Text>
-            </Pressable>
-            <Pressable onPress={() => setPriceModalVisible(false)} style={s.modalCancel}>
-              <Text style={s.modalCancelText}>Cancel</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── Back confirm modal (active mode only) ── */}
+      {/* ── Back confirm modal (new scans only) ── */}
       <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
@@ -668,6 +702,9 @@ const s = StyleSheet.create({
   badge:       { width: 90, alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderRadius: 12, borderWidth: 1.5, gap: 5 },
   badgeEmoji:  { fontSize: 20 },
   badgeLabel:  { fontSize: 9, fontWeight: '800', letterSpacing: 0.8, textAlign: 'center' },
+  // Provisional rating (no price yet): dashed edge + ESTIMATED tag, never mistaken for final.
+  badgeProvisional: { borderStyle: 'dashed', opacity: 0.9 },
+  badgeEst:    { fontSize: 7, fontWeight: '800', letterSpacing: 1 },
 
   // B: Price box — centered, negative red display
   priceBox:      { flex: 1, backgroundColor: CARD, borderWidth: 1, borderColor: CARD_B, borderRadius: 12, padding: 12, alignItems: 'center' },
@@ -681,6 +718,9 @@ const s = StyleSheet.create({
   profitBox:   { flex: 1, backgroundColor: CARD, borderWidth: 1, borderColor: CARD_B, borderRadius: 12, padding: 12, alignItems: 'center', justifyContent: 'center' },
   profitValue: { fontFamily: FONTS.serif, fontSize: 18, fontWeight: '800' },
   profitSub:   { fontSize: 9, color: MUTED, marginTop: 3 },
+
+  helper:          { marginHorizontal: 16, marginTop: 8, fontSize: 12, fontWeight: '600', color: '#7A5C1E', textAlign: 'center' },
+  provisionalNote: { marginHorizontal: 16, marginTop: 8, fontSize: 11, color: MUTED, textAlign: 'center' },
 
   marketCard:  { marginHorizontal: 16, marginTop: 10, backgroundColor: CARD, borderWidth: 1, borderColor: CARD_B, borderRadius: 12 },
   marketRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: CARD_B + '70' },

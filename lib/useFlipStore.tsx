@@ -27,6 +27,7 @@ import { deriveGlobalStats } from '@/utils/flipCalculations';
 import type { GlobalStats } from '@/types/flip';
 import { upsertScan, deleteScan, deleteAllScans, fetchScans, mergeScans } from '@/lib/scanSync';
 import { upsertHuntBundle, deleteHuntBundle, deleteAllHuntBundles, fetchHuntBundles, mergeHuntBundles } from '@/lib/huntBundleSync';
+import { confirmHuntBundlesPersisted } from '@/lib/hunt-context';
 
 /**
  * Every hosted (https) photo URL an entry references. Hunt items reuse the
@@ -52,6 +53,11 @@ function collectLocalItemUris(bundle: HuntBundle): string[] {
   for (const it of items) {
     const u = it?.imageUri;
     if (typeof u === 'string' && u && !/^https?:\/\//.test(u)) out.add(u);
+    // Tag / Detail photos saved with the item — same retry as the main photo.
+    for (const p of (Array.isArray(it?.extraPhotos) ? it.extraPhotos : [])) {
+      const x = p?.uri;
+      if (typeof x === 'string' && x && !/^https?:\/\//.test(x)) out.add(x);
+    }
   }
   return [...out];
 }
@@ -242,7 +248,12 @@ export function FlipStoreProvider({
   useEffect(() => {
     if (!state.isLoaded) return;
     const key = userId ? userKey(userId) : GUEST_KEY;
-    AsyncStorage.setItem(key, JSON.stringify(state.flips)).catch(() => {});
+    const bundleIds = state.flips.filter(isHuntBundle).map(b => b.id);
+    AsyncStorage.setItem(key, JSON.stringify(state.flips))
+      // Only once a finished hunt's bundle is really on the phone may its
+      // active-hunt record be deleted (lib/hunt-context).
+      .then(() => { if (userId) confirmHuntBundlesPersisted(bundleIds); })
+      .catch(() => {});
   }, [state.flips, state.isLoaded, userId]);
 
   // ── Cloud sync on login: migrate guest → user, pull cloud, merge ─────────
@@ -430,6 +441,10 @@ export function FlipStoreProvider({
         const patchItems = (items: any[] | undefined) =>
           (items ?? []).map(it => {
             const next = it?.imageUri ? map.get(it.imageUri) : undefined;
+            const extras = Array.isArray(it?.extraPhotos)
+              ? it.extraPhotos.map((p: any) => (p?.uri && map.get(p.uri) ? { ...p, uri: map.get(p.uri) } : p))
+              : it?.extraPhotos;
+            if (extras !== it?.extraPhotos) it = { ...it, extraPhotos: extras };
             if (!next) return it;
             const all = Array.isArray(it.allImageUris) && it.allImageUris.length > 0
               ? [next, ...it.allImageUris.slice(1)]

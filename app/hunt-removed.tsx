@@ -18,7 +18,7 @@ import { useState, useEffect } from 'react';
 import { Platform } from 'react-native';
 
 import {
-  getActiveHunt, restoreHuntItem, subscribeToHunt,
+  getActiveHunt, restoreHuntItem, subscribeToHunt, removedItemsOf,
   type HuntItem, type HuntSession,
 } from '@/lib/hunt-context';
 import { logEvent } from '@/lib/analytics';
@@ -54,14 +54,21 @@ export default function HuntRemovedScreen() {
     return unsub;
   }, []);
 
-  const removedItems = session?.items.filter(i => !i.kept) ?? [];
+  // Removed only — never an undecided (pending) find.
+  const removedItems = session ? removedItemsOf(session) : [];
 
   const handleRestore = (item: HuntItem) => {
+    const r = restoreHuntItem(item.huntItemId);
+    if (r === 'needs_price') {
+      // Removed before it was ever priced: a kept find needs a price, so open it
+      // with the price field ready. Nothing changes until they restore there.
+      router.push(`/hunt-item-detail?mode=readonly&huntItemId=${item.huntItemId}&focusPrice=1` as any);
+      return;
+    }
     if (Platform.OS !== 'web') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     }
-    restoreHuntItem(item.huntItemId);
-    logEvent('hunt_item_restored', { huntItemId: item.huntItemId, category: item.category });
+    logEvent('hunt_item_restored', { huntItemId: item.huntItemId, category: item.category, from: 'removed_list' });
   };
 
   const handleViewItem = (item: HuntItem) => {

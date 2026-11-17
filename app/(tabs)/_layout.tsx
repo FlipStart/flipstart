@@ -20,6 +20,7 @@ import { useAchievementNotifications } from '@/lib/AchievementNotificationContex
 import { useAuth } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
 import { useScanGate } from '@/lib/useScanGate';
+import { chooseScanDestination } from '@/lib/huntScanChoice';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const ROAR_SOUND = require('@/assets/images/lion-roar.m4a');
@@ -108,7 +109,8 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     startScan({
       origin: 'tab',
-      run: () => router.push('/camera' as any),
+      // With a hunt running, ask which mode this scan belongs to (never silent).
+      run: () => chooseScanDestination(() => router.push('/camera' as any), 'tab'),
       goToScanStore: () => router.push('/scan-store?from=tab_gate' as any),
     });
   };

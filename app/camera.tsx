@@ -40,7 +40,7 @@ import { ProCameraContextInput,
          type ProCameraContextInputHandle } from '@/components/camera/ProCameraContextInput';
 import { useEntitlement } from '@/lib/useEntitlement';
 import { useScreenFocus, logEvent } from '@/lib/analytics';
-import { isHuntActive } from '@/lib/hunt-context';
+import { scanGoesToHunt } from '@/lib/hunt-context';
 // ProGateHost stays mounted: harmless, and the camera is the one screen where
 // a fullScreenModal host is genuinely needed if any gate returns here.
 import { ProGateHost } from '@/components/monetization/ProGate';
@@ -112,7 +112,7 @@ export default function CameraScreen() {
    * Placed above the permission early returns so hook order never changes.
    * The name must match CAMERA_EVENT in server/founderMetricsV4.ts.
    */
-  useScreenFocus('camera_opened', { hunt: isHuntActive() });
+  useScreenFocus('camera_opened', { hunt: scanGoesToHunt() });
 
 
   const { openProPaywall } = useProPaywall();

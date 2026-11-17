@@ -254,6 +254,17 @@ export interface HuntBundleItem {
   kept:         boolean;
   scanSnapshot: ScanResult;   // full AI result — used to reopen Discovery Analysis
 
+  // ─── Added with active-hunt persistence (Nov 2026) ─────────────────────────
+  // All optional: bundles saved before this simply lack them. No migration.
+  analysisId?:    string;
+  allImageUris?:  string[];
+  /** Tag / Detail photos, same shape as FlipResult.extraPhotos. */
+  extraPhotos?:   Array<{ uri: string; label: 'Tag' | 'Detail' }>;
+  fees?:          number;
+  priceUpdatedAt?: number;
+  /** Lightweight sold-comps evidence (lib/hunt-context HuntCompsSnapshot). */
+  compsSnapshot?: unknown;
+
   // ─── Flip Record state ──────────────────────────────────────────────────────
   // Kept items get the same Flip Record as a normal scan, so they need the same
   // mutable fields. All optional: bundles saved before this existed simply have

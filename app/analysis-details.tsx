@@ -27,6 +27,7 @@ import { FONTS } from '@/constants/typography';
 import { computeFlipCalc, resolveEffectiveThriftPrice,
          findMaxBuyPriceForRating, findBuyUnderPrice } from '@/utils/flipCalculations';
 import { REC_THEMES, normalizeBuyRating } from '@/utils/recommendation';
+import { ratingSignalsFor } from '@/utils/ratingSignals';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import {
   buildDeepInputs, confidenceBreakdown, platformStrategy, listingStrategy,
@@ -330,6 +331,10 @@ export default function AnalysisDetailsScreen() {
       baseFlip.styleLabels, baseFlip.era,
       baseFlip.demand ?? '',
       baseFlip.sellSpeed ?? '',
+      // The same risk signals results and Hunt use. Without them Deep Analysis
+      // rated basic / damaged / narrow-pool items higher than the screen that
+      // opened it.
+      ratingSignalsFor(baseFlip),
     ),
     [baseFlip.resaleValue, editedThrift, baseFlip.matchConfidence,
      baseFlip.competitionLevel, baseFlip.styleLabels, baseFlip.era,
@@ -456,12 +461,10 @@ export default function AnalysisDetailsScreen() {
    * cannot drift — and computed from the rating model only, never from the
    * user's price, because a ceiling is a property of the opportunity.
    */
-  const v1Sig = {
-    buyerPool:        (baseFlip as any)?.identification?.v1?.buyerPool,
-    basicItem:        (baseFlip as any)?.identification?.v1?.basicItem === true,
-    hasObviousDamage: (((baseFlip as any)?.identification?.v1?.obviousDamage?.length) ?? 0) > 0,
-    eraUnconfirmed:   (((baseFlip as any)?.identification?.v1?.eraStatus) ?? '') === 'unknown',
-  };
+  // Read from wherever the snapshot keeps the canonical block (results and
+  // saved flips use structured.v1; the old code looked only at identification.v1
+  // and so silently got nothing).
+  const v1Sig = ratingSignalsFor(baseFlip);
   const absoluteCeiling = findMaxBuyPriceForRating(
     baseFlip.resaleValue, baseFlip.matchConfidence, baseFlip.competitionLevel,
     baseFlip.demand ?? '', baseFlip.sellSpeed ?? '', v1Sig,

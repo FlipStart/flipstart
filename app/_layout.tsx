@@ -100,6 +100,11 @@ function AppProviders({ children }: { children: React.ReactNode }) {
       const { setXpUserId, syncXpOnLogin } = await import('@/lib/huntXp');
       // Always update the active storage key first
       setXpUserId(uid);
+      // Restore this account's live hunt, if one was running when the app closed.
+      try {
+        const { setHuntUserId } = await import('@/lib/hunt-context');
+        await setHuntUserId(uid ?? null);
+      } catch { /* a hunt restore failure never blocks sign-in */ }
       // Attribute analytics events to the signed-in profile (null for guests).
       try {
         const { setAnalyticsIdentity } = await import('@/lib/analytics');

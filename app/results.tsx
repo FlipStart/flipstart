@@ -22,7 +22,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { ScreenContainer } from '@/components/screen-container';
 import { listingExtras } from '@/lib/listingHints';
 import { useScanContext } from '@/lib/scan-context';
-import { isHuntActive, addItemToHunt, computeHuntRating, getActiveHunt, updateHuntItemImage } from '@/lib/hunt-context';
+import { getActiveHunt } from '@/lib/hunt-context';
 import { uploadImageToStorage, isRemoteUri } from '@/lib/imageUpload';
 import { FeedbackCard } from '@/components/results/FeedbackCard';
 import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
@@ -62,6 +62,7 @@ import { useAchievementNotifications } from '@/lib/AchievementNotificationContex
 import { useAuth } from '@/lib/auth-context';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice, findBuyUnderPrice } from '@/utils/flipCalculations';
+import { ratingSignalsFromV1 } from '@/utils/ratingSignals';
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
@@ -365,14 +366,8 @@ export default function ResultsScreen() {
       _id?.estimated_era ?? '',
       _md?.demand ?? '',
       _md?.sell_speed ?? '',
-      {
-        buyerPool:        (_id as any)?.v1?.buyerPool,
-        basicItem:        (_id as any)?.v1?.basicItem === true,
-        hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
-        eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
-        priceConfidence:  (_id as any)?.v1?.priceConfidence,
-        confidenceTier:   (_id as any)?.v1?.confidenceTier,
-      },
+      // Shared with Hunt, Deep Analysis and the Flip Record — see utils/ratingSignals.
+      ratingSignalsFromV1((_id as any)?.v1),
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [_md?.adjusted_estimated_value, effectiveThrift, _ra?.match_confidence,
@@ -525,12 +520,8 @@ export default function ResultsScreen() {
   // Derived directly from the same recommendation engine that drives the rating
   // shown on screen — so it's never disconnected from what you actually see.
   // Paying more than this is guaranteed to downgrade the rating.
-  const v1Sig = {
-    buyerPool:        (_id as any)?.v1?.buyerPool,
-    basicItem:        (_id as any)?.v1?.basicItem === true,
-    hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
-    eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
-  };
+  // Same signals as the rating above, so the thresholds and the badge agree.
+  const v1Sig = ratingSignalsFromV1((_id as any)?.v1);
   // Ceiling: the most you should pay before this becomes a SKIP. Null when the
   // item is not worth buying at any price — rendered as words, never as $0.
   const suggestedMax = findMaxBuyPriceForRating(
@@ -679,7 +670,6 @@ export default function ResultsScreen() {
       uploadImageToStorage(localUri, 'scan-photos', uid).then(cloudUrl => {
         if (!cloudUrl) return;
         updateFlip(flipId, { imageUri: cloudUrl });
-        if (isHuntActive()) updateHuntItemImage(flipId, cloudUrl);
       }).catch(() => {});
     }
 
@@ -824,27 +814,9 @@ export default function ResultsScreen() {
     // Enqueue all collected rewards (priority handled inside enqueueReward).
     rewards.forEach(enqueueReward);
 
-    // If a hunt is active, add this item to the hunt session too
-    if (isHuntActive()) {
-      try {
-        addItemToHunt({
-          huntItemId:     currentScan.id,
-          scanId:         currentScan.id,
-          itemName:       id.item_name,
-          brand:          id.brand,
-          category:       id.category,
-          imageUri:       currentScan.imageUri,
-          allImageUris:   currentScan.allImageUris ?? [currentScan.imageUri],
-          estimatedValue: md.adjusted_estimated_value,
-          thriftPrice:    calc.thriftPrice,
-          profit:         calc.profit,
-          kept:           true,
-          huntRating:     computeHuntRating(calc.profit, ra.match_confidence),
-          addedAt:        Date.now(),
-          scanSnapshot:   currentScan,
-        });
-      } catch { /* never block navigation */ }
-    }
+    // (A results-screen hunt branch used to live here. Hunt scans never reach
+    // this screen — loading.tsx routes them to Discovery Analysis — so it was
+    // dead, and it rated with a different, older rule. Removed Nov 2026.)
 
     // Review eligibility is no longer counted here. Saving is a weaker signal
     // than completing: FlipStart is useful in the aisle without saving. The

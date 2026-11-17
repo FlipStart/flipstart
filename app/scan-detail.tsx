@@ -34,6 +34,7 @@ import { huntItemToFlip } from '@/utils/huntItemToFlip';
 import { FONTS } from '@/constants/typography';
 import { normalizeBuyRating, type CanonicalRating } from '@/utils/recommendation';
 import { computeFlipCalc, calculateFees } from '@/utils/flipCalculations';
+import { ratingSignalsFor } from '@/utils/ratingSignals';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { trpc } from '@/lib/trpc';
 import { trackAnalyticsEvent } from '@/lib/analytics';
@@ -190,6 +191,8 @@ export default function ScanDetailScreen() {
       flip.matchConfidence, flip.competitionLevel,
       flip.styleLabels, flip.era,
       flip.demand ?? '', flip.sellSpeed ?? '',
+      // Same risk signals as results, Hunt and Deep Analysis.
+      ratingSignalsFor(flip),
     ) : null,
     [flip, editedThrift],
   );

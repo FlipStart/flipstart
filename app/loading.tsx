@@ -46,7 +46,7 @@ import { useProPaywall, ProPaywallHost } from "@/components/monetization/paywall
 import { scanSoftFail, softFailCanContinue } from "@shared/scanFailure";
 import { APP_STORE_PRODUCT_URL } from "@/lib/reviewPrompt";
 import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
-import { isHuntActive } from "@/lib/hunt-context";
+import { scanGoesToHunt } from "@/lib/hunt-context";
 import { rememberScanPhotos } from "@/lib/scanSessionPhotos";
 import { useAuth } from "@/lib/auth-context";
 import { useEntitlement } from "@/lib/useEntitlement";
@@ -365,7 +365,7 @@ export default function LoadingScreen() {
         try {
           logEvent("scan_failed", {
             errorType: legacyErrorType("photo_load_failed"), reason: "photo_load_failed",
-            screen: "photo_load_failed", charge: "not_used", attemptId: scanAttemptId, inHunt: isHuntActive(),
+            screen: "photo_load_failed", charge: "not_used", attemptId: scanAttemptId, inHunt: scanGoesToHunt(),
           });
           incrementSessionCount("failedScanCount");
         } catch { /* never block */ }
@@ -525,7 +525,7 @@ export default function LoadingScreen() {
               chargeHeld: chargePending,
               // Phase 6: which screen, and enough to join it to scan_outcomes.
               screen: soft, kind: "soft", tier, charge: softCharge,
-              attemptId: scanAttemptId, inHunt: isHuntActive(),
+              attemptId: scanAttemptId, inHunt: scanGoesToHunt(),
             });
             incrementSessionCount("failedScanCount");
           } catch { /* never block */ }
@@ -584,7 +584,9 @@ export default function LoadingScreen() {
         // never held back for an animation.
         if (hasNavigated.current) return;
         hasNavigated.current = true;
-        if (isHuntActive()) {
+        // Only a scan the user put in the hunt goes there (Live Hunt, or "Add to
+        // Hunt" on the Home prompt) — never just because a hunt exists.
+        if (scanGoesToHunt()) {
           // Replace loading with hunt-item-detail — keeps stack clean so
           // back() from Discovery Analysis returns to hunt-active, not loading
           router.replace("/hunt-item-detail" as any);
@@ -653,7 +655,7 @@ export default function LoadingScreen() {
                 chargeOnContinue:   true,
                 // Results will show sold comps: let the server start that
                 // search now. Hunt scans go to their own screen, which has none.
-                prefetchComps:      !isHuntActive(),
+                prefetchComps:      !scanGoesToHunt(),
               }, { signal: tryAbort.signal }),
               deadline,
               new Promise<never>((_, reject) => {
@@ -762,7 +764,7 @@ export default function LoadingScreen() {
       // the attempt id that joins it to scan_outcomes.
       const failMeta = {
         screen, cause: cause ?? null, serverReason: lastServerReason, kind: "hard",
-        charge, attemptId: scanAttemptId, inHunt: isHuntActive(), cancelStatus,
+        charge, attemptId: scanAttemptId, inHunt: scanGoesToHunt(), cancelStatus,
       };
       if (screen !== "out_of_scans" && screen !== "app_outdated") {
         try {
@@ -830,7 +832,7 @@ export default function LoadingScreen() {
 
   // ── Fail state ────────────────────────────────────────────────────────────
   if (failState) {
-    const inHunt = isHuntActive();
+    const inHunt = scanGoesToHunt();
 
     /** Back / Retake on a soft fail: the held scan goes back to the user. */
     const releaseHeld = () => {
