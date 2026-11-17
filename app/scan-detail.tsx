@@ -12,6 +12,7 @@
  */
 
 import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
+import { toTitleCase } from '@/utils/titleCase';
 import { listingExtras } from '@/lib/listingHints';
 import { viewerPhotosFor } from '@/lib/viewerPhotos';
 import { navGuard } from '@/lib/navGuard';
@@ -558,9 +559,9 @@ export default function ScanDetailScreen() {
                   the tip in half. */}
             </View>
             <View style={s.chipWrap}>
-              {!!flip.brand && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{flip.brand}</Text></View>}
-              {!!flip.category && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{flip.category}</Text></View>}
-              {!!flip.era && flip.era.toLowerCase() !== 'unknown' && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{flip.era}</Text></View>}
+              {!!flip.brand && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{toTitleCase(flip.brand)}</Text></View>}
+              {!!flip.category && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{toTitleCase(flip.category)}</Text></View>}
+              {!!flip.era && flip.era.toLowerCase() !== 'unknown' && <View style={s.chip}><Text style={s.chipText} numberOfLines={1}>{toTitleCase(flip.era)}</Text></View>}
               {(() => {
                 // Words, not a percentage: matchConfidence is ordinal, not a
                 // probability. The tier is the server's when the scan has one.

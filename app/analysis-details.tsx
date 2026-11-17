@@ -7,6 +7,7 @@ import {
   Alert, TextInput, KeyboardAvoidingView, Modal, Clipboard, useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { toTitleCase } from '@/utils/titleCase';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -549,9 +550,9 @@ export default function AnalysisDetailsScreen() {
             <View style={d.recapInfo}>
               <Text style={d.recapName} numberOfLines={2} ellipsizeMode="tail">{baseFlip.itemName || 'Unknown Item'}</Text>
               <View style={d.recapChips}>
-                {!isUnknownStr(baseFlip.brand) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.brand}</Text></View>}
-                {!isUnknownStr(baseFlip.category) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.category}</Text></View>}
-                {!isUnknownStr(baseFlip.era) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{baseFlip.era}</Text></View>}
+                {!isUnknownStr(baseFlip.brand) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{toTitleCase(baseFlip.brand)}</Text></View>}
+                {!isUnknownStr(baseFlip.category) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{toTitleCase(baseFlip.category)}</Text></View>}
+                {!isUnknownStr(baseFlip.era) && <View style={d.recapChip}><Text style={d.recapChipText} numberOfLines={1}>{toTitleCase(baseFlip.era)}</Text></View>}
                 {confidence && (
                   <View style={[d.recapChip, { borderColor: confidence.border, backgroundColor: confidence.bg }]}><Text style={[d.recapChipText, { color: confidence.color }]} numberOfLines={1}>{confidence.short}</Text></View>
                 )}
@@ -729,7 +730,7 @@ export default function AnalysisDetailsScreen() {
             const decade = v1?.productionDecade && v1.productionDecade !== 'unknown'
               ? String(v1.productionDecade).replace(/^pre_/, 'pre-') : null;
             const styleEra = v1?.styleEra && v1.styleEra !== 'none' && v1.styleEra !== 'unknown'
-              ? String(v1.styleEra).replace(/_/g, ' ') : null;
+              ? toTitleCase(String(v1.styleEra).replace(/_/g, ' ')) : null;
             return (
               <View style={d.card}>
                 <DeepHead icon="history-edu" title="Era & Authenticity" />

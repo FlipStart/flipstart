@@ -18,6 +18,7 @@ import {
   View, Text, Pressable, StyleSheet, ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { toTitleCase } from '@/utils/titleCase';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -293,7 +294,7 @@ function HuntItemRow({ item, onPress }: { item: HuntBundleItem; onPress: () => v
 
       <View style={r.info}>
         <Text style={r.name} numberOfLines={1}>{item.itemName}</Text>
-        <Text style={r.meta} numberOfLines={1}>{[item.brand, item.category].filter(Boolean).join(' · ')}</Text>
+        <Text style={r.meta} numberOfLines={1}>{[item.brand, item.category].filter(Boolean).map(toTitleCase).join(' · ')}</Text>
         <View style={[r.ratingPill, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
           <Text style={r.ratingEmoji}>{cfg.emoji}</Text>
           <Text style={[r.ratingLabel, { color: cfg.color }]}>{cfg.label.toUpperCase()}</Text>

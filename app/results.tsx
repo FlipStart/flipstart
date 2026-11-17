@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { toTitleCase } from '@/utils/titleCase';
 import { useRouter, type ErrorBoundaryProps } from 'expo-router';
 import { ScreenCrashFallback } from '@/components/scan/ScreenCrashFallback';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1146,8 +1147,8 @@ export default function ResultsScreen() {
                 </View>
 
                 <View style={[s.chipWrap, idTier === 'lg' && s.chipWrapLg]}>
-                  {!!id.brand && <View style={chipStyle}><Text style={chipTextStyle} numberOfLines={1} ellipsizeMode="tail">{id.brand}</Text></View>}
-                  {!!id.category && <View style={chipStyle}><Text style={chipTextStyle} numberOfLines={1} ellipsizeMode="tail">{id.category}</Text></View>}
+                  {!!id.brand && <View style={chipStyle}><Text style={chipTextStyle} numberOfLines={1} ellipsizeMode="tail">{toTitleCase(id.brand)}</Text></View>}
+                  {!!id.category && <View style={chipStyle}><Text style={chipTextStyle} numberOfLines={1} ellipsizeMode="tail">{toTitleCase(id.category)}</Text></View>}
                   {/* Transcribed product line / model number. These only exist
                       when the model READ them off the item, so they are worth
                       showing verbatim — the user photographed a tag to get them. */}
@@ -1223,7 +1224,7 @@ export default function ResultsScreen() {
                     return (
                       <View style={[chipStyle, soft && s.chipSoft]}>
                         <Text style={[chipTextStyle, soft && s.chipSoftText]} numberOfLines={1} ellipsizeMode="tail">
-                          {label}
+                          {toTitleCase(label)}
                         </Text>
                       </View>
                     );

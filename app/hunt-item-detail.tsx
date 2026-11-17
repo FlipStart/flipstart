@@ -26,7 +26,7 @@
 
 import {
   View, Text, Pressable, StyleSheet, Alert,
-  Platform, Modal, Keyboard, ScrollView, useWindowDimensions,
+  Platform, Modal, Keyboard, ScrollView, useWindowDimensions, Animated,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter, useNavigation, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
@@ -68,7 +68,7 @@ import { SectionCard } from '@/components/hunt/discovery/SectionCard';
 import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
 import { DeepAnalysisButton } from '@/components/results/DeepAnalysisButton';
 import {
-  huntBuyGuidance, buildWhyRating, buildMarketSnapshot, buildItemDetails, huntMetaLine, HUNT_RATING_LABEL,
+  huntBuyGuidance, buildWhyRating, buildMarketSnapshot, buildItemDetails, huntMetaParts, HUNT_RATING_LABEL,
 } from '@/lib/huntDiscovery';
 
 // ─── Palette (Hunt theme) ─────────────────────────────────────────────────────
@@ -238,6 +238,21 @@ export default function HuntItemDetailScreen() {
   };
   const typedPrice = parseThriftPrice(priceText);
 
+  // Soft pulsing gold glow on the title's "›" (same cue as the Results title).
+  // JS driver: textShadowRadius can't use the native one. One tiny element.
+  const arrowGlow = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(arrowGlow, { toValue: 1, duration: 1100, useNativeDriver: false }),
+        Animated.timing(arrowGlow, { toValue: 0, duration: 1100, useNativeDriver: false }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [arrowGlow]);
+  const arrowShadowRadius = arrowGlow.interpolate({ inputRange: [0, 1], outputRange: [1, 9] });
+
   // ── Money + rating ────────────────────────────────────────────────────────
   // history: exactly as saved. Otherwise live from the shared engine: at the
   // user's price when there is one, else provisional at the suggested price.
@@ -377,9 +392,19 @@ export default function HuntItemDetailScreen() {
   const why = buildWhyRating(econ, shownRating, guidance, enteredPrice);
   const tiles = buildMarketSnapshot(scan, { ...econ, provisional: econ.provisional });
   const details = buildItemDetails(scan, conf?.authenticity ?? null);
-  const meta = huntMetaLine(scan);
+  const metaPills = huntMetaParts(scan);
   // Photo a bit shorter than before (248), a touch more on small phones.
   const photoH = winH < 700 ? 176 : 204;
+
+  // No confirmed thrift price: the third box answers "what is it worth?" (the
+  // same resale number the Results screen shows). Once a price is confirmed it
+  // becomes Est. Profit. History items that were never priced follow the same rule.
+  const showResale = shownProfit === null;
+  const resaleValue = Number((scan.market_data as any)?.adjusted_estimated_value ?? 0);
+  const resale$ = resaleValue > 0 ? `$${Math.round(resaleValue)}` : '—';
+
+  // Same rule as the Deep Analysis button: a History item that was never priced has no entry.
+  const canOpenDeep = context !== 'history' || (!!item && item.thriftPrice > 0);
 
   const profit$ = shownProfit !== null
     ? `${shownProfit >= 0 ? '+' : '-'}$${Math.abs(Math.round(shownProfit))}`
@@ -602,15 +627,43 @@ export default function HuntItemDetailScreen() {
 
         {/* 2 · Identity */}
         <View style={s.identity}>
-          <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
-          {!!meta && <Text style={s.itemMeta} numberOfLines={1}>{meta}</Text>}
+          {canOpenDeep ? (
+            <Pressable
+              onPress={handleDeepAnalysis}
+              hitSlop={6}
+              style={({ pressed }) => [s.titlePress, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`${id.item_name}. Open Deep Analysis`}
+              testID="hunt-title-deep-analysis"
+            >
+              <Text style={s.itemName} numberOfLines={2}>
+                {id.item_name}
+                <Animated.Text
+                  style={[
+                    s.titleArrow,
+                    { textShadowColor: GOLD, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: arrowShadowRadius },
+                  ]}
+                > ›</Animated.Text>
+              </Text>
+            </Pressable>
+          ) : (
+            <Text style={s.itemName} numberOfLines={2}>{id.item_name}</Text>
+          )}
+          {metaPills.length > 0 && (
+            <View style={s.pillRow} testID="hunt-meta-pills">
+              {metaPills.map(label => (
+                <View key={label} style={s.pill}>
+                  <Text style={s.pillText} numberOfLines={1} ellipsizeMode="tail">{label}</Text>
+                </View>
+              ))}
+            </View>
+          )}
           {!!conf && (
             <View style={s.confRow}>
               <View style={[s.confChip, { borderColor: conf.color + '66', backgroundColor: conf.color + '14' }]}>
                 <MaterialIcons name="verified-user" size={11} color={conf.color} />
                 <Text style={[s.confChipText, { color: conf.color }]}>{conf.short.toUpperCase()}</Text>
               </View>
-              {!!conf.reason && <Text style={s.confReason} numberOfLines={1}>{conf.reason}</Text>}
             </View>
           )}
         </View>
@@ -643,10 +696,14 @@ export default function HuntItemDetailScreen() {
               {editable && !priceText && <Text style={s.priceHint}>Tap to enter</Text>}
             </View>
 
-            <View style={s.profitBox}>
-              <Text style={s.boxLabel}>EST. PROFIT</Text>
-              <Text style={[s.profitValue, { color: profitColor }]}>{profit$}</Text>
-              {shownProfit !== null && <Text style={s.profitSub}>after fees</Text>}
+            <View style={s.profitBox} testID={showResale ? 'hunt-est-resale' : 'hunt-est-profit'}>
+              <Text style={s.boxLabel}>{showResale ? 'EST. RESALE' : 'EST. PROFIT'}</Text>
+              <Text style={[s.profitValue, { color: showResale ? GOLD : profitColor }]}>
+                {showResale ? resale$ : profit$}
+              </Text>
+              {showResale
+                ? (resaleValue > 0 && <Text style={s.profitSub}>before fees</Text>)
+                : <Text style={s.profitSub}>after fees</Text>}
             </View>
           </View>
 
@@ -790,12 +847,15 @@ const s = StyleSheet.create({
   imgArrowR:      { right: 10 },
 
   identity:     { paddingHorizontal: 16, paddingTop: 12, gap: 4 },
+  titlePress:   { alignSelf: 'flex-start' },
+  titleArrow:   { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: GOLD },
   itemName:     { fontFamily: FONTS.serif, fontSize: 20, fontWeight: '800', color: BROWN, lineHeight: 25 },
-  itemMeta:     { fontSize: 13, color: MUTED },
+  pillRow:      { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
+  pill:         { maxWidth: '100%', backgroundColor: CARD, borderWidth: 1, borderColor: CARD_B, borderRadius: 50, paddingHorizontal: 10, paddingVertical: 4 },
+  pillText:     { fontSize: 12, fontWeight: '600', color: BROWN, flexShrink: 1 },
   confRow:      { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
   confChip:     { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   confChipText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
-  confReason:   { flex: 1, fontSize: 11, color: MUTED },
 
   decisionCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: CARD, borderRadius: 16, borderWidth: 1.5, borderColor: GOLD + '70', padding: 10, gap: 8,
                   shadowColor: '#3A2A10', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.10, shadowRadius: 6, elevation: 2 },

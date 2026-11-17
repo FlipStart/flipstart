@@ -10,6 +10,7 @@ import {
   View, Text, Pressable, StyleSheet, ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { toTitleCase } from '@/utils/titleCase';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -157,7 +158,7 @@ function RemovedItemCard({
       <View style={rc.info}>
         <Text style={rc.name} numberOfLines={1}>{item.itemName}</Text>
         <Text style={rc.meta} numberOfLines={1}>
-          {[item.brand, item.category].filter(Boolean).join(' · ')}
+          {[item.brand, item.category].filter(Boolean).map(toTitleCase).join(' · ')}
         </Text>
         <View style={rc.skipPill}>
           <Text style={rc.skipText}>✕  SKIPPED</Text>

@@ -7,6 +7,7 @@
  * structured headline / bullets / risk factors, or from scan fields.
  */
 import type { ScanResult } from './types';
+import { toTitleCase } from '@/utils/titleCase';
 import type { HuntEconomics, HuntRating } from './huntEconomics';
 import { findMaxBuyPriceForRating } from '@/utils/flipCalculations';
 import { findBuyUnderPrice } from '@/utils/flipCalculations';
@@ -147,7 +148,7 @@ export function buildItemDetails(scan: ScanResult, authenticity: string | null):
   const rows: DetailRow[] = [];
 
   const material = known(id?.material_guess);
-  if (material) rows.push({ label: 'Material', value: material });
+  if (material) rows.push({ label: 'Material', value: toTitleCase(material) });
 
   const size = known(v1.sizeLabel);
   const dept = known(v1.targetDepartment);
@@ -166,7 +167,7 @@ export function buildItemDetails(scan: ScanResult, authenticity: string | null):
   const decade = known(v1.productionDecade);
   const status = ERA_STATUS[String(v1.eraStatus ?? '')] ?? '';
   if (era || decade) {
-    const main = decade && era && !era.includes(decade) ? `${era} (${decade})` : (era || decade);
+    const main = toTitleCase(decade && era && !era.includes(decade) ? `${era} (${decade})` : (era || decade));
     rows.push({ label: 'Era', value: status ? `${main} · ${status}` : main });
   }
 
@@ -180,9 +181,14 @@ export function buildItemDetails(scan: ScanResult, authenticity: string | null):
 
 /** "Carhartt · Work Vest · Modern" — brand, item type, era; blanks dropped. */
 export function huntMetaLine(scan: ScanResult): string {
+  return huntMetaParts(scan).join(' · ');
+}
+
+/** The same brand / item type / era, one entry each, for the pills under the title. */
+export function huntMetaParts(scan: ScanResult): string[] {
   const id = scan?.identification as any;
   return [known(id?.brand), known(id?.itemType ?? id?.category), known(id?.estimated_era)]
-    .filter(Boolean)
-    .filter((v, i, a) => a.indexOf(v) === i)
-    .join(' · ');
+    .map(v => toTitleCase(v))
+    .filter((v): v is string => !!v)
+    .filter((v, i, a) => a.indexOf(v) === i);
 }

@@ -13,6 +13,7 @@
  */
 
 import { navGuard } from '@/lib/navGuard';
+import { toTitleCase } from '@/utils/titleCase';
 import {
   Text, View, FlatList, Pressable, Platform,
   StyleSheet, TextInput,
@@ -156,7 +157,7 @@ function FlipCard({
           <View style={fc.content}>
             <Text style={fc.name} numberOfLines={1}>{item.itemName}</Text>
             <Text style={fc.brand} numberOfLines={1}>
-              {item.brand}{item.brand && item.category ? ' · ' : ''}{item.category}
+              {toTitleCase(item.brand)}{item.brand && item.category ? ' · ' : ''}{toTitleCase(item.category)}
             </Text>
             <View style={fc.metaRow}>
               <View style={[fc.ratingPill, { borderColor: rTheme.border, backgroundColor: rTheme.bg }]}>
@@ -227,7 +228,7 @@ function TopFlipCard({ item, rank, onPress }: { item: FlipResult; rank: number; 
 
       <View style={tf.info}>
         <Text style={tf.name} numberOfLines={1}>{item.itemName}</Text>
-        <Text style={tf.brand} numberOfLines={1}>{item.brand}</Text>
+        <Text style={tf.brand} numberOfLines={1}>{toTitleCase(item.brand)}</Text>
         <View style={tf.badgeRow}>
           <View style={tf.roiWrap}><Text style={tf.roi}>{item.roi}% ROI</Text></View>
           {isSold && <View style={tf.soldChip}><Text style={tf.soldChipText}>SOLD</Text></View>}
