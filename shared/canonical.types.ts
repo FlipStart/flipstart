@@ -276,6 +276,10 @@ export interface AiMarketability {
   competition_level: 'low' | 'moderate' | 'high' | 'unknown';
   marketability_confidence: Confidence;
   marketability_reasons: string[];
+  /** True when this is a basic or unappealing item few buyers are looking for
+   *  (plain basics, generic fast fashion, promo/event tees, lame graphics).
+   *  Optional in the type: analyses stored before prompt v1.13.1 lack it. */
+  basic_item?: boolean;
 }
 
 export interface AiPricing {

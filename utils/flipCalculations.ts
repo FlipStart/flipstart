@@ -232,7 +232,7 @@ export function findMaxBuyPriceForRating(
   competitionLevel: string,
   demandLevel:      string = '',
   sellSpeed:        string = '',
-  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
+  v1Signals: { buyerPool?: string; basicItem?: boolean; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
                priceConfidence?: number } = {},
 ): number | null {
   const fees = calculateFees(resaleValue);
@@ -245,6 +245,7 @@ export function findMaxBuyPriceForRating(
       netProfit: profit, resaleValue, thriftPrice: price, roi,
       matchConfidence, competitionLevel, demandLevel, sellSpeed,
       buyerPool:        v1Signals.buyerPool,
+      basicItem:        v1Signals.basicItem,
       hasObviousDamage: v1Signals.hasObviousDamage,
       eraUnconfirmed:   v1Signals.eraUnconfirmed,
       priceConfidence:  v1Signals.priceConfidence,
@@ -268,7 +269,7 @@ export function findBuyThresholdPrice(
   competitionLevel: string,
   demandLevel:      string = '',
   sellSpeed:        string = '',
-  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
+  v1Signals: { buyerPool?: string; basicItem?: boolean; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
                priceConfidence?: number } = {},
 ): number | null {
   const fees = calculateFees(resaleValue);
@@ -279,6 +280,7 @@ export function findBuyThresholdPrice(
       netProfit: profit, resaleValue, thriftPrice: price, roi,
       matchConfidence, competitionLevel, demandLevel, sellSpeed,
       buyerPool:        v1Signals.buyerPool,
+      basicItem:        v1Signals.basicItem,
       hasObviousDamage: v1Signals.hasObviousDamage,
       eraUnconfirmed:   v1Signals.eraUnconfirmed,
       priceConfidence:  v1Signals.priceConfidence,
@@ -313,7 +315,7 @@ export function findBuyUnderPrice(
   competitionLevel: string,
   demandLevel:      string = '',
   sellSpeed:        string = '',
-  v1Signals: { buyerPool?: string; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
+  v1Signals: { buyerPool?: string; basicItem?: boolean; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
                priceConfidence?: number } = {},
 ): number | null {
   const byRating = findBuyThresholdPrice(resaleValue, matchConfidence, competitionLevel, demandLevel, sellSpeed, v1Signals);
@@ -379,6 +381,7 @@ export function computeFlipCalc(
    *  working — they simply carry fewer risk factors. */
   v1Signals: {
     buyerPool?: string;
+    basicItem?: boolean;
     hasObviousDamage?: boolean;
     eraUnconfirmed?: boolean;
     priceConfidence?: number;
@@ -405,6 +408,7 @@ export function computeFlipCalc(
     demandLevel,
     sellSpeed,
     buyerPool:        v1Signals.buyerPool,
+    basicItem:        v1Signals.basicItem,
     hasObviousDamage: v1Signals.hasObviousDamage,
     eraUnconfirmed:   v1Signals.eraUnconfirmed,
     priceConfidence:  v1Signals.priceConfidence,

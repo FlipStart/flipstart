@@ -653,7 +653,8 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
           "buyer_pool",
           "competition_level",
           "marketability_confidence",
-          "marketability_reasons"
+          "marketability_reasons",
+          "basic_item"
         ],
         "properties": {
           "expected_sell_speed": {
@@ -703,6 +704,9 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
             "items": {
               "type": "string"
             }
+          },
+          "basic_item": {
+            "type": "boolean"
           }
         }
       },

@@ -458,6 +458,7 @@ export default function AnalysisDetailsScreen() {
    */
   const v1Sig = {
     buyerPool:        (baseFlip as any)?.identification?.v1?.buyerPool,
+    basicItem:        (baseFlip as any)?.identification?.v1?.basicItem === true,
     hasObviousDamage: (((baseFlip as any)?.identification?.v1?.obviousDamage?.length) ?? 0) > 0,
     eraUnconfirmed:   (((baseFlip as any)?.identification?.v1?.eraStatus) ?? '') === 'unknown',
   };

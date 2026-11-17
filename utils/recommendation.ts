@@ -28,6 +28,8 @@ export interface RecommendationInput {
   /** Canonical V1 signals. Optional — absent on v0 scans, which simply carry
    *  fewer risk factors rather than behaving differently. */
   buyerPool?:       string;   // 'broad' | 'moderate' | 'narrow' | 'very_narrow'
+  /** The AI judged it a basic item few buyers are looking for. */
+  basicItem?:       boolean;
   hasObviousDamage?: boolean;
   eraUnconfirmed?:  boolean;
   /** ai.pricing.price_confidence, 0-100. Gates STRONG_BUY: a resale estimate
@@ -55,7 +57,8 @@ export interface Recommendation {
 export type RiskFactorCode =
   | 'SLOW_SELL' | 'HIGH_COMPETITION' | 'LOW_CONFIDENCE'
   | 'NARROW_POOL' | 'OBVIOUS_DAMAGE' | 'ERA_UNCONFIRMED' | 'THIN_MARGIN'
-  | 'LOW_DEMAND' | 'VERY_SLOW_SELL' | 'PRICE_CONFIDENCE_TOO_LOW_FOR_STRONG_BUY';
+  | 'LOW_DEMAND' | 'VERY_SLOW_SELL' | 'PRICE_CONFIDENCE_TOO_LOW_FOR_STRONG_BUY'
+  | 'BASIC_ITEM';
 
 export interface RiskFactor { code: RiskFactorCode; label: string }
 
@@ -72,6 +75,7 @@ const RISK_LABELS: Record<RiskFactorCode, string> = {
   ERA_UNCONFIRMED:  'Era unconfirmed',
   THIN_MARGIN:      'Thin margin',
   PRICE_CONFIDENCE_TOO_LOW_FOR_STRONG_BUY: 'Price estimate uncertain',
+  BASIC_ITEM:       'Basic item, few buyers want it',
 };
 
 /** STRONG_BUY needs a resale number worth betting on. At or below this the
@@ -97,7 +101,7 @@ export const STRONG_BUY_MIN_IDENTIFICATION_SCORE = 70;
 /** Ranked by how much each should worry a reseller. The card shows the top few,
  *  so ordering decides what the user actually reads. */
 const RISK_PRIORITY: RiskFactorCode[] = [
-  'OBVIOUS_DAMAGE', 'THIN_MARGIN', 'VERY_SLOW_SELL', 'LOW_DEMAND',
+  'OBVIOUS_DAMAGE', 'BASIC_ITEM', 'THIN_MARGIN', 'VERY_SLOW_SELL', 'LOW_DEMAND',
   'SLOW_SELL', 'HIGH_COMPETITION', 'NARROW_POOL', 'LOW_CONFIDENCE', 'ERA_UNCONFIRMED',
 ];
 
@@ -156,7 +160,10 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   if (rawSpeed.includes('very slow') || rawSpeed === 'very_slow') add('VERY_SLOW_SELL');
   else if (s === 'slow')                add('SLOW_SELL');
   if (c === 'high')                     add('HIGH_COMPETITION');
-  if (d === 'low')                      add('LOW_DEMAND');
+  // "Basic item, few buyers want it" is the specific form of low demand, so it
+  // replaces LOW_DEMAND rather than counting the same problem twice.
+  if (input.basicItem)                  add('BASIC_ITEM');
+  else if (d === 'low')                 add('LOW_DEMAND');
   if (matchConfidence > 0 && matchConfidence < 55) add('LOW_CONFIDENCE');
   const pool = (input.buyerPool ?? '').toLowerCase();
   if (pool === 'narrow' || pool === 'very_narrow') add('NARROW_POOL');

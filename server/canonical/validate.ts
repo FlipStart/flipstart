@@ -170,6 +170,8 @@ export function validateAnalysis(input: ValidationInput): ValidationOutput {
   ai.visible_attributes.material_confidence = clampInt(ai.visible_attributes.material_confidence);
   ai.condition.condition_confidence         = clampInt(ai.condition.condition_confidence);
   ai.marketability.marketability_confidence = clampInt(ai.marketability.marketability_confidence);
+  // Only a literal true counts; absent (older prompt) or anything else is false.
+  ai.marketability.basic_item = ai.marketability.basic_item === true;
   ai.pricing.price_confidence               = clampInt(ai.pricing.price_confidence);
   ai.era.era_confidence                     = clampInt(ai.era.era_confidence);
 

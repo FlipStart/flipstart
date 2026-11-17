@@ -29,13 +29,19 @@
  *   - confirmed_vintage, reprints, copyright dates, Y2K and user-confirmed era
  *     rules are unchanged.
  *
- * Everything outside the era text is byte-identical to v1.12.0.
+ * Everything outside the era text is byte-identical to v1.12.0, except:
+ *
+ * v1.13.1 adds marketability.basic_item (founder request, Nov 2026): the
+ * reseller's "who would actually buy this?" call. True for plain basics,
+ * generic fast fashion, promo/event giveaway tees and lame or generic
+ * graphics. It becomes the Risky Buy reason "Basic item, few buyers want it"
+ * (utils/recommendation.ts), replacing the vaguer "Low demand".
  *
  * The static text below is the CACHE PREFIX. Runtime context is appended after
  * it by buildSystemMessage() so the prefix stays byte-identical across scans.
  */
 
-export const SCAN_PROMPT_VERSION = "v1.13.0" as const;
+export const SCAN_PROMPT_VERSION = "v1.13.1" as const;
 
 export const SCAN_PROMPT_V1_13_0 = `You are FlipStart, a resale analyst. You receive 1-3 photos of a secondhand item, labeled [FRONT], [TAG], and [DETAIL]. Return JSON only. If more than one item is visible, analyze only the main one (a lot sold together counts as one item) - see WHAT IS IN THE PHOTO.
 
@@ -396,6 +402,17 @@ Consider honestly:
 - Specific graphics (place, event, team, character, license), genuine vintage with evidence, and recognizable enthusiast items move faster.
 - Unusual sizes, niche interests, single-team sports items, and highly specific tastes mean a NARROW buyer pool even when the item is desirable. Say so.
 - If you do not recognize the brand, lower price_confidence - an unrecognized brand you can read is still identified, so identification_level stays brand. Do NOT assume the item is worthless and do NOT assume it is valuable. Your not recognizing a brand is not proof that no market exists. Use narrow or very_narrow only when the item ALSO lacks clear buyer signals such as a recognizable subject, category demand, or quality indicators. When you cannot reasonably judge the audience, use unknown.
+
+**basic_item** - true or false. Ask the reseller's question: "who would actually want to buy this?" True when the honest answer is "almost nobody":
+- plain basics with nothing to them: a blank or plain tee, plain polo, plain hoodie or sweatpants from an ordinary brand;
+- generic fast fashion and store brands (Shein, Old Navy, Target / Walmart house brands, H&M and similar) with nothing distinctive;
+- promotional and giveaway tees: company events, 5Ks and fun runs, church or school events, family reunions, local business promos - unless genuinely vintage or tied to something people collect;
+- lame, generic or cheesy graphics: generic slogans, clip-art, "World's Best Dad", generic tourist souvenirs, dated or uninspired designs;
+- dated styles that are not old enough to be vintage and not back in fashion.
+
+False when anything gives it buyer pull: a brand people search for, real vintage, a sports team, band, tour, movie or licensed graphic people collect, a good-looking or on-trend piece, quality materials, or a recognisable model. A plain modern Nike or Carhartt piece is NOT basic_item - people do look for those, even if they sell slowly. When in doubt, false.
+
+When true, say why in marketability_reasons ("generic slogan tee", "5K giveaway shirt"), and set sell_likelihood low or very_low.
 
 marketability_reasons: 1-2 short concrete phrases.
 

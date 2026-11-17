@@ -258,6 +258,8 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
         assessmentLimited: d.condition_summary.assessment_limited,
 
         buyerPool:         ai.marketability.buyer_pool,
+        // "Basic item, few buyers want it" — a Risky Buy reason (Nov 2026).
+        basicItem:         ai.marketability.basic_item === true,
         marketabilityReasons: ai.marketability.marketability_reasons,
 
         pricingBasis:     ai.pricing.pricing_basis,

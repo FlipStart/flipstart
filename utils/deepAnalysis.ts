@@ -454,10 +454,14 @@ export function itemEvidence(i: DeepInputs): { present: EvidenceField[]; missing
 
 export function whatCouldChange(i: DeepInputs): string[] {
   const { flip, rating } = i;
-  const out: string[] = [
+  const out: string[] = [];
+  if ((flip as any)?.identification?.v1?.basicItem === true || (flip as any)?.structured?.v1?.basicItem === true) {
+    out.push("It's a basic piece few buyers are searching for - only a very low thrift price makes it worth it.");
+  }
+  out.push(
     'Heavy stains, holes, or pilling would lower the value and rating.',
     'A desirable size or new-with-tags condition could raise the value.',
-  ];
+  );
   if (isUnknown(flip.brand)) out.push('Confirming the brand tag would sharpen the estimate significantly.');
   else out.push('If the brand tag is missing or altered, confidence should drop.');
 

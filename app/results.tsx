@@ -367,6 +367,7 @@ export default function ResultsScreen() {
       _md?.sell_speed ?? '',
       {
         buyerPool:        (_id as any)?.v1?.buyerPool,
+        basicItem:        (_id as any)?.v1?.basicItem === true,
         hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
         eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
         priceConfidence:  (_id as any)?.v1?.priceConfidence,
@@ -526,6 +527,7 @@ export default function ResultsScreen() {
   // Paying more than this is guaranteed to downgrade the rating.
   const v1Sig = {
     buyerPool:        (_id as any)?.v1?.buyerPool,
+    basicItem:        (_id as any)?.v1?.basicItem === true,
     hasObviousDamage: ((_id as any)?.v1?.obviousDamage?.length ?? 0) > 0,
     eraUnconfirmed:   ((_id as any)?.v1?.eraStatus ?? '') === 'unknown',
   };
@@ -1359,6 +1361,10 @@ export default function ResultsScreen() {
                   const has = (c: string) => codes.includes(c as any);
                   const good = calc.profit >= 15;
 
+                  if (has('BASIC_ITEM'))
+                    return good
+                      ? 'The margin looks fine, but this is a basic piece most buyers scroll past - expect it to sit.'
+                      : 'Basic item that few buyers are looking for, so only worth it if it is nearly free.';
                   if (has('OBVIOUS_DAMAGE'))
                     return good
                       ? 'Good profit on paper, but the damage will cost you buyers and may bring a return.'

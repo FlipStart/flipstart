@@ -53,6 +53,8 @@ export interface CanonicalV1Passthrough {
   conditionUnknowns?: string[];
   assessmentLimited?: boolean;
   buyerPool?: string;
+  /** Basic / unappealing item few buyers want (prompt v1.13.1+). */
+  basicItem?: boolean;
   marketabilityReasons?: string[];
   pricingBasis?: string[];
   pricingUnknowns?: string[];
