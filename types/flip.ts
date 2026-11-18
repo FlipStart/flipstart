@@ -302,8 +302,13 @@ export interface HuntBundle {
   totalCost:          number;         // sum of thriftPrice for kept items
   totalEstimatedProfit: number;       // sum of profit for kept items
   estimatedROI:       number;         // (totalEstimatedProfit / totalCost) * 100
-  xpEarned?:          number;         // XP awarded when this hunt was saved
+  xpEarned?:          number;         // XP the SERVER awarded for this hunt
   xpBreakdown?:       XpBreakdownItem[]; // line-by-line XP breakdown for history detail UI
+  /**
+   * The server could not be reached when this Hunt was saved. Its XP is awarded
+   * (and this cleared) when the app next reaches the server. See lib/huntCompletion.
+   */
+  xpPending?:         boolean;
 }
 
 /**

@@ -17,9 +17,10 @@
 --   hunt_config       two settings (the Founding Hunter cap and end date)
 --   xp_profiles       five new columns the server keeps
 --   hunt_xp_context() and award_hunt_xp(): the only way XP is awarded
+--   hunt_near_photo_matches(): has another account scanned this same photo
 --
 -- Only the server can use any of it. Every new table has row-level security
--- with no policies, and neither function can be called by app users.
+-- with no policies, and none of the functions can be called by app users.
 
 begin;
 
@@ -168,6 +169,49 @@ begin
 end;
 $$;
 
+-- ── 7b. Has anyone else used this photo? ────────────────────────────────────
+-- For each photo fingerprint given, up to 3 OTHER accounts that scanned a
+-- near-identical photo (at most p_max_bits of the 64 bits differ). Finishing a
+-- Hunt uses it to spot pictures taken from the web: the same image from two or
+-- more other accounts is a shared image.
+--
+-- It compares inside the database and returns only real matches, so the answer
+-- stays small and complete however many scans exist. (Asking the table for
+-- "everything that shares a quarter of the fingerprint" and comparing on the
+-- server stops being complete once that list passes 1,000 rows, which is the
+-- most Supabase returns for one request.)
+create or replace function public.hunt_near_photo_matches(
+  p_user_id  uuid,
+  p_hashes   text[],
+  p_max_bits integer default 6
+)
+returns table (photo_hash text, user_id uuid)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select m.photo_hash, m.user_id
+    from (select distinct h.hex from unnest(p_hashes) as h(hex) where h.hex ~ '^[0-9a-f]{16}$') q
+   cross join lateral (
+     select ('x' || q.hex)::bit(64)                        as bits,
+            ('x' || substr(q.hex,  1, 4))::bit(16)::integer as b0,
+            ('x' || substr(q.hex,  5, 4))::bit(16)::integer as b1,
+            ('x' || substr(q.hex,  9, 4))::bit(16)::integer as b2,
+            ('x' || substr(q.hex, 13, 4))::bit(16)::integer as b3
+   ) k
+   cross join lateral (
+     select distinct on (s.user_id) s.user_id, s.photo_hash
+       from public.hunt_scans s
+      where (s.hash_b0 = k.b0 or s.hash_b1 = k.b1 or s.hash_b2 = k.b2 or s.hash_b3 = k.b3)
+        and s.user_id <> p_user_id
+        and s.photo_hash ~ '^[0-9a-f]{16}$'
+        and bit_count(('x' || s.photo_hash)::bit(64) # k.bits) <= greatest(coalesce(p_max_bits, 6), 0)
+      order by s.user_id
+      limit 3
+   ) m;
+$$;
+
 -- ── 8. Award a finished Hunt. Exactly once, all or nothing. ─────────────────
 create or replace function public.award_hunt_xp(
   p_user_id               uuid,
@@ -251,8 +295,10 @@ begin
   select to_jsonb(x) into v_row from public.xp_profiles x where x.user_id = p_user_id for update;
 
   -- The score was worked out against a profile and a week. If either has moved,
-  -- say so; the server reads again and re-scores.
-  if coalesce((v_row ->> 'xp_version')::integer, 0) <> p_expected_version or p_week_start <> v_week then
+  -- say so; the server reads again and re-scores. A missing version or week is
+  -- treated as "moved", never as "fine".
+  if coalesce((v_row ->> 'xp_version')::integer, 0) is distinct from p_expected_version
+     or p_week_start is distinct from v_week then
     return jsonb_build_object('status', 'conflict');
   end if;
 
@@ -272,15 +318,20 @@ begin
    limit 1;
 
   -- Founding Hunter: first finished Hunt, while there is room and time.
+  -- The count is taken under a lock so two people can never both take the last
+  -- place. The lock is only asked for while a place could still be free, so once
+  -- the badge is closed it costs nothing.
   if not exists (select 1 from public.founding_hunters f where f.user_id = p_user_id) then
     select (c.value #>> '{}')::integer into v_cap from public.hunt_config c where c.key = 'founding_cap';
     select (c.value #>> '{}')::timestamptz into v_deadline from public.hunt_config c where c.key = 'founding_deadline';
-    perform pg_advisory_xact_lock(hashtextextended('founding_hunters', 0));
-    if (select count(*) from public.founding_hunters) < coalesce(v_cap, 2000)
-       and (v_deadline is null or v_now <= v_deadline) then
-      insert into public.founding_hunters (user_id, awarded_at) values (p_user_id, v_now)
-        on conflict (user_id) do nothing;
-      v_founding := true;
+    if (v_deadline is null or v_now <= v_deadline)
+       and (select count(*) from public.founding_hunters) < coalesce(v_cap, 2000) then
+      perform pg_advisory_xact_lock(hashtextextended('founding_hunters', 0));
+      if (select count(*) from public.founding_hunters) < coalesce(v_cap, 2000) then
+        insert into public.founding_hunters (user_id, awarded_at) values (p_user_id, v_now)
+          on conflict (user_id) do nothing;
+        v_founding := true;
+      end if;
     end if;
   else
     v_founding := true;
@@ -354,22 +405,32 @@ end;
 $$;
 
 -- App users can never call these. Only the server (service role) can.
+revoke all on function public.hunt_week_start(timestamptz) from public, anon, authenticated;
 revoke all on function public.hunt_xp_context(uuid) from public, anon, authenticated;
+revoke all on function public.hunt_near_photo_matches(uuid, text[], integer) from public, anon, authenticated;
+grant execute on function public.hunt_near_photo_matches(uuid, text[], integer) to service_role;
 revoke all on function public.award_hunt_xp(uuid, text, integer, date, integer, integer, boolean, integer, integer,
   timestamptz, timestamptz, bigint, text, jsonb, jsonb, jsonb, integer, date, jsonb, jsonb) from public, anon, authenticated;
+grant execute on function public.hunt_week_start(timestamptz) to service_role;
 grant execute on function public.hunt_xp_context(uuid) to service_role;
 grant execute on function public.award_hunt_xp(uuid, text, integer, date, integer, integer, boolean, integer, integer,
   timestamptz, timestamptz, bigint, text, jsonb, jsonb, jsonb, integer, date, jsonb, jsonb) to service_role;
 grant select, insert, update, delete on public.hunt_scans, public.hunts, public.xp_ledger,
   public.founding_hunters, public.hunt_config to service_role;
+-- The ledger's row counter. Nothing in the app could reach it (its table is
+-- closed), but a Supabase project hands new sequences to app users by default.
+do $$
+begin
+  execute format('revoke all on sequence %s from public, anon, authenticated', pg_get_serial_sequence('public.xp_ledger', 'id'));
+end $$;
 
 commit;
 
 -- ── Check it worked ─────────────────────────────────────────────────────────
--- Run this after the block above. It should list 5 tables and 3 functions.
+-- Run this after the block above. It should list 5 tables and 4 functions.
 select 'table' as kind, tablename as name from pg_tables
  where schemaname = 'public' and tablename in ('hunt_scans', 'hunts', 'xp_ledger', 'founding_hunters', 'hunt_config')
 union all
 select 'function', proname from pg_proc
- where pronamespace = 'public'::regnamespace and proname in ('hunt_week_start', 'hunt_xp_context', 'award_hunt_xp')
+ where pronamespace = 'public'::regnamespace and proname in ('hunt_week_start', 'hunt_xp_context', 'award_hunt_xp', 'hunt_near_photo_matches')
 order by 1, 2;

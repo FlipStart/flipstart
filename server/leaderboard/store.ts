@@ -79,9 +79,37 @@ export interface LeaderboardStore {
   blocked(blockerId: string): Promise<Array<{ public_id: string; name: string | null; avatar: string | null }> | null>;
   /** Account ids with a profile, in a fixed order, for the one-off backfill. */
   profileIds(afterId: string | null, limit: number): Promise<string[]>;
+  /**
+   * Freeze the final result of every finished week that is not frozen yet
+   * (drizzle/sql/hunt_leaderboard_phase4.sql). Returns the weeks it froze, or
+   * null when the call failed.
+   */
+  closeFinishedWeeks(): Promise<ClosedWeek[] | null>;
+  /**
+   * File names of every public picture an account is still using. Null when
+   * the list could not be read IN FULL (it decides what may be deleted, so a
+   * partial answer is never returned).
+   */
+  avatarFilesInUse(): Promise<Set<string> | null>;
+  /** One page of the public pictures bucket, by name. Null when it could not be read. */
+  listPublicAvatars(offset: number, limit: number): Promise<Array<{ name: string; createdAt: string | null }> | null>;
+  /** Delete public pictures by file name. Returns how many were asked for, or null on failure. */
+  removePublicAvatarFiles(names: string[]): Promise<number | null>;
 }
 
+export interface ClosedWeek { week_start: string; hunters: number }
+
 export const MAX_AVATAR_BYTES = 12 * 1024 * 1024;
+
+/** The file name inside the public pictures bucket that a public link points at, or null. */
+export function publicAvatarFileName(publicUrl: string): string | null {
+  const marker = `/object/public/${PUBLIC_AVATAR_BUCKET}/`;
+  const i = typeof publicUrl === "string" ? publicUrl.indexOf(marker) : -1;
+  if (i === -1) return null;
+  const name = publicUrl.slice(i + marker.length).split(/[?#]/)[0];
+  if (!name || name.includes("/") || name.includes("..") || name.includes("\\")) return null;
+  return name;
+}
 const IDENTITY_COLUMNS =
   "user_id,public_id,public_name,name_source,name_status,avatar_url,avatar_source,avatar_status,name_hidden,avatar_hidden";
 
@@ -134,13 +162,10 @@ function supabaseStore(sb: any): LeaderboardStore {
     },
     async removePublicAvatar(publicUrl) {
       try {
-        const marker = `/object/public/${PUBLIC_AVATAR_BUCKET}/`;
-        const i = publicUrl.indexOf(marker);
-        if (i === -1) return;
-        const name = publicUrl.slice(i + marker.length).split("?")[0];
-        if (!name || name.includes("/") || name.includes("..")) return;
+        const name = publicAvatarFileName(publicUrl);
+        if (!name) return;
         await sb.storage.from(PUBLIC_AVATAR_BUCKET).remove([name]);
-      } catch { /* an orphaned copy is harmless: nothing links to it */ }
+      } catch { /* left behind: the daily sweep removes pictures nothing uses (avatarSweep.ts) */ }
     },
     async report(reporterId, publicId, reason) {
       const { data, error } = await sb.rpc("report_profile", { p_reporter: reporterId, p_public_id: publicId, p_reason: reason });
@@ -164,6 +189,48 @@ function supabaseStore(sb: any): LeaderboardStore {
       const { data, error } = await q;
       if (error) { warn("list profiles", error); return []; }
       return (data ?? []).map((r: any) => String(r.id));
+    },
+    async avatarFilesInUse() {
+      // The exact number first, then every row: the two must agree, or the answer is not trusted.
+      const head = await sb.from("leaderboard_identity").select("user_id", { count: "exact", head: true }).not("avatar_url", "is", null);
+      if (head.error || typeof head.count !== "number") { warn("count pictures in use", head.error); return null; }
+      const names = new Set<string>();
+      let rows = 0;
+      for (let from = 0; from < 2_000_000; from += 1000) {
+        const { data, error } = await sb.from("leaderboard_identity").select("user_id,avatar_url")
+          .not("avatar_url", "is", null).order("user_id", { ascending: true }).range(from, from + 999);
+        if (error) { warn("list pictures in use", error); return null; }
+        for (const r of data ?? []) {
+          rows += 1;
+          const name = publicAvatarFileName(String(r.avatar_url ?? ""));
+          if (name) names.add(name);
+        }
+        if (!data || data.length < 1000) break;
+      }
+      return rows === head.count ? names : null;
+    },
+    async listPublicAvatars(offset, limit) {
+      try {
+        const { data, error } = await sb.storage.from(PUBLIC_AVATAR_BUCKET)
+          .list("", { limit, offset, sortBy: { column: "name", order: "asc" } });
+        if (error || !Array.isArray(data)) { if (error) warn("list public pictures", error); return null; }
+        return data.filter((f: any) => f && typeof f.name === "string")
+          .map((f: any) => ({ name: f.name as string, createdAt: typeof f.created_at === "string" ? f.created_at : null }));
+      } catch (err) { warn("list public pictures", err); return null; }
+    },
+    async removePublicAvatarFiles(names) {
+      if (names.length === 0) return 0;
+      try {
+        const { error } = await sb.storage.from(PUBLIC_AVATAR_BUCKET).remove(names);
+        if (error) { warn("remove public pictures", error); return null; }
+        return names.length;
+      } catch (err) { warn("remove public pictures", err); return null; }
+    },
+    async closeFinishedWeeks() {
+      const { data, error } = await sb.rpc("leaderboard_close_finished_weeks");
+      if (error) { warn("freeze finished weeks", error); return null; }
+      const d = Array.isArray(data) && data.length === 1 && Array.isArray(data[0]) ? data[0] : data;
+      return Array.isArray(d) ? (d as ClosedWeek[]) : [];
     },
   };
 }

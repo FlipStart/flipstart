@@ -26,7 +26,7 @@ import { RANK_LADDER, getCurrentRank } from "../../shared/hunt/ranks";
 import { getAnalysis } from "../analysisStore.js";
 import { toLegacyShape } from "../compat/toLegacyShape.js";
 import { hamming } from "./photoHash.js";
-import { buildHuntScanRow, isScreenFlag, normalizeCaptureKind, validHuntId } from "./scanEvidence.js";
+import { buildHuntScanRow, isScreenFlag, normalizeCaptureKind, settleRecordings, validHuntId } from "./scanEvidence.js";
 import { getHuntStore, type HuntScanRow, type HuntStore, type ProfileSnapshot } from "./store.js";
 
 /** Two hashes this close are the same image. */
@@ -96,18 +96,28 @@ export function sanitizeItems(raw: unknown): CompleteHuntItem[] {
 
 /**
  * A listed scan with no row: the insert at scan time failed. Rebuild it from the
- * stored analysis when this user verifiably owns it. No photo hash and no capture
- * source, so it scores as an ordinary scan and can never pass the big-find gate.
+ * server's own stored analysis, and only when ALL of these hold:
+ *
+ *   - the server verified this account as the owner when the scan ran
+ *   - the server marked the analysis, at scan time, as a Hunt scan for THIS Hunt
+ *
+ * The second is what stops an ordinary scan (any photo, any day, never checked
+ * as a Hunt scan) being listed in a made-up Hunt and paid as one. The rebuilt
+ * row keeps what the server recorded about how the photo was taken. It has no
+ * photo fingerprint, so it can never pass the big-find gate.
  */
 async function recoverRow(store: HuntStore, userId: string, huntId: string, analysisId: string): Promise<HuntScanRow | null> {
   try {
     const stored = getAnalysis(analysisId, userId);
-    if (!stored || (stored.verifiedOwnerId ?? stored.ownerId) !== userId) return null;
+    if (!stored || stored.verifiedOwnerId !== userId) return null;
+    const mark = stored.hunt;
+    if (!mark || mark.huntId !== huntId) return null;
     const payload = { ...toLegacyShape(stored.canonical), canonical: stored.canonical };
     const row = await buildHuntScanRow({
       userId, huntId, attemptId: stored.scanAttemptId || analysisId, analysisId,
       canonical: stored.canonical, payload, frontBase64: null,
-      photoCount: stored.canonical.meta?.photo_slots_provided?.length ?? 1, captureFront: "unknown",
+      photoCount: mark.photoCount,
+      captureFront: mark.captureFront === "camera" || mark.captureFront === "library" ? mark.captureFront : "unknown",
     });
     row.scanned_at = new Date(stored.savedAt).toISOString();
     await store.insertScan(row).catch(() => false);
@@ -159,6 +169,11 @@ export function decideStatuses(
       const accounts = new Set(others.filter(o => near(o.photo_hash, h)).map(o => o.user_id));
       if (accounts.size >= SHARED_IMAGE_ACCOUNTS) { d.unique = false; d.reasons.push("shared_image"); }
     }
+    // What the app said. It is a claim, not a proof: a changed app could say
+    // "camera" for anything, so this only ever counts together with the checks
+    // the server makes itself (the fingerprint, the screen flag, the review list).
+    // No stated source at all is left as an ordinary scan; it just can never
+    // count as "taken with the in-app camera" for a big find.
     if (d.row.capture_front === "library") d.reasons.push("library_photo");
     if (isScreenFlag(normalizeCaptureKind(d.row.capture_kind))) d.reasons.push("screen_flag");
     if (d.row.soft_fail) d.reasons.push("soft_fail");
@@ -236,6 +251,8 @@ async function run(store: HuntStore, input: CompleteHuntInput): Promise<Complete
     }
 
     // ── Only scans the server recorded for THIS user and THIS Hunt ─────────────
+    // A scan made a moment ago may still be on its way into the database.
+    await settleRecordings(items.map(i => i.analysisId));
     const rows = await store.scansForHunt(userId, huntId);
     const byId = new Map(rows.map(r => [r.analysis_id, r]));
     const decided: Array<{ row: HuntScanRow; item: CompleteHuntItem }> = [];

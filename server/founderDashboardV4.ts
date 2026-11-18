@@ -1363,14 +1363,17 @@ function renderHuntXp(x: any): string {
     `<div class="card"><div class="card-h">Lifetime <span class="muted">— current totals from xp_profiles · the date range does not apply</span></div>${grid([
       m("Accounts with XP", x.withXp), m("Total XP", x.totalXp), m("Avg XP (with XP)", x.meanXp), m("Median XP (with XP)", x.medianXp),
       m("Most XP", x.maxXp), m("Hunts completed", x.huntsCompleted), m("Accounts with a hunt", x.hunters),
-      m("Live streaks", x.liveStreaks), m("Longest live streak", x.longestLiveStreak),
+      m(x.streakUnit === "weeks" ? "Live weekly streaks" : "Live streaks", x.liveStreaks),
+      m(x.streakUnit === "weeks" ? "Longest live streak (weeks)" : "Longest live streak", x.longestLiveStreak),
     ])}</div>
-    <div class="card"><div class="card-h">In the selected range</div>${grid([
+    <div class="card"><div class="card-h">In the selected range <span class="muted">— ${x.inRangeSource === "server" ? "from the server's record of every Hunt it scored" : "from the app's hunt_xp_awarded event (the server has scored no Hunt in scope yet)"}</span></div>${grid([
       m("XP earned", ev.xpInRange), m("XP awards (hunts)", ev.awardsInRange), m("People who earned XP", ev.earnersInRange), m("XP per hunt", ev.perHunt, { dp: 0 }),
     ])}</div>
-    <div class="card"><div class="card-h">Top ${num(x.top.length)} hunters by XP</div>${table(["#", "User", "XP", "Rank", "Hunts", "Streak", "Last hunt"], top, "compact")}</div>
-    <div class="muted">Only signed-in accounts have an XP row (${num(x.xpRows)} of ${num(x.accounts)} accounts in scope). A streak is live if the last hunt was ${esc(x.today)} or the day before.${x.staleRankNames ? ` ${num(x.staleRankNames)} stored rank name${x.staleRankNames === 1 ? " is" : "s are"} out of date; ranks here are recomputed from XP.` : ""}</div>`,
-    "source: xp_profiles");
+    <div class="card"><div class="card-h">Top ${num(x.top.length)} hunters by XP</div>${table(["#", "User", "XP", "Rank", "Hunts", x.streakUnit === "weeks" ? "Week streak" : "Streak", "Last hunt"], top, "compact")}</div>
+    <div class="muted">Only signed-in accounts have an XP row (${num(x.xpRows)} of ${num(x.accounts)} accounts in scope). ${x.streakUnit === "weeks"
+      ? `A weekly streak is live if they Hunted this leaderboard week (from ${esc(x.weekStart ?? "")}) or the one before.`
+      : `A streak is live if the last hunt was ${esc(x.today)} or the day before.`}${x.staleRankNames ? ` ${num(x.staleRankNames)} stored rank name${x.staleRankNames === 1 ? " is" : "s are"} out of date; ranks here are recomputed from XP.` : ""}</div>`,
+    x.inRangeSource === "server" ? "source: xp_profiles · hunts" : "source: xp_profiles");
 }
 
 function renderHuntLevels(x: any): string {
@@ -1398,12 +1401,206 @@ function renderHuntLevels(x: any): string {
     "source: xp_profiles");
 }
 
+
+// ── Hunt Leaderboard ─────────────────────────────────────────────────────────
+
+/** Where the leaderboard buttons post. Same secret, scope and range as the page. */
+const LB_ACTION_PATH = "/api/dev/founder-leaderboard-action";
+const CONFIRM: Record<string, string> = {
+  exclude: "Take this account off every leaderboard? Their XP is not touched, and you can put them back.",
+  avatar_remove: "Remove this picture from the leaderboard? It stays off until they upload a different one.",
+  name_remove: "Remove this name from the leaderboard? They show as Hunter until they change it.",
+  reclose_week: "Freeze this week again from the kept XP? Excluded accounts drop out and everyone below moves up.",
+};
+function lbButton(action: string, label: string, fields: Record<string, string>, danger = false): string {
+  const hidden = Object.entries({ action, ...fields }).map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join("");
+  const ask = CONFIRM[action] ? ` onsubmit="return confirm('${esc(CONFIRM[action])}')"` : "";
+  return `<form class="lbact" method="post" action="${esc(LB_ACTION_PATH + pageQuery)}"${ask}>${hidden}<button type="submit"${danger ? ` class="danger"` : ""}>${esc(label)}</button></form>`;
+}
+const lbWho = (r: any) => `${userLink(r.userId, r.name ?? r.userId.slice(0, 8) + "…")}${r.excluded ? ` <span class="sev sev-conflict">excluded</span>` : ""}${r.internal ? ` <span class="sev sev-info">internal</span>` : ""}`;
+const lbExcludeButton = (r: any) => r.excluded
+  ? lbButton("include", "Put back on leaderboards", { user: r.userId })
+  : lbButton("exclude", "Exclude from leaderboards", { user: r.userId }, true);
+const money = (v: number | null | undefined) => v === null || v === undefined || !Number.isFinite(v) ? "—"
+  : `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** Only https links are ever put in a src. */
+const safeSrc = (u: unknown): string | null => typeof u === "string" && /^https:\/\//.test(u) ? u : null;
+
+export function renderLeaderboard(x: any, impact: any): string {
+  const id = "lb", title = "Hunt Leaderboard";
+  if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(x)) return section(id, title, errorCard("Hunt Leaderboard", x));
+  const boards = x.boards.map((b: any) => [esc(b.label), num(b.views), num(b.viewers), num(b.openedOn), num(b.tabSelections), b.views ? `${num(b.unrankedViews)} <span class="muted">${pct(b.unrankedViews / b.views)}</span>` : "—"]);
+  const sources = x.sources.map((s: any) => [esc(s.label), num(s.opens)]);
+  const reasons = Object.entries(x.reportsByReason ?? {}).map(([k, v]) => `${esc(k)} ${num(v as number)}`).join(" · ");
+  let impactHtml = "";
+  if (impact && isErr(impact)) impactHtml = errorCard("Leaderboard and Hunting", impact);
+  else if (impact && typeof impact === "object") {
+    const g = impact.groups.map((r: any) => [
+      esc(r.label), num(r.users), num(r.huntsPerUser.value, 1), num(r.scansPerHunt.value, 1), num(r.xpPerHunt.value, 0),
+      r.repeatRate.d ? `${pct(r.repeatRate.value)} <span class="muted">${num(r.repeatRate.n)} / ${num(r.repeatRate.d)}</span> ${small(r.repeatRate.d)}` : "—",
+      r.d7.d ? `${pct(r.d7.value)} <span class="muted">${num(r.d7.n)} / ${num(r.d7.d)}</span> ${small(r.d7.d)}` : `<span class="muted">nobody 7 days in yet</span>`,
+      r.d30.d ? `${pct(r.d30.value)} <span class="muted">${num(r.d30.n)} / ${num(r.d30.d)}</span> ${small(r.d30.d)}` : `<span class="muted">nobody 30 days in yet</span>`,
+    ]);
+    const ba = impact.beforeAfter;
+    impactHtml = `<div class="card wide"><div class="card-h">Leaderboard and Hunting <span class="muted">— the ${num(impact.hunters)} accounts with a server-scored Hunt · lifetime · the date range does not apply</span></div>
+      ${table(["Group", "Accounts", "Hunts per account", "Scans per Hunt", "XP per Hunt", "Hunted 2+ times", "Active 7+ days after first Hunt", "Active 30+ days after"], g, "compact")}
+      <div class="card-h" style="margin-top:10px">The same people, ${num(ba.days)} days before and after their first open</div>
+      ${ba.users
+        ? grid([m("Hunts before", ba.before, { dp: 2 }), m("Hunts after", ba.after, { dp: 2 }),
+            m("Hunted more after", { value: ba.more, trust: "EXACT", d: ba.users }), m("Hunted less after", { value: ba.fewer, trust: "EXACT", d: ba.users }), m("No change", { value: ba.same, trust: "EXACT", d: ba.users })])
+        : `<div class="muted">Nobody opened the leaderboard ${num(ba.days)} or more days ago yet.</div>`}
+      <div class="note-block">Read with care. The two groups chose differently: keen hunters are also the ones most likely to open a leaderboard, so the top table cannot show that the leaderboard <em>caused</em> more Hunting. Before and after compares each person with themselves, which is fairer, but new users are still ramping up either way.${ba.waiting ? ` ${num(ba.waiting)} more viewer${ba.waiting === 1 ? " has" : "s have"} not had ${num(ba.days)} days since their first open.` : ""}${impact.ever ? "" : " No leaderboard opens recorded yet, so everyone is in the second group."}</div></div>`;
+  }
+  return section(id, title,
+    (x.ever ? "" : `<div class="banner warn">No <code>leaderboard_opened</code> event has arrived yet. These cards fill in once the leaderboard app build is in use.</div>`) +
+    `<div class="card"><div class="card-h">Who opens it <span class="muted">— selected range · accounts in scope</span></div>${grid([
+      m("People who opened it", x.viewers), m("Opens", x.opens), m("Opens per person", x.opensPerViewer, { dp: 1 }),
+      m("Came back another day", x.repeatViewers), m("Return visits", x.returnVisits), m("My Hunt Level shown", x.levelTrackViews),
+    ])}</div>
+    <div class="card"><div class="card-h">Does it lead to a Hunt? <span class="muted">— a Hunt the server scored within ${num(x.conversionDays)} days</span></div>${grid([
+      m("Start Hunt taps", x.startHuntClicks), m("People who tapped Start Hunt", x.startHuntClickers), m("Tapped while unranked", x.startHuntUnranked),
+      m("Tapped Start Hunt → finished a Hunt", x.clickToHunt), m("Opened it → finished a Hunt", x.openToHunt),
+    ])}</div>
+    <div class="card"><div class="card-h">Boards</div>${table(["Board", "Views", "People", "Opened on", "Tab taps", "Viewed while unranked"], boards, "compact")}
+    <div class="muted">A view is counted once per board each time the screen is opened, when that board's data arrives.</div></div>
+    <div class="card"><div class="card-h">Opened from</div>${table(["From", "Opens"], sources, "compact")}</div>
+    <div class="card"><div class="card-h">Safety</div>${grid([m("Reports sent", x.reports), m("Blocks", x.blocks)])}${reasons ? `<div class="muted">Reports by reason: ${reasons}. Open reports are under Leaderboard review.</div>` : ""}</div>` +
+    impactHtml,
+    "source: analytics_events (leaderboard_*) · hunts");
+}
+
+export function renderLeaderboardBoards(x: any): string {
+  const id = "lbboards", title = "Leaderboard boards";
+  if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(x)) return section(id, title, errorCard("Leaderboard boards", x));
+  const maxB = Math.max(1, ...x.distribution.map((b: any) => b.hunters));
+  const dist = x.distribution.map((b: any) => [esc(b.label), num(b.hunters), `<div style="min-width:120px">${bar(b.hunters / maxB * 100)}</div>`]);
+  const top = x.top.map((t: any) => {
+    const e = t.evidence;
+    const flags = e ? [
+      e.reduced ? `${num(e.reduced)} reduced` : "", e.excluded ? `${num(e.excluded)} left out` : "",
+      e.cappedBigFinds ? `${num(e.cappedBigFinds)} capped` : "", e.screenFlags ? `${num(e.screenFlags)} screen` : "",
+      e.sharedImages ? `${num(e.sharedImages)} shared image` : "", e.duplicatePhotos ? `${num(e.duplicatePhotos)} repeat photo` : "",
+      e.libraryPhotos ? `${num(e.libraryPhotos)} library` : "",
+    ].filter(Boolean).join(" · ") : "";
+    // Which rule fired is worked out once, on the server side of the page (leaderLook).
+    const look = t.look ?? {};
+    const lookTag = (why: string) => ` <span class="sev sev-warning" title="${esc(why)}">look</span>`;
+    return [
+      num(t.position), userLink(t.userId, t.name ?? t.userId.slice(0, 8) + "…"),
+      `${num(t.xp)}${look.bigWeek ? lookTag("A very big week: an ordinary Hunt earns about 150 to 200 XP") : ""}`,
+      num(t.hunts), num(t.biggestHunt),
+      e ? `${num(e.kept)} <span class="muted">of ${num(e.scans)} scans</span>` : `<span class="muted">not read</span>`,
+      e ? money(e.countedProfit) : "—",
+      e && e.onePhotoShare !== null ? `${pct(e.onePhotoShare)}${look.onePhoto ? lookTag("Over $1,000 of counted profit, nearly all from items scanned with one photo") : ""}` : "—",
+      e ? (e.nearLine ? `${num(e.nearLine)}${look.nearLine ? lookTag("Several kept items just under the $250 line where evidence starts to be needed") : ""}` : `<span class="muted">0</span>`) : "—",
+      flags || `<span class="muted">none</span>`,
+    ];
+  });
+  const past = (x.pastWeeks ?? []).map((w: any) => [
+    esc(w.weekStart), num(w.hunters), num(w.totalXp),
+    w.winners.length ? w.winners.map((p: any) => `${num(p.position)}. ${userLink(p.userId, p.name ?? p.userId.slice(0, 8) + "…")} <span class="muted">${num(p.xp)}</span>`).join(" &nbsp; ") : `<span class="muted">nobody ranked</span>`,
+    when(w.closedAt), lbButton("reclose_week", "Freeze again", { week: w.weekStart }),
+  ]);
+  return section(id, title,
+    (x.unfrozenWeeks && x.unfrozenWeeks.length
+      ? `<div class="banner warn"><strong>${num(x.unfrozenWeeks.length)} finished week${x.unfrozenWeeks.length === 1 ? " has" : "s have"} not been frozen</strong> (${x.unfrozenWeeks.map((w: string) => esc(w)).join(", ")}). The server freezes finished weeks every 30 minutes; if this stays, check that hunt_leaderboard_phase4.sql was run and the server is up.</div>` : "") +
+    `<div class="card"><div class="card-h">This week <span class="muted">— week of ${esc(x.weekStart)} · resets ${when(x.weekEndsAt)} · the date range does not apply</span></div>${grid([
+      m("Ranked this week", x.rankedThisWeek), m("Ranked, of all accounts", x.rankedOfAccounts), m("Weekly XP earned", x.weeklyXpTotal),
+      m("Top weekly XP", x.weeklyXpTop), m("Median weekly XP", x.weeklyXpMedian, { dp: 0 }),
+      m("On the Best Hunt board", x.bestHuntQualifiers), m("Founding Hunters", x.foundingHunters), m("Excluded accounts", x.excluded),
+    ])}</div>
+    <div class="card"><div class="card-h">Weekly XP spread <span class="muted">— hunters ranked this week</span></div>${table(["XP this week", "Hunters", ""], dist, "compact")}</div>
+    <div class="card wide"><div class="card-h">This week's top ${num(x.top.length)} <span class="muted">— and what their XP is made of</span></div>${table(["#", "User", "Weekly XP", "Hunts", "Biggest Hunt", "Kept items", "Profit counted", "From one-photo items", "Just under $250", "Flags"], top, "compact")}
+    <div class="muted">In scope and not excluded. The app's board also hides accounts a viewer has blocked, so positions there can differ by viewer.
+    One photo is normal for ordinary finds. Worth a look: 3,000+ XP in a week (an ordinary Hunt earns about 150 to 200), a big week made almost entirely of one-photo items, or several kept items just under the $250 line (items at $250 or less need no evidence). Hunts of 1,000+ XP are listed with photos under Leaderboard review; a week spread across many smaller Hunts only shows up here.</div></div>
+    <div class="card wide"><div class="card-h">Past weeks <span class="muted">— final results, frozen when each week closed</span></div>${
+      x.pastWeeksError ? `<div class="err-msg">⚠ ${esc(x.pastWeeksError)}</div>` : table(["Week of", "Hunters", "XP", "Top 3", "Frozen", ""], past, "compact")}
+    <div class="muted">"Freeze again" rebuilds a week from the kept weekly XP. Use it after excluding someone who placed in a week that had already closed.</div></div>`,
+    "source: leaderboard_weekly · weekly_results · hunts");
+}
+
+export function renderLeaderboardIntegrity(x: any): string {
+  const id = "lbint", title = "Leaderboard integrity";
+  if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(x)) return section(id, title, errorCard("Leaderboard integrity", x));
+  const reasons = x.reasons.map((r: any) => [esc(r.label), num(r.scans)]);
+  const anomalies = x.anomalyRows.map((r: any) => [
+    userLink(r.userId, r.name ?? r.userId.slice(0, 8) + "…"), when(r.at), esc(r.item), money(r.thriftPrice), money(r.resale), money(r.countedProfit), esc(r.status ?? "—"),
+  ]);
+  return section(id, title,
+    `<div class="card"><div class="card-h">Hunts the server scored <span class="muted">— selected range · accounts in scope</span></div>${grid([
+      m("Hunts", x.hunts), m("XP awarded", x.huntXp), m("Count for Best Hunt", x.qualifying), m("Hunts awarding 1,000+ XP", x.bigHunts),
+    ])}</div>
+    <div class="card"><div class="card-h">Hunt scans <span class="muted">— scans in finished Hunts</span></div>${grid([
+      m("Scans judged", x.scans), m("Full XP", x.normal), m("Reduced", x.reduced), m("Left out", x.excluded),
+    ])}</div>
+    <div class="card"><div class="card-h">Big finds and evidence</div>${grid([
+      m("Big finds with full evidence", x.bigFindsGated), m("Big finds held to the cap", x.bigFindsCapped), m("Share held to the cap", x.cappedShare),
+      m("Photos seen on other accounts", x.sharedImages), m("Repeat of their own photo", x.duplicatePhotos),
+      m("Screen or listing photos", x.screenFlags), m("Library photos", x.libraryPhotos), m("Price anomalies", x.priceAnomalies),
+    ])}</div>
+    <div class="card"><div class="card-h">Why scans were reduced, left out or capped <span class="muted">— one scan can have several</span></div>${table(["Reason", "Scans"], reasons, "compact")}</div>
+    <div class="card wide"><div class="card-h">Price anomalies <span class="muted">— kept for $0.50 or less with a resale estimate of $100 or more · highest resale first</span></div>${table(["User", "Scanned", "Item", "Typed price", "Resale est.", "Profit counted for XP", "Status"], anomalies, "compact")}
+    <div class="muted">Not proof of cheating: free and yard-sale finds are real. XP uses a floor price (5% of resale, at least $1), so a low typed price gains nothing.</div></div>`,
+    "source: hunts · hunt_scans");
+}
+
+export function renderLeaderboardReview(x: any): string {
+  const id = "lbreview", title = "Leaderboard review";
+  if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(x)) return section(id, title, errorCard("Leaderboard review", x));
+  const msg = x.message ? `<div class="banner ok">${esc(x.message)}</div>` : "";
+
+  const reports = x.reportsError ? `<div class="err-msg">⚠ ${esc(x.reportsError)}</div>` : !x.reports.length ? `<div class="muted">No open reports.</div>` : table(
+    ["User", "Reported for", "Reporters", "Shown now?", "What was reported", "First · last", ""],
+    x.reports.map((r: any) => {
+      const pic = safeSrc(r.picture);
+      const what = r.reason === "photo" ? (pic ? `<a href="${esc(pic)}" target="_blank" rel="noopener noreferrer"><img class="lbpic" src="${esc(pic)}" alt="reported picture" loading="lazy" referrerpolicy="no-referrer"></a>` : `<span class="muted">no picture on the profile now</span>`)
+        : r.reason === "name" ? esc(r.profileName ?? "—") : `<span class="muted">see their Hunts in the Explorer</span>`;
+      const act = r.reason === "photo" ? lbButton("avatar_ok", "Picture is fine", { user: r.userId }) + lbButton("avatar_remove", "Remove picture", { user: r.userId }, true)
+        : r.reason === "name" ? lbButton("name_ok", "Name is fine", { user: r.userId }) + lbButton("name_remove", "Remove name", { user: r.userId }, true)
+        : lbButton("close_cheating", "Looked, close reports", { user: r.userId }) + lbExcludeButton(r);
+      return [lbWho(r), esc(r.reason), `${num(r.reporters)}${r.reporters >= 3 ? ` <span class="sev sev-warning">auto-hidden at 3</span>` : ""}`,
+        r.reason === "cheating" ? `<span class="muted">n/a</span>` : r.hiddenNow ? `<span class="sev sev-conflict">hidden</span>` : "showing", what, `${when(r.first)} · ${when(r.last)}`, `<div class="lbacts">${act}</div>`];
+    }), "compact");
+
+  const hunts = x.bigHuntsError ? `<div class="err-msg">⚠ ${esc(x.bigHuntsError)}</div>` : !x.bigHunts.length ? `<div class="muted">No Hunt has awarded ${num(x.reviewXp)} XP or more.</div>`
+    : x.bigHunts.map((h: any) => {
+      const items = h.items.map((i: any) => [
+        esc(i.item), money(i.thriftPrice), money(i.resale), money(i.countedProfit),
+        `${esc(i.status ?? "—")}${i.rating ? ` <span class="muted">${esc(i.rating)}</span>` : ""}`,
+        `${esc(i.capture ?? "unknown")} · ${num(i.photoCount)} photo${i.photoCount === 1 ? "" : "s"}`,
+        i.reasons.length ? i.reasons.map((t: string) => esc(t)).join("<br>") : `<span class="muted">none</span>`,
+        i.photos.length ? `<div class="lbphotos">${i.photos.map((u: string) => { const s = safeSrc(u); return s ? `<a href="${esc(s)}" target="_blank" rel="noopener noreferrer"><img src="${esc(s)}" alt="scan photo" loading="lazy" referrerpolicy="no-referrer"></a>` : ""; }).join("")}</div>` : `<span class="muted">no stored photo</span>`,
+      ]);
+      const lines = h.breakdown.map((b: any) => `${esc(b.label)}${b.detail ? ` <span class="muted">${esc(b.detail)}</span>` : ""} +${num(b.xp)}`).join(" · ");
+      return `<div class="card wide lbhunt"><div class="card-h">${lbWho(h)} — ${num(h.xp)} XP <span class="muted">· ${when(h.at)} · ${num(h.scans)} scans, ${num(h.kept)} kept, ${num(h.minutes)} min${h.grade ? ` · grade ${esc(h.grade)}` : ""} · ${h.qualifies ? "counts for Best Hunt" : "does not count for Best Hunt"}${h.cappedBigFinds ? ` · ${num(h.cappedBigFinds)} big find${h.cappedBigFinds === 1 ? "" : "s"} held to the cap` : ""}${h.rankBefore !== h.rankAfter ? ` · ${esc(h.rankBefore)} → ${esc(h.rankAfter)}` : ""}</span></div>
+        <div class="muted">${lines || "No breakdown stored."}</div>
+        ${table(["Kept item", "Typed price", "Resale est.", "Profit counted", "Status", "Capture", "Flags", "Photos"], items, "compact")}
+        <div class="lbacts">${lbExcludeButton(h)}</div></div>`;
+    }).join("");
+
+  const excluded = x.excludedError ? `<div class="err-msg">⚠ ${esc(x.excludedError)}</div>` : !x.excluded.length ? `<div class="muted">Nobody is excluded.</div>`
+    : table(["User", ""], x.excluded.map((r: any) => [lbWho(r), lbButton("include", "Put back on leaderboards", { user: r.userId })]), "compact");
+
+  return section(id, title, msg +
+    `<div class="card wide"><div class="card-h">Open reports <span class="muted">— every account, whatever the scope · most reported first</span></div>${reports}
+    <div class="muted">Three different reporters hide a picture or name until you decide. "Fine" shows it again and closes those reports. "Remove" keeps it off until the person changes it. Cheating reports never hide anything by themselves.</div></div>
+    <div class="card"><div class="card-h">Hunts awarding ${num(x.reviewXp)}+ XP <span class="muted">— newest ${num(x.limit)} · every account · photo links work for one hour</span></div>
+    <div class="muted">Excluding an account takes it off every board at once. XP, rank and history are not touched, and it can be put back. If they placed in a week that already closed, use "Freeze again" on that week under Leaderboard boards.</div></div>
+    ${hunts}
+    <div class="card"><div class="card-h">Excluded accounts</div>${excluded}</div>`,
+    "source: hunts · hunt_scans · profile_reports");
+}
+
 // ── Composer ─────────────────────────────────────────────────────────────────
 
 const TOC: Array<[string, string]> = [
   ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["onv2", "Onboarding V2"], ["newphones", "New phones"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
   ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["deepa", "Deep Analysis"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"],
-  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["huntxp", "Hunt XP"], ["huntlevels", "Hunt levels"], ["progress", "Progress"],
+  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["huntxp", "Hunt XP"], ["huntlevels", "Hunt levels"], ["lb", "Leaderboard"], ["lbboards", "Boards"], ["lbint", "Leaderboard integrity"], ["lbreview", "Leaderboard review"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
 ];
 
@@ -1431,7 +1628,10 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
     renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderRetentionSegments(metrics.retentionSegments), renderSessionsV2(metrics.sessionsV2), renderAppVersions(metrics.appVersions),
     renderScans(metrics.scans), renderScanReliability(metrics.scanReliability), renderCompsInspector(metrics.compsInspector), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
     // V3 product analytics, preserved and demoted below the business funnel.
-    renderTrust(metrics.trust), renderHunt(metrics.hunt), renderHuntXp(metrics.huntXp), renderHuntLevels(metrics.huntLevels), renderProgress(metrics.progress), renderAchievements(metrics.achievements),
+    renderTrust(metrics.trust), renderHunt(metrics.hunt), renderHuntXp(metrics.huntXp), renderHuntLevels(metrics.huntLevels),
+    renderLeaderboard(metrics.leaderboard, metrics.leaderboardImpact), renderLeaderboardBoards(metrics.leaderboardBoards),
+    renderLeaderboardIntegrity(metrics.leaderboardIntegrity), renderLeaderboardReview(metrics.leaderboardReview),
+    renderProgress(metrics.progress), renderAchievements(metrics.achievements),
     renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold),
     renderDataQualityV4(metrics.dataQualityV4),
   ].join("");
@@ -1508,6 +1708,11 @@ details.more[open]>summary{margin-bottom:8px}
 .sev{display:inline-block;font-size:9.5px;font-weight:600;padding:1px 6px;border-radius:3px;letter-spacing:.3px}
 .sev-conflict{background:#4a1d1d;color:#ff9b8a}.sev-warning{background:#33291a;color:#e0b46a}.sev-info{background:#1f2f3b;color:#7fb8e8}
 .ulink{color:var(--fg);text-decoration:underline;text-decoration-color:var(--line)}.ulink:hover{text-decoration-color:var(--accent)}
+.lbact{display:inline-block;margin:2px 4px 2px 0}.lbacts{margin-top:6px}
+.lbact button{background:#1b2a20;color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:3px 9px;font-size:11.5px;font-weight:600;cursor:pointer}
+.lbact button:hover{border-color:var(--accent)}.lbact button.danger{background:#3a1c1c;border-color:#6b2b2b;color:#ffb3a6}
+.lbphotos{display:flex;gap:4px;flex-wrap:wrap}.lbphotos img{height:84px;width:auto;border-radius:4px;border:1px solid var(--line);display:block}
+.lbpic{height:64px;width:64px;object-fit:cover;border-radius:50%;border:1px solid var(--line);display:block}
 .xsearch{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
 .xsearch input{flex:1;min-width:220px;background:#0b110e;border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:5px 8px;font-size:12.5px;font-family:inherit}
 .xsearch button{background:var(--accent);color:#14200f;border:0;border-radius:4px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer}

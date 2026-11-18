@@ -10,15 +10,20 @@
  *                          XP, purchases.
  *
  * ── Where the numbers come from ─────────────────────────────────────────────
- * XP and rank come from `xp_profiles`, the table the app syncs each signed-in
- * user's Hunt profile to (lib/xpSync.ts). It holds CURRENT totals only, so
- * the lifetime cards ignore the date range. Rank is recomputed from total XP
- * with the same ladder the app uses (shared/hunt/ranks.ts, one copy for the
- * app, the server and this dashboard) rather than trusting the stored rank name.
+ * XP and rank come from `xp_profiles`. It holds CURRENT totals only, so the
+ * lifetime cards ignore the date range. Rank is recomputed from total XP with
+ * the same ladder the app uses (shared/hunt/ranks.ts, one copy for the app,
+ * the server and this dashboard) rather than trusting the stored rank name.
  *
- * "XP earned in range" and "rank-ups in range" need the `hunt_xp_awarded`
- * event, which the app logs from the build after 2.2. Until any such event
- * exists those cards say so instead of showing zero.
+ * "XP earned in range" and "rank-ups in range" come from the SERVER's record
+ * of every Hunt it scored (the `hunts` table, written in the same transaction
+ * as the XP ledger), as soon as it holds one. Before that (the server tables
+ * not created yet, or no Hunt scored yet) they fall back to the app's
+ * `hunt_xp_awarded` event, and say which source they used. The app's event
+ * misses Hunts finished offline; the server's record cannot.
+ *
+ * Streaks are the WEEKLY streak the server keeps (the one that pays XP) once
+ * its columns exist; before that, the old daily streak.
  *
  * Brands unlocked come from `user_brand_discoveries` (the Brand Compendium),
  * counted as distinct brands per account.
@@ -38,6 +43,7 @@ import { centralDay } from "./dashboardDates";
 // THE ladder: the same constant the app and Hunt completion use.
 import { RANK_LADDER, rankIndexFor } from "../shared/hunt/ranks";
 import type { V4Data, Metric } from "./founderMetricsV4";
+import type { LbData } from "./founderLeaderboard";
 
 type Ev = V4Data["rawEvents"][number];
 
@@ -62,6 +68,9 @@ export interface XpRow {
   completed_hunts: number | string | null;
   hunt_streak: number | string | null;
   last_hunt_date: string | null;
+  /** Server-kept (hunt_xp_phase1.sql). Undefined before those columns exist. */
+  week_streak?: number | string | null;
+  last_streak_week?: string | null;
 }
 
 export interface HuntData {
@@ -75,9 +84,11 @@ export interface HuntData {
 /** Two queries. Each fails on its own; a failure is reported, never read as zero. */
 export async function loadHuntData(): Promise<HuntData> {
   const out: HuntData = { xp: [], brandsByUser: new Map() };
+  const XP_COLS = "user_id, total_xp, current_rank, completed_hunts, hunt_streak, last_hunt_date";
   const [xp, brands] = await Promise.allSettled([
-    fetchAll<XpRow>("xp_profiles",
-      "user_id, total_xp, current_rank, completed_hunts, hunt_streak, last_hunt_date", { order: ["user_id"] }),
+    // The weekly-streak columns arrive with hunt_xp_phase1.sql. Without them, the old columns alone.
+    fetchAll<XpRow>("xp_profiles", `${XP_COLS}, week_streak, last_streak_week`, { order: ["user_id"] })
+      .catch(() => fetchAll<XpRow>("xp_profiles", XP_COLS, { order: ["user_id"] })),
     fetchAll<{ user_id: string | null; brand_id: string | null }>("user_brand_discoveries",
       "user_id, brand_id", { order: ["user_id", "brand_id"] }),
   ]);
@@ -131,9 +142,42 @@ function xpEvents(d: V4Data) {
   return { ever, inRange };
 }
 
+/** One Hunt the server scored, with the account's XP either side of it. */
+export interface ServerAward { userId: string; at: string; xp: number; before: number; after: number; rankedUp: boolean; rankAfter: string }
+
+/**
+ * Server-scored Hunts in the selected range, for accounts in scope. Null when
+ * the server holds none yet (so the caller can fall back to the app's event).
+ *
+ * The totals either side of a Hunt are worked back from the account's XP today:
+ * today's total minus everything earned after that Hunt.
+ */
+export function serverAwards(d: V4Data, h: HuntData, lb: LbData | null | undefined): ServerAward[] | null {
+  if (!lb || lb.errors.hunts || h.xpError) return null;
+  const mine = lb.hunts.filter(x => d.base.profileIds.has(x.user_id));
+  if (mine.length === 0) return null;
+  const total = new Map(h.xp.map(r => [r.user_id, n0(r.total_xp)]));
+  const byUser = new Map<string, typeof mine>();
+  for (const x of mine) (byUser.get(x.user_id) ?? byUser.set(x.user_id, []).get(x.user_id)!).push(x);
+  const { startMs, endMs } = d.window;
+  const out: ServerAward[] = [];
+  for (const [uid, list] of byUser) {
+    list.sort((a, b) => Date.parse(b.completed_at) - Date.parse(a.completed_at));   // newest first
+    let after = total.get(uid) ?? list.reduce((a, x) => a + n0(x.xp), 0);
+    for (const x of list) {
+      const xp = n0(x.xp), before = Math.max(0, after - xp), t = Date.parse(x.completed_at);
+      if ((startMs == null || t >= startMs) && (endMs == null || t < endMs)) {
+        out.push({ userId: uid, at: x.completed_at, xp, before, after, rankedUp: rankIndexFor(after) > rankIndexFor(before), rankAfter: HUNT_RANKS[rankIndexFor(after)].rank });
+      }
+      after = before;
+    }
+  }
+  return out;
+}
+
 // ── Hunt XP ──────────────────────────────────────────────────────────────────
 
-export function getHuntXp(d: V4Data, h: HuntData) {
+export function getHuntXp(d: V4Data, h: HuntData, lb?: LbData | null) {
   const rows = scopedXp(d, h);
   const accounts = d.base.profileIds.size;
   const xpOf = (r: XpRow) => n0(r.total_xp);
@@ -144,10 +188,18 @@ export function getHuntXp(d: V4Data, h: HuntData) {
   const huntsOf = (r: XpRow) => n0(r.completed_hunts);
   const hunters = rows.filter(r => huntsOf(r) > 0);
 
-  // A streak is alive if the last hunt was today or yesterday (Central).
   const today = centralDay(d.now), yesterday = centralDay(new Date(d.now.getTime() - DAY));
-  const live = rows.filter(r => n0(r.hunt_streak) > 0 && !!r.last_hunt_date && r.last_hunt_date.slice(0, 10) >= yesterday);
-  const liveStreaks = live.map(r => n0(r.hunt_streak));
+  // The weekly streak (the one that pays XP) once the server keeps it and says which week it is.
+  // It is alive if the last streak week is this week or last week. Before that: the old daily streak.
+  const weekNow = lb && !lb.errors.live && lb.live ? lb.live.weekStart : null;
+  const weekly = !!weekNow && rows.some(r => r.week_streak !== undefined);
+  const lastWeek = weekNow ? new Date(Date.parse(`${weekNow}T00:00:00Z`) - 7 * DAY).toISOString().slice(0, 10) : null;
+  const streakOf = (r: XpRow) => weekly ? n0(r.week_streak) : n0(r.hunt_streak);
+  const isLive = (r: XpRow) => weekly
+    ? n0(r.week_streak) > 0 && !!r.last_streak_week && String(r.last_streak_week).slice(0, 10) >= lastWeek!
+    : n0(r.hunt_streak) > 0 && !!r.last_hunt_date && r.last_hunt_date.slice(0, 10) >= yesterday;
+  const live = rows.filter(isLive);
+  const liveStreaks = live.map(streakOf);
 
   const stale = rows.filter(r => r.current_rank && r.current_rank !== HUNT_RANKS[rankIndexFor(xpOf(r))].rank).length;
 
@@ -155,13 +207,20 @@ export function getHuntXp(d: V4Data, h: HuntData) {
     .map(r => ({
       userId: r.user_id, name: userName(d, r.user_id), xp: xpOf(r),
       rank: HUNT_RANKS[rankIndexFor(xpOf(r))].rank, rankNumber: rankIndexFor(xpOf(r)) + 1,
-      hunts: huntsOf(r), streak: n0(r.hunt_streak), lastHunt: r.last_hunt_date,
-      streakLive: n0(r.hunt_streak) > 0 && !!r.last_hunt_date && r.last_hunt_date.slice(0, 10) >= yesterday,
+      hunts: huntsOf(r), streak: streakOf(r), lastHunt: r.last_hunt_date,
+      streakLive: isLive(r),
     }));
 
-  const ev = xpEvents(d);
-  const earned = ev.inRange.map(e => n0(metaNum(e, "xp_earned")));
-  const earnedUsers = new Set(ev.inRange.filter(e => n0(metaNum(e, "xp_earned")) > 0).map(e => e.user_id!));
+  // In range: the server's own record when it has one, else the app's event.
+  const server = serverAwards(d, h, lb);
+  const ev = server
+    ? { ever: true, inRange: [] as Ev[] }
+    : xpEvents(d);
+  const earned = server ? server.map(a => a.xp) : ev.inRange.map(e => n0(metaNum(e, "xp_earned")));
+  const earnedUsers = server
+    ? new Set(server.filter(a => a.xp > 0).map(a => a.userId))
+    : new Set(ev.inRange.filter(e => n0(metaNum(e, "xp_earned")) > 0).map(e => e.user_id!));
+  const awards = server ? server.length : ev.inRange.length;
   const notYet = { available: false, note: "Starts with the app build after 2.2 (hunt_xp_awarded)" };
 
   return {
@@ -174,17 +233,20 @@ export function getHuntXp(d: V4Data, h: HuntData) {
     maxXp: exact(xps.length ? Math.max(...xps) : null),
     huntsCompleted: exact(rows.reduce((a, r) => a + huntsOf(r), 0)),
     hunters: rateOf(hunters.length, accounts),
-    liveStreaks: exact(live.length, { note: `last hunt ${yesterday} or later` }),
+    liveStreaks: exact(live.length, { note: weekly ? `hunted in the week of ${lastWeek} or since` : `last hunt ${yesterday} or later` }),
     longestLiveStreak: exact(liveStreaks.length ? Math.max(...liveStreaks) : null),
+    streakUnit: weekly ? "weeks" : "days",
+    inRangeSource: server ? "server" : "app",
+    weekStart: weekNow,
     staleRankNames: stale,
     top,
     events: {
       ever: ev.ever,
       xpInRange: ev.ever ? exact(earned.reduce((a, b) => a + b, 0)) : ({ value: null, trust: "NOT_TRACKED", ...notYet } as Metric),
-      awardsInRange: ev.ever ? exact(ev.inRange.length) : ({ value: null, trust: "NOT_TRACKED", ...notYet } as Metric),
+      awardsInRange: ev.ever ? exact(awards) : ({ value: null, trust: "NOT_TRACKED", ...notYet } as Metric),
       earnersInRange: ev.ever ? exact(earnedUsers.size) : ({ value: null, trust: "NOT_TRACKED", ...notYet } as Metric),
       perHunt: ev.ever
-        ? ({ value: ev.inRange.length ? earned.reduce((a, b) => a + b, 0) / ev.inRange.length : null, trust: "DERIVED", d: ev.inRange.length } as Metric)
+        ? ({ value: awards ? earned.reduce((a, b) => a + b, 0) / awards : null, trust: "DERIVED", d: awards } as Metric)
         : ({ value: null, trust: "NOT_TRACKED", ...notYet } as Metric),
     },
     today,
@@ -193,7 +255,7 @@ export function getHuntXp(d: V4Data, h: HuntData) {
 
 // ── Hunt Levels ──────────────────────────────────────────────────────────────
 
-export function getHuntLevels(d: V4Data, h: HuntData) {
+export function getHuntLevels(d: V4Data, h: HuntData, lb?: LbData | null) {
   const rows = scopedXp(d, h);
   const counts = HUNT_RANKS.map(() => 0);
   let zeroXp = 0;
@@ -202,9 +264,16 @@ export function getHuntLevels(d: V4Data, h: HuntData) {
     if (xp === 0) zeroXp++;
     counts[rankIndexFor(xp)]++;
   }
-  const ev = xpEvents(d);
+  const server = serverAwards(d, h, lb);
+  const ev = server ? { ever: true, inRange: [] as Ev[] } : xpEvents(d);
   const upsByRank = new Map<string, number>();
   let rankUps = 0;
+  // One Hunt can cross several ranks; it counts once, under the rank it landed on.
+  for (const a of server ?? []) {
+    if (!a.rankedUp) continue;
+    rankUps++;
+    upsByRank.set(a.rankAfter, (upsByRank.get(a.rankAfter) ?? 0) + 1);
+  }
   for (const e of ev.inRange) {
     if (meta(e, "ranked_up") !== true) continue;
     rankUps++;
@@ -228,6 +297,7 @@ export function getHuntLevels(d: V4Data, h: HuntData) {
     medianRank: med === null ? null : { number: med + 1, rank: HUNT_RANKS[med].rank },
     rankUpsInRange: ev.ever ? exact(rankUps) : ({ value: null, trust: "NOT_TRACKED", available: false, note: "Starts with the app build after 2.2" } as Metric),
     eventsEver: ev.ever,
+    inRangeSource: server ? "server" : "app",
   };
 }
 

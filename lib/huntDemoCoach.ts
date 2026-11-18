@@ -26,10 +26,17 @@ import { onHuntDemoDeactivated } from '@/lib/huntDemoMode';
 export type CoachScreen = 'hunt' | 'hunt-active' | 'demo-camera' | 'hunt-item-detail' | 'hunt-removed' | 'hunt-complete';
 
 /**
- * The leaderboard is a separate project and is not built. Until it is, the teaser says
- * so ("COMING SOON") instead of promising something the app cannot do. Flip when it ships.
+ * The one switch for the Hunt Leaderboard (app/hunt-leaderboard.tsx).
+ *
+ *   true    the HUNT LEADERBOARD button, the Home card link and the Hunt complete
+ *           link open the leaderboard, and the demo's teaser reads as a feature
+ *   false   the button says "Coming soon", the links are hidden and the teaser
+ *           carries a COMING SOON badge
+ *
+ * It needs the server (leaderboard.view) and its SQL to be live. Set it to false
+ * to ship a build without the leaderboard.
  */
-export const LEADERBOARD_LIVE = false;
+export const LEADERBOARD_LIVE = true;
 
 export type CoachStepId =
   | 'start' | 'scan' | 'shutter' | 'analysis' | 'price' | 'save' | 'another' | 'skip'

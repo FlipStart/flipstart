@@ -631,6 +631,9 @@ export default function RootLayout() {
             <Stack.Screen name="scan-detail" options={{ animation: "fade" }} />
             <Stack.Screen name="hunt-history" options={{ animation: "fade" }} />
             <Stack.Screen name="hunt-item-detail" options={{ animation: "fade" }} />
+            {/* Hunt Leaderboard. Pushed over the Hunt start screen (or Home), so
+                Back and its Start Hunt button return to where it was opened. */}
+            <Stack.Screen name="hunt-leaderboard" options={{ headerShown: false, animation: "slide_from_right" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="hunt-demo-camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal", gestureEnabled: false }} />
             <Stack.Screen name="oauth/callback" />

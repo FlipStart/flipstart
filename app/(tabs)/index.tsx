@@ -46,6 +46,7 @@ import { registerCaptureListener, unregisterCaptureListener } from '@/lib/captur
 import { needsOnboarding, restoreSignedInDevice } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
 import { useHuntOnboarding } from '@/lib/useHuntOnboarding';
+import { LEADERBOARD_LIVE } from '@/lib/huntDemoCoach';
 import { HuntAttentionDot } from '@/components/hunt/HuntAttentionDot';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -586,6 +587,21 @@ export default function HomeScreen() {
             <View style={s.huntHeadRow}>
               <MaterialIcons name="pets" size={18} color="#1A1A1A" />
               <Text style={s.huntHeadTitle}>Hunt Mode</Text>
+              {/* Straight to the Hunt Leaderboard (app/hunt-leaderboard.tsx). */}
+              {LEADERBOARD_LIVE && (
+                <Pressable
+                  onPress={() => go({ pathname: '/hunt-leaderboard', params: { source: 'home' } })}
+                  hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel="Hunt Leaderboard"
+                  style={({ pressed }) => [s.huntLbLink, pressed && { opacity: 0.6 }]}
+                  testID="home-hunt-leaderboard"
+                >
+                  <MaterialIcons name="emoji-events" size={14} color={GOLD} />
+                  <Text style={s.huntLbLinkText}>Leaderboard</Text>
+                  <MaterialIcons name="chevron-right" size={16} color={MUTED} />
+                </Pressable>
+              )}
             </View>
             <Text style={s.huntTagline}>Turn every thrift trip into a challenge.</Text>
 
@@ -944,6 +960,8 @@ const s = StyleSheet.create({
     overflow: 'hidden',
   },
   huntHeadRow:   { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  huntLbLink:     { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 3 },
+  huntLbLinkText: { fontSize: 12.5, fontWeight: '700', color: BROWN },
   huntHeadTitle: { fontFamily: FONTS.serif, fontSize: 17, fontWeight: '800', color: DARK },
   huntTagline:   { fontSize: 12, fontWeight: '600', fontStyle: 'italic', color: BROWN, marginTop: -4 },
   huntBullets:   { gap: 6 },

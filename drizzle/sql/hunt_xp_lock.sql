@@ -21,8 +21,40 @@
 --
 -- Safe to run more than once: A and B skip anyone already done, C only sets
 -- the end date if it is still empty, D is a no-op the second time.
+--
+-- It can stop itself. Until this file runs the app can still write its own XP,
+-- so a number in xp_profiles is only what a phone said, and step A is about to
+-- make it permanent on the All-Time board. If any account holds more than
+-- 5,000 XP that the server never awarded, the file stops before changing
+-- anything and names the accounts (the highest real total in November 2026 was
+-- 528). Look at them, then either correct them or raise the limit in step 0.
 
 begin;
+
+-- ── 0. Look before importing ────────────────────────────────────────────────
+do $$
+declare
+  v_limit constant integer := 5000;     -- raise only after looking at the accounts it names
+  v_count integer;
+  v_who   text;
+begin
+  select count(*), string_agg(format('%s (%s XP)', t.user_id, t.unexplained), ', ' order by t.unexplained desc) filter (where t.rn <= 5)
+    into v_count, v_who
+    from (
+      select x.user_id,
+             coalesce(x.total_xp, 0) - coalesce(l.xp, 0) as unexplained,
+             row_number() over (order by coalesce(x.total_xp, 0) - coalesce(l.xp, 0) desc) as rn
+        from public.xp_profiles x
+        left join (select user_id, sum(xp)::integer as xp from public.xp_ledger group by user_id) l
+               on l.user_id = x.user_id
+       where coalesce(x.total_xp, 0) - coalesce(l.xp, 0) > v_limit
+    ) t;
+  if v_count > 0 then
+    raise exception using
+      message = format('Stopped. Nothing was changed. %s account(s) hold more than %s XP that the server never awarded: %s', v_count, v_limit, v_who),
+      hint = 'Look at each one in xp_profiles and in the User Explorer. Then correct its total_xp, or raise v_limit in step 0 of this file, and run the file again.';
+  end if;
+end $$;
 
 -- ── A. Current XP into the ledger ───────────────────────────────────────────
 -- One 'legacy_import' row per account: its XP today, minus anything the server
@@ -59,7 +91,7 @@ update public.hunt_config
 drop policy if exists "Users can insert own xp profile" on public.xp_profiles;
 drop policy if exists "Users can update own xp profile" on public.xp_profiles;
 drop policy if exists "Users can delete own xp profile" on public.xp_profiles;
-revoke insert, update, delete on public.xp_profiles from anon, authenticated;
+revoke insert, update, delete, truncate, references, trigger on public.xp_profiles from anon, authenticated;
 
 commit;
 

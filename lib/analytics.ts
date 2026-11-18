@@ -171,6 +171,8 @@ function categoryFor(eventName: string): string | null {
   if (eventName.startsWith("app_") || eventName.startsWith("session")) return "session";
   if (eventName.startsWith("scan_") || eventName === "listing_generated") return "scan";
   if (eventName.startsWith("hunt_")) return "hunt";
+  // Its own category, so "used Hunt" is never inferred from looking at a board.
+  if (eventName.startsWith("leaderboard_")) return "leaderboard";
   if (eventName.startsWith("progress_") || eventName.startsWith("achievement") ||
       eventName.startsWith("brand_") || eventName.startsWith("diamond")) return "progress";
   return null;

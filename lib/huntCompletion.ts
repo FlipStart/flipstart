@@ -49,8 +49,13 @@ export interface ServerCompletion {
 
 export type SendOutcome =
   | { kind: 'done'; result: ServerCompletion }
-  /** Not now (offline, timeout, server busy, session not ready). Queue it. */
-  | { kind: 'retry' }
+  /**
+   * Not now. Queue it. `reachable` is true when the server answered but could
+   * not do THIS Hunt right now, so other waiting Hunts are still worth sending;
+   * false when nothing can be sent at all (offline, timeout, signed out, or the
+   * signed-in account is not the one this Hunt belongs to).
+   */
+  | { kind: 'retry'; reachable: boolean }
   /** The server will never accept this request. Drop it. */
   | { kind: 'rejected' };
 
@@ -86,15 +91,40 @@ let transportOverride: Transport | null = null;
 /** Tests only. */
 export function __setCompletionTransportForTests(t: Transport | null): void { transportOverride = t; }
 
+// The request is signed with whichever account is signed in at the moment it is
+// sent. A Hunt belongs to one account, so before sending, the signed-in account
+// is checked against the Hunt's owner. Without this, a Hunt still waiting from
+// account A could be sent while account B is signed in: the server would find
+// no scans of B's for it, answer "nothing to award", and A's XP would be lost.
+type SessionUid = () => Promise<string | null>;
+let sessionUidOverride: SessionUid | null = null;
+/** Tests only. */
+export function __setCompletionSessionForTests(f: SessionUid | null): void { sessionUidOverride = f; }
+
+async function signedInUid(): Promise<string | null> {
+  if (sessionUidOverride) return sessionUidOverride();
+  try {
+    const { supabase } = await import('@/lib/supabase');
+    return (await supabase?.auth.getSession())?.data?.session?.user?.id ?? null;
+  } catch { return null; }
+}
+
 async function defaultTransport(payload: CompletionPayload): Promise<any> {
   const { createTRPCClient } = await import('@/lib/trpc');
   return createTRPCClient().hunt.complete.mutate({ huntId: payload.huntId, items: payload.items });
 }
 
-/** Ask the server to finish this Hunt. Never throws. */
-export async function sendCompletion(payload: CompletionPayload, timeoutMs = COMPLETION_TIMEOUT_MS): Promise<SendOutcome> {
+/**
+ * Ask the server to finish this Hunt. Never throws.
+ * `forUid` is the account the Hunt belongs to: nothing is sent unless that
+ * account is the one signed in right now.
+ */
+export async function sendCompletion(
+  payload: CompletionPayload, timeoutMs = COMPLETION_TIMEOUT_MS, forUid?: string | null,
+): Promise<SendOutcome> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    if (forUid && (await signedInUid()) !== forUid) return { kind: 'retry', reachable: false };
     const res: any = await Promise.race([
       (transportOverride ?? defaultTransport)(payload),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), timeoutMs); }),
@@ -103,9 +133,10 @@ export async function sendCompletion(payload: CompletionPayload, timeoutMs = COM
       return { kind: 'done', result: res as ServerCompletion };
     }
     if (res?.ok === false && res.reason === 'BAD_REQUEST') return { kind: 'rejected' };
-    return { kind: 'retry' };
+    // The server answered, but not with an award: only "could not do it right now" is about this Hunt alone.
+    return { kind: 'retry', reachable: res?.ok === false && res.reason === 'UNAVAILABLE' };
   } catch {
-    return { kind: 'retry' };
+    return { kind: 'retry', reachable: false };
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -160,8 +191,13 @@ export async function flushCompletions(
   try {
     const queue = await readQueue(uid);
     for (const payload of queue) {
-      const out = await sendCompletion(payload);
-      if (out.kind === 'retry') break;                 // still unreachable: keep the rest for next time
+      const out = await sendCompletion(payload, COMPLETION_TIMEOUT_MS, uid);
+      if (out.kind === 'retry') {
+        // The server could not do this one right now: leave it waiting and try the
+        // others, so one stuck Hunt never holds up the rest.
+        if (out.reachable) continue;
+        break;                                         // nothing can be sent: keep everything for next time
+      }
       if (out.kind === 'done') {
         try { await onDone(payload.huntId, out.result); } catch { /* the award stands regardless */ }
       }

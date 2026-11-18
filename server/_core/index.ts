@@ -9,6 +9,8 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { trackResponse } from "../shutdown";
+import { startWeeklyResultsJob } from "../leaderboard/weeklyResults";
+import { startAvatarSweepJob } from "../leaderboard/avatarSweep";
 import { createContext } from "./context";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -295,7 +297,9 @@ async function startServer() {
       let base: any;
       try { base = await loadBaseData(); } catch { base = undefined; }
       const v3 = await getFounderDashboardV3Metrics(base);
-      const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3, scope, process.env, range, base, explorer);
+      // The answer to a leaderboard button just pressed (set by the redirect below).
+      const lbmsg = typeof req.query.lbmsg === "string" ? req.query.lbmsg.slice(0, 300) : null;
+      const metrics = v3?.configured === false || v3?.fatal ? v3 : await getFounderDashboardV4Metrics(v3, scope, process.env, range, base, explorer, { leaderboardMessage: lbmsg });
       // Sold comps inspector lives in this process (DATA_DIR), not Supabase.
       if (metrics && typeof metrics === "object" && !metrics.fatal && metrics.configured !== false) {
         try { metrics.compsInspector = require("../comps/inspector").inspectorSnapshot(); }
@@ -310,6 +314,30 @@ async function startServer() {
   };
   app.get("/api/dev/founder-dashboard-v3", founderDashboard);
   app.post("/api/dev/founder-dashboard-v3", founderDashboard);
+
+  /**
+   * The Leaderboard review buttons on the founder dashboard: exclude an
+   * account, clear or remove a reported picture or name, close cheating
+   * reports, freeze a week again. Same secret as the dashboard, POST only.
+   * It runs one founder function in Postgres, then sends the browser back to
+   * the dashboard (same scope and date range) with the answer to show.
+   */
+  app.post("/api/dev/founder-leaderboard-action", async (req, res) => {
+    if (!secretOk(req.query.secret, process.env.FOUNDER_DASHBOARD_SECRET)) {
+      return res.status(401).send("<h1>401 Unauthorized</h1>");
+    }
+    const { runLeaderboardAction } = require("../founderLeaderboard");
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const out = await runLeaderboardAction({ action: body.action, userId: body.user, week: body.week });
+    const back = new URLSearchParams();
+    for (const k of ["secret", "scope", "preset", "from", "to"]) {
+      const v = req.query[k];
+      if (typeof v === "string" && v) back.set(k, v);
+    }
+    back.set("lbmsg", out.message);
+    res.setHeader("Cache-Control", "no-store");
+    res.redirect(303, `/api/dev/founder-dashboard-v3?${back.toString()}#lbreview`);
+  });
 
   /**
    * Confidence report — why scans land on the low-confidence screens.
@@ -569,6 +597,11 @@ async function startServer() {
   server.listen(port, "0.0.0.0", () => {
     console.log(`[api] server listening on http://0.0.0.0:${port}`);
   });
+
+  // Freeze the final result of each finished leaderboard week (Phase 4).
+  startWeeklyResultsJob();
+  // Once a day, delete public profile pictures no account uses any more (Phase 6).
+  startAvatarSweepJob();
 }
 
 startServer().catch(console.error);

@@ -48,7 +48,7 @@ import {
 } from '@/lib/majorAchievementStorage';
 import { isHuntDemoActive, isDemoExiting, getHuntDemoXp, beginDemoExit, endDemoExit } from '@/lib/huntDemoMode';
 import { getDemoBundle, endDemoHunt } from '@/lib/huntDemoSession';
-import { advanceCoach, type CoachStepId } from '@/lib/huntDemoCoach';
+import { advanceCoach, LEADERBOARD_LIVE, type CoachStepId } from '@/lib/huntDemoCoach';
 import { logHuntOnboardingChoice } from '@/lib/huntOnboardingAnalytics';
 import { CoachOverlay } from '@/components/hunt/onboarding/coach/CoachOverlay';
 import { useCoach } from '@/components/hunt/onboarding/coach/useCoach';
@@ -272,7 +272,13 @@ export default function HuntCompleteScreen() {
   const totalScanned  = bundle.keptItemCount + bundle.removedItemCount;
   const currentRank   = xpResult?.newRank ?? getCurrentRank(0);
   const nextRank      = getNextRank(xpResult?.newTotalXp ?? 0);
-  const xpEarned      = xpResult?.totalXpEarned ?? bundle.xpEarned ?? 0;
+  // XP comes from the server. When it couldn't be reached at save time the Hunt
+  // is saved with its XP pending; the saved Hunt flips to the real number once the
+  // server answers, so the bundle (not the stale in-memory result) decides.
+  const xpPending     = !demo && bundle.xpPending === true;
+  const xpSettled     = xpResult && !xpResult.pending ? xpResult.totalXpEarned : undefined;
+  const xpEarned      = xpPending ? 0 : (xpSettled ?? bundle.xpEarned ?? 0);
+  const cappedFinds   = xpPending ? 0 : (xpResult?.cappedBigFinds ?? 0);
   const newTotalXp    = xpResult?.newTotalXp ?? 0;
   const didRankUp     = xpResult?.didRankUp ?? false;
 
@@ -378,9 +384,19 @@ export default function HuntCompleteScreen() {
         <View style={s.xpSection} onLayout={e => { xpSectionY.current = e.nativeEvent.layout.y; }}>
           {/* Header row: YOU EARNED + XP amount */}
           <View ref={coachXpRef as any} collapsable={false} style={s.xpHeaderRow}>
-            <Text style={s.xpLabel}>YOU EARNED</Text>
-            <Text style={s.xpAmount}>+{xpEarned} XP</Text>
+            <Text style={s.xpLabel}>{xpPending ? 'XP PENDING' : 'YOU EARNED'}</Text>
+            <Text style={s.xpAmount} testID="hunt-complete-xp">{xpPending ? '…' : `+${xpEarned} XP`}</Text>
           </View>
+          {xpPending && (
+            <Text style={s.xpNote} testID="hunt-complete-xp-pending">
+              Your Hunt is saved. We couldn't reach FlipStart to add up your XP, so it will be added as soon as you're back online.
+            </Text>
+          )}
+          {cappedFinds > 0 && (
+            <Text style={s.xpNote} testID="hunt-complete-xp-capped">
+              {cappedFinds === 1 ? '1 big find' : `${cappedFinds} big finds`} counted at a capped value. For full XP on a find worth over $250, take the photo in the app and add a tag or detail photo.
+            </Text>
+          )}
 
           <View ref={coachRankRef as any} collapsable={false}>
           {/* Rank row: icon + rank name + level up badge */}
@@ -431,6 +447,18 @@ export default function HuntCompleteScreen() {
           >
             <Text style={s.ghostBtnText}>View Hunt History</Text>
           </Pressable>
+
+          {/* Where this Hunt's XP put you. */}
+          {LEADERBOARD_LIVE && (
+            <Pressable
+              onPress={() => router.push({ pathname: '/hunt-leaderboard', params: { source: 'hunt_complete' } } as any)}
+              style={({ pressed }) => [s.ghostBtn, pressed && { opacity: 0.65 }]}
+              accessibilityRole="button"
+              testID="hunt-complete-leaderboard"
+            >
+              <Text style={s.ghostBtnText}>View Hunt Leaderboard</Text>
+            </Pressable>
+          )}
         </View>}
 
       </ScrollView>
@@ -590,6 +618,9 @@ const s = StyleSheet.create({
   },
   xpAmount: {
     fontFamily: FONTS.serif, fontSize: 26, fontWeight: '900', color: GOLD_L,
+  },
+  xpNote: {
+    fontSize: 12.5, lineHeight: 18, color: BROWN, marginTop: -4, marginBottom: 12,
   },
   rankRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12,

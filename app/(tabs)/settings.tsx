@@ -34,6 +34,7 @@ import { getClearHistoryImpact, type ClearHistoryImpact, type ImpactContext } fr
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { ClearHistoryModal } from '@/components/DeleteImpactModal';
 import { FONTS } from '@/constants/typography';
+import { BlockedHuntersModal } from '@/components/hunt/leaderboard/BlockedHuntersModal';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Camera } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
@@ -71,6 +72,7 @@ export default function SettingsScreen() {
   const ent = useEntitlement();
   const { openProPaywall } = useProPaywall();
   const [restoring, setRestoring] = useState(false);
+  const [showBlocked, setShowBlocked] = useState(false);
 
 
 
@@ -549,6 +551,18 @@ export default function SettingsScreen() {
             sub="Contact the FlipStart team."
             onPress={handleSendFeedback}
           />
+          {/* Hunters blocked on the Hunt Leaderboard, with Unblock. Accounts only. */}
+          {user && (
+            <>
+              <View style={s.cardDivider} />
+              <Row
+                icon="block"
+                label="Blocked Hunters"
+                sub="Hunters you've blocked on the Hunt Leaderboard."
+                onPress={() => setShowBlocked(true)}
+              />
+            </>
+          )}
         </View>
 
         {/* ══════════════ SECTION 4 — ABOUT ════════════════════════════ */}
@@ -760,6 +774,7 @@ export default function SettingsScreen() {
         onCancel={() => { finalValidRef.current = { achievements: [], brands: [], diamonds: [] }; setClearImpact(null); }}
         onConfirm={performClearHistory}
       />
+      <BlockedHuntersModal visible={showBlocked} userId={user?.id ?? null} onClose={() => setShowBlocked(false)} />
     </View>
   );
 }

@@ -34,7 +34,7 @@ import {
 } from '@/lib/huntOnboardingAnalytics';
 import { devResetHuntOnboarding } from '@/lib/huntOnboarding';
 import { isHuntDemoActive } from '@/lib/huntDemoMode';
-import { advanceCoach, getCoachState } from '@/lib/huntDemoCoach';
+import { advanceCoach, getCoachState, LEADERBOARD_LIVE } from '@/lib/huntDemoCoach';
 import { beginDemoHuntSession, endDemoHunt } from '@/lib/huntDemoSession';
 import { CoachOverlay } from '@/components/hunt/onboarding/coach/CoachOverlay';
 import { useCoachRef } from '@/components/hunt/onboarding/coach/coachTargets';
@@ -267,16 +267,17 @@ export default function HuntScreen() {
   };
 
   // ── Hunt Leaderboard ──────────────────────────────────────────────────────
-  // PLACEHOLDER: the leaderboard screen is not built yet, so this only shows a
-  // notice. When the screen exists, replace the Alert with
-  //   router.push('/hunt-leaderboard' as any);
-  // (do NOT route to '/leaderboard' — app/(tabs)/leaderboard.tsx is a stale
-  // copy of an old tab layout, not a real screen.)
+  // Opens app/hunt-leaderboard.tsx on top of this screen, so its Start Hunt
+  // button and Back both land right back here. LEADERBOARD_LIVE (lib/huntDemoCoach)
+  // is the one switch: off, this goes back to a "Coming soon" notice.
+  // Never during the guided demo, which touches nothing real.
   const handleLeaderboard = () => {
+    if (isHuntDemoActive()) return;
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
-    Alert.alert('Hunt Leaderboard', 'Coming soon.');
+    if (!LEADERBOARD_LIVE) { Alert.alert('Hunt Leaderboard', 'Coming soon.'); return; }
+    router.push({ pathname: '/hunt-leaderboard', params: { source: 'hunt' } } as any);
   };
 
   // Always return to Home. Hunt Mode is a stack route pushed over the tabs.

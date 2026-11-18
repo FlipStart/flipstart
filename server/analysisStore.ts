@@ -28,6 +28,14 @@ export interface StoredAnalysis {
    * analyses stored before it existed, which fall back to `ownerId`.
    */
   verifiedOwnerId?: string | null;
+  /**
+   * Written by the server when this scan was made inside a Hunt: which Hunt,
+   * how the app said the front photo was taken, and how many photos arrived.
+   * Finishing a Hunt may rebuild a lost evidence row from this, and ONLY from
+   * this: an analysis without it was never a Hunt scan and can never be turned
+   * into one afterwards (server/hunt/completeHunt.ts).
+   */
+  hunt?: { huntId: string; captureFront: "camera" | "library" | "unknown"; photoCount: number } | null;
   canonical: CanonicalAnalysisV1;
   savedAt: number;
 }

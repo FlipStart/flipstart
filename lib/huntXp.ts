@@ -76,6 +76,8 @@ export interface HuntXpProfile {
   discoveredBrands:     string[];  // display names of all-time discovered brands (kept items only)
   discoveredCategories: string[];  // display names of all-time discovered categories (kept items only)
   appliedHuntIds:       string[];  // hunts already awarded (kept for older app versions)
+  /** Holds the Founding Hunter badge. Set from the server only, and never taken away. */
+  foundingHunter?:      boolean;
 }
 
 export interface HuntXpResult {
@@ -210,6 +212,7 @@ function profileFromServer(p: ServerProfile, previous: HuntXpProfile, huntId?: s
     discoveredBrands:     p.discoveredBrands ?? [],
     discoveredCategories: p.discoveredCategories ?? [],
     appliedHuntIds:       Array.from(applied).slice(-200),
+    foundingHunter:       previous.foundingHunter === true,
   };
 }
 
@@ -242,6 +245,8 @@ export async function syncXpOnLogin(userId: string): Promise<void> {
       ...cloud,
       currentRank:    getCurrentRank(cloud.totalXp ?? 0).rank,
       appliedHuntIds: Array.from(new Set([...(local.appliedHuntIds ?? []), ...(cloud.appliedHuntIds ?? [])])).slice(-200),
+      // The badge is not part of the cloud row the app can read. Keep what the server last said.
+      foundingHunter: local.foundingHunter === true,
     };
     try { await AsyncStorage.setItem(key, JSON.stringify(next)); } catch { /* ok */ }
   } catch (err) {
@@ -281,7 +286,52 @@ export async function applyServerCompletion(huntId: string, r: ServerCompletion,
   if (!r.profile) return;
   const uid = userId ?? _activeUserId;
   const previous = await loadXpProfile(uid ?? undefined);
-  await saveXpProfile(profileFromServer(r.profile, previous, huntId), uid);
+  const next = profileFromServer(r.profile, previous, huntId);
+  if (r.foundingHunter === true) next.foundingHunter = true;
+  await saveXpProfile(next, uid);
+}
+
+// ─── The server's profile, on demand ──────────────────────────────────────────
+
+type ProfileTransport = () => Promise<any>;
+let profileTransportOverride: ProfileTransport | null = null;
+/** Tests only. */
+export function __setProfileTransportForTests(t: ProfileTransport | null): void { profileTransportOverride = t; }
+
+async function defaultProfileTransport(): Promise<any> {
+  const { createTRPCClient } = await import('@/lib/trpc');
+  return createTRPCClient().hunt.profile.query();
+}
+
+export const PROFILE_REFRESH_TIMEOUT_MS = 8_000;
+
+/**
+ * Ask the server for this account's XP profile and bring the phone's copy up to
+ * date. Used by the leaderboard's My Hunt Level, which shows lifetime XP as the
+ * server holds it. Returns the fresh copy, or null when the server could not be
+ * reached (the copy on the phone is left alone). Never throws.
+ */
+export async function refreshXpFromServer(userId: string | null | undefined, timeoutMs = PROFILE_REFRESH_TIMEOUT_MS): Promise<HuntXpProfile | null> {
+  if (!userId || isHuntDemoActive()) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res: any = await Promise.race([
+      (profileTransportOverride ?? defaultProfileTransport)(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), timeoutMs); }),
+    ]);
+    const p = res?.ok === true ? res.profile : null;
+    if (!p || typeof p.totalXp !== 'number' || !Number.isFinite(p.totalXp)) return null;
+    const previous = await loadXpProfile(userId);
+    const next = profileFromServer(p as ServerProfile, previous);
+    // The badge is never taken away, so an answer without it changes nothing.
+    if (res.foundingHunter === true) next.foundingHunter = true;
+    await saveXpProfile(next, userId);
+    return next;
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -325,7 +375,7 @@ export async function applyHuntXp(bundle: HuntBundle): Promise<HuntXpResult> {
   if (!uid) return unchanged(false);
 
   const payload = completionPayloadFor(bundle);
-  const sent = await sendCompletion(payload);
+  const sent = await sendCompletion(payload, undefined, uid);
   if (sent.kind === 'done') {
     await applyServerCompletion(bundle.id, sent.result, uid);
     return resultFromServer(sent.result);

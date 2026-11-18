@@ -112,26 +112,59 @@ export async function buildHuntScanRow(input: RecordHuntScanInput): Promise<Hunt
   };
 }
 
+// Recordings still being written, by analysis id. Finishing a Hunt waits for
+// these (settleRecordings), so a Hunt ended seconds after its last scan is scored
+// from that scan's real evidence row instead of a rebuilt one.
+const recording = new Map<string, Promise<boolean>>();
+
 /**
  * Record a Hunt scan. Fire-and-forget: call without awaiting.
- * One retry, because a row that fails to save costs an honest user that scan's XP.
+ * Tried four times over about five seconds, because a row that fails to save
+ * costs an honest user that scan's XP. (If it still fails, finishing the Hunt
+ * can rebuild the row from the stored analysis while the server still has it.)
  */
-export async function recordHuntScan(input: RecordHuntScanInput): Promise<boolean> {
+export const RECORD_RETRY_WAITS_MS = [400, 1200, 3000] as const;
+
+export function recordHuntScan(input: RecordHuntScanInput): Promise<boolean> {
+  const id = typeof input?.analysisId === "string" ? input.analysisId : "";
+  const job = writeHuntScan(input).finally(() => { if (id && recording.get(id) === job) recording.delete(id); });
+  if (id) recording.set(id, job);
+  return job;
+}
+
+/** Wait until none of these scans is still being recorded, or until the time is up. Never throws. */
+export async function settleRecordings(analysisIds: string[], timeoutMs = 6_000): Promise<void> {
+  const pending = analysisIds.map(id => recording.get(id)).filter((p): p is Promise<boolean> => !!p);
+  if (pending.length === 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled(pending),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); }),
+  ]);
+  if (timer) clearTimeout(timer);
+}
+
+/** Tests only. */
+export function __recordingsInFlightForTests(): number { return recording.size; }
+
+async function writeHuntScan(input: RecordHuntScanInput): Promise<boolean> {
   try {
     if (!input.userId || !validHuntId(input.huntId) || !input.analysisId) return false;
     const row = await buildHuntScanRow(input);
     const store = getHuntStore();
     if (!store) { console.warn("[hunt] scan not recorded: database not configured"); return false; }
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt <= RECORD_RETRY_WAITS_MS.length; attempt++) {
       const ok = await store.insertScan(row).catch(() => false);
       if (ok) {
         console.log(`[hunt] scan recorded hunt=${input.huntId.slice(0, 24)} capture=${row.capture_front}` +
           ` kind=${row.capture_kind ?? "-"} photos=${row.photo_count} hash=${row.photo_hash ? "yes" : "NO"}`);
         return true;
       }
-      await new Promise(r => setTimeout(r, 400));
+      const wait = RECORD_RETRY_WAITS_MS[attempt];
+      if (wait === undefined) break;
+      await new Promise(r => setTimeout(r, wait));
     }
-    console.error(`[hunt] scan NOT recorded after retry, analysis=${input.analysisId}`);
+    console.error(`[hunt] scan NOT recorded after ${RECORD_RETRY_WAITS_MS.length + 1} tries, analysis=${input.analysisId}`);
     return false;
   } catch (err) {
     console.error("[hunt] recordHuntScan threw:", err instanceof Error ? err.message : err);

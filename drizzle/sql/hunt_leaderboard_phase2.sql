@@ -51,8 +51,7 @@ create index if not exists leaderboard_best_hunt_rank
 alter table public.leaderboard_best_hunt enable row level security;
 revoke all on public.leaderboard_best_hunt from anon, authenticated;
 
-create index if not exists xp_profiles_all_time_rank
-  on public.xp_profiles (total_xp desc, xp_reached_at asc, user_id);
+-- (The All-Time board's index is created with leaderboard_page(), further down.)
 
 -- ── 3. What other people may see of an account ──────────────────────────────
 -- profiles is editable by its owner, so nothing in it can be trusted as "safe to
@@ -169,6 +168,109 @@ on conflict (user_id) do nothing;
 --
 -- The result carries real account ids so the SERVER can refresh names and
 -- pictures. The server removes them before anything reaches the app.
+--
+-- How it stays fast with many accounts. Nothing here sorts a whole board:
+--   the page       walks the board's index in order and stops after the page
+--   "ranked"       one count over the board
+--   your position  one count of the accounts ahead of you
+--   the one above  the nearest account ahead of you, read backwards off the index
+-- Each board reads through its own index, which is why leaderboard_rank() puts
+-- its queries together per board. Only fixed text is ever put together: the
+-- board name is checked against the three names first, and every value is
+-- passed as a parameter.
+create index if not exists xp_profiles_all_time_order
+  on public.xp_profiles (total_xp desc, xp_reached_at asc nulls first, user_id);
+drop index if exists public.xp_profiles_all_time_rank;        -- replaced by the index above
+create index if not exists xp_profiles_excluded
+  on public.xp_profiles (user_id) where leaderboard_status = 'excluded';
+
+-- The ranking itself: read-only, and every part of one answer is taken from the
+-- same instant, so a page and "your rank" can never disagree with each other.
+create or replace function public.leaderboard_rank(
+  p_board  text,
+  p_viewer uuid,
+  p_week   date,
+  p_after  integer,
+  p_limit  integer
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_src    text;      -- this board's entries: user_id, metric, reached_at (above zero only)
+  v_first  text;      -- best first
+  v_last   text;      -- the same order, backwards
+  v_seen   text;      -- not excluded by you, not blocked by this viewer
+  v_ahead  text;      -- "ranked above the viewer"
+  v_ranked integer;
+  v_page   jsonb;     -- [{user_id, pos, metric}]
+  v_mine   boolean;
+  v_me_metric  integer;
+  v_me_reached timestamptz;
+  v_me_pos     integer;
+  v_above      integer;
+begin
+  -- $1 = the viewer, $2 = the week, $3 / $4 = the viewer's own number and time,
+  -- $5 / $6 = where the page starts and how long it is.
+  if p_board = 'weekly' then
+    v_src   := 'select w.user_id, w.xp as metric, w.reached_at from public.leaderboard_weekly w where w.week_start = $2 and w.xp > 0';
+    v_first := 'e.metric desc, e.reached_at asc, e.user_id asc';
+    v_last  := 'e.metric asc, e.reached_at desc, e.user_id desc';
+  elsif p_board = 'all_time' then
+    -- XP with no "reached" time yet counts as reached first.
+    v_src   := 'select x.user_id, x.total_xp as metric, x.xp_reached_at as reached_at from public.xp_profiles x where x.total_xp > 0';
+    v_first := 'e.metric desc, e.reached_at asc nulls first, e.user_id asc';
+    v_last  := 'e.metric asc, e.reached_at desc nulls last, e.user_id desc';
+  elsif p_board = 'best_hunt' then
+    v_src   := 'select b.user_id, b.score as metric, b.achieved_at as reached_at from public.leaderboard_best_hunt b where b.score > 0';
+    v_first := 'e.metric desc, e.reached_at asc, e.user_id asc';
+    v_last  := 'e.metric asc, e.reached_at desc, e.user_id desc';
+  else
+    raise exception 'unknown board %', p_board;
+  end if;
+
+  v_seen := ' and e.user_id not in (select h.user_id from public.xp_profiles h where h.leaderboard_status = ''excluded'')'
+         || ' and ($1 is null or e.user_id not in (select k.blocked_id from public.user_blocks k where k.blocker_id = $1))';
+  v_ahead := ' and e.metric >= $3 and (e.metric > $3'
+          || ' or coalesce(e.reached_at, ''-infinity''::timestamptz) < coalesce($4, ''-infinity''::timestamptz)'
+          || ' or (coalesce(e.reached_at, ''-infinity''::timestamptz) = coalesce($4, ''-infinity''::timestamptz) and e.user_id < $1))';
+
+  -- How many are on the board.
+  execute 'select count(*)::integer from (' || v_src || ') e where true' || v_seen
+    into v_ranked using p_viewer, p_week;
+
+  -- The page.
+  execute 'select coalesce(jsonb_agg(jsonb_build_object(''user_id'', t.user_id, ''pos'', $5 + t.n, ''metric'', t.metric) order by t.n), ''[]''::jsonb)'
+       || ' from (select e.user_id, e.metric, row_number() over (order by ' || v_first || ') as n'
+       || '         from (select e.* from (' || v_src || ') e where true' || v_seen
+       || '               order by ' || v_first || ' offset $5 limit $6) e) t'
+    into v_page using p_viewer, p_week, null::integer, null::timestamptz, p_after, p_limit;
+
+  -- The viewer's own place: one more than the number of accounts ahead.
+  if p_viewer is not null then
+    execute 'select true, e.metric, e.reached_at from (' || v_src || ') e where e.user_id = $1' || v_seen
+      into v_mine, v_me_metric, v_me_reached using p_viewer, p_week;
+    if coalesce(v_mine, false) then
+      execute 'select 1 + count(*)::integer from (' || v_src || ') e where true' || v_seen || v_ahead
+        into v_me_pos using p_viewer, p_week, v_me_metric, v_me_reached;
+      execute 'select e.metric from (' || v_src || ') e where true' || v_seen || v_ahead
+           || ' order by ' || v_last || ' limit 1'
+        into v_above using p_viewer, p_week, v_me_metric, v_me_reached;
+    end if;
+  end if;
+
+  return jsonb_build_object(
+    'ranked', v_ranked,
+    'page', v_page,
+    'me', case when coalesce(v_mine, false)
+               then jsonb_build_object('user_id', p_viewer, 'pos', v_me_pos, 'metric', v_me_metric) end,
+    'above', v_above);
+end;
+$$;
+
 create or replace function public.leaderboard_page(
   p_board  text,
   p_viewer uuid,
@@ -185,67 +287,53 @@ declare
   v_week  date := public.hunt_week_start(v_now);
   v_limit integer := least(greatest(coalesce(p_limit, 50), 1), 100);
   v_after integer := greatest(coalesce(p_after, 0), 0);
+  v_rank  jsonb;
+  v_page  jsonb;
+  v_me    jsonb;
+  v_ids   uuid[];
   v_out   jsonb;
 begin
   if p_board not in ('weekly', 'all_time', 'best_hunt') then
     raise exception 'unknown board %', p_board;
   end if;
 
-  -- Anyone holding XP has an identity row (and so a public handle).
-  insert into public.leaderboard_identity (user_id)
-  select x.user_id from public.xp_profiles x
-   where coalesce((to_jsonb(x) ->> 'total_xp')::numeric, 0) > 0
-     and not exists (select 1 from public.leaderboard_identity i where i.user_id = x.user_id)
-  on conflict (user_id) do nothing;
+  v_rank := public.leaderboard_rank(p_board, p_viewer, v_week, v_after, v_limit);
+  v_page := v_rank -> 'page';
+  v_me   := nullif(v_rank -> 'me', 'null'::jsonb);
 
-  with entries as (
-    select w.user_id, w.xp as metric, w.reached_at
-      from public.leaderboard_weekly w
-     where p_board = 'weekly' and w.week_start = v_week
+  -- Anyone about to be shown has an identity row (and so a public handle).
+  -- Looked at first, so an ordinary read writes nothing.
+  select coalesce(array_agg((e ->> 'user_id')::uuid), '{}'::uuid[]) into v_ids
+    from jsonb_array_elements(v_page || case when v_me is null then '[]'::jsonb else jsonb_build_array(v_me) end) e;
+  if exists (select 1 from unnest(v_ids) u(id)
+              where not exists (select 1 from public.leaderboard_identity i where i.user_id = u.id)) then
+    insert into public.leaderboard_identity (user_id)
+    select distinct u.id from unnest(v_ids) u(id)
+    on conflict (user_id) do nothing;
+  end if;
+
+  with shown as (
+    select s.user_id, s.pos, s.metric, true as on_page
+      from jsonb_to_recordset(v_page) as s(user_id uuid, pos integer, metric integer)
     union all
-    select x.user_id, x.total_xp::integer, coalesce(x.xp_reached_at, 'epoch'::timestamptz)
-      from public.xp_profiles x
-     where p_board = 'all_time'
-    union all
-    select b.user_id, b.score, b.achieved_at
-      from public.leaderboard_best_hunt b
-     where p_board = 'best_hunt'
-  ),
-  visible as (
-    select e.* from entries e
-     where e.metric > 0
-       and not exists (select 1 from public.xp_profiles x
-                        where x.user_id = e.user_id and x.leaderboard_status = 'excluded')
-       and (p_viewer is null or not exists (
-             select 1 from public.user_blocks b
-              where b.blocker_id = p_viewer and b.blocked_id = e.user_id))
-  ),
-  ranked as (
-    select v.*, row_number() over (order by v.metric desc, v.reached_at asc, v.user_id asc) as pos
-      from visible v
-  ),
-  wanted as (
-    select r.* from ranked r where r.pos > v_after order by r.pos limit v_limit
-  ),
-  me as (
-    select r.* from ranked r where r.user_id = p_viewer
-  ),
-  shown as (
-    select user_id, pos, metric from wanted
-    union
-    select user_id, pos, metric from me
+    -- The viewer, when they are ranked but not on this page.
+    select m.user_id, m.pos, m.metric, false
+      from jsonb_to_record(coalesce(v_me, '{}'::jsonb)) as m(user_id uuid, pos integer, metric integer)
+     where v_me is not null
+       and not exists (select 1 from jsonb_to_recordset(v_page) as s(user_id uuid) where s.user_id = m.user_id)
   ),
   described as (
     select s.user_id, s.pos, s.metric, i.public_id,
            case when i.name_hidden then null else i.public_name end   as name,
            case when i.avatar_hidden then null else i.avatar_url end as avatar,
-           coalesce((to_jsonb(x) ->> 'total_xp')::numeric, 0)::integer as total_xp,
+           coalesce(x.total_xp, 0) as total_xp,
            (f.user_id is not null) as founding,
            -- The profile changed since the name or picture was last checked, or a
            -- check is still waiting: the server should look again.
            (i.name_source is distinct from (coalesce(p.display_name, '') || E'\n' || coalesce(p.username, ''))
             or coalesce(i.avatar_source, '') is distinct from coalesce(p.avatar_url, '')
-            or i.name_status = 'pending' or i.avatar_status = 'pending') as stale
+            or i.name_status = 'pending' or i.avatar_status = 'pending') as stale,
+           s.on_page
       from shown s
       join public.leaderboard_identity i on i.user_id = s.user_id
       left join public.profiles p on p.id = s.user_id
@@ -257,12 +345,11 @@ begin
     'now', v_now,
     'week_start', v_week,
     'week_ends_at', ((v_week + 7)::timestamp at time zone 'America/Los_Angeles'),
-    'ranked', (select count(*) from ranked),
+    'ranked', coalesce((v_rank ->> 'ranked')::integer, 0),
     'rows', coalesce((
-      select jsonb_agg(to_jsonb(d) order by d.pos)
-        from described d where d.pos > v_after and d.user_id in (select user_id from wanted)), '[]'::jsonb),
-    'me', (select to_jsonb(d) from described d where d.user_id = p_viewer),
-    'above_metric', (select r.metric from ranked r, me where r.pos = me.pos - 1)
+      select jsonb_agg(to_jsonb(d) - 'on_page' order by d.pos) from described d where d.on_page), '[]'::jsonb),
+    'me', (select to_jsonb(d) - 'on_page' from described d where v_me is not null and d.user_id = p_viewer),
+    'above_metric', case when v_me is not null then (v_rank ->> 'above')::integer end
   ) into v_out;
 
   return v_out;
@@ -482,6 +569,7 @@ end $$;
 -- ── 12. App users can call none of this ─────────────────────────────────────
 revoke all on function public.leaderboard_on_hunt() from public, anon, authenticated;
 revoke all on function public.leaderboard_page(text, uuid, integer, integer) from public, anon, authenticated;
+revoke all on function public.leaderboard_rank(text, uuid, date, integer, integer) from public, anon, authenticated;
 revoke all on function public.report_profile(uuid, uuid, text) from public, anon, authenticated;
 revoke all on function public.set_user_block(uuid, uuid, boolean) from public, anon, authenticated;
 revoke all on function public.blocked_users(uuid) from public, anon, authenticated;
@@ -495,6 +583,11 @@ grant execute on function public.set_user_block(uuid, uuid, boolean) to service_
 grant execute on function public.blocked_users(uuid) to service_role;
 grant select, insert, update, delete on public.leaderboard_weekly, public.leaderboard_best_hunt,
   public.leaderboard_identity, public.profile_reports, public.user_blocks to service_role;
+-- The report counter: closed to app users like its table.
+do $$
+begin
+  execute format('revoke all on sequence %s from public, anon, authenticated', pg_get_serial_sequence('public.profile_reports', 'id'));
+end $$;
 
 commit;
 

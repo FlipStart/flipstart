@@ -39,6 +39,7 @@ import { completeHunt, HuntCompletionError } from "./hunt/completeHunt.js";
 import { getHuntStore } from "./hunt/store.js";
 import { getCurrentRank } from "../shared/hunt/ranks";
 import { getLeaderboard, invalidateLeaderboardCache, FALLBACK_NAME } from "./leaderboard/view.js";
+import { allowFor } from "./rateLimit.js";
 import { refreshIdentity, queueIdentityRefresh } from "./leaderboard/identity.js";
 import { getLeaderboardStore } from "./leaderboard/store.js";
 
@@ -597,6 +598,15 @@ const appRouter_scan = router({
               // muid is verified above (a scan needs a session); comps check it.
               verifiedOwnerId: muid ?? null,
               canonical,
+              // A Hunt scan says so here, on the server's own copy. It is the only
+              // thing that lets a lost evidence row be rebuilt when the Hunt ends.
+              hunt: isHuntScan
+                ? {
+                    huntId: input.huntId as string,
+                    captureFront: input.capture?.front ?? "unknown",
+                    photoCount: [images.front, images.detail, images.tag].filter(Boolean).length,
+                  }
+                : null,
             });
 
             // Store for Generate Listings, tied to the owner so the listing
@@ -1541,11 +1551,14 @@ const huntRouter = router({
       const uid = await resolveSupabaseUserId(ctx?.req as never, "hunt-complete");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
       try {
+        // Far above anything the app sends (its offline queue holds 20 at most).
+        if (!allowFor("huntComplete", uid)) return { ok: false as const, reason: "UNAVAILABLE" as const };
         const result = await completeHunt({ userId: uid, huntId: input.huntId, items: input.items });
         if (result.status === "awarded") {
-          // The boards just changed, and this hunter may now be on one: make sure
-          // the name and picture other people would see have been checked.
-          invalidateLeaderboardCache();
+          // This hunter sees their new XP on the boards at once; everyone else
+          // within the 30-second cache. They may now be on a board: make sure the
+          // name and picture other people would see have been checked.
+          invalidateLeaderboardCache(uid);
           queueIdentityRefresh([uid]);
         }
         return { ok: true as const, ...result };
@@ -1559,12 +1572,18 @@ const huntRouter = router({
   profile: publicProcedure.query(async ({ ctx }) => {
     const uid = await resolveSupabaseUserId(ctx?.req as never, "hunt-profile");
     if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+    if (!allowFor("huntProfile", uid)) return { ok: false as const, reason: "UNAVAILABLE" as const };
     const store = getHuntStore();
     const c = store ? await store.context(uid).catch(() => null) : null;
     if (!c) return { ok: false as const, reason: "UNAVAILABLE" as const };
     const p = c.profile;
+    // The badge lives in a server-only table, so this is the app's one way to learn of it.
+    const foundingHunter = store?.isFoundingHunter
+      ? await store.isFoundingHunter(uid).catch(() => false)
+      : false;
     return {
       ok: true as const,
+      foundingHunter,
       profile: {
         totalXp: p.totalXp, currentRank: getCurrentRank(p.totalXp).rank,
         completedHunts: p.completedHunts, huntStreak: p.huntStreak, lastHuntDate: p.lastHuntDate,
@@ -1594,6 +1613,7 @@ const leaderboardRouter = router({
     }))
     .query(async ({ input, ctx }) => {
       const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-view");
+      if (uid && !allowFor("leaderboardView", uid)) return { ok: false as const, reason: "RATE_LIMITED" as const };
       const view = await getLeaderboard({ board: input.board, viewerId: uid, after: input.after, limit: input.limit })
         .catch(() => null);
       if (!view) return { ok: false as const, reason: "UNAVAILABLE" as const };
@@ -1609,8 +1629,12 @@ const leaderboardRouter = router({
     .mutation(async ({ ctx }) => {
       const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-identity");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      // Each check can cost a moderation call, an image re-encode and an upload.
+      // The app asks once per profile save; the leaderboard also re-checks a
+      // changed profile by itself, so nothing is lost by saying "not now".
+      if (!allowFor("identitySync", uid)) return { ok: false as const, reason: "RATE_LIMITED" as const };
       const r = await refreshIdentity(uid);
-      if (r.checked) invalidateLeaderboardCache();
+      if (r.checked) invalidateLeaderboardCache(uid);
       return { ok: true as const, name: r.name, avatar: r.avatar, shownAs: r.publicName ?? FALLBACK_NAME };
     }),
 
@@ -1620,6 +1644,7 @@ const leaderboardRouter = router({
     .mutation(async ({ input, ctx }) => {
       const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-report");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      if (!allowFor("report", uid)) return { ok: false as const, reason: "RATE_LIMITED" as const };
       const r = await getLeaderboardStore()?.report(uid, input.id, input.reason).catch(() => null);
       if (!r) return { ok: false as const, reason: "UNAVAILABLE" as const };
       if (r.hidden) invalidateLeaderboardCache();
@@ -1636,9 +1661,11 @@ const leaderboardRouter = router({
     .mutation(async ({ input, ctx }) => {
       const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-block");
       if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      if (!allowFor("block", uid)) return { ok: false as const, reason: "RATE_LIMITED" as const };
       const r = await getLeaderboardStore()?.setBlock(uid, input.id, input.blocked).catch(() => null);
       if (!r) return { ok: false as const, reason: "UNAVAILABLE" as const };
-      invalidateLeaderboardCache();
+      // Only this viewer's boards change.
+      invalidateLeaderboardCache(uid);
       return r.status === "blocked" || r.status === "unblocked"
         ? { ok: true as const, blocked: r.status === "blocked" }
         : { ok: false as const, reason: "NOT_ALLOWED" as const };
@@ -1648,6 +1675,7 @@ const leaderboardRouter = router({
   blocked: publicProcedure.query(async ({ ctx }) => {
     const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-blocked");
     if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+    if (!allowFor("blockedList", uid)) return { ok: false as const, reason: "RATE_LIMITED" as const };
     const list = await getLeaderboardStore()?.blocked(uid).catch(() => null);
     if (!list) return { ok: false as const, reason: "UNAVAILABLE" as const };
     return {

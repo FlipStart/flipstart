@@ -105,6 +105,8 @@ export interface HuntStore {
   context(userId: string): Promise<XpContext | null>;
   existingHunt(userId: string, huntId: string): Promise<{ result: Record<string, unknown> } | null>;
   award(args: AwardArgs): Promise<AwardOutcome | null>;
+  /** Does this account hold the Founding Hunter badge? false when it cannot be read. */
+  isFoundingHunter?(userId: string): Promise<boolean>;
 }
 
 const arr = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
@@ -149,6 +151,8 @@ const SCAN_COLUMNS =
   "photo_count,capture_front,capture_kind,soft_fail,confident_id,brand,category,item_key,resale,xp_inputs," +
   "kept,final_status,final_rating";
 
+let warnedNoMatchFn = false;
+
 function supabaseStore(sb: any): HuntStore {
   const warn = (what: string, error: any) => console.warn(`[hunt] ${what} failed:`, error?.message ?? error);
   return {
@@ -168,12 +172,27 @@ function supabaseStore(sb: any): HuntStore {
       const { data, error } = await sb.from("hunt_scans").select("photo_hash")
         .eq("user_id", userId).neq("hunt_id", excludeHuntId).gte("scanned_at", sinceIso)
         .not("photo_hash", "is", null).not("final_status", "is", null).neq("final_status", "excluded")
-        .order("scanned_at", { ascending: false }).limit(3000);
+        // The newest 1,000: the most Supabase returns for one request.
+        .order("scanned_at", { ascending: false }).limit(1000);
       if (error) { warn("read own hashes", error); throw new Error("hunt_scans_read_failed"); }
       return (data ?? []).map((r: any) => String(r.photo_hash));
     },
     async othersNearHashes(userId, hashes) {
       if (hashes.length === 0) return [];
+      // The database compares the fingerprints itself and returns only real
+      // matches (at most 3 accounts per photo), so the answer is complete however
+      // many scans exist. See hunt_near_photo_matches in hunt_xp_phase1.sql.
+      const viaRpc = await sb.rpc("hunt_near_photo_matches", { p_user_id: userId, p_hashes: Array.from(new Set(hashes)) });
+      if (!viaRpc.error) {
+        return ((viaRpc.data ?? []) as any[]).filter(r => r?.photo_hash && r?.user_id)
+          .map(r => ({ user_id: String(r.user_id), photo_hash: String(r.photo_hash) }));
+      }
+      // The function is not there yet (the SQL file has not been run again): the
+      // earlier lookup still works, but is only complete while few scans exist.
+      if (!warnedNoMatchFn) {
+        warnedNoMatchFn = true;
+        console.warn("[hunt] hunt_near_photo_matches unavailable, using the table lookup (run hunt_xp_phase1.sql again):", viaRpc.error?.message);
+      }
       const bands: number[][] = [[], [], [], []];
       for (const h of hashes) [0, 4, 8, 12].forEach((o, k) => bands[k].push(parseInt(h.slice(o, o + 4), 16)));
       const clause = bands.map((b, k) => `hash_b${k}.in.(${Array.from(new Set(b)).join(",")})`).join(",");
@@ -186,7 +205,7 @@ function supabaseStore(sb: any): HuntStore {
       const { data, error } = await sb.from("hunt_scans").select("item_key")
         .eq("user_id", userId).neq("hunt_id", excludeHuntId).gte("scanned_at", sinceIso)
         .eq("kept", true).eq("final_status", "normal").in("final_rating", ["legendary", "treasure"])
-        .not("item_key", "is", null).limit(2000);
+        .not("item_key", "is", null).order("scanned_at", { ascending: false }).limit(1000);
       if (error) { warn("read prior finds", error); throw new Error("hunt_scans_read_failed"); }
       return Array.from(new Set((data ?? []).map((r: any) => String(r.item_key))));
     },
@@ -194,6 +213,11 @@ function supabaseStore(sb: any): HuntStore {
       const { data, error } = await sb.rpc("hunt_xp_context", { p_user_id: userId });
       if (error) { warn("read xp context", error); return null; }
       return contextFromRpc(Array.isArray(data) ? data[0] : data);
+    },
+    async isFoundingHunter(userId) {
+      const { data, error } = await sb.from("founding_hunters").select("user_id").eq("user_id", userId).maybeSingle();
+      if (error) { warn("read founding hunter", error); return false; }
+      return Boolean(data);
     },
     async existingHunt(userId, huntId) {
       const { data, error } = await sb.from("hunts").select("result")

@@ -39,6 +39,10 @@ import { getPricingEras, getAppleFeeRate, eraAt, currentEra, eraPrice, ERA_NOTES
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { loadScanOutcomes, buildScanReliability } from "./scanReliability";
 import { loadHuntData, getHuntXp, getHuntLevels, getNewPhones, type HuntData } from "./founderHuntJourney";
+import {
+  loadLeaderboardData, getLeaderboardUsage, getLeaderboardImpact, getLeaderboardBoards, getLeaderboardIntegrity,
+  getLeaderboardReview, type LbData,
+} from "./founderLeaderboard";
 import { loadUserExtras, summarizeOutcomes, storeTimeline, buildGlance } from "./founderUserLookup";
 import { derivePlan, type AccountUsage, type PlanState,
   FREE_LIFETIME_SCANS, MONTHLY_SCANS, ANNUAL_SCANS } from "./monetization/policy";
@@ -3563,9 +3567,10 @@ export interface AttentionItem {
 
 /**
  * Rules over numbers already on the page — no model, no guessing. Each rule
- * states its threshold so it can be read and argued with. At most five,
+ * states its threshold so it can be read and argued with. At most seven,
  * most urgent first.
  */
+export const ATTENTION_MAX_ITEMS = 7;
 export const ATTENTION_RULES = {
   activationBelow: 0.5,      // fewer than half have scanned
   activationMinUsers: 10,    // below this, a rate is too noisy to call out
@@ -3647,8 +3652,42 @@ export function getFounderAttention(m: any): AttentionItem[] {
     out.push({ level: "opportunity", icon: "🔥", title: "Power user",
       detail: `${pu.user ?? "One user"} (${pu.plan}) completed ${pu.scans30} scans in the last 30 days.`, anchor: "explorer" });
   }
+  // ── Hunt Leaderboard: things only you can act on ──────────────────────────
+  const lr = m.leaderboardReview, lbb = m.leaderboardBoards;
+  if (ok(lr) && Array.isArray(lr.reports) && lr.reports.length > 0) {
+    const hidden = lr.reports.filter((r: any) => r.hiddenNow).length;
+    out.push({ level: "warning", icon: "🚩", title: `${lr.reports.length} leaderboard report${lr.reports.length === 1 ? "" : "s"} waiting for you`,
+      detail: hidden ? `${hidden} picture${hidden === 1 ? " or name is" : "s or names are"} hidden until you decide.` : "Nothing is hidden yet; three reporters hide a picture or name.",
+      anchor: "lbreview" });
+  }
+  if (ok(lr) && Array.isArray(lr.bigHunts)) {
+    const weekAgo = Date.now() - 7 * 86_400_000;
+    const recent = lr.bigHunts.filter((h: any) => !h.excluded && Date.parse(h.at) >= weekAgo);
+    if (recent.length > 0) {
+      const top = recent.reduce((a: any, b: any) => (b.xp > a.xp ? b : a));
+      out.push({ level: "warning", icon: "🔎", title: `${recent.length} Hunt${recent.length === 1 ? "" : "s"} awarded ${Number(lr.reviewXp).toLocaleString("en-US")}+ XP in the last 7 days`,
+        detail: `Biggest: ${Number(top.xp).toLocaleString("en-US")} XP by ${top.name ?? "a hunter"}. Look at the photos before Monday's freeze.`, anchor: "lbreview" });
+    }
+  }
+  if (ok(lbb) && Array.isArray(lbb.top)) {
+    // The rules live in one place: leaderLook() in founderLeaderboard.ts.
+    const look = lbb.top.filter((t: any) => t.look?.any === true);
+    if (look.length > 0) {
+      const first = look[0];
+      const why = first.look.bigWeek ? `${Number(first.xp).toLocaleString("en-US")} XP this week`
+        : first.look.onePhoto ? "a big week made almost entirely of one-photo items"
+        : "several kept items just under the $250 line";
+      out.push({ level: "warning", icon: "🔎", title: `${look.length} of this week's top ${lbb.top.length} ${look.length === 1 ? "is" : "are"} worth a look`,
+        detail: `${first.name ?? "A hunter"} (#${first.position}): ${why}. Look at the photos before Monday's freeze.`, anchor: "lbboards" });
+    }
+  }
+  if (ok(lbb) && Array.isArray(lbb.unfrozenWeeks) && lbb.unfrozenWeeks.length > 0) {
+    out.push({ level: "warning", icon: "⚠️", title: `${lbb.unfrozenWeeks.length} finished leaderboard week${lbb.unfrozenWeeks.length === 1 ? " is" : "s are"} not frozen`,
+      detail: "The server freezes finished weeks every 30 minutes. If this stays, check the server is up and the Phase 4 SQL was run.", anchor: "lbboards" });
+  }
+
   const order = { critical: 0, warning: 1, opportunity: 2, info: 3 } as const;
-  return out.sort((a, b) => order[a.level] - order[b.level]).slice(0, 5);
+  return out.sort((a, b) => order[a.level] - order[b.level]).slice(0, ATTENTION_MAX_ITEMS);
 }
 
 /**
@@ -3695,6 +3734,8 @@ export async function getFounderDashboardV4Metrics(
   /** The route's single load, shared with V3. Loaded here only if absent. */
   preloaded?: BaseData,
   explorerParams: ExplorerParams = {},
+  /** The answer to a leaderboard button just pressed, shown once in its section. */
+  extras: { leaderboardMessage?: string | null } = {},
 ) {
   const cutover = getCutover(env);
   const cohort = getLaunchCohort(scope, env);
@@ -3712,9 +3753,16 @@ export async function getFounderDashboardV4Metrics(
   const scanReliability = await safeAsync("scanReliability", async () =>
     buildScanReliability(await loadScanOutcomes(window), d.rawEvents ?? [], window));
   // Hunt XP / Levels / New Phones — two extra reads (xp_profiles, user_brand_discoveries).
-  const hunt = await safeAsync("huntData", () => loadHuntData());
+  // Hunt Leaderboard: the server's own tables (hunts, hunt_scans, weekly XP, reports).
+  const [hunt, lbLoad] = await Promise.all([
+    safeAsync("huntData", () => loadHuntData()),
+    safeAsync("leaderboardData", () => loadLeaderboardData(window)),
+  ]);
+  const lb: LbData | null = "error" in lbLoad ? null : lbLoad;
   const huntSafe = <T,>(name: string, fn: (h: HuntData) => T) =>
     "error" in hunt ? { error: `${name}: ${hunt.error}` } : safe(name, () => fn(hunt));
+  const lbSafe = <T,>(name: string, fn: (l: LbData) => T) =>
+    "error" in lbLoad ? { error: `${name}: ${lbLoad.error}` } : safe(name, () => fn(lbLoad));
   const out: any = {
     ...v3Metrics,
     cutover, cohort, window,
@@ -3726,8 +3774,13 @@ export async function getFounderDashboardV4Metrics(
     powerUsers: safe("powerUsers", () => getPowerUsers(d, rates)),
     firstSession: safe("firstSession", () => getFirstSessionFunnel(d)),
     newPhones: huntSafe("newPhones", h => getNewPhones(d, h)),
-    huntXp: huntSafe("huntXp", h => getHuntXp(d, h)),
-    huntLevels: huntSafe("huntLevels", h => getHuntLevels(d, h)),
+    huntXp: huntSafe("huntXp", h => getHuntXp(d, h, lb)),
+    huntLevels: huntSafe("huntLevels", h => getHuntLevels(d, h, lb)),
+    leaderboard: lbSafe("leaderboard", l => getLeaderboardUsage(d, l)),
+    leaderboardImpact: lbSafe("leaderboardImpact", l => getLeaderboardImpact(d, l)),
+    leaderboardBoards: lbSafe("leaderboardBoards", l => getLeaderboardBoards(d, l)),
+    leaderboardIntegrity: lbSafe("leaderboardIntegrity", l => getLeaderboardIntegrity(d, l)),
+    leaderboardReview: lbSafe("leaderboardReview", l => getLeaderboardReview(d, l, extras.leaderboardMessage)),
     featureAdoption: safe("featureAdoption", () => getFeatureAdoption(d)),
     paywallIntel: safe("paywallIntel", () => getPaywallIntelligence(d, env)),
     retentionSegments: safe("retentionSegments", () => getRetentionSegments(d)),

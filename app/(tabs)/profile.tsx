@@ -18,7 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FONTS } from '@/constants/typography';
 import { useAuth } from '@/lib/auth-context';
 import { useFlipStore } from '@/lib/useFlipStore';
-import { loadXpProfile, getCurrentRank, RANK_LADDER } from '@/lib/huntXp';
+import { loadXpProfile, refreshXpFromServer, getCurrentRank, RANK_LADDER } from '@/lib/huntXp';
 import { isHuntBundle } from '@/types/flip';
 import { allScanFlips } from '@/utils/huntItemToFlip';
 import type { FlipResult } from '@/types/flip';
@@ -44,13 +44,23 @@ export default function ProfileScreen() {
   const { flips } = useFlipStore();
 
   const [xp,               setXp]               = useState(0);
+  const [founding,         setFounding]         = useState(false);
   const [avatarUri,        setAvatarUri]        = useState<string | null>(null);
   const [showAvatarPreview, setShowAvatarPreview] = useState(false);
 
   useFocusEffect(useCallback(() => {
     const uid = user?.id ?? null;
     if (uid) {
-      loadXpProfile(uid).then(p => setXp(p.totalXp)).catch(() => {});
+      loadXpProfile(uid).then(p => {
+        setXp(p.totalXp);
+        setFounding(p.foundingHunter === true);
+        // The badge is held by the server. Ask once per visit until it is known to be there.
+        if (p.foundingHunter !== true) {
+          refreshXpFromServer(uid).then(fresh => {
+            if (fresh) { setXp(fresh.totalXp); setFounding(fresh.foundingHunter === true); }
+          }).catch(() => {});
+        }
+      }).catch(() => {});
       // Prefer the Supabase-backed avatar (survives logout/login + reinstall);
       // fall back to the local cache if the account has none yet.
       if (profile?.avatar_url) {
@@ -62,6 +72,7 @@ export default function ProfileScreen() {
       }
     } else {
       setXp(0);
+      setFounding(false);
       setAvatarUri(null);
     }
   }, [user?.id, profile?.avatar_url]));
@@ -150,7 +161,21 @@ export default function ProfileScreen() {
           )}
         </Pressable>
 
-        <Text style={s.displayName}>{displayName}</Text>
+        <View style={s.nameRow}>
+          <Text style={[s.displayName, s.displayNameInRow]}>{displayName}</Text>
+          {/* Founding Hunter: the same gold mark other hunters see on the leaderboard. */}
+          {founding && (
+            <Pressable
+              onPress={() => Alert.alert('Founding Hunter', "You're one of FlipStart's first hunters. This badge is yours for good, and it shows next to your name on the Hunt Leaderboard.")}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Founding Hunter badge"
+              testID="profile-founding-hunter"
+            >
+              <MaterialIcons name="workspace-premium" size={20} color={GOLD} />
+            </Pressable>
+          )}
+        </View>
         {usernameText ? <Text style={s.username}>{usernameText}</Text> : null}
         <View style={{ marginBottom: 10 }}><MembershipStatus fontSize={13} /></View>
 
@@ -262,6 +287,8 @@ const s = StyleSheet.create({
   },
 
   displayName: { fontFamily: FONTS.serif, fontSize: 24, fontWeight: '800', color: BROWN, marginBottom: 3 },
+  nameRow:          { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: '100%', marginBottom: 3 },
+  displayNameInRow: { flexShrink: 1, marginBottom: 0 },
   username:    { fontFamily: FONTS.serifReg, fontSize: 14, color: MUTED, marginBottom: 2 },
   planStatus:  { fontSize: 13, fontStyle: 'italic', color: MUTED, marginBottom: 10 },
 
