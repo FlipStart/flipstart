@@ -35,10 +35,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { loadXpProfile, refreshXpFromServer } from '@/lib/huntXp';
 import { pendingCompletionIds } from '@/lib/huntCompletion';
+import { useFlipStore } from '@/lib/useFlipStore';
 import { useLeaderboard } from '@/lib/useLeaderboard';
 import {
   BOARD_TABS, BOARDS, DEFAULT_BOARD, boardCaption, cachedAtLabel, listRows, msUntilReset, nextCountdownTickMs,
-  nextRolloverTry, rankCardFor, reportHunter, setHunterBlocked, sparseLine,
+  nextRolloverTry, rankCardFor, reportHunter, setHunterBlocked, sparseLine, TOP_N, TOP_N_LINE,
   type Board, type BoardRow, type ReportReason, type RolloverState,
 } from '@/lib/leaderboard';
 import {
@@ -91,13 +92,32 @@ export default function HuntLeaderboardScreen() {
   const [totalXp, setTotalXp] = useState(0);
   const [pendingXp, setPendingXp] = useState(false);
   const [levelKnown, setLevelKnown] = useState(false);
+  const { settlePendingHuntXp } = useFlipStore();
+  const settleRef = useRef(settlePendingHuntXp);
+  settleRef.current = settlePendingHuntXp;
+  const boardRefreshRef = useRef(lb.refresh);
+  boardRefreshRef.current = lb.refresh;
   const refreshMine = useCallback(() => {
     if (!uid) { setTotalXp(0); setPendingXp(false); return; }
     let alive = true;
     loadXpProfile(uid).then(p => { if (alive) setTotalXp(p.totalXp); }).catch(() => {})
       .finally(() => { if (alive) setLevelKnown(true); });
     refreshXpFromServer(uid).then(p => { if (alive && p) setTotalXp(p.totalXp); }).catch(() => {});
-    pendingCompletionIds(uid).then(ids => { if (alive) setPendingXp(ids.length > 0); }).catch(() => {});
+    pendingCompletionIds(uid).then(async ids => {
+      if (!alive) return;
+      setPendingXp(ids.length > 0);
+      if (ids.length === 0) return;
+      // A Hunt is still waiting: send it now instead of waiting for the app to come back to the
+      // foreground. The server awards a Hunt once, so asking again is always safe.
+      const settled = await settleRef.current().catch(() => 0);
+      const left = await pendingCompletionIds(uid).catch(() => ids);
+      if (!alive) return;
+      setPendingXp(left.length > 0);
+      if (settled > 0) {
+        refreshXpFromServer(uid).then(p => { if (alive && p) setTotalXp(p.totalXp); }).catch(() => {});
+        void boardRefreshRef.current();
+      }
+    }).catch(() => {});
     return () => { alive = false; };
   }, [uid]);
 
@@ -212,6 +232,10 @@ export default function HuntLeaderboardScreen() {
     if (sparse) out.push({ key: 'sparse', kind: 'sparse', text: sparse });
     for (const row of listRows(view.rows)) out.push({ key: row.id, kind: 'row', row });
     if (entry.loadingMore) out.push({ key: 'more', kind: 'more' });
+    // The end of the top 100, when more hunters are ranked than are listed.
+    else if (!view.hasMore && view.rankedCount > TOP_N && view.rows.length > 0) {
+      out.push({ key: 'top-n', kind: 'sparse', text: TOP_N_LINE });
+    }
     return out;
   }, [view, entry.loading, entry.stale, entry.at, entry.loadingMore, authReady, board]);
 

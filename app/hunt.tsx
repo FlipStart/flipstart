@@ -286,17 +286,25 @@ export default function HuntScreen() {
   // straight back into Hunt (the glitch). Resetting the root stack to a fresh
   // (tabs) reinitializes it to its first tab (Home), which is deterministic.
   const leavingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const handleBack = () => {
     if (leavingRef.current) return;          // one leave per tap, even if the button is hit twice
     leavingRef.current = true;
-    // If the transition is ever swallowed, the next tap must still work.
-    setTimeout(() => { leavingRef.current = false; }, 1200);
     if (isHuntDemoActive()) endDemoHunt();
     try {
       navigation.reset({ index: 0, routes: [{ name: '(tabs)' as never }] });
     } catch {
       router.replace('/(tabs)' as any); // safety fallback
     }
+    // Still here a moment later? The move was dropped (founder report: the X did nothing after
+    // coming back from the Leaderboard). Leave a second way - pop straight to Home - and re-arm
+    // the button so the next tap always works too.
+    setTimeout(() => {
+      if (!mountedRef.current) return;
+      try { if ((navigation as any).isFocused?.()) router.dismissTo('/' as any); } catch { /* the tap re-arms below */ }
+      leavingRef.current = false;
+    }, 600);
   };
 
   if (!authLoading && !user) {

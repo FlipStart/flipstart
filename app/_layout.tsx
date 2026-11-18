@@ -629,11 +629,22 @@ export default function RootLayout() {
                 it by file, but declaring it keeps the transition consistent
                 with every other pushed screen. */}
             <Stack.Screen name="scan-detail" options={{ animation: "fade" }} />
-            <Stack.Screen name="hunt-history" options={{ animation: "fade" }} />
-            <Stack.Screen name="hunt-item-detail" options={{ animation: "fade" }} />
+            {/*
+              Hunt Mode: NO swipe-back on any Hunt screen (founder rule, Nov 18, 2026). The arrow
+              and X buttons are the only way off them. A swipe skipped each screen's own exit
+              (the "End this hunt?" check, Save / Skip on a find), and the iOS edge-swipe listener
+              sits right where the X buttons are and could swallow a tap on them.
+            */}
+            <Stack.Screen name="hunt"             options={{ gestureEnabled: false }} />
+            <Stack.Screen name="hunt-active"      options={{ gestureEnabled: false }} />
+            <Stack.Screen name="hunt-item-detail" options={{ animation: "fade", gestureEnabled: false }} />
+            <Stack.Screen name="hunt-removed"     options={{ gestureEnabled: false }} />
+            <Stack.Screen name="hunt-xp-reveal"   options={{ gestureEnabled: false }} />
+            <Stack.Screen name="hunt-complete"    options={{ gestureEnabled: false }} />
+            <Stack.Screen name="hunt-history"     options={{ animation: "fade", gestureEnabled: false }} />
             {/* Hunt Leaderboard. Pushed over the Hunt start screen (or Home), so
                 Back and its Start Hunt button return to where it was opened. */}
-            <Stack.Screen name="hunt-leaderboard" options={{ headerShown: false, animation: "slide_from_right" }} />
+            <Stack.Screen name="hunt-leaderboard" options={{ headerShown: false, animation: "slide_from_right", gestureEnabled: false }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
             <Stack.Screen name="hunt-demo-camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal", gestureEnabled: false }} />
             <Stack.Screen name="oauth/callback" />

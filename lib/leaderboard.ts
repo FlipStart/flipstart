@@ -13,6 +13,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RANK_LADDER, rankIndexFor, getNextRank, getRankProgress } from '@shared/hunt/ranks';
+import { QUALIFY_MIN_SCANS, QUALIFY_MIN_KEPT, QUALIFY_MIN_MINUTES } from '@shared/hunt/xpRules';
 
 // ─── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,9 @@ export const REPORT_REASONS: Array<{ reason: ReportReason; label: string }> = [
 export interface BlockedHunter { id: string; name: string; avatarUrl: string | null }
 
 export const PAGE_SIZE = 50;
+/** The board lists the top 100 only (the server enforces it). Your own place is always on the rank card. */
+export const TOP_N = 100;
+export const TOP_N_LINE = `Showing the top ${TOP_N} hunters.`;
 /** Under this many ranked hunters the board says how many there are. */
 export const SPARSE_BELOW = 10;
 export const FETCH_TIMEOUT_MS = 10_000;
@@ -383,8 +387,16 @@ export function unrankedCopy(board: Board): UnrankedCopy {
   if (board === 'all_time') {
     return { title: 'UNRANKED', body: 'Complete your first real Hunt to enter the leaderboard.', cta: 'Start Hunt' };
   }
-  return { title: 'NO QUALIFYING HUNT YET', body: 'Finish a Hunt to set your personal best.', cta: 'Start Hunt' };
+  return { title: 'NO QUALIFYING HUNT YET', body: BEST_HUNT_RULE, cta: 'Start Hunt' };
 }
+/**
+ * What makes a Hunt count for Best Hunt (and the weekly streak). Built from the server's own
+ * numbers so it can never drift from the rule. Before this the card said "Finish a Hunt to set
+ * your personal best", which reads wrong to someone who just finished a short one.
+ */
+export const BEST_HUNT_RULE =
+  `A Hunt counts for Best Hunt with at least ${QUALIFY_MIN_SCANS} scans, ${QUALIFY_MIN_KEPT} kept find` +
+  `${QUALIFY_MIN_KEPT === 1 ? '' : 's'} and ${QUALIFY_MIN_MINUTES} minutes.`;
 export const SIGNED_OUT_COPY = { title: 'Sign in to join the leaderboard', cta: 'Sign in' };
 export const PENDING_XP_COPY = "Your last Hunt's XP is still syncing";
 

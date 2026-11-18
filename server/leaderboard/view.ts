@@ -21,7 +21,13 @@ import { getLeaderboardStore, type Board, type RawPage, type RawRow } from "./st
 import { allowFor } from "../rateLimit.js";
 
 export const PAGE_SIZE = 50;
-export const MAX_AFTER = 5_000;           // how deep a board can be browsed
+/**
+ * Only the top 100 of each board are ever listed (founder decision, Nov 18, 2026). Someone
+ * ranked #1,275 still sees their own place on the rank card: `me` is worked out from the
+ * whole board, whatever page is asked for. Enforced here, so an older app that keeps asking
+ * for deeper pages just gets no more rows.
+ */
+export const TOP_N = 100;
 export const CACHE_MS = 30_000;
 export const FALLBACK_NAME = "Hunter";
 
@@ -88,7 +94,7 @@ export function toView(raw: RawPage, viewerId: string | null, after: number): Le
     weekEndsAt: String(raw.week_ends_at),
     rankedCount,
     rows,
-    hasMore: after + rows.length < rankedCount && after + rows.length < MAX_AFTER,
+    hasMore: after + rows.length < Math.min(rankedCount, TOP_N),
     me,
   };
 }
@@ -210,10 +216,13 @@ export async function getLeaderboard(input: {
 }): Promise<LeaderboardView | null> {
   const store = getLeaderboardStore();
   if (!store) return null;
-  const after = Math.min(Math.max(0, int(input.after)), MAX_AFTER);
+  const after = Math.min(Math.max(0, int(input.after)), TOP_N);
   // One page size, whatever is asked for: it keeps the number of different
-  // requests (and so of cached pages and database calls) small.
-  const limit = PAGE_SIZE;
+  // requests (and so of cached pages and database calls) small. Never past the top 100;
+  // at the very end one row is still read (the database needs a limit of at least 1)
+  // so the viewer's own place and the counts come back, and that row is dropped below.
+  const room  = TOP_N - after;
+  const limit = Math.max(1, Math.min(PAGE_SIZE, room));
   const viewerId = input.viewerId || null;
   const now = input.now ?? Date.now();
 
@@ -243,7 +252,7 @@ export async function getLeaderboard(input: {
     const stale = [...(raw.rows ?? []), ...(raw.me ? [raw.me] : [])].filter(r => r?.stale).map(r => r.user_id);
     if (stale.length > 0) queueIdentityRefresh(Array.from(new Set(stale)));
 
-    const view = toView(raw, viewerId, after);
+    const view = toView({ ...raw, rows: (Array.isArray(raw.rows) ? raw.rows : []).slice(0, Math.max(0, room)) }, viewerId, after);
     if (genOf(viewerId) === gen) remember(key, now, view);
     return view;
   })();

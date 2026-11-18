@@ -215,6 +215,8 @@ interface FlipStoreValue {
 
   // Convenience
   getFlipById: (id: string) => FlipResult | undefined;
+  /** Send Hunts whose XP is still waiting on the server now. Resolves to how many the server settled. */
+  settlePendingHuntXp: () => Promise<number>;
 }
 
 const FlipStoreContext = createContext<FlipStoreValue | undefined>(undefined);
@@ -479,6 +481,33 @@ export function FlipStoreProvider({
     return () => sub.remove();
   }, [userId, state.isLoaded, retryPendingPhotoUploads]);
 
+  // ── Retry sweep: Hunts whose XP is still waiting on the server ────────────
+  // A Hunt finished offline is saved at once with its XP "pending". This sends
+  // those requests on load and whenever the app returns to the foreground, and
+  // writes the server's XP onto the saved Hunt when it answers. The server
+  // awards a Hunt exactly once, so asking again is always safe.
+  // Also run by the Leaderboard when it opens with a Hunt still waiting, so the
+  // "still syncing" note clears as soon as the server takes it.
+  const settlePendingHuntXp = useCallback((): Promise<number> => {
+    if (!userId || isHuntDemoActive()) return Promise.resolve(0);
+    return import('@/lib/huntXp').then(({ flushPendingHuntXp }) =>
+      flushPendingHuntXp(userId, (huntId, result) => {
+        const b = flipsRef.current.find((e): e is HuntBundle => isHuntBundle(e) && e.id === huntId);
+        if (!b) return;
+        addHuntBundle({ ...b, xpEarned: result.totalXpEarned, xpBreakdown: result.breakdown, xpPending: false });
+      }),
+    ).catch(() => 0 /* tried again next foreground */);
+  }, [userId, addHuntBundle]);
+
+  useEffect(() => {
+    if (!userId || !state.isLoaded) return;
+    void settlePendingHuntXp();
+    const sub = AppState.addEventListener('change', s => {
+      if (s === 'active') void settlePendingHuntXp();
+    });
+    return () => sub.remove();
+  }, [userId, state.isLoaded, settlePendingHuntXp]);
+
   const setPendingThriftPrice = useCallback((id: string, price: string) => {
     dispatch({ type: 'SET_THRIFT_PRICE', payload: { id, price } });
   }, []);
@@ -543,6 +572,7 @@ export function FlipStoreProvider({
         clearPendingThriftPrice,
         globalStats,
         getFlipById,
+        settlePendingHuntXp,
       }}
     >
       {children}

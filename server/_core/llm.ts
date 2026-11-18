@@ -13,6 +13,10 @@ const MODEL_PRICING: Record<string, { in: number; cachedIn: number; out: number 
   "gpt-4.1-nano": { in: 0.0000001,  cachedIn: 0.000000025, out: 0.0000004 },
   // Reasoning tokens bill as output and are already inside completion_tokens.
   "gpt-6-luna":   { in: 0.0000001,  cachedIn: 0.00000001,  out: 0.0000005 },
+  // Model trial candidates (OpenAI Standard tier, Nov 2026), so a trial's cost per scan shows in the logs.
+  "gpt-6.1-terra": { in: 0.000001,  cachedIn: 0.00000005,  out: 0.000005  },
+  "gpt-6.1-sol":   { in: 0.000002,  cachedIn: 0.0000001,   out: 0.00001   },
+  "gpt-5.4-mini":  { in: 0.00000075, cachedIn: 0.000000075, out: 0.0000045 },
 };
 const FALLBACK_PRICING = MODEL_PRICING["gpt-4o"];
 
