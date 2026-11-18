@@ -45,6 +45,8 @@ import { currentScanBalances } from '@/lib/analytics';
 import { registerCaptureListener, unregisterCaptureListener } from '@/lib/capture-event';
 import { needsOnboarding, restoreSignedInDevice } from '@/lib/onboarding-storage';
 import { useAuth } from '@/lib/auth-context';
+import { useHuntOnboarding } from '@/lib/useHuntOnboarding';
+import { HuntAttentionDot } from '@/components/hunt/HuntAttentionDot';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useEntitlement } from '@/lib/useEntitlement';
@@ -155,6 +157,7 @@ export default function HomeScreen() {
 
   // ── Onboarding ──────────────────────────────────────────────────────────────
   const { user, profile, loading: authLoading, profileChecked, profileError } = useAuth();
+  const { attention: huntAttention } = useHuntOnboarding();
   const roar = useAudioPlayer(ROAR_SOUND);
   const [showScanModal,   setShowScanModal]   = useState(false);
   /**
@@ -635,6 +638,9 @@ export default function HomeScreen() {
             >
               <Text style={s.huntBtnText}>Start Hunting</Text>
               <MaterialIcons name="arrow-forward" size={15} color={CREAM} />
+              {huntAttention !== 'off' && (
+                <HuntAttentionDot mode={huntAttention} style={s.huntBtnDot} />
+              )}
             </Pressable>
           </View>
         </Animated.View>
@@ -966,6 +972,9 @@ const s = StyleSheet.create({
     backgroundColor: GREEN, borderRadius: 12, paddingVertical: 13,
   },
   huntBtnText: { fontFamily: FONTS.serif, fontSize: 14, fontWeight: '800', color: CREAM },
+  // Hunt onboarding badge: half off the button's top-right corner, so it reads as a badge on
+  // the button instead of sitting on its label. The card's padding leaves room for it.
+  huntBtnDot: { position: 'absolute', top: -9, right: -7 },
 
   // Articles & Guides
   sectionHead: {

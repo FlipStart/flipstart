@@ -24,6 +24,7 @@ import {
 } from '@/lib/hunt-context';
 import { logEvent } from '@/lib/analytics';
 import { FONTS } from '@/constants/typography';
+import { CoachOverlay } from '@/components/hunt/onboarding/coach/CoachOverlay';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
@@ -125,6 +126,9 @@ export default function HuntRemovedScreen() {
           ))
         )}
       </ScrollView>
+
+      {/* Guided demo only (draws nothing otherwise): "Back to Hunt" returns to Live Hunt. */}
+      <CoachOverlay screen="hunt-removed" onNext={() => router.back()} />
     </View>
   );
 }

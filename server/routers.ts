@@ -34,6 +34,13 @@ import {
 import { isDraining } from "./shutdown.js";
 import { scanSoftFail, type ScanFailReason } from "../shared/scanFailure.js";
 import { startOutcome, rowForResult, rowForError, writeOutcome, resolveOutcome, noteAppGaveUp } from "./scanOutcomes.js";
+import { recordHuntScan, validHuntId, huntCaptureCheckEnabled } from "./hunt/scanEvidence.js";
+import { completeHunt, HuntCompletionError } from "./hunt/completeHunt.js";
+import { getHuntStore } from "./hunt/store.js";
+import { getCurrentRank } from "../shared/hunt/ranks";
+import { getLeaderboard, invalidateLeaderboardCache, FALLBACK_NAME } from "./leaderboard/view.js";
+import { refreshIdentity, queueIdentityRefresh } from "./leaderboard/identity.js";
+import { getLeaderboardStore } from "./leaderboard/store.js";
 
 /**
  * A scan failure the app can route on. The message is what app 2.1 already
@@ -155,6 +162,14 @@ const appRouter_scan = router({
           // the comps search as soon as the scan is delivered. Absent from app
           // 2.2 and older, which ask for comps when the results screen opens.
           prefetchComps: z.boolean().optional(),
+          // A scan made inside a Hunt. The server records its own evidence for
+          // the scan against this Hunt, and Hunt XP is later scored from that
+          // record alone (server/hunt). Absent from app 2.2 and older, whose
+          // Hunt scans are simply not recorded.
+          huntId: z.string().max(80).optional(),
+          // How the app says each photo was taken. Reported, not verified: it
+          // only ever counts together with checks the server makes itself.
+          capture: z.object({ front: z.enum(["camera", "library"]).optional() }).optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -523,6 +538,7 @@ const appRouter_scan = router({
         if (canonicalV1EnabledFor(sid)) {
           outcome.route = "v1";
           const analysisId = randomUUID();
+          const isHuntScan = Boolean(muid) && validHuntId(input.huntId);
 
           // ── Entitlement, enforced here rather than by hiding the UI ────────
           // analyzeFast is a publicProcedure; a modified client can post
@@ -568,6 +584,8 @@ const appRouter_scan = router({
               photoRefs,
               userContext: userCtx,
               signal: run.signal,
+              // Hunt scans also ask how the photo was made (screen / listing image).
+              captureCheck: isHuntScan && huntCaptureCheckEnabled(),
             });
 
             // Stored so comps (and later, anything else) can be run against
@@ -672,6 +690,17 @@ const appRouter_scan = router({
             if (!useV1 && !ENV.canonicalV1Enabled) console.log("[analyzeV1] allow-list scan — quota NOT consumed");
             const delivered = await settleCharge(v1Payload, "analyzeV1", commit);
             cacheAnalysis(input.scanAttemptId, delivered, userCtx.hash);
+            // Hunt scan: write down what the server saw, for XP later. Never
+            // awaited and never able to fail the scan.
+            if (isHuntScan && muid) {
+              void recordHuntScan({
+                userId: muid, huntId: input.huntId as string,
+                attemptId: input.scanAttemptId ?? analysisId, analysisId,
+                canonical, payload: v1Payload, frontBase64: input.imageBase64,
+                photoCount: [images.front, images.detail, images.tag].filter(Boolean).length,
+                captureFront: input.capture?.front ?? "unknown",
+              });
+            }
             // Start the sold-comps search now instead of when the results
             // screen asks; comps.forScan picks up this same run. Only when the
             // app said it will show comps (not Hunt), the scan was delivered,
@@ -895,6 +924,7 @@ const appRouter_scan = router({
             primaryColor:      z.string().max(40).optional(),
             obviousDamage:     z.array(z.string().max(80)).max(5).optional(),
             assessmentLimited: z.boolean().optional(),
+            design:            z.array(z.string().max(110)).max(4).optional(),
           }).optional(),
         })
       )
@@ -1485,9 +1515,157 @@ const feedbackRouter = router({
 
 });
 
+// ─── Hunt XP ──────────────────────────────────────────────────────────────────
+const huntRouter = router({
+  /**
+   * Finish a Hunt and award its XP. THE only way Hunt XP is awarded.
+   *
+   * The app sends which scans it kept and the price typed for each. Everything
+   * else (which scans exist, what they are worth, how long the Hunt ran, the
+   * streak, the totals) comes from the server's own records. Safe to call again:
+   * a Hunt is awarded once and later calls return that same result.
+   *
+   * `ok:false` reasons: NOT_AUTHENTICATED and UNAVAILABLE are worth retrying
+   * later (the app queues them); BAD_REQUEST is not.
+   */
+  complete: publicProcedure
+    .input(z.object({
+      huntId: z.string().min(6).max(80),
+      items: z.array(z.object({
+        analysisId:  z.string().min(1).max(80),
+        kept:        z.boolean(),
+        thriftPrice: z.number().min(0).max(100_000),
+      })).max(300),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "hunt-complete");
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      try {
+        const result = await completeHunt({ userId: uid, huntId: input.huntId, items: input.items });
+        if (result.status === "awarded") {
+          // The boards just changed, and this hunter may now be on one: make sure
+          // the name and picture other people would see have been checked.
+          invalidateLeaderboardCache();
+          queueIdentityRefresh([uid]);
+        }
+        return { ok: true as const, ...result };
+      } catch (err) {
+        const code = err instanceof HuntCompletionError ? err.code : "unavailable";
+        return { ok: false as const, reason: code === "bad_request" ? "BAD_REQUEST" as const : "UNAVAILABLE" as const };
+      }
+    }),
+
+  /** The signed-in account's XP profile as the server holds it. Read-only. */
+  profile: publicProcedure.query(async ({ ctx }) => {
+    const uid = await resolveSupabaseUserId(ctx?.req as never, "hunt-profile");
+    if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+    const store = getHuntStore();
+    const c = store ? await store.context(uid).catch(() => null) : null;
+    if (!c) return { ok: false as const, reason: "UNAVAILABLE" as const };
+    const p = c.profile;
+    return {
+      ok: true as const,
+      profile: {
+        totalXp: p.totalXp, currentRank: getCurrentRank(p.totalXp).rank,
+        completedHunts: p.completedHunts, huntStreak: p.huntStreak, lastHuntDate: p.lastHuntDate,
+        weekStreak: p.weekStreak, discoveredBrands: p.discoveredBrands,
+        discoveredCategories: p.discoveredCategories,
+      },
+    };
+  }),
+});
+
+// ─── Hunt Leaderboard ─────────────────────────────────────────────────────────
+const PUBLIC_ID = z.string().uuid();
+
+const leaderboardRouter = router({
+  /**
+   * One page of one board, plus the viewer's own place.
+   *
+   * Readable signed out (no "me", nobody blocked). Rows carry a public handle,
+   * a moderated name and picture, the Hunt level and the number. Never an
+   * account id, an email or anything from a Hunt. See server/leaderboard/view.ts.
+   */
+  view: publicProcedure
+    .input(z.object({
+      board: z.enum(["weekly", "all_time", "best_hunt"]),
+      after: z.number().int().min(0).max(5_000).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-view");
+      const view = await getLeaderboard({ board: input.board, viewerId: uid, after: input.after, limit: input.limit })
+        .catch(() => null);
+      if (!view) return { ok: false as const, reason: "UNAVAILABLE" as const };
+      return { ok: true as const, signedIn: Boolean(uid), ...view };
+    }),
+
+  /**
+   * Check this account's own name and picture for the leaderboard, now.
+   * The app calls it after a profile edit and waits, so it can tell the user
+   * when something was saved but cannot be shown to other people.
+   */
+  syncIdentity: publicProcedure
+    .mutation(async ({ ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-identity");
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      const r = await refreshIdentity(uid);
+      if (r.checked) invalidateLeaderboardCache();
+      return { ok: true as const, name: r.name, avatar: r.avatar, shownAs: r.publicName ?? FALLBACK_NAME };
+    }),
+
+  /** Report a name, a picture, or suspected cheating. One per person per reason. */
+  report: publicProcedure
+    .input(z.object({ id: PUBLIC_ID, reason: z.enum(["photo", "name", "cheating"]) }))
+    .mutation(async ({ input, ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-report");
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      const r = await getLeaderboardStore()?.report(uid, input.id, input.reason).catch(() => null);
+      if (!r) return { ok: false as const, reason: "UNAVAILABLE" as const };
+      if (r.hidden) invalidateLeaderboardCache();
+      // "reported" and "already" look the same to the person reporting.
+      const accepted = r.status === "reported" || r.status === "already";
+      return accepted
+        ? { ok: true as const }
+        : { ok: false as const, reason: r.status === "rate_limited" ? "RATE_LIMITED" as const : "NOT_ALLOWED" as const };
+    }),
+
+  /** Block or unblock someone. A blocked account disappears from this viewer's boards. */
+  block: publicProcedure
+    .input(z.object({ id: PUBLIC_ID, blocked: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-block");
+      if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+      const r = await getLeaderboardStore()?.setBlock(uid, input.id, input.blocked).catch(() => null);
+      if (!r) return { ok: false as const, reason: "UNAVAILABLE" as const };
+      invalidateLeaderboardCache();
+      return r.status === "blocked" || r.status === "unblocked"
+        ? { ok: true as const, blocked: r.status === "blocked" }
+        : { ok: false as const, reason: "NOT_ALLOWED" as const };
+    }),
+
+  /** Who this account has blocked, for the unblock list. */
+  blocked: publicProcedure.query(async ({ ctx }) => {
+    const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-blocked");
+    if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+    const list = await getLeaderboardStore()?.blocked(uid).catch(() => null);
+    if (!list) return { ok: false as const, reason: "UNAVAILABLE" as const };
+    return {
+      ok: true as const,
+      users: list.map(u => ({
+        id: String(u.public_id),
+        name: typeof u.name === "string" && u.name.trim() ? u.name.trim() : FALLBACK_NAME,
+        avatarUrl: typeof u.avatar === "string" && /^https:\/\//.test(u.avatar) ? u.avatar : null,
+      })),
+    };
+  }),
+});
+
 // ─── App router ───────────────────────────────────────────────────────────────
 
 export const appRouter = router({
+  hunt: huntRouter,
+  leaderboard: leaderboardRouter,
   dev: devRouter,
   comps: compsRouter,
   monetization: monetizationRouter,

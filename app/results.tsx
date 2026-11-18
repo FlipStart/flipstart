@@ -34,6 +34,7 @@ import { SoldCompsSection } from '@/components/comps/SoldCompsSection';
 import { useRefreshEntitlement } from '@/lib/useEntitlement';
 import { useGenerateListingsGate } from '@/lib/useGenerateListingsGate';
 import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
+import { useDeepAnalysisTip } from '@/lib/deepAnalysisTip';
 import { useFlipStore } from '@/lib/useFlipStore';
 import { trpc } from '@/lib/trpc';
 import { FlipResult, isHuntBundle } from '@/types/flip';
@@ -387,34 +388,10 @@ export default function ResultsScreen() {
   }, []);   // stable — ref is always current
 
   // ── Deep Analysis coach-mark (tooltip) ──────────────────────────────────────
-  // Rules:
-  //  • Shows on early scans until the user taps into Deep Analysis once.
-  //  • The X hides it for the current scan only.
-  //  • After they've used Deep Analysis, it stays hidden — UNLESS the user then
-  //    does 5+ scans in a row WITHOUT opening Deep Analysis, in which case the
-  //    tip returns until they tap Deep Analysis again (which resets the streak).
-  // State is stored as one account-scoped JSON blob to avoid multiple reads.
-  const DEEP_STREAK_THRESHOLD = 5;
-  const deepTipKey = `@flipstart/deep_analysis_state:${user?.id ?? 'guest'}`;
-  const [showDeepTip, setShowDeepTip] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(deepTipKey);
-        const st = raw ? JSON.parse(raw) as { seen?: boolean; streak?: number; lastScanId?: string } : {};
-        let streak = st.streak ?? 0;
-        // Count this scan once (dedupe by scan id so re-renders don't inflate it).
-        if (currentScan?.id && currentScan.id !== st.lastScanId) {
-          streak += 1;
-          await AsyncStorage.setItem(deepTipKey, JSON.stringify({ ...st, streak, lastScanId: currentScan.id }));
-        }
-        const shouldShow = !st.seen || streak >= DEEP_STREAK_THRESHOLD;
-        if (alive) setShowDeepTip(shouldShow);
-      } catch { /* if storage fails, just don't show the tip */ }
-    })();
-    return () => { alive = false; };
-  }, [deepTipKey, currentScan?.id]);
+  // Shown until the user has opened Deep Analysis once, spent their free preview,
+  // or closed it with the X. Then never again. All of that lives in
+  // lib/deepAnalysisTip.ts (and the gate hook marks it on any Deep Analysis tap).
+  const { show: showDeepTip, dismiss: dismissDeepTip } = useDeepAnalysisTip();
 
   // ── Deep Analysis arrow glow ────────────────────────────────────────────────
   // Subtle pulsing gold aura on the "›" next to the title. Uses the JS driver
@@ -1002,14 +979,9 @@ export default function ResultsScreen() {
     );
   };
 
-  // Tapping the title opens Deep Analysis AND permanently dismisses the coach-mark.
+  // Every way into Deep Analysis goes through the gate hook, which marks the tip
+  // seen the moment the user taps. Nothing extra to do here.
   const handleOpenDeepAnalysis = () => {
-    if (showDeepTip) setShowDeepTip(false);
-    // Mark as used and reset the "scans since last use" streak.
-    AsyncStorage.setItem(
-      deepTipKey,
-      JSON.stringify({ seen: true, streak: 0, lastScanId: currentScan?.id ?? '' }),
-    ).catch(() => { /* non-fatal */ });
     handleOpenAnalysis();
   };
 
@@ -1138,7 +1110,7 @@ export default function ResultsScreen() {
                         <Text style={s.deepTipText}>
                           Tap the item name to open <Text style={s.deepTipBold}>Deep Analysis</Text> — market signals, where to sell, and listing strategy.
                         </Text>
-                        <Pressable onPress={() => setShowDeepTip(false)} hitSlop={8} style={s.deepTipClose}>
+                        <Pressable onPress={dismissDeepTip} hitSlop={8} style={s.deepTipClose}>
                           <MaterialIcons name="close" size={15} color={MUTED} />
                         </Pressable>
                       </View>

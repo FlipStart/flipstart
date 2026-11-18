@@ -49,6 +49,7 @@ import { useEntitlement, useRefreshEntitlement } from "@/lib/useEntitlement";
 import { useProGate } from "@/components/monetization/ProGate";
 import { useProPaywall } from "@/components/monetization/paywall/ProPaywallProvider";
 import { deepAnalysisAnalytics } from "@/lib/deepAnalysisAnalytics";
+import { markDeepTipSeen } from "@/lib/deepAnalysisTip";
 
 export interface DeepAnalysisOptions {
   /**
@@ -98,6 +99,11 @@ export function useDeepAnalysisGate(): (open: () => void, options?: DeepAnalysis
 
       /** Identity as it stands the moment the user taps. */
       const openedUid = uidRef.current;
+
+      // The coach-mark has done its job the first time anyone taps Deep Analysis,
+      // wherever they tapped and wherever the tap ends up (screen, offer or paywall).
+      // Marked here, once, for every entry point, rather than in each screen.
+      markDeepTipSeen(openedUid);
       const openedContext = contextRef?.current ?? null;
 
       /**

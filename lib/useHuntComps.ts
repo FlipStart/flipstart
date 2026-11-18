@@ -11,6 +11,7 @@ import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/lib/auth-context';
 import { logEvent } from '@/lib/analytics';
 import { setHuntItemComps } from '@/lib/hunt-context';
+import { isHuntDemoActive } from '@/lib/huntDemoMode';
 import {
   loadHuntComps, readCompsSnapshot, toCompsSnapshot, compsResultPayload, deriveHuntComps,
   type HuntCompsSource,
@@ -45,7 +46,8 @@ export function useHuntComps(a: UseHuntCompsArgs): {
   const reportedRef = useRef<string | null>(null);
 
   const key = a.huntItemId ?? '';
-  const needsSearch = !!a.huntItemId && !snapshotData && a.allowFetch && !!a.analysisId;
+  // The demo never asks the (metered) comps endpoint.
+  const needsSearch = !!a.huntItemId && !snapshotData && a.allowFetch && !!a.analysisId && !isHuntDemoActive();
 
   useEffect(() => {
     if (!needsSearch || !a.huntItemId) return;

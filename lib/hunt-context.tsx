@@ -46,6 +46,7 @@ import {
   huntEconomics, parseThriftPrice, provisionalEconomics,
   type HuntRating,
 } from './huntEconomics';
+import { isHuntDemoActive, __setHuntDemoActive } from './huntDemoMode';
 
 export type { HuntRating } from './huntEconomics';
 export { recLabelToHuntRating } from './huntEconomics';
@@ -118,6 +119,8 @@ interface PersistedHunt {
 let _activeHunt: HuntSession | null = null;
 let _ownerId: string | null = null;
 let _hydratedFor: string | null = null;
+/** A restore was skipped because the demo was running; exitHuntDemo finishes it. */
+let _hydrateDeferred = false;
 const _listeners = new Set<() => void>();
 
 function _notify(persist = true) {
@@ -186,6 +189,7 @@ const _reportedErrors = new Set<string>();
 export function setHuntErrorSink(fn: HuntErrorSink | null): void { _errorSink = fn; }
 
 export function reportHuntError(stage: HuntErrorStage, huntId?: string | null): void {
+  if (isHuntDemoActive()) return;                // the demo never reports
   const id = huntId ?? _activeHunt?.id ?? null;
   const key = `${stage}:${id ?? ''}`;
   if (_reportedErrors.has(key)) return;
@@ -197,6 +201,7 @@ export function reportHuntError(stage: HuntErrorStage, huntId?: string | null): 
 }
 
 function _persist(): Promise<void> {
+  if (isHuntDemoActive()) return Promise.resolve();   // demo state never reaches the phone
   const owner = _ownerId;
   if (!owner) return Promise.resolve();          // Hunt Mode requires an account
   const session = _activeHunt;
@@ -247,6 +252,8 @@ function _normalizeItem(raw: any): HuntItem | null {
 export async function setHuntUserId(uid: string | null): Promise<void> {
   if (_ownerId !== uid) {
     _hydratedFor = null;
+    _hydrateDeferred = false;
+    if (isHuntDemoActive()) __setHuntDemoActive(false);   // a different account never inherits a demo
     if (_activeHunt) {
       _activeHunt = null;             // previous account's hunt stays saved under ITS key
       _notify(false);
@@ -265,6 +272,12 @@ export async function hydrateActiveHunt(uid: string): Promise<HuntSession | null
     const raw = await AsyncStorage.getItem(ACTIVE_HUNT_KEY(uid));
     rec = raw ? JSON.parse(raw) as PersistedHunt : null;
   } catch { rec = null; reportHuntError('hydrate_read', null); }
+  if (isHuntDemoActive()) {
+    // The demo owns the in-memory slot right now. Leave the saved Hunt exactly
+    // as it is and load it when the demo ends.
+    _hydrateDeferred = true;
+    return null;
+  }
   if (!rec || rec.version !== 1 || rec.ownerId !== uid || !rec.session?.id) return null;
 
   if (rec.endedBundleId) {
@@ -305,7 +318,7 @@ export function startHunt(name?: string): HuntSession {
     isActive:  true,
     items:     [],
   };
-  _pendingEndedBundleId = null;
+  if (!isHuntDemoActive()) _pendingEndedBundleId = null;
   _notify();
   return _activeHunt;
 }
@@ -507,6 +520,13 @@ export function getHuntItemById(huntItemId: string): HuntItem | null {
 export function finishHunt(bundleId: string): HuntSession | null {
   if (!_activeHunt) return null;
   const ended = { ..._activeHunt, isActive: false };
+  if (isHuntDemoActive()) {
+    // Nothing is saved, nothing is marked as waiting for history.
+    _activeHunt = null;
+    _scanDestination = 'normal';
+    _notify(false);
+    return ended;
+  }
   const owner = _ownerId;
   if (owner) {
     const record: PersistedHunt = {
@@ -528,12 +548,100 @@ export function finishHunt(bundleId: string): HuntSession | null {
 export function discardHunt(): HuntSession | null {
   if (!_activeHunt) return null;
   const ended = { ..._activeHunt, isActive: false };
+  if (isHuntDemoActive()) {
+    // Leaving the demo must never delete the user's real saved Hunt.
+    _activeHunt = null;
+    _scanDestination = 'normal';
+    _notify(false);
+    return ended;
+  }
   _activeHunt = null;
   _pendingEndedBundleId = null;
   _scanDestination = 'normal';
   if (_ownerId) void _deletePersisted(_ownerId);
   _notify(false);
   return ended;
+}
+
+// ─── Guided demo Hunt ─────────────────────────────────────────────────────────
+// The onboarding demo runs on the REAL Hunt screens against throwaway data. It
+// borrows the in-memory slot (only when no real Hunt is active), and while it
+// does, persistence, analytics, XP, history and uploads are all off (see
+// lib/huntDemoMode). Nothing here is ever written to the phone.
+
+export type EnterDemoResult = 'entered' | 'real_hunt_active' | 'already_demo';
+
+export interface DemoSeedEntry {
+  scan:        ScanResult;
+  thriftPrice: number;
+  decision:    'kept' | 'removed';
+}
+
+/**
+ * Start the demo Hunt. Refuses while a real Hunt is active: the demo must never
+ * stand in the way of, or be mixed with, a real one.
+ */
+export function enterHuntDemo(opts: { name?: string; startedAgoMs?: number; session?: boolean } = {}): EnterDemoResult {
+  if (isHuntDemoActive()) return 'already_demo';
+  if (_activeHunt) return 'real_hunt_active';
+  __setHuntDemoActive(true);
+  _scanDestination = 'normal';
+  // session:false switches the sandbox on but starts no Hunt yet: the demo opens on
+  // the real Hunt start screen, and the Hunt begins when the user taps START HUNT.
+  if (opts.session !== false) beginHuntDemoSession(opts);
+  else _notify(false);
+  return 'entered';
+}
+
+/** Start the demo's Hunt (demo mode only, and only when it has none). */
+export function beginHuntDemoSession(opts: { name?: string; startedAgoMs?: number } = {}): HuntSession | null {
+  if (!isHuntDemoActive() || _activeHunt) return _activeHunt;
+  _activeHunt = {
+    id:        `demo_hunt_${Date.now()}`,
+    name:      opts.name?.trim() || 'Demo Hunt',
+    startedAt: Date.now() - Math.max(0, opts.startedAgoMs ?? 0),
+    isActive:  true,
+    items:     [],
+  };
+  _notify(false);
+  return _activeHunt;
+}
+
+/** Make the demo Hunt look like it has been running for `agoMs` (demo mode only). */
+export function setHuntDemoElapsed(agoMs: number): void {
+  if (!isHuntDemoActive() || !_activeHunt) return;
+  _activeHunt = { ..._activeHunt, startedAt: Date.now() - Math.max(0, agoMs) };
+  _notify(false);
+}
+
+/**
+ * Add already-decided items to the demo Hunt through the SAME keep / remove
+ * functions a real Hunt uses, so their shape, money and rating can never drift
+ * from the product. Only works while the demo is running.
+ */
+export function seedHuntDemoItems(entries: DemoSeedEntry[]): void {
+  if (!isHuntDemoActive() || !_activeHunt) return;
+  for (const e of entries) {
+    if (e.decision === 'kept') keepScanInHunt(e.scan, e.thriftPrice);
+    else removeScanFromHunt(e.scan, e.thriftPrice);
+  }
+}
+
+/**
+ * Throw the demo away. The saved Hunt (if any) was never touched; a restore
+ * that was skipped while the demo ran happens now.
+ */
+export function exitHuntDemo(): void {
+  if (!isHuntDemoActive()) return;
+  __setHuntDemoActive(false);
+  _activeHunt = null;
+  _scanDestination = 'normal';
+  _huntItemDetailReturnPending = false;
+  _notify(false);
+  if (_hydrateDeferred && _ownerId) {
+    _hydrateDeferred = false;
+    void hydrateActiveHunt(_ownerId);
+  }
 }
 
 /** @deprecated use finishHunt(bundleId) or discardHunt(). Kept for old call sites. */
@@ -596,6 +704,7 @@ let _pendingRestoreDone = false;
  * back to that Discovery Analysis (via Live Hunt) — no new scan, no new charge.
  */
 export function shouldRestorePendingFind(): boolean {
+  if (isHuntDemoActive()) return false;          // never spend the once-per-launch restore on demo data
   if (_pendingRestoreDone) return false;
   if (!isHuntActive() || !pendingItemOf(_activeHunt)) return false;
   _pendingRestoreDone = true;
@@ -604,6 +713,7 @@ export function shouldRestorePendingFind(): boolean {
 
 /** Test seam. */
 export function __resetHuntForTests(): void {
+  __setHuntDemoActive(false); _hydrateDeferred = false;
   _pendingRestoreDone = false;
   _activeHunt = null; _ownerId = null; _hydratedFor = null;
   _pendingEndedBundleId = null; _writeChain = Promise.resolve();

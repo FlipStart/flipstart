@@ -632,6 +632,7 @@ export default function RootLayout() {
             <Stack.Screen name="hunt-history" options={{ animation: "fade" }} />
             <Stack.Screen name="hunt-item-detail" options={{ animation: "fade" }} />
             <Stack.Screen name="camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal" }} />
+            <Stack.Screen name="hunt-demo-camera" options={{ animation: "slide_from_bottom", headerShown: false, presentation: "fullScreenModal", gestureEnabled: false }} />
             <Stack.Screen name="oauth/callback" />
             <Stack.Screen name="auth" options={{ headerShown: false, animation: "fade" }} />
             <Stack.Screen name="auth/callback" options={{ headerShown: false }} />

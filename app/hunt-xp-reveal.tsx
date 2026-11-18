@@ -12,17 +12,19 @@
  */
 
 import { View, StyleSheet } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useRef } from 'react';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useEffect, useRef } from 'react';
 
 import { XpBreakdownOverlay } from '@/components/hunt/XpBreakdownOverlay';
 import { consumeLastCompletionResult } from '@/lib/huntXp';
 import type { HuntXpResult } from '@/lib/huntXp';
+import { isHuntDemoActive, isDemoExiting } from '@/lib/huntDemoMode';
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function HuntXpRevealScreen() {
   const router   = useRouter();
+  const navigation = useNavigation();
   const params   = useLocalSearchParams<{ bundleId?: string }>();
   const bundleId = params.bundleId ?? '';
 
@@ -31,6 +33,17 @@ export default function HuntXpRevealScreen() {
   // → fallback: navigate directly to hunt-complete so user isn't stuck.
   const xpResultRef = useRef<HuntXpResult | null>(consumeLastCompletionResult());
   const navigated   = useRef(false);
+
+  // Guided demo: the walkthrough carries on to the summary; there is no swiping out of it.
+  // (Only moving forward to the summary, or the coach's own exit, may leave this screen.)
+  useEffect(() => {
+    if (!isHuntDemoActive()) return;
+    (navigation as any).setOptions?.({ gestureEnabled: false });
+    return (navigation as any).addListener('beforeRemove', (e: any) => {
+      if (isDemoExiting() || e?.data?.action?.type === 'REPLACE') return;
+      e.preventDefault();
+    });
+  }, [navigation]);
 
   const goToComplete = () => {
     if (navigated.current) return;   // prevent double-navigation on rapid taps

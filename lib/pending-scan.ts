@@ -16,8 +16,16 @@ export interface PhotoData {
   uri?:     string;
 }
 
+/** How a photo got here. Reported to the server with Hunt scans (see server/hunt). */
+export type CaptureSource = 'camera' | 'library';
+
 export interface PendingScan {
   front:   PhotoData;
+  /**
+   * Where the FRONT photo came from: the in-app camera, or the photo library.
+   * Hunt XP gives full value to big finds only when the photo was taken in the app.
+   */
+  frontSource?: CaptureSource;
   tag?:    PhotoData;
   detail?: PhotoData;   // formerly 'back' — back print, graphic, flaw, logo, close-up
   /**

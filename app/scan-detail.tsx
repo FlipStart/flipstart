@@ -44,6 +44,7 @@ import { useAchievementNotifications } from '@/lib/AchievementNotificationContex
 
 import { useGenerateListingsGate } from '@/lib/useGenerateListingsGate';
 import { useDeepAnalysisGate } from '@/lib/useDeepAnalysisGate';
+import { useDeepAnalysisTip } from '@/lib/deepAnalysisTip';
 import {
   getScanDeletionImpact, computeValidSets, type ImpactContext,
 } from '@/lib/scanDeletionImpact';
@@ -421,36 +422,10 @@ export default function ScanDetailScreen() {
     ]);
   };
 
-  // ── Deep Analysis coach-mark (tooltip) — IDENTICAL system to results.tsx,
-  // and deliberately keyed by the SAME account-scoped storage key so the
-  // "haven't opened Deep Analysis in N scans" streak is shared across both
-  // Flip Record (this screen) and normal Scan Analysis (results.tsx). Opening
-  // Deep Analysis from either screen resets the shared streak.
-  //  • Shows on first visit to either screen until the user taps in once.
-  //  • The X hides it for the current scan only.
-  //  • After first use, stays hidden — UNLESS the user then views 5+ scans in
-  //    a row (across both screens) WITHOUT opening Deep Analysis.
-  const DEEP_STREAK_THRESHOLD = 5;
-  const deepTipKey = `@flipstart/deep_analysis_state:${user?.id ?? 'guest'}`;
-  const [showDeepTip, setShowDeepTip] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(deepTipKey);
-        const st = raw ? JSON.parse(raw) as { seen?: boolean; streak?: number; lastScanId?: string } : {};
-        let streak = st.streak ?? 0;
-        // Count this scan once (dedupe by scan id so re-renders don't inflate it).
-        if (flip?.id && flip.id !== st.lastScanId) {
-          streak += 1;
-          await AsyncStorage.setItem(deepTipKey, JSON.stringify({ ...st, streak, lastScanId: flip.id }));
-        }
-        const shouldShow = !st.seen || streak >= DEEP_STREAK_THRESHOLD;
-        if (alive) setShowDeepTip(shouldShow);
-      } catch { /* if storage fails, just don't show the tip */ }
-    })();
-    return () => { alive = false; };
-  }, [deepTipKey, flip?.id]);
+  // ── Deep Analysis coach-mark (tooltip) — same rule as results.tsx ──────────
+  // Shown until Deep Analysis has been opened once, the free preview spent, or the
+  // X pressed. Then never again (lib/deepAnalysisTip.ts).
+  const { show: showDeepTip, dismiss: dismissDeepTip } = useDeepAnalysisTip();
 
   // ── Deep Analysis arrow glow — same subtle pulsing gold aura as results.tsx ─
   const arrowGlow = useRef(new Animated.Value(0)).current;
@@ -475,14 +450,9 @@ export default function ScanDetailScreen() {
     );
   };
 
-  // Tapping the title/arrow (or the existing Deep Analysis card) opens Deep
-  // Analysis AND permanently dismisses the coach-mark, resetting the streak.
+  // Every way into Deep Analysis goes through the gate hook, which marks the tip
+  // seen the moment the user taps.
   const handleOpenDeepAnalysis = () => {
-    if (showDeepTip) setShowDeepTip(false);
-    AsyncStorage.setItem(
-      deepTipKey,
-      JSON.stringify({ seen: true, streak: 0, lastScanId: flip?.id ?? '' }),
-    ).catch(() => { /* non-fatal */ });
     navigateToDeepAnalysis();
   };
 
@@ -612,7 +582,7 @@ export default function ScanDetailScreen() {
                 </Text>
               </View>
               <Pressable
-                onPress={(e) => { e.stopPropagation?.(); setShowDeepTip(false); }}
+                onPress={(e) => { e.stopPropagation?.(); dismissDeepTip(); }}
                 hitSlop={10}
                 style={s.deepTipClose}
               >

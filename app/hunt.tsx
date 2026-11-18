@@ -10,10 +10,11 @@
 
 import {
   View, Text, TextInput, Pressable, StyleSheet,
-  ImageBackground, Animated, Platform, Keyboard,
-  Modal, TouchableWithoutFeedback, Dimensions, Alert, Image,
+  Animated, Platform, Keyboard,
+  Modal, TouchableWithoutFeedback, Dimensions, Alert, AccessibilityInfo,
   useWindowDimensions,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useRouter, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAudioPlayer } from 'expo-audio';
@@ -24,14 +25,29 @@ import { useRef, useState, useEffect } from 'react';
 import { startHunt, isHuntActive, subscribeToHunt } from '@/lib/hunt-context';
 import { useAuth } from '@/lib/auth-context';
 import { logHuntModeOpened, logHuntStarted } from '@/lib/analytics';
+import { useHuntOnboarding } from '@/lib/useHuntOnboarding';
+import { HuntGlowRing } from '@/components/hunt/HuntGlowRing';
+import { HuntWelcome } from '@/components/hunt/onboarding/HuntWelcome';
+import { launchHuntDemoResult, DEMO_HUNT_NAME } from '@/lib/huntDemoLaunch';
+import {
+  logHuntOnboardingOffered, logHuntOnboardingSkipped, logHuntOnboardingReplayed,
+} from '@/lib/huntOnboardingAnalytics';
+import { devResetHuntOnboarding } from '@/lib/huntOnboarding';
+import { isHuntDemoActive } from '@/lib/huntDemoMode';
+import { advanceCoach, getCoachState } from '@/lib/huntDemoCoach';
+import { beginDemoHuntSession, endDemoHunt } from '@/lib/huntDemoSession';
+import { CoachOverlay } from '@/components/hunt/onboarding/coach/CoachOverlay';
+import { useCoachRef } from '@/components/hunt/onboarding/coach/coachTargets';
 import { FONTS } from '@/constants/typography';
+import { HUNT_BG, HUNT_TITLE, isHuntArtReady } from '@/lib/huntArt';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 
-const BG_IMAGE   = require('@/assets/images/hunt-mode-bg.png');
+// Both images live in lib/huntArt so the tab bar can load them before this screen opens.
+const BG_IMAGE    = HUNT_BG;
 // "HUNT MODE" + paw divider, drawn as its own layer on top of the background
 // (the background no longer contains them). Rendered at 3x for crisp edges.
-const TITLE_IMAGE = require('@/assets/images/hunt-mode-title.png');
+const TITLE_IMAGE = HUNT_TITLE;
 
 // Background image size, and where the title layer sits on it (in background
 // image pixels). The background uses resizeMode="cover", so the title is placed
@@ -58,6 +74,14 @@ const SCREEN_H    = Dimensions.get('window').height;
 // Normal iPhones are unaffected.
 const COMPACT    = SCREEN_H < 700;
 
+/**
+ * Painted under the art. The navigator's own background is forest green (#214D2D,
+ * app/_layout), which showed through as the screen opened. The art is normally
+ * already loaded by now (lib/huntArt), so this is rarely seen; when it is, it is plain
+ * white, a clean blank, not a coloured flash.
+ */
+const ART_UNDERLAY = '#FFFFFF';
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function HuntScreen() {
@@ -67,6 +91,61 @@ export default function HuntScreen() {
   const insets  = useSafeAreaInsets();
   const { width: winW, height: winH } = useWindowDimensions();
   const player  = useAudioPlayer(ROAR_SOUND);
+  // Gold glow on START HUNT while Hunt onboarding is unresolved (see lib/huntOnboarding).
+  const onboarding = useHuntOnboarding();
+  const huntAttention = onboarding.attention;
+  // Guided demo spotlight targets (inert outside it).
+  const coachNameRef  = useCoachRef('hunt-name');
+  const coachStartRef = useCoachRef('hunt-start-btn');
+
+  // ── Welcome (first intentional entry) and replay ──────────────────────────
+  // The automatic welcome opens once per visit while onboarding is unresolved
+  // (never offered, or skipped for now), and never while a hunt is running (that
+  // case already redirects to Live Hunt). The info button replays it any time.
+  const [welcome, setWelcome] = useState<null | 'offer' | 'replay'>(null);
+  const welcomeOfferedRef = useRef(false);
+  useEffect(() => {
+    if (!user || !onboarding.autoOffer || welcomeOfferedRef.current || isHuntActive()) return;
+    welcomeOfferedRef.current = true;
+    setWelcome('offer');
+    logHuntOnboardingOffered((onboarding.offerCount ?? 0) + 1);
+    void onboarding.recordOffered();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, onboarding.autoOffer]);
+
+  // DEVELOPER ONLY (compiled out of release builds by __DEV__): forget this account's onboarding
+  // so the welcome and dots come back. Touches nothing but the onboarding record.
+  const handleDevReset = async () => {
+    if (!user) return;
+    const ok = await devResetHuntOnboarding(user.id);
+    welcomeOfferedRef.current = false;
+    Alert.alert(ok ? 'Onboarding reset' : 'Reset unavailable', ok
+      ? 'Leave Hunt Mode and open it again: the welcome and the gold dots are back.'
+      : 'Only works in a development build.');
+  };
+
+  const handleWelcomeSkip = (doNotShowAgain: boolean) => {
+    if (welcome === 'offer') {
+      logHuntOnboardingSkipped(doNotShowAgain);
+      void onboarding.skipWelcome(doNotShowAgain);
+    }
+    setWelcome(null);                    // a replay's Close changes nothing
+  };
+  const handleWelcomeStartDemo = () => {
+    // Changes no onboarding state: the welcome just steps aside and the coach takes over.
+    const result = launchHuntDemoResult({ replay: welcome === 'replay' });
+    if (result === 'real_hunt_active') {
+      Alert.alert('Finish your Hunt first', "You have a Hunt in progress. The demo can't run on top of it, so it's waiting until you're done.");
+      setWelcome(null);
+      return;
+    }
+    if (result !== 'started') {
+      Alert.alert("Demo unavailable", "The guided demo can't start right now. You can skip it and start a real Hunt.");
+      return;
+    }
+    setWelcome(null);
+    setHuntName(DEMO_HUNT_NAME);
+  };
 
   // Confirmed hunt name shown on the card
   const [huntName, setHuntName] = useState('');
@@ -80,6 +159,9 @@ export default function HuntScreen() {
 
   // Track Hunt Mode screen open — fires once on mount
   useEffect(() => {
+    // A demo left switched on with no coach is stale (it only lives in memory): clear it
+    // so it can never stand in the way of a real Hunt.
+    if (isHuntDemoActive() && !getCoachState().active) endDemoHunt();
     logHuntModeOpened();
   }, []);
 
@@ -105,10 +187,17 @@ export default function HuntScreen() {
   };
 
   // ── Screen entrance animation ──────────────────────────────────────────────
-  const screenFade = useRef(new Animated.Value(0)).current;
+  // Art already loaded (normal case): the screen is fully there on its first frame and only
+  // the card eases in. Otherwise it fades in once the art arrives.
+  const artWasReady = useRef(isHuntArtReady()).current;
+  const screenFade = useRef(new Animated.Value(artWasReady ? 1 : 0)).current;
   const cardSlide  = useRef(new Animated.Value(32)).current;
 
-  const handleImageLoad = () => {
+  const handleImageLoad = async () => {
+    // Reduce Motion: the card is simply there, no slide and no fade.
+    let reduceNow = false;
+    try { reduceNow = !!(await AccessibilityInfo.isReduceMotionEnabled?.()); } catch { /* animate */ }
+    if (reduceNow) { screenFade.setValue(1); cardSlide.setValue(0); return; }
     Animated.parallel([
       Animated.timing(screenFade, {
         toValue: 1, duration: 200, useNativeDriver: true,
@@ -118,6 +207,14 @@ export default function HuntScreen() {
       }),
     ]).start();
   };
+
+  useEffect(() => {
+    if (artWasReady) { void handleImageLoad(); return; }
+    // The art never reporting back must not leave the screen invisible.
+    const t = setTimeout(() => { void handleImageLoad(); }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Name popup ────────────────────────────────────────────────────────────
   const openModal = () => {
@@ -153,6 +250,14 @@ export default function HuntScreen() {
     try { player.seekTo(0); player.play(); } catch { /* never crash */ }
 
     startedHereRef.current = true;
+    if (isHuntDemoActive()) {
+      // Guided demo: an in-memory Hunt, no analytics, nothing stored.
+      beginDemoHuntSession(huntName);
+      advanceCoach('start');
+      router.replace('/hunt-active' as any);
+      setStarting(false);
+      return;
+    }
     const session = startHunt(huntName);
     logHuntStarted(session.id, huntName);
     if (__DEV__) console.log(`[hunt] session started — id:${session.id} name:"${session.name}"`);
@@ -180,6 +285,7 @@ export default function HuntScreen() {
   // straight back into Hunt (the glitch). Resetting the root stack to a fresh
   // (tabs) reinitializes it to its first tab (Home), which is deterministic.
   const handleBack = () => {
+    if (isHuntDemoActive()) endDemoHunt();
     try {
       navigation.reset({ index: 0, routes: [{ name: '(tabs)' as never }] });
     } catch {
@@ -214,13 +320,19 @@ export default function HuntScreen() {
 
 
   return (
+    <View style={s.artUnderlay}>
     <Animated.View style={[s.screenWrap, { opacity: screenFade }]}>
-      <ImageBackground
-        source={BG_IMAGE}
-        style={s.bg}
-        resizeMode="cover"
-        onLoad={handleImageLoad}
-      >
+      <View style={s.bg}>
+        <Image
+          source={BG_IMAGE}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          transition={artWasReady ? 0 : 160}
+          cachePolicy="memory-disk"
+          priority="high"
+          onLoad={handleImageLoad}
+          accessible={false}
+        />
         {/* HUNT MODE title + paw divider — separate layer, full opacity */}
         <View
           style={titleStyle}
@@ -229,7 +341,7 @@ export default function HuntScreen() {
           accessibilityRole="header"
           accessibilityLabel="Hunt Mode"
         >
-          <Image source={TITLE_IMAGE} style={s.titleImg} resizeMode="stretch" />
+          <Image source={TITLE_IMAGE} style={s.titleImg} contentFit="fill" transition={0} cachePolicy="memory-disk" />
         </View>
 
         {/* Back button */}
@@ -240,6 +352,33 @@ export default function HuntScreen() {
         >
           <Text style={s.backBtnText}>✕</Text>
         </Pressable>
+
+        {/* How Hunt Mode Works — replays the welcome any time, even after it was
+            completed or dismissed. Hidden while the onboarding switch is off. */}
+        {onboarding.live && (
+          <Pressable
+            onPress={() => { logHuntOnboardingReplayed(); setWelcome('replay'); }}
+            hitSlop={12}
+            style={[s.infoBtn, { top: insets.top + 12 }]}
+            accessibilityRole="button"
+            accessibilityLabel="How Hunt Mode works"
+            testID="hunt-replay-welcome"
+          >
+            <MaterialIcons name="info-outline" size={20} color="#F2E8D0" />
+          </Pressable>
+        )}
+
+        {__DEV__ && onboarding.live && (
+          <Pressable
+            onPress={handleDevReset}
+            style={[s.devBtn, { top: insets.top + 12 + 44 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Developer: reset Hunt onboarding"
+            testID="hunt-dev-reset-onboarding"
+          >
+            <Text style={s.devBtnText}>DEV · reset onboarding</Text>
+          </Pressable>
+        )}
 
         <View style={s.spacer} />
 
@@ -277,19 +416,29 @@ export default function HuntScreen() {
           </Pressable>
         </Animated.View>
 
-        {/* ── Card ── */}
+        {/* ── Card ──
+            Invisible while the welcome is up: it shows through the scrim and pulls the eye
+            off "Welcome to Hunt Mode". Kept mounted (just transparent) so nothing shifts
+            when the welcome closes, and out of touch and VoiceOver while hidden. */}
         <Animated.View
           style={[
             s.card,
             { marginBottom: insets.bottom + (COMPACT ? 16 : 40) },
             COMPACT && s.cardCompact,
             { transform: [{ translateY: cardSlide }] },
+            !!welcome && { opacity: 0 },
           ]}
+          pointerEvents={welcome ? 'none' : 'auto'}
+          importantForAccessibility={welcome ? 'no-hide-descendants' : 'auto'}
+          accessibilityElementsHidden={!!welcome}
+          testID="hunt-start-card"
         >
           <Text style={s.inputLabel}>HUNT NAME (OPTIONAL)</Text>
 
           {/* Tap target — opens popup instead of inline keyboard */}
           <Pressable
+            ref={coachNameRef as any}
+            collapsable={false}
             onPress={openModal}
             style={({ pressed }) => [s.inputTap, pressed && { opacity: 0.75 }]}
           >
@@ -305,25 +454,40 @@ export default function HuntScreen() {
             <MaterialIcons name="edit" size={14} color={TEXT_MUTED + '99'} />
           </Pressable>
 
-          <Pressable
-            onPress={handleStartHunt}
-            disabled={starting}
-            style={({ pressed }) => [
-              s.startBtn,
-              pressed  && { transform: [{ scale: 0.97 }], opacity: 0.92 },
-              starting && { opacity: 0.7 },
-            ]}
-          >
-            <MaterialIcons name="pets" size={20} color={GOLD} />
-            <Text style={s.startBtnText}>
-              {starting ? 'Starting...' : 'START HUNT'}
-            </Text>
-            <MaterialIcons name="pets" size={20} color={GOLD} />
-          </Pressable>
+          <View ref={coachStartRef as any} collapsable={false} style={{ position: 'relative', marginTop: 2 }}>
+            {huntAttention !== 'off' && <HuntGlowRing mode={huntAttention} radius={14} />}
+            <Pressable
+              onPress={handleStartHunt}
+              disabled={starting}
+              style={({ pressed }) => [
+                s.startBtn,
+                pressed  && { transform: [{ scale: 0.97 }], opacity: 0.92 },
+                starting && { opacity: 0.7 },
+              ]}
+            >
+              <MaterialIcons name="pets" size={20} color={GOLD} />
+              <Text style={s.startBtnText}>
+                {starting ? 'Starting...' : 'START HUNT'}
+              </Text>
+              <MaterialIcons name="pets" size={20} color={GOLD} />
+            </Pressable>
+          </View>
 
           <Text style={s.hint}>Scan items during your hunt to track your haul</Text>
         </Animated.View>
-      </ImageBackground>
+      </View>
+
+      {/* ── Welcome / replay ── */}
+      {welcome && (
+        <HuntWelcome
+          replay={welcome === 'replay'}
+          onStartDemo={handleWelcomeStartDemo}
+          onSkip={handleWelcomeSkip}
+        />
+      )}
+
+      {/* ── Guided demo coach marks (draws nothing outside the demo) ── */}
+      <CoachOverlay screen="hunt" />
 
       {/* ── Hunt Name Popup ── */}
       <Modal
@@ -379,12 +543,14 @@ export default function HuntScreen() {
         </View>
       </Modal>
     </Animated.View>
+    </View>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
+  artUnderlay: { flex: 1, backgroundColor: ART_UNDERLAY },
   screenWrap: { flex: 1 },
   bg:         { flex: 1, justifyContent: 'flex-end' },
 
@@ -399,6 +565,17 @@ const s = StyleSheet.create({
     alignItems:      'center',
   },
   backBtnText: { color: '#F2E8D0', fontSize: 16, fontWeight: '600' },
+  // Replay (info) button: the same disc as ✕, on the opposite side.
+  infoBtn: {
+    position: 'absolute', right: 18, width: 36, height: 36, borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.30)', justifyContent: 'center', alignItems: 'center',
+  },
+
+  devBtn: {
+    position: 'absolute', right: 18, minHeight: 32, paddingHorizontal: 10, borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center',
+  },
+  devBtnText: { color: '#F2E8D0', fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
 
   spacer: { flex: 1 },
 
@@ -492,7 +669,6 @@ const s = StyleSheet.create({
     paddingVertical: 17,
     borderWidth:     1.5,
     borderColor:     GOLD + '60',
-    marginTop:       2,
     shadowColor:     FOREST_DARK,
     shadowOffset:    { width: 0, height: 4 },
     shadowOpacity:   0.45,

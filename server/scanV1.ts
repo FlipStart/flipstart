@@ -87,6 +87,12 @@ export interface ScanV1Input {
   now?: Date;
   /** Aborts the AI call when the scan runs out of time or is cancelled. */
   signal?: AbortSignal;
+  /**
+   * A Hunt scan: also ask the model how the photo was made (a real object, a
+   * screen, a screenshot / listing image). Adds one enum field to the schema and
+   * one short section to the prompt, for these scans only.
+   */
+  captureCheck?: boolean;
 }
 
 export interface ScanV1Success {
@@ -109,8 +115,10 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
   // Evaluated per request, so enabling a definition takes effect on the next
   // scan with no redeploy of anything else.
   const includeFeatures = anyRecognitionEnabled();
+  const captureCheck = input.captureCheck === true;
 
   const system = buildSystemMessage({
+    captureCheck,
     currentYear: now.getFullYear(),
     vintageCutoffYear: cutoff,
     photoSlotsProvided: slots,
@@ -142,7 +150,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
       // `features` is requested only when a recognition definition is live.
       // While all nine are disabled it is ~119 output tokens of data the
       // matcher discards — about 1.6s of generation on every scan.
-      response_format: canonicalResponseFormat(includeFeatures) as never,
+      response_format: canonicalResponseFormat(includeFeatures, captureCheck) as never,
       max_tokens: MAX_OUTPUT_TOKENS,
       signal: input.signal,
     });
@@ -170,9 +178,9 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
 
   const telemetry: ScanV1Telemetry = {
     model: raw.model || model,
-    prompt_version: SCAN_PROMPT_VERSION,
+    prompt_version: captureCheck ? `${SCAN_PROMPT_VERSION}+capture1` : SCAN_PROMPT_VERSION,
     schema_version: SCHEMA_VERSION,
-    schema_hash: canonicalSchemaHash(includeFeatures),
+    schema_hash: canonicalSchemaHash(includeFeatures, captureCheck),
     duration_ms: duration,
     finish_reason: choice?.finish_reason ?? null,
     refusal: (choice?.message as { refusal?: string } | undefined)?.refusal ?? null,
@@ -218,8 +226,8 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
 
   const meta: CanonicalMeta = {
     schema_version: SCHEMA_VERSION,
-    prompt_version: SCAN_PROMPT_VERSION,
-    schema_hash: canonicalSchemaHash(includeFeatures),
+    prompt_version: captureCheck ? `${SCAN_PROMPT_VERSION}+capture1` : SCAN_PROMPT_VERSION,
+    schema_hash: canonicalSchemaHash(includeFeatures, captureCheck),
     model: telemetry.model,
     photo_slots_provided: slots,
     plan_at_scan: input.planAtScan,

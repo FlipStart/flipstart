@@ -16,6 +16,7 @@ import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { getApiBaseUrl } from "@/constants/oauth";
 import { createEventQueue, newClientEventId, classifyInsertFailure, type InsertError, type SendResult } from "@/lib/analyticsQueue";
+import { analyticsAllowed, isHuntDemoActive } from "@/lib/huntDemoMode";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -356,6 +357,7 @@ export function getCurrentSessionId(): string | null {
  * Increment a per-session counter. Safe to call before session starts.
  */
 export function incrementSessionCount(key: keyof typeof _counts): void {
+  if (isHuntDemoActive()) return;                // demo activity is not session usage
   try { _counts[key]++; } catch { /* never throw */ }
 }
 
@@ -365,6 +367,8 @@ export function incrementSessionCount(key: keyof typeof _counts): void {
  * Log a named event with optional metadata. Fire-and-forget, never throws.
  */
 export function logEvent(eventName: string, metadata: Record<string, unknown> = {}): void {
+  // The guided Hunt demo is not real usage: only hunt_onboarding_* events leave.
+  if (!analyticsAllowed(eventName)) return;
   // Sink 1: Supabase analytics_events (Founder Dashboard v3 source). Fail-safe.
   const route = typeof metadata.route === "string" ? (metadata.route as string) : undefined;
   writeEventToSupabase(eventName, metadata, route);
@@ -509,6 +513,7 @@ export function endSession(): void {
  * as metadata so the dashboard can show accurate per-user time-to-first-scan.
  */
 export function recordScanCompleted(metadata: Record<string, unknown> = {}): void {
+  if (isHuntDemoActive()) return;                // would stamp the user's first-scan time
   incrementSessionCount("completedScanCount");
   void (async () => {
     try {
@@ -644,6 +649,7 @@ export interface ScanRecordPayload {
 }
 
 export function saveScanRecord(record: ScanRecordPayload): void {
+  if (isHuntDemoActive()) return;
   void (async () => {
     try {
       const userId = await getAnonUserId();

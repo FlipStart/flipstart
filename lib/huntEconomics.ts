@@ -16,9 +16,11 @@
  * Pure: no React, no storage, no network.
  */
 import type { ScanResult } from './types';
-import { computeFlipCalc, findBuyUnderPrice } from '@/utils/flipCalculations';
-import { ratingSignalsFor } from '@/utils/ratingSignals';
-import type { FlipCalc } from '@/types/flip';
+// Relative imports on purpose: the server imports this file to score Hunt XP with
+// the exact engine the app shows, and it has no '@/' alias.
+import { computeFlipCalc, findBuyUnderPrice } from '../utils/flipCalculations';
+import { ratingSignalsFor, type RatingSignals } from '../utils/ratingSignals';
+import type { FlipCalc } from '../types/flip';
 
 export type HuntRating = 'legendary' | 'treasure' | 'risky' | 'trash';
 
@@ -86,8 +88,23 @@ export interface HuntEconomics {
   calc:        FlipCalc;
 }
 
+/**
+ * Everything the rating engine reads from a scan. Small and JSON-safe: the server
+ * stores this with each Hunt scan and scores XP from it later.
+ */
+export interface EngineInputs {
+  resale:      number;
+  confidence:  number;
+  competition: string;
+  styleLabels: string[];
+  era:         string;
+  demand:      string;
+  speed:       string;
+  signals:     RatingSignals;
+}
+
 /** Inputs to the shared engine, read from a scan. */
-function engineInputs(scan: ScanResult) {
+export function engineInputs(scan: ScanResult): EngineInputs {
   const md = scan?.market_data as any;
   const id = scan?.identification as any;
   const ra = scan?.risk_analysis as any;
@@ -105,7 +122,11 @@ function engineInputs(scan: ScanResult) {
 
 /** Fees, profit, ROI and Hunt rating for this scan at this thrift price. */
 export function huntEconomics(scan: ScanResult, thriftPrice: number): HuntEconomics {
-  const i = engineInputs(scan);
+  return economicsFromInputs(engineInputs(scan), thriftPrice);
+}
+
+/** The same, from stored inputs. The one place the engine is actually called. */
+export function economicsFromInputs(i: EngineInputs, thriftPrice: number): HuntEconomics {
   const price = Number.isFinite(thriftPrice) && thriftPrice > 0 ? thriftPrice : 0;
   const calc = computeFlipCalc(
     i.resale, price, i.confidence, i.competition, i.styleLabels, i.era, i.demand, i.speed, i.signals,

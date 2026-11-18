@@ -14,6 +14,7 @@
  */
 import { scanPhotosFor } from './scanSessionPhotos';
 import { setHuntItemPhotos, reportHuntError, type HuntPhoto } from './hunt-context';
+import { isHuntDemoActive } from './huntDemoMode';
 
 const isRemote = (u: string | null | undefined) => !!u && /^https?:\/\//.test(u);
 
@@ -33,6 +34,7 @@ export async function backUpHuntItemPhotos(
   mainUri: string,
   userId: string | null | undefined,
 ): Promise<void> {
+  if (isHuntDemoActive()) return;                // demo photos are bundled; nothing to back up
   const extras = sessionExtraPhotos(scanId);
   // Record the local extras immediately so they survive with the hunt.
   if (extras.length > 0) setHuntItemPhotos(scanId, { extraPhotos: extras });

@@ -219,7 +219,14 @@ export interface AiPhotoEvidence {
   items_in_frame?: ItemsInFrame;
   /** Absent on analyses made before prompt v1.10.0. */
   photo_problems?: PhotoProblem[];
+  /**
+   * How the front photo was made. Asked for on HUNT scans only (and only while
+   * the capture check is on), so it is absent everywhere else. Hunt XP reads it.
+   */
+  capture_kind?: CaptureKind;
 }
+
+export type CaptureKind = 'in_person' | 'screen' | 'screenshot_or_listing' | 'unclear';
 
 export interface AiEraEvidence {
   observation: string;

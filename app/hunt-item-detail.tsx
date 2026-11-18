@@ -34,7 +34,7 @@ import { ScreenCrashFallback } from '@/components/scan/ScreenCrashFallback';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 
 import { useScanContext }       from '@/lib/scan-context';
 import {
@@ -58,6 +58,13 @@ import { FONTS }                from '@/constants/typography';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { logHuntItemSaved, logHuntItemRemoved, logEvent } from '@/lib/analytics';
 import { HuntPriceField, type HuntPriceFieldHandle } from '@/components/hunt/HuntPriceField';
+import { isHuntDemoActive, isDemoExiting } from '@/lib/huntDemoMode';
+import { advanceCoach } from '@/lib/huntDemoCoach';
+import { demoPriceFor, applyDemoPrefill } from '@/lib/huntDemoSession';
+import { demoPhotoUri } from '@/components/hunt/onboarding/demoAssets';
+import { CoachOverlay } from '@/components/hunt/onboarding/coach/CoachOverlay';
+import { useCoach } from '@/components/hunt/onboarding/coach/useCoach';
+import { useCoachRef } from '@/components/hunt/onboarding/coach/coachTargets';
 import { PhotoViewerModal } from '@/components/results/PhotoViewerModal';
 import { H } from '@/components/hunt/discovery/theme';
 import { HuntRatingBadge } from '@/components/hunt/discovery/HuntRatingBadge';
@@ -80,6 +87,8 @@ const FOREST = H.forest;
 const BROWN  = H.brown;
 const MUTED  = H.muted;
 const GOLD   = H.gold;
+/** Guided demo: room the coach card needs under the decision card (the card is about 190pt tall). */
+const DEMO_COACH_ROOM = 200;
 const CREAM  = H.cream;
 const RED    = H.red;
 
@@ -172,6 +181,18 @@ export default function HuntItemDetailScreen() {
   const priceRef    = useRef<HuntPriceFieldHandle>(null);
   const scrollRef   = useRef<ScrollView>(null);
   const { height: winH } = useWindowDimensions();
+
+  // Guided demo (all inert outside it): where the coach marks point, and where the card sits.
+  const demo           = isHuntDemoActive();
+  const coach          = useCoach();
+  const decisionCoachRef = useCoachRef('item-decision');
+  const decisionViewRef  = useRef<View | null>(null);
+  // One ref for both: the coach spotlight finds the card, and the demo can measure where it sits.
+  const decisionRef = useCallback((v: View | null) => { decisionViewRef.current = v; (decisionCoachRef as any)(v); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const coachPriceRef  = useCoachRef('item-price');
+  const coachSaveRef   = useCoachRef('item-save');
+  const coachSkipRef   = useCoachRef('item-skip');
+  const decisionY      = useRef(0);
 
   // The action bar steps aside while the keyboard is up (the Done bar is the
   // way out), so it can never sit on top of the price field or the content.
@@ -340,12 +361,45 @@ export default function HuntItemDetailScreen() {
   useEffect(() => {
     if (context !== 'new') return;
     const unsub = (navigation as any).addListener('beforeRemove', (e: any) => {
-      if (allowNavRef.current) return;
+      if (allowNavRef.current || isDemoExiting()) return;
       e.preventDefault();
-      setConfirmVisible(true);
+      // In the guided demo the way out is the coach's "Exit demo", not this dialog.
+      if (!isHuntDemoActive()) setConfirmVisible(true);
     });
     return unsub;
   }, [navigation, context]);
+
+  // Guided demo: no swipe-back out of the walkthrough.
+  useEffect(() => {
+    if (demo) (navigation as any).setOptions?.({ gestureEnabled: false });
+  }, [demo, navigation]);
+
+  // Guided demo: the second find ("skip") arrives with the tag price already entered.
+  useEffect(() => {
+    if (!demo || coach.stepId !== 'skip' || context !== 'new' || !scanId) return;
+    const p = demoPriceFor(scanId);
+    if (p === null || pendingThriftPrices[scanId]) return;
+    setPendingThriftPrice(scanId, formatThriftPrice(p));
+    if (getHuntItemById(`hi_${scanId}`)) setHuntItemPrice(`hi_${scanId}`, p);
+  }, [demo, coach.stepId, context, scanId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Guided demo: make sure the decision card (rating, price, profit) AND the coach card under it fit
+  // on screen, scrolling only as far as that takes. On most phones that is not at all, so the photo,
+  // title and pills at the top stay exactly where they are in a normal Hunt.
+  const scrollYRef = useRef(0);
+  useEffect(() => {
+    if (!demo || (coach.stepId !== 'analysis' && coach.stepId !== 'price')) return;
+    const t = setTimeout(() => {
+      try {
+        (decisionViewRef.current as any)?.measureInWindow?.((_x: number, y: number, _w: number, h: number) => {
+          const room = winH - (y + h) - insets.bottom - 22;      // space left under the decision card
+          const deficit = DEMO_COACH_ROOM - room;
+          if (deficit > 0) scrollRef.current?.scrollTo({ y: scrollYRef.current + deficit, animated: true });
+        });
+      } catch { /* the card stays where it is */ }
+    }, 150);
+    return () => clearTimeout(t);
+  }, [demo, coach.stepId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scan vanished (hot reload etc.) and no pending record to fall back on.
   useEffect(() => {
@@ -462,6 +516,17 @@ export default function HuntItemDetailScreen() {
     router.replace('/hunt-active' as any);
   };
 
+  // Guided demo: tapping the highlighted price box enters the tag price for the user
+  // (no keyboard, nothing to get wrong) and the coach moves on.
+  const demoPriceStep = demo && coach.stepId === 'price' && context === 'new';
+  const fillDemoPrice = () => {
+    const p = demoPriceFor(scanId);
+    if (p === null) return;
+    haptic('light');
+    commitPrice(formatThriftPrice(p));
+    advanceCoach('price');
+  };
+
   // ── Deep Analysis ─────────────────────────────────────────────────────────
   // Deep Analysis talks about "your price", so it opens at a real price: the one
   // in the field (or saved with the item). With none, the price field is focused
@@ -526,6 +591,7 @@ export default function HuntItemDetailScreen() {
         hunt_item_id:   compsItemId,
       });
     } catch {}
+    advanceCoach('save');                       // guided demo only; a no-op otherwise
     leaveToHunt();
   };
 
@@ -542,6 +608,11 @@ export default function HuntItemDetailScreen() {
           hunt_item_id:   compsItemId,
         });
       } catch {}
+    }
+    if (isHuntDemoActive()) {
+      // The skipped find completes the "established Hunt" the next step shows.
+      applyDemoPrefill(demoPhotoUri);
+      advanceCoach('skip');
     }
     leaveToHunt();
   };
@@ -597,7 +668,7 @@ export default function HuntItemDetailScreen() {
         contentContainerStyle={{ paddingBottom: 132 + insets.bottom }}
         keyboardShouldPersistTaps="handled"
         scrollEventThrottle={120}
-        onScroll={e => checkCompsViewed(e.nativeEvent.contentOffset.y)}
+        onScroll={e => { scrollYRef.current = e.nativeEvent.contentOffset.y; checkCompsViewed(e.nativeEvent.contentOffset.y); }}
         onLayout={e => { scrollViewH.current = e.nativeEvent.layout.height; checkCompsViewed(0); }}
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         automaticallyAdjustKeyboardInsets
@@ -669,11 +740,16 @@ export default function HuntItemDetailScreen() {
         </View>
 
         {/* 3 · Decision card: rating · thrift price · profit, then buy guidance */}
-        <View style={s.decisionCard}>
+        <View
+          ref={decisionRef as any}
+          collapsable={false}
+          onLayout={e => { decisionY.current = e.nativeEvent.layout.y; }}
+          style={s.decisionCard}
+        >
           <View style={s.decisionRow}>
             <HuntRatingBadge rating={shownRating} provisional={provisional} />
 
-            <View style={[s.priceBox, emphasize && { borderColor: GOLD, borderWidth: 2 }]}>
+            <View ref={coachPriceRef as any} collapsable={false} style={[s.priceBox, emphasize && { borderColor: GOLD, borderWidth: 2 }]}>
               <Text style={s.boxLabel}>THRIFT PRICE</Text>
               {editable ? (
                 <HuntPriceField
@@ -694,6 +770,15 @@ export default function HuntItemDetailScreen() {
                 </Text>
               )}
               {editable && !priceText && <Text style={s.priceHint}>Tap to enter</Text>}
+              {demoPriceStep && (
+                <Pressable
+                  style={StyleSheet.absoluteFill}
+                  onPress={fillDemoPrice}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Enter the $${demoPriceFor(scanId) ?? ''} store price`}
+                  testID="hunt-demo-price-tap"
+                />
+              )}
             </View>
 
             <View style={s.profitBox} testID={showResale ? 'hunt-est-resale' : 'hunt-est-profit'}>
@@ -755,11 +840,13 @@ export default function HuntItemDetailScreen() {
       {/* ── Sticky actions (hidden while the keyboard is up) ── */}
       {showActions && context === 'new' && (
         <View style={[s.actions, { paddingBottom: barPad }]}>
-          <Pressable onPress={handleSave} style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}>
+          <Pressable ref={coachSaveRef as any} collapsable={false} onPress={handleSave} style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}>
             <MaterialIcons name="add-circle-outline" size={18} color={CREAM} />
             <Text style={s.saveBtnText}>SAVE TO HUNT</Text>
           </Pressable>
           <Pressable
+            ref={coachSkipRef as any}
+            collapsable={false}
             onPress={() => Alert.alert(
               'Skip this find?',
               'It moves to Removed Items, where you can restore it later.',
@@ -823,6 +910,8 @@ export default function HuntItemDetailScreen() {
         </View>
       </Modal>
 
+      {/* Guided demo only (draws nothing otherwise). */}
+      <CoachOverlay screen="hunt-item-detail" />
     </View>
   );
 }

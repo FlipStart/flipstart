@@ -23,6 +23,10 @@ export interface CanonicalV1Passthrough {
   subject?: string;
   artist?: string;
   characterOrLicense?: string;
+  team?: string;
+  event?: string;
+  /** Photo observations behind the design fields, for Generate Listings on older scans. */
+  designNotes?: string[];
   secondaryColors?: string[];
   conditionChecked?: string[];
   conditionConfidence?: number;

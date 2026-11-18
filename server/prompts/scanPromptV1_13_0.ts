@@ -525,10 +525,30 @@ While this section is present, a feature that distinguishes the item (logo_ident
 
 `;
 
+/**
+ * Appended for HUNT scans only, together with the matching schema field
+ * (server/canonical/schema.ts withCaptureKind). Normal scans never see it, so
+ * their prompt stays byte-identical. Hunt XP reads the answer: a scan flagged as
+ * a screen, screenshot or listing image earns no value XP.
+ */
+export const CAPTURE_CHECK_SECTION = `
+
+# HOW THE PHOTO WAS MADE
+
+photo_evidence.capture_kind - how the FRONT photo was made. It is about the photograph, not the item.
+  in_person             - a camera pointed at a real, physical object. The normal case: an item on a rack, shelf, floor, table or hanger, or held in a hand.
+  screen                - a photo of a phone, monitor, laptop or TV that is showing the item: visible pixels or moire, a bezel or device edge, screen glare, a cursor, or interface elements around the picture.
+  screenshot_or_listing - not a camera photo of an object at all: a screenshot, a marketplace or shop listing image, an advert, or a catalogue or stock product shot. Signs: watermarks, price or title overlays, app or browser interface, a perfectly uniform studio background with catalogue lighting and no surroundings at all.
+  unclear               - you cannot tell.
+Choose screen or screenshot_or_listing ONLY when you can point to a visible sign of it. A plain or tidy background alone is not a sign: people photograph real items against white tables and walls. With no clear sign, answer in_person. This field changes nothing else: analyze the item exactly as you otherwise would.
+`;
+
 export interface RuntimeContext {
   /** Whether any recognition definition is live. When false the FEATURES
    *  section is omitted, matching the schema, which also omits the block. */
   includeFeatures?: boolean;
+  /** A Hunt scan: also ask how the photo was made (CAPTURE_CHECK_SECTION). */
+  captureCheck?: boolean;
   currentYear: number;
   vintageCutoffYear: number;
   photoSlotsProvided: Array<"front" | "tag" | "detail">;
@@ -544,6 +564,7 @@ export function buildSystemMessage(ctx: RuntimeContext): string {
     // Appended before the runtime block so the cacheable prefix stays
     // byte-identical for every scan sharing the same flag value.
     (ctx.includeFeatures ? FEATURES_SECTION : "") +
+    (ctx.captureCheck ? CAPTURE_CHECK_SECTION : "") +
     "\n\n# RUNTIME CONTEXT\n" +
     `Current year: ${ctx.currentYear}\n` +
     `Vintage cutoff year: ${ctx.vintageCutoffYear} (items made on or before this year may qualify as vintage)\n` +

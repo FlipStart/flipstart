@@ -34,6 +34,7 @@ import { FONTS } from '@/constants/typography';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';   // safe — edit-profile is not startup-loaded
 import { uploadImageToStorage, deleteUploadedImage, isRemoteUri } from '@/lib/imageUpload';
+import { syncLeaderboardIdentity, identityNotice } from '@/lib/leaderboardIdentity';
 
 // ─── Palette — matches profile.tsx exactly ───────────────────────────────────
 const FOREST      = '#2A4A2A';
@@ -279,10 +280,24 @@ export default function EditProfileScreen() {
       // ── 3. Refresh profile context so Profile/Home screens update ─────────
       await refreshProfile().catch(() => {});
 
+      // ── 4. Hunt Leaderboard: have the server check the new name / photo ───
+      // Other hunters only ever see a name and photo the server has checked.
+      // Waits a few seconds at most, so a rejection can be explained right here;
+      // if the server is slow it finishes the check later without us.
+      const nameEdited   = Boolean(updates.display_name !== undefined || updates.username !== undefined);
+      const avatarEdited = typeof newAvatarUrl === 'string';
+      let leaderboardNote: string | null = null;
+      if (nameEdited || newAvatarUrl !== undefined) {
+        const check = await syncLeaderboardIdentity();
+        leaderboardNote = identityNotice(check, { name: nameEdited, avatar: avatarEdited });
+      }
+
       setSaving(false);
-      Alert.alert('Profile updated', 'Your changes have been saved.', [
-        { text: 'Done', onPress: () => router.back() },
-      ]);
+      Alert.alert(
+        'Profile updated',
+        leaderboardNote ? `Your changes have been saved.\n\n${leaderboardNote}` : 'Your changes have been saved.',
+        [{ text: 'Done', onPress: () => router.back() }],
+      );
     } catch {
       setError('Something went wrong. Please try again.');
       setSaving(false);

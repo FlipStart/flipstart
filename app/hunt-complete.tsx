@@ -18,7 +18,7 @@ import {
   Animated, Dimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRef, useEffect, useState, useCallback } from 'react';
@@ -46,6 +46,14 @@ import {
   markMajorAchievementShown,
   type MajorAchievementType,
 } from '@/lib/majorAchievementStorage';
+import { isHuntDemoActive, isDemoExiting, getHuntDemoXp, beginDemoExit, endDemoExit } from '@/lib/huntDemoMode';
+import { getDemoBundle, endDemoHunt } from '@/lib/huntDemoSession';
+import { advanceCoach, type CoachStepId } from '@/lib/huntDemoCoach';
+import { logHuntOnboardingChoice } from '@/lib/huntOnboardingAnalytics';
+import { CoachOverlay } from '@/components/hunt/onboarding/coach/CoachOverlay';
+import { useCoach } from '@/components/hunt/onboarding/coach/useCoach';
+import { useCoachRef } from '@/components/hunt/onboarding/coach/coachTargets';
+import { useHuntOnboarding } from '@/lib/useHuntOnboarding';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 
@@ -99,13 +107,24 @@ function getTopFinds(keptItems: HuntBundleItem[]): HuntBundleItem[] {
 
 export default function HuntCompleteScreen() {
   const router  = useRouter();
+  const navigation = useNavigation();
   const insets  = useSafeAreaInsets();
   const params  = useLocalSearchParams<{ bundleId?: string }>();
   const { flips } = useFlipStore();
 
-  // Find the bundle
-  const bundle = flips.find(
-    f => isHuntBundle(f) && f.id === params.bundleId
+  // Guided demo (all inert outside it): this screen runs on the in-memory demo Hunt.
+  const demo         = isHuntDemoActive();
+  const coach        = useCoach();
+  const onboarding   = useHuntOnboarding();
+  const coachXpRef   = useCoachRef('complete-xp');
+  const coachRankRef = useCoachRef('complete-rank');
+  const scrollRef    = useRef<ScrollView>(null);
+  const xpSectionY   = useRef(0);
+
+  // Find the bundle (the demo's lives in memory only, never in saved history)
+  const bundle = (demo
+    ? (getDemoBundle(params.bundleId) ?? undefined)
+    : flips.find(f => isHuntBundle(f) && f.id === params.bundleId)
   ) as HuntBundle | undefined;
 
   // Consume XP result (set by hunt-active before navigating here)
@@ -130,6 +149,9 @@ export default function HuntCompleteScreen() {
   }, []);
 
   useEffect(() => {
+    // Guided demo: show the demo's XP. Never read the real profile, never fire the real
+    // brand-reveal / achievement logic (they record "shown" state on the phone).
+    if (isHuntDemoActive()) { setXpResult(getHuntDemoXp<HuntXpResult>()); return; }
     const result = consumeLastCompletionResult();
     if (result) {
       setXpResult(result);
@@ -196,6 +218,30 @@ export default function HuntCompleteScreen() {
     });
   }, []);
 
+  // Guided demo: no swiping out; the coach's buttons (or Exit demo) are the way on.
+  useEffect(() => {
+    if (!demo) return;
+    (navigation as any).setOptions?.({ gestureEnabled: false });
+    return (navigation as any).addListener('beforeRemove', (e: any) => {
+      if (isDemoExiting()) return;
+      e.preventDefault();
+    });
+  }, [demo, navigation]);
+
+  // Guided demo: reaching the last card IS finishing it, so onboarding is complete even if
+  // the app is closed right there. (Idempotent.)
+  useEffect(() => {
+    if (demo && coach.stepId === 'unlocked') void onboarding.markCompleted();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo, coach.stepId]);
+
+  // Guided demo: bring the XP section into view for its two steps.
+  useEffect(() => {
+    if (!demo || (coach.stepId !== 'xp' && coach.stepId !== 'rank')) return;
+    const t = setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, xpSectionY.current - 300), animated: true }), 150);
+    return () => clearTimeout(t);
+  }, [demo, coach.stepId]);
+
   // Progress bar animation — fills once when xpResult is ready
   const barAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -215,7 +261,7 @@ export default function HuntCompleteScreen() {
       <View style={[s.errorWrap, { paddingTop: insets.top }]}>
         <MaterialIcons name="search-off" size={36} color={MUTED} />
         <Text style={s.errorText}>Hunt data not found</Text>
-        <Pressable onPress={() => router.replace('/(tabs)' as any)} style={s.errorBtn}>
+        <Pressable onPress={() => { if (demo) endDemoHunt(); router.replace('/(tabs)' as any); }} style={s.errorBtn}>
           <Text style={s.errorBtnText}>Return Home</Text>
         </Pressable>
       </View>
@@ -235,6 +281,21 @@ export default function HuntCompleteScreen() {
     outputRange: ['0%', '100%'],
     extrapolate: 'clamp',
   });
+
+  /** The two buttons on the last demo card. Both end the demo; only the destination differs. */
+  const onCoachChoose = (_id: CoachStepId, which: 'primary' | 'secondary') => {
+    logHuntOnboardingChoice(which === 'primary' ? 'start_real_hunt' : 'done');
+    void onboarding.markCompleted();
+    advanceCoach('unlocked');
+    beginDemoExit();
+    endDemoHunt();
+    const startReal = which === 'primary';
+    // Home underneath, so Back from the real start screen lands on Home.
+    const routes = startReal ? [{ name: '(tabs)' }, { name: 'hunt' }] : [{ name: '(tabs)' }];
+    try { (navigation as any).reset({ index: routes.length - 1, routes }); }
+    catch { router.replace((startReal ? '/hunt' : '/(tabs)') as any); }
+    setTimeout(endDemoExit, 1000);
+  };
 
   return (
     <View style={s.root}>
@@ -257,6 +318,7 @@ export default function HuntCompleteScreen() {
 
       {/* ── Cream card — scrollable ─────────────────────────────────────────── */}
       <ScrollView
+        ref={scrollRef}
         style={s.scrollArea}
         contentContainerStyle={[s.cardInner, { paddingBottom: insets.bottom + 32 }]}
         showsVerticalScrollIndicator={false}
@@ -313,13 +375,14 @@ export default function HuntCompleteScreen() {
           <View style={s.ornamentLine} />
         </View>
 
-        <View style={s.xpSection}>
+        <View style={s.xpSection} onLayout={e => { xpSectionY.current = e.nativeEvent.layout.y; }}>
           {/* Header row: YOU EARNED + XP amount */}
-          <View style={s.xpHeaderRow}>
+          <View ref={coachXpRef as any} collapsable={false} style={s.xpHeaderRow}>
             <Text style={s.xpLabel}>YOU EARNED</Text>
             <Text style={s.xpAmount}>+{xpEarned} XP</Text>
           </View>
 
+          <View ref={coachRankRef as any} collapsable={false}>
           {/* Rank row: icon + rank name + level up badge */}
           <View style={s.rankRow}>
             <View style={s.rankIconWrap}>
@@ -345,10 +408,11 @@ export default function HuntCompleteScreen() {
               <Text style={s.progressNext}>{nextRank.xp.toLocaleString()} XP</Text>
             )}
           </View>
+          </View>
         </View>
 
-        {/* ── Buttons ─────────────────────────────────────────────────────── */}
-        <View style={s.buttons}>
+        {/* ── Buttons (the demo ends through the coach's own card instead) ───── */}
+        {!demo && <View style={s.buttons}>
           <Pressable
             onPress={() => router.replace('/(tabs)' as any)}
             style={({ pressed }) => [s.primaryBtn, pressed && { opacity: 0.88 }]}
@@ -367,7 +431,7 @@ export default function HuntCompleteScreen() {
           >
             <Text style={s.ghostBtnText}>View Hunt History</Text>
           </Pressable>
-        </View>
+        </View>}
 
       </ScrollView>
 
@@ -388,6 +452,9 @@ export default function HuntCompleteScreen() {
           onContinue={advanceQueue}
         />
       )}
+
+      {/* Guided demo only (draws nothing otherwise). */}
+      <CoachOverlay screen="hunt-complete" onChoose={onCoachChoose} />
 
     </View>
   );

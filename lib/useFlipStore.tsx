@@ -28,6 +28,7 @@ import type { GlobalStats } from '@/types/flip';
 import { upsertScan, deleteScan, deleteAllScans, fetchScans, mergeScans } from '@/lib/scanSync';
 import { upsertHuntBundle, deleteHuntBundle, deleteAllHuntBundles, fetchHuntBundles, mergeHuntBundles } from '@/lib/huntBundleSync';
 import { confirmHuntBundlesPersisted } from '@/lib/hunt-context';
+import { isHuntDemoActive, setHuntDemoBundle } from '@/lib/huntDemoMode';
 
 /**
  * Every hosted (https) photo URL an entry references. Hunt items reuse the
@@ -301,11 +302,18 @@ export function FlipStoreProvider({
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const addFlip = useCallback((flip: FlipResult) => {
+    if (isHuntDemoActive()) return;                // demo activity never reaches saved history
     dispatch({ type: 'ADD_FLIP', payload: flip });
     if (userId) upsertScan(flip, userId).catch(() => {});
   }, [userId]);
 
   const addHuntBundle = useCallback((bundle: HuntBundle) => {
+    if (isHuntDemoActive()) {
+      // The finished demo Hunt is held in memory for the completion screens.
+      // It is never added to saved history, never written to the phone, never synced.
+      setHuntDemoBundle(bundle);
+      return;
+    }
     dispatch({ type: 'ADD_HUNT_BUNDLE', payload: bundle });
     if (userId) upsertHuntBundle(bundle, userId).catch(() => {});
   }, [userId]);

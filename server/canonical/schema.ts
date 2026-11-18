@@ -953,9 +953,12 @@ export const CANONICAL_SCHEMA_V1: Record<string, unknown> = {
  * Safe to vary per request because the schema travels in response_format, NOT
  * in the cached message prefix — changing it costs no prompt-cache benefit.
  */
-export function buildCanonicalSchema(includeFeatures: boolean): Record<string, unknown> {
-  if (includeFeatures) return CANONICAL_SCHEMA_V1;
+export function buildCanonicalSchema(includeFeatures: boolean, captureCheck = false): Record<string, unknown> {
+  const featured = includeFeatures ? CANONICAL_SCHEMA_V1 : withoutFeatures();
+  return captureCheck ? withCaptureKind(featured) : featured;
+}
 
+function withoutFeatures(): Record<string, unknown> {
   const base = CANONICAL_SCHEMA_V1 as {
     properties: Record<string, unknown>; required: string[]; [k: string]: unknown;
   };
@@ -968,14 +971,42 @@ export function buildCanonicalSchema(includeFeatures: boolean): Record<string, u
   };
 }
 
+/** How the front photo was made. Hunt scans only (see CAPTURE_KINDS). */
+export const CAPTURE_KINDS = ["in_person", "screen", "screenshot_or_listing", "unclear"] as const;
+
+/**
+ * Hunt scans ask one extra question: is this a photo of a real object, or of a
+ * screen / a screenshot / a listing image? Hunt XP reads the answer (a flagged
+ * scan earns no value XP). It is requested ONLY for Hunt scans, so a normal scan
+ * sends exactly the schema it always has, and `captureCheck` can be turned off
+ * with HUNT_CAPTURE_CHECK=off without touching anything else.
+ *
+ * A copy, never a mutation: CANONICAL_SCHEMA_V1 is shared by every request.
+ */
+function withCaptureKind(schema: Record<string, unknown>): Record<string, unknown> {
+  const root = schema as { properties: Record<string, any>; [k: string]: unknown };
+  const pe = root.properties.photo_evidence as { required: string[]; properties: Record<string, unknown>; [k: string]: unknown };
+  return {
+    ...root,
+    properties: {
+      ...root.properties,
+      photo_evidence: {
+        ...pe,
+        required: [...pe.required, "capture_kind"],
+        properties: { ...pe.properties, capture_kind: { type: "string", enum: [...CAPTURE_KINDS] } },
+      },
+    },
+  };
+}
+
 /**
  * Hash of the schema ACTUALLY sent, so a stored analysis stays attributable to
  * the exact contract that produced it. The two shapes hash differently on
  * purpose — that is the record of which one was used.
  */
-export function canonicalSchemaHash(includeFeatures: boolean): string {
+export function canonicalSchemaHash(includeFeatures: boolean, captureCheck = false): string {
   return "sha256:" + crypto.createHash("sha256")
-    .update(JSON.stringify(buildCanonicalSchema(includeFeatures)))
+    .update(JSON.stringify(buildCanonicalSchema(includeFeatures, captureCheck)))
     .digest("hex")
     .slice(0, 16);
 }
@@ -984,13 +1015,13 @@ export function canonicalSchemaHash(includeFeatures: boolean): string {
 export const CANONICAL_SCHEMA_HASH: string = canonicalSchemaHash(true);
 
 /** The response_format block passed to OpenAI. */
-export function canonicalResponseFormat(includeFeatures = true) {
+export function canonicalResponseFormat(includeFeatures = true, captureCheck = false) {
   return {
     type: "json_schema" as const,
     json_schema: {
       name: CANONICAL_SCHEMA_NAME,
       strict: true,
-      schema: buildCanonicalSchema(includeFeatures),
+      schema: buildCanonicalSchema(includeFeatures, captureCheck),
     },
   };
 }

@@ -199,6 +199,16 @@ export function toLegacyShape(c: CanonicalAnalysisV1): LegacyShape {
         subject:             ai.identification.subject,
         artist:              ai.identification.artist,
         characterOrLicense:  ai.identification.character_or_license,
+        // What is printed / embroidered on the item, for Generate Listings on scans old enough
+        // that the server no longer holds the analysis: the other identity fields, and the
+        // photo observations behind them ("Mickey, Goofy and Donald Duck on the chest").
+        team:                ai.identification.team,
+        event:               ai.identification.event,
+        designNotes:         (ai.identification.identification_evidence ?? [])
+                               .filter(e => ["character_or_license", "artist", "team", "event", "subject"].includes(e.field)
+                                         && e.evidence_mode !== "inference")
+                               .map(e => String(e.observation ?? "").slice(0, 110))
+                               .filter(Boolean).slice(0, 3),
         secondaryColors:     ai.visible_attributes.secondary_colors,
         conditionChecked:    ai.condition.visible_condition_observations,
         conditionConfidence: ai.condition.condition_confidence,

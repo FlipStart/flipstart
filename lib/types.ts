@@ -2,6 +2,12 @@ export interface ScanResult {
   id: string;
   imageUri: string;
   allImageUris?: string[];  // all photos captured — front + tag + detail URIs
+  /**
+   * How this scan's photos were made, for Hunt XP's "big find" note: whether the
+   * front photo was taken in the app, and how many photos were sent. The server
+   * keeps its own record and scores from that, never from this.
+   */
+  capture?: { front: 'camera' | 'library'; photos: number };
   timestamp: number;
   identification: {
     item_name: string;

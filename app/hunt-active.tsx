@@ -29,7 +29,7 @@ import {
   getActiveHunt, finishHunt, discardHunt, getHuntStats, subscribeToHunt,
   moveHuntItemToRemoved, type HuntItem, type HuntRating,
   keptItemsOf, removedItemsOf, pendingItemOf, setScanDestination,
-  consumeReturningFromHuntItemDetail,
+  consumeReturningFromHuntItemDetail, addPendingScanToHunt,
 } from '@/lib/hunt-context';
 import { logHuntScanStarted, logHuntEnded, logHuntXpAwarded } from '@/lib/analytics';
 import { applyHuntXp, setLastCompletionResult } from '@/lib/huntXp';
@@ -38,6 +38,13 @@ import { isHuntBundle, type HuntBundle, type HuntBundleItem } from '@/types/flip
 import { FONTS } from '@/constants/typography';
 import { V } from '@/constants/vintage';
 import { useScanGate } from '@/lib/useScanGate';
+import { isHuntDemoActive, isDemoExiting, beginDemoExit, endDemoExit } from '@/lib/huntDemoMode';
+import { advanceCoach, returnCoachTo, type CoachStepId } from '@/lib/huntDemoCoach';
+import { finishDemoHunt, endDemoHunt, demoScanFor } from '@/lib/huntDemoSession';
+import { demoPhotoUri } from '@/components/hunt/onboarding/demoAssets';
+import { CoachOverlay } from '@/components/hunt/onboarding/coach/CoachOverlay';
+import { useCoachRef } from '@/components/hunt/onboarding/coach/coachTargets';
+import { useHuntOnboarding } from '@/lib/useHuntOnboarding';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
@@ -293,6 +300,7 @@ const SCAN_BTN = 76;
 function HuntBottomZone({ onPress }: { onPress: () => void }) {
   const insets     = useSafeAreaInsets();
   const safeBottom = Math.max(insets.bottom, 0);
+  const coachScanRef = useCoachRef('hunt-scan-btn');     // guided demo spotlight; inert otherwise
 
   return (
     <View style={{
@@ -307,6 +315,8 @@ function HuntBottomZone({ onPress }: { onPress: () => void }) {
       <View style={{ width: SCAN_BTN, height: SCAN_BTN, alignItems: 'center', justifyContent: 'center' }}>
 
         <Pressable
+          ref={coachScanRef as any}
+          collapsable={false}
           onPress={onPress}
           accessibilityRole="button"
           accessibilityLabel="Scan an item"
@@ -352,6 +362,14 @@ export default function HuntActiveScreen() {
    */
   const startScan = useScanGate();
   const insets     = useSafeAreaInsets();
+
+  // Guided demo (inert outside it): spotlight targets and the exit bookkeeping.
+  const demo            = isHuntDemoActive();
+  const onboarding      = useHuntOnboarding();
+  const coachLocationRef = useCoachRef('hunt-location');
+  const coachStatsRef    = useCoachRef('hunt-stats');
+  const coachRemovedRef  = useCoachRef('hunt-removed-link');
+  const coachFinishRef   = useCoachRef('hunt-finish-btn');
 
   // Re-render whenever hunt state changes
   const { addHuntBundle, flips } = useFlipStore();
@@ -411,6 +429,8 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
   const [locationLabel, setLocationLabel] = useState<string>('Finding hunt location…');
 
   useEffect(() => {
+    // Guided demo: never ask for location permission or read the real place.
+    if (isHuntDemoActive()) { setLocationLabel('Demo Hunt'); return; }
     let cancelled = false;
 
     const fetchLocation = async () => {
@@ -483,7 +503,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
   const allowNavRef = useRef(false);
   useEffect(() => {
     const unsub = (navigation as any).addListener('beforeRemove', (e: any) => {
-      if (allowNavRef.current) return; // confirmed end — let through
+      if (allowNavRef.current || isDemoExiting()) return; // confirmed end — let through
 
       // Intentional return from Hunt Item Detail (Save or Remove confirmed).
       // consumeReturningFromHuntItemDetail() reads AND resets the flag atomically
@@ -515,6 +535,11 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
     return () => { unsubFocus?.(); unsubHunt(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigation]);
+
+  // Guided demo: no swipe-back out of the walkthrough (the coach's Exit demo is the way out).
+  useEffect(() => {
+    if (demo) (navigation as any).setOptions?.({ gestureEnabled: false });
+  }, [demo, navigation]);
 
   const session = getActiveHunt();
 
@@ -552,6 +577,12 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
    */
   const handleScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    if (isHuntDemoActive()) {
+      // Guided demo: the practice camera. No scan balance, paywall or real camera is involved.
+      advanceCoach('scan');
+      router.push('/hunt-demo-camera?find=jacket' as any);
+      return;
+    }
     startScan({
       origin: 'hunt',
       run: () => {
@@ -562,6 +593,37 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
       },
       goToScanStore: () => router.push('/scan-store?from=hunt_active' as any),
     });
+  };
+
+  /** Leave the demo and land on Home. Home is a fresh reset, like Hunt Mode's own back. */
+  const leaveDemoToHome = () => {
+    allowNavRef.current = true;
+    beginDemoExit();
+    endDemoHunt();
+    try { (navigation as any).reset({ index: 0, routes: [{ name: '(tabs)' }] }); }
+    catch { router.replace('/(tabs)' as any); }
+    setTimeout(endDemoExit, 1000);
+  };
+
+  /**
+   * Save Hunt, guided demo. Runs the real finish path in the sandbox (bundle, XP rules
+   * against a brand-new profile, nothing stored or synced), then plays the real XP reveal
+   * and Great Hunt summary from that in-memory Hunt. The demo ends on the summary screen.
+   */
+  const finishDemoAndLeave = async () => {
+    const done = await finishDemoHunt();
+    if (!done) { leaveDemoToHome(); return; }
+    advanceCoach('confirm');
+    allowNavRef.current = true;
+    router.replace(`/hunt-xp-reveal?bundleId=${done.bundle.id}` as any);
+  };
+
+  /** The coach card's button, for the steps that need something done first. */
+  const onCoachNext = (stepId: CoachStepId) => {
+    if (stepId === 'another') {
+      // The second find arrives on the dashboard; the existing pending-find handoff opens it.
+      addPendingScanToHunt(demoScanFor('polo', demoPhotoUri));
+    }
   };
 
   return (
@@ -581,6 +643,8 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
           <Text style={s.headerSub}>LIVE HUNT</Text>
         </View>
         <Pressable
+          ref={coachFinishRef as any}
+          collapsable={false}
           onPress={() => {
             if (pendingItem) {
               // A find is still waiting for Keep / Remove: decide it first so
@@ -599,6 +663,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
               Alert.alert('', 'Save at least 1 item to finish your hunt.');
               return;
             }
+            advanceCoach('finish');             // guided demo only; a no-op otherwise
             setSaveConfirmVisible(true);
           }}
           hitSlop={10}
@@ -609,7 +674,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
       </View>
 
       {/* ── Location card — timer sits inline to the right of location text ── */}
-      <View style={s.locationCard}>
+      <View ref={coachLocationRef as any} collapsable={false} style={s.locationCard}>
         <View style={s.locationInner}>
           <MaterialIcons name="storefront" size={20} color={BROWN} />
           <Text style={s.locationText} numberOfLines={1}>{locationLabel}</Text>
@@ -621,7 +686,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
       </View>
 
       {/* ── Stats card — separate from location, just like reference ── */}
-      <View style={s.statsCard}>
+      <View ref={coachStatsRef as any} collapsable={false} style={s.statsCard}>
         <View style={s.statBox}>
           <Text style={s.statNum}>{stats.scanned}</Text>
           <Text style={s.statLabel}>Scanned</Text>
@@ -645,7 +710,9 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
         <Text style={s.sectionTitle}>{`KEPT ITEMS · ${keptItems.length}`}</Text>
         {/* Always there, even at 0: the way to Removed Items never disappears. */}
         <Pressable
-          onPress={() => router.push('/hunt-removed' as any)}
+          ref={coachRemovedRef as any}
+          collapsable={false}
+          onPress={() => { advanceCoach('removed'); router.push('/hunt-removed' as any); }}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
           style={({ pressed }) => [s.sectionLink, pressed && { opacity: 0.6 }]}
           accessibilityRole="button"
@@ -685,7 +752,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
         visible={saveConfirmVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setSaveConfirmVisible(false)}
+        onRequestClose={() => { setSaveConfirmVisible(false); returnCoachTo('finish', 'confirm'); }}
       >
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
@@ -696,6 +763,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
             <Pressable
               onPress={async () => {
                 setSaveConfirmVisible(false);
+                if (isHuntDemoActive()) { await finishDemoAndLeave(); return; }
                 const now      = Date.now();
                 const hunt     = getActiveHunt();
                 if (!hunt) return;
@@ -798,7 +866,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
               <Text style={s.modalSaveText}>Save Hunt</Text>
             </Pressable>
             <Pressable
-              onPress={() => setSaveConfirmVisible(false)}
+              onPress={() => { setSaveConfirmVisible(false); returnCoachTo('finish', 'confirm'); }}
               style={({ pressed }) => [s.modalCancel, pressed && { opacity: 0.7 }]}
             >
               <Text style={s.modalCancelText}>Cancel</Text>
@@ -823,6 +891,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
             <Pressable
               onPress={() => {
                 setEndConfirmVisible(false);
+                if (isHuntDemoActive()) { void onboarding.markSkipped(); leaveDemoToHome(); return; }
                 allowNavRef.current = true;
                 logHuntEnded({
                   hunt_id:         getActiveHunt()?.id ?? null,
@@ -849,6 +918,8 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
         </View>
       </Modal>
 
+      {/* Guided demo only (draws nothing otherwise). */}
+      <CoachOverlay screen="hunt-active" onNext={onCoachNext} />
     </View>
   );
 }

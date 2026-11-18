@@ -21,6 +21,9 @@ import { useAuth } from '@/lib/auth-context';
 import { FONTS } from '@/constants/typography';
 import { useScanGate } from '@/lib/useScanGate';
 import { chooseScanDestination } from '@/lib/huntScanChoice';
+import { useHuntOnboarding } from '@/lib/useHuntOnboarding';
+import { HuntAttentionDot, useShutter, ATTENTION_GOLD_TAB, DEFAULT_DOT_SIZE } from '@/components/hunt/HuntAttentionDot';
+import { preloadHuntArt, preloadHuntArtBriefly } from '@/lib/huntArt';
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 const ROAR_SOUND = require('@/assets/images/lion-roar.m4a');
@@ -49,6 +52,12 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   const { unseenCount, unseenBrandCount, unseenDiamondCount } = useAchievementNotifications();
   const totalBadge  = unseenCount + unseenBrandCount + unseenDiamondCount;
   const { user }    = useAuth();
+  // Gold "new" dot on the Hunt tab while Hunt onboarding is unresolved (never offered
+  // or skipped for now). 'off' for veterans, completed/dismissed, signed-out, and
+  // until the existing-user check has answered, so it never flashes.
+  const { attention: huntAttention } = useHuntOnboarding();
+  // While the invitation is pulsing, the Hunt tab shutters (a quick shake) so it can't be missed.
+  const huntShutter = useShutter(huntAttention === 'pulse');
   const insets    = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
   const roar      = useAudioPlayer(ROAR_SOUND);
@@ -105,6 +114,17 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   /** Shared scan preflight — see lib/useScanGate.ts. */
   const startScan = useScanGate();
 
+  // Hunt Mode's artwork: warmed as soon as the user is signed in, and awaited (briefly) on
+  // the tap, so the screen opens with the art already there instead of a blank background.
+  useEffect(() => { if (user) void preloadHuntArt(); }, [user]);
+  const openingHuntRef = useRef(false);
+  const openHuntMode = async () => {
+    if (openingHuntRef.current) return;           // a second tap while the first is opening
+    openingHuntRef.current = true;
+    try { await preloadHuntArtBriefly(); router.push('/hunt' as any); }
+    finally { setTimeout(() => { openingHuntRef.current = false; }, 800); }
+  };
+
   const handleCenterScan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     startScan({
@@ -118,7 +138,9 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
   const renderTab = (item: LeftTab | RightTab) => {
     const routeIndex = state.routes.findIndex(r => r.name === item.name);
     const isActive   = state.index === routeIndex;
-    const color      = isActive ? V.green : V.textMuted;
+    // Gold paw and label while Hunt Mode is the thing to try next; otherwise the usual colors.
+    const huntInvite = item.name === 'hunt-tab' && huntAttention !== 'off';
+    const color      = huntInvite ? ATTENTION_GOLD_TAB : (isActive ? V.green : V.textMuted);
 
     const onPress = () => {
       if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -126,7 +148,7 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
       // in-tab account gate (which keeps the bottom tab bar visible).
       if (item.name === 'hunt-tab') {
         try { roar.seekTo(0); roar.play(); } catch { /* never crash */ }
-        if (user) { router.push('/hunt' as any); }
+        if (user) { void openHuntMode(); }
         else      { navigation.navigate(item.name); }
         return;
       }
@@ -158,9 +180,20 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
         key={item.name}
         onPress={onPress}
         style={({ pressed }) => [styles.tabItem, pressed && { opacity: 0.7 }]}
+        accessibilityRole="button"
+        accessibilityLabel={isHunt && huntAttention !== 'off' ? 'Hunt Mode, new. Learn how Hunt Mode works.' : undefined}
       >
         {isHunt ? (
-          <MaterialIcons name="pets" size={22} color={color} />
+          // Paw, label and badge move together; the badge sits BESIDE the paw, not on it.
+          <Animated.View style={[styles.huntGroup, huntInvite && huntShutter]}>
+            <View>
+              <MaterialIcons name="pets" size={22} color={color} />
+              {huntInvite && (
+                <HuntAttentionDot mode={huntAttention as 'static' | 'pulse'} style={styles.huntDot} />
+              )}
+            </View>
+            <Text style={[styles.tabLabel, { color }]}>{item.label}</Text>
+          </Animated.View>
         ) : shouldAnimate ? (
           // Progress tab with notifications: animate icon + label + badge together
           <Animated.View style={{
@@ -174,7 +207,6 @@ function VintageTabBar({ state, navigation }: BottomTabBarProps) {
             {tabContent}
           </View>
         )}
-        {isHunt && <Text style={[styles.tabLabel, { color }]}>{item.label}</Text>}
         {isActive && isHunt && <View style={[styles.activeBar, { backgroundColor: V.green }]} />}
       </Pressable>
     );
@@ -309,4 +341,9 @@ const styles = StyleSheet.create({
     borderColor:     V.pageBg,
   },
   badgeText: { fontSize: 9, fontWeight: '800', color: '#fff' },
+  // Paw + label as one group, so they shake together.
+  huntGroup: { alignItems: 'center', gap: 2 },
+  // Hunt onboarding badge: up and to the right of the 22pt paw, clear of it (its left edge starts
+  // where the paw's right edge ends). The tab is wide enough that nothing is clipped.
+  huntDot: { position: 'absolute', top: -8, right: -(DEFAULT_DOT_SIZE + 1) },
 });

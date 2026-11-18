@@ -44,6 +44,13 @@ export interface ListingFacts {
   color: string;
   material: string;
   styleLabels: string[];
+  /**
+   * WHAT is printed, embroidered or pictured on the item, as a buyer would search it:
+   * "Disney", "Mickey Mouse, Goofy and Donald Duck on the chest", "Chicago Bulls". Empty when the
+   * scan found nothing nameable. Without this the writer only knows there IS a graphic
+   * ("embroidered graphic") and has nothing to say about it.
+   */
+  design: string[];
 }
 
 export interface ListingHints {
@@ -55,6 +62,8 @@ export interface ListingHints {
   primaryColor?: string;
   obviousDamage?: string[];
   assessmentLimited?: boolean;
+  /** Saved-scan design details (character / artist / team / event / subject, and what the photos showed). */
+  design?: string[];
 }
 
 /** Words that mean "we don't know" and must never be written into a listing. */
@@ -63,6 +72,43 @@ const UNKNOWNISH = /^(unknown|n\/?a|none|not (specified|provided|available|liste
 export function known(v: string | null | undefined): string {
   const s = (v ?? "").trim();
   return UNKNOWNISH.test(s) ? "" : s;
+}
+
+/** A "subject" that only restates that a design exists says nothing a buyer can use. */
+const VAGUE_DESIGN = /^(graphics?|logos?|prints?|designs?|text|lettering|pattern|patterns|artwork|embroider(?:y|ed)|screen ?print(?:ed)?|graphic (?:tee|print|design)|embroidered (?:graphic|logo|design))$/i;
+
+/** One design phrase, single line, bounded, or "" when it is empty or vague. */
+function designPhrase(v: string | null | undefined, max = 110): string {
+  const s = known(v).replace(/\s+/g, " ").replace(/[\u0000-\u001f]/g, "").trim();
+  return !s || VAGUE_DESIGN.test(s) ? "" : s.slice(0, max);
+}
+
+/**
+ * What the item shows, from the scan's identity fields and the photo observations behind them.
+ * Order: the named thing first (character / artist / team / event / subject), then what the
+ * photos actually showed ("Mickey, Goofy and Donald Duck on the chest"). Deduped, at most 4.
+ * Observations written FROM the user's note are included too: that is the seller's own word.
+ */
+export function designPhrases(
+  ids: { character_or_license?: string; artist?: string; team?: string; event?: string; subject?: string },
+  evidence: Array<{ field?: string; observation?: string; evidence_mode?: string }> = [],
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string | null | undefined) => {
+    const p = designPhrase(raw);
+    if (!p) return;
+    const key = p.toLowerCase();
+    // Skip a phrase that only repeats one already kept ("Disney" then "Disney characters").
+    for (const k of seen) if (k.includes(key) || key.includes(k)) { if (key.length <= k.length) return; }
+    seen.add(key); out.push(p);
+  };
+  for (const f of [ids.character_or_license, ids.artist, ids.team, ids.event, ids.subject]) push(f);
+  const DESIGN_FIELDS = new Set(["character_or_license", "artist", "team", "event", "subject"]);
+  for (const e of evidence) {
+    if (DESIGN_FIELDS.has(String(e.field)) && e.evidence_mode !== "inference") push(e.observation);
+  }
+  return out.slice(0, 4);
 }
 
 const DECADE_SHORT: Record<string, string> = {
@@ -124,6 +170,7 @@ export function buildListingFacts(
     category: known(input.category),
     material: known(input.material_guess),
     styleLabels: (input.style_labels ?? []).map(known).filter(Boolean).slice(0, 4),
+    design: [] as string[],
   };
 
   if (canonical) {
@@ -141,6 +188,7 @@ export function buildListingFacts(
     const deptOk = (va.target_department_confidence ?? 0) >= 50;
     return {
       ...base,
+      design: designPhrases(ai.identification ?? {}, ai.identification?.identification_evidence ?? []),
       era: eraWord(d.era_effective?.status, d.era_effective?.production_decade_effective, ai.era?.style_era),
       condition,
       flaws,
@@ -155,6 +203,7 @@ export function buildListingFacts(
   const flaws = (hints.obviousDamage ?? []).map(known).filter(Boolean).slice(0, 3);
   return {
     ...base,
+    design: (hints.design ?? []).map(d => designPhrase(d)).filter(Boolean).slice(0, 4),
     era: eraWord(hints.eraStatus, hints.productionDecade, hints.styleEra, input.estimated_era),
     condition: flaws.length ? "good" : hints.assessmentLimited ? "good" : "excellent",
     flaws,
@@ -179,6 +228,8 @@ export function factsBlock(f: ListingFacts): string {
   add("Color", f.color);
   add("Material", f.material);
   if (f.styleLabels.length) lines.push(`Style: ${f.styleLabels.join(", ")}`);
+  // What is printed / embroidered on it. The writer must NAME these, never just say "graphic".
+  if (f.design.length) lines.push(`Design on the item: ${f.design.join("; ")}`);
   return lines.join("\n");
 }
 

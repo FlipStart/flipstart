@@ -13,8 +13,8 @@
  * XP and rank come from `xp_profiles`, the table the app syncs each signed-in
  * user's Hunt profile to (lib/xpSync.ts). It holds CURRENT totals only, so
  * the lifetime cards ignore the date range. Rank is recomputed from total XP
- * with the same ladder the app uses (HUNT_RANKS below, kept identical to
- * RANK_LADDER in lib/huntXp.ts) rather than trusting the stored rank name.
+ * with the same ladder the app uses (shared/hunt/ranks.ts, one copy for the
+ * app, the server and this dashboard) rather than trusting the stored rank name.
  *
  * "XP earned in range" and "rank-ups in range" need the `hunt_xp_awarded`
  * event, which the app logs from the build after 2.2. Until any such event
@@ -35,6 +35,8 @@
 import { fetchAll } from "./founderMetrics";
 import { derivePlan } from "./monetization/policy";
 import { centralDay } from "./dashboardDates";
+// THE ladder: the same constant the app and Hunt completion use.
+import { RANK_LADDER, rankIndexFor } from "../shared/hunt/ranks";
 import type { V4Data, Metric } from "./founderMetricsV4";
 
 type Ev = V4Data["rawEvents"][number];
@@ -47,43 +49,9 @@ export const TOP_HUNTERS = 10;
 export const XP_EVENT = "hunt_xp_awarded";
 export const STEP_EVENT = "onboarding_step_viewed";
 
-/**
- * Identical to RANK_LADDER in lib/huntXp.ts. The server cannot import that
- * file (it pulls in AsyncStorage), so it is copied; change both together.
- */
-export const HUNT_RANKS: ReadonlyArray<{ xp: number; rank: string }> = [
-  { xp:        0, rank: "Dung Beetle Scout"   },
-  { xp:      100, rank: "Scorpion Squasher"   },
-  { xp:      300, rank: "Meerkat Menace"      },
-  { xp:      700, rank: "Hyena Hustler"       },
-  { xp:     1500, rank: "Warthog Wanderer"    },
-  { xp:     3000, rank: "Jackal Jumper"       },
-  { xp:     5000, rank: "Zebra Zipper"        },
-  { xp:     8000, rank: "Gazelle Gatherer"    },
-  { xp:    12000, rank: "Antelope Alchemist"  },
-  { xp:    18000, rank: "Cheetah Flipper"     },
-  { xp:    26000, rank: "Leopard Learner"     },
-  { xp:    38000, rank: "Rhino Reseller"      },
-  { xp:    55000, rank: "Elephant Eloper"     },
-  { xp:    80000, rank: "Crocodile Closer"    },
-  { xp:   110000, rank: "Panther Profiteer"   },
-  { xp:   150000, rank: "Gorilla Gatherer"    },
-  { xp:   200000, rank: "Hippo Hunter"        },
-  { xp:   270000, rank: "Buffalo Baron"       },
-  { xp:   360000, rank: "Savannah Lord"       },
-  { xp:   475000, rank: "Apex Finder"         },
-  { xp:   650000, rank: "Lion Tracker"        },
-  { xp:   900000, rank: "Kingmaker"           },
-  { xp:  1250000, rank: "Lion King"           },
-];
-
-export function rankIndexFor(totalXp: number): number {
-  let i = 0;
-  for (let k = 0; k < HUNT_RANKS.length; k++) {
-    if (totalXp >= HUNT_RANKS[k].xp) i = k; else break;
-  }
-  return i;
-}
+/** The shared ladder (shared/hunt/ranks.ts). Not a copy. */
+export const HUNT_RANKS: ReadonlyArray<{ xp: number; rank: string }> = RANK_LADDER;
+export { rankIndexFor };
 
 // ── Loading ──────────────────────────────────────────────────────────────────
 
