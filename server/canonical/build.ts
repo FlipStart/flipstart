@@ -12,12 +12,12 @@
 import type {
   AiAnalysis, CanonicalAnalysisV1, CanonicalMeta, DerivedAnalysis,
   DerivedIdentification, DerivedPricing, PhotoSlot,
-  DerivedConditionSummary, DerivedEraEffective,
+  DerivedConditionSummary,
 } from "../../shared/canonical.types.js";
 import { validateAnalysis } from "./validate.js";
 import { validateEra, qualifiesForY2kPrefix } from "./era.js";
 import {
-  conditionAdjustments, isCommonModernBasic, commonBasicCeiling,
+  conditionAdjustments,
 } from "./priceAdjust.js";
 import { evaluateRecognition, evaluateDiamondEligibility } from "../recognition/matcher.js";
 import { computeConfidence } from "./confidence.js";
@@ -85,7 +85,7 @@ export function buildCanonicalAnalysis(input: BuildInput): CanonicalAnalysisV1 {
   // Pricing is built AFTER era and condition are validated, and receives both.
   // Previously it took only ai.pricing and returned adjustments: [] — so a
   // confirmed tear or a confirmed vintage could never move the number.
-  const pricing = buildPricing(v.cleaned, v.conditionSummary, eraRes.effective);
+  const pricing = buildPricing(v.cleaned, v.conditionSummary);
 
   // 6. Progress and Diamonds — structured fields only.
   const validationPassed = true; // hard failures throw before reaching here
@@ -171,7 +171,6 @@ function buildDisplayName(
 function buildPricing(
   ai: AiAnalysis,
   condition: DerivedConditionSummary,
-  era: DerivedEraEffective,
 ): DerivedPricing {
   const { low: rawLow, high: rawHigh } = ai.pricing.ai_estimated_resale_range;
   const usable = rawLow != null && rawHigh != null &&
@@ -188,24 +187,10 @@ function buildPricing(
   const adjustments = [...conditionAdjustments(ai, condition)];
   let adjLow = rawLow as number, adjHigh = rawHigh as number;
 
-  // ── Common modern basic ceiling ─────────────────────────────────────────────
-  // The model still overprices recognisable-brand basics despite the prompt
-  // telling it not to. A recognisable label is not a value driver, so this caps
-  // the estimate unless a concrete premium signal is present — in which case
-  // isCommonModernBasic returns false and nothing here applies.
-  if (isCommonModernBasic(ai, era)) {
-    const ceiling = commonBasicCeiling(ai);
-    if (ceiling != null && adjHigh > ceiling) {
-      const factor = ceiling / adjHigh;
-      adjustments.push({
-        reason: `Common modern ${ai.identification.item_type} — no premium model, graphic or material identified`,
-        impact: -Math.round((1 - factor) * 100) / 100,
-        source: "server",
-      });
-      adjLow = adjLow * factor;
-      adjHigh = ceiling;
-    }
-  }
+  // No brand-list price ceiling. There used to be one here (plain modern mall-brand basics capped
+  // at $15-25), and it capped pieces it should never have touched: a late-2000s Hollister sherpa
+  // zip-up that sells for $60-80 came out at about $22. Founder decision (Nov 18, 2026): prices are
+  // never capped by brand. Plain basics are priced low by the prompt (v1.14.0 PRICING) instead.
 
   // ── Condition ───────────────────────────────────────────────────────────────
   const condPct = adjustments

@@ -46,7 +46,7 @@ import { useProPaywall, ProPaywallHost } from "@/components/monetization/paywall
 import { scanSoftFail, softFailCanContinue } from "@shared/scanFailure";
 import { APP_STORE_PRODUCT_URL } from "@/lib/reviewPrompt";
 import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
-import { scanGoesToHunt } from "@/lib/hunt-context";
+import { scanGoesToHunt, getActiveHunt } from "@/lib/hunt-context";
 import { rememberScanPhotos } from "@/lib/scanSessionPhotos";
 import { useAuth } from "@/lib/auth-context";
 import { useEntitlement } from "@/lib/useEntitlement";
@@ -374,7 +374,11 @@ export default function LoadingScreen() {
       }
       lastPendingScan.current = pending;
 
-      const { front, tag, detail, userContext } = pending;
+      const { front, tag, detail, userContext, frontSource } = pending;
+      // A scan made inside a Hunt names that Hunt, so the server can record what it
+      // saw for it. Hunt XP is scored later from the server's record alone. Read
+      // once per scan: every retry of this scan must send the same value.
+      const huntIdForScan = scanGoesToHunt() ? (getActiveHunt()?.id ?? undefined) : undefined;
       const imageBase64 = front.base64;
       const mimeType    = front.mimeType;
       console.log(`[loading] images ready — front✓ tag:${!!tag} detail:${!!detail}`);
@@ -477,6 +481,9 @@ export default function LoadingScreen() {
           market_data:    safeMarketData,
           risk_analysis:  safeRiskAnalysis,
           // listings intentionally omitted — undefined until user generates them
+          ...(frontSource
+            ? { capture: { front: frontSource, photos: 1 + (tag ? 1 : 0) + (detail ? 1 : 0) } }
+            : {}),
         };
         // Every photo taken for this scan, for the results screen's viewer
         // (also after "Continue anyway" on a soft fail).
@@ -657,6 +664,9 @@ export default function LoadingScreen() {
                 // the server start that search now, the moment the analysis is
                 // saved. The screen's request (comps.forScan) picks up this run.
                 prefetchComps:      true,
+                // Hunt scans only: which Hunt, and how the front photo was taken.
+                ...(huntIdForScan ? { huntId: huntIdForScan } : {}),
+                ...(frontSource ? { capture: { front: frontSource } } : {}),
               }, { signal: tryAbort.signal }),
               deadline,
               new Promise<never>((_, reject) => {
@@ -846,8 +856,9 @@ export default function LoadingScreen() {
       hasNavigated.current = true;
       if (to === "camera") router.replace("/camera" as any);
       else if (to === "result") router.replace((inHunt ? "/hunt-item-detail" : "/results") as any);
-      // Hunt progress is never lost: Back returns to the live hunt.
-      else router.replace((inHunt ? "/hunt-active" : "/(tabs)") as any);
+      // Hunt progress is never lost: Back returns to the live hunt. dismissTo pops back to the
+      // Hunt (or Home) already underneath instead of stacking a second copy of it.
+      else router.dismissTo((inHunt ? "/hunt-active" : "/(tabs)") as any);
     };
 
     const onAction = async (action: FailAction) => {

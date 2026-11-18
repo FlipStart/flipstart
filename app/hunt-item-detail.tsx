@@ -19,8 +19,13 @@
  * from lib/huntEconomics — the same engine and risk signals as normal Analysis.
  *
  * Navigation:
- *   new: Save / Remove → router.replace('/hunt-active') (loading.tsx put this
- *        screen inside a fullScreenModal stack, so back() would land on Home).
+ *   new: Save / Remove → router.dismissTo('/hunt-active'). The Hunt is normally
+ *        already underneath this screen, so this pops back to THAT one instead of
+ *        stacking a second copy on top (replace did, and the extra copy made the
+ *        next back press skip its "End this hunt?" check). If no Hunt is underneath
+ *        it swaps this screen for one. Never router.back() after leaving: the
+ *        scan is cleared on the way out, and a second "go back" from that landed
+ *        on Home.
  *   kept / removed / history: router.back().
  */
 
@@ -39,7 +44,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useScanContext }       from '@/lib/scan-context';
 import {
   isHuntActive, getHuntItemById, keepScanInHunt, removeScanFromHunt,
-  setHuntItemPrice, restoreHuntItem, markReturningFromHuntItemDetail,
+  setHuntItemPrice, restoreHuntItem,
   subscribeToHunt, addPendingScanToHunt, itemStatus, getActiveHunt, type HuntItem, type HuntRating,
 } from '@/lib/hunt-context';
 import { useHuntComps } from '@/lib/useHuntComps';
@@ -49,6 +54,7 @@ import type { HuntBundleItem } from '@/types/flip';
 import {
   huntEconomics, provisionalEconomics, parseThriftPrice, formatThriftPrice,
 } from '@/lib/huntEconomics';
+import { xpPriceFor, BIG_FIND_PROFIT } from '@shared/hunt/xpRules';
 import { backUpHuntItemPhotos } from '@/lib/huntPhotos';
 import { viewerPhotosFor }      from '@/lib/viewerPhotos';
 import { useAuth }              from '@/lib/auth-context';
@@ -147,7 +153,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
       onRetry={retry}
       onBack={() => {
         if (readOnly && router.canGoBack()) router.back();
-        else router.replace((inHunt ? '/hunt-active' : '/(tabs)') as any);
+        else router.dismissTo((inHunt ? '/hunt-active' : '/(tabs)') as any);
       }}
       backLabel={inHunt ? 'Back to Hunt' : 'Back to Home'}
       justScanned={!readOnly}
@@ -178,6 +184,11 @@ export default function HuntItemDetailScreen() {
   const [emphasize,      setEmphasize]      = useState(false);
   const [, setTick]                         = useState(0);
   const allowNavRef = useRef(false);
+  // Set the moment Save / Skip starts leaving. Nothing else on this screen may navigate after it.
+  const leavingRef  = useRef(false);
+  const afterConfirmRef   = useRef<(() => void) | null>(null);
+  const afterConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (afterConfirmTimer.current) clearTimeout(afterConfirmTimer.current); }, []);
   const priceRef    = useRef<HuntPriceFieldHandle>(null);
   const scrollRef   = useRef<ScrollView>(null);
   const { height: winH } = useWindowDimensions();
@@ -285,6 +296,25 @@ export default function HuntItemDetailScreen() {
     }
     return provisionalEconomics(scan);
   }, [scan, typedPrice, context, item]);
+
+  // ── "Big find" note ─────────────────────────────────────────────────────────
+  // Hunt XP counts a find worth over $250 in full only when the scan has
+  // evidence: taken with the in-app camera, plus a tag or detail photo. The
+  // SERVER decides that from its own record (it also checks things the phone
+  // can't see); this note only tells the hunter what the scan was made with, so
+  // they know before they finish. Live Hunts only, once a real price is typed.
+  const bigFind = useMemo(() => {
+    if (!scan || !econ || econ.provisional || context === 'history' || demo) return null;
+    const cap = scan.capture;
+    if (!cap) return null;                                  // made before the app recorded this
+    const resale = Number((scan.market_data as any)?.adjusted_estimated_value ?? 0);
+    const xpProfit = huntEconomics(scan, xpPriceFor(econ.basis ?? 0, resale)).profit;
+    if (!(xpProfit > BIG_FIND_PROFIT)) return null;
+    const missing = cap.front !== 'camera'
+      ? 'it was added from your photo library'
+      : cap.photos < 2 ? 'it has only one photo' : null;
+    return { ready: missing === null, missing };
+  }, [scan, econ, context, demo]);
 
   // A saved hunt keeps the rating it was saved with (historical snapshot).
   const shownRating: HuntRating = context === 'history' && item
@@ -402,11 +432,15 @@ export default function HuntItemDetailScreen() {
   }, [demo, coach.stepId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scan vanished (hot reload etc.) and no pending record to fall back on.
+  // Not while Save / Skip is leaving: that clears the scan on purpose, and a second
+  // navigation here pops the Hunt that was just returned to (it landed on Home).
   useEffect(() => {
-    if (context !== 'new') return;
+    if (context !== 'new' || leavingRef.current) return;
     if (!scan) {
       allowNavRef.current = true;
-      router.back();
+      leavingRef.current = true;
+      if (router.canGoBack()) router.back();
+      else router.replace((isHuntActive() ? '/hunt-active' : '/(tabs)') as any);
     }
   }, [scan, context]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -425,7 +459,10 @@ export default function HuntItemDetailScreen() {
       <View style={es.wrap}>
         <MaterialIcons name="search-off" size={40} color={MUTED} />
         <Text style={es.text}>Item not found</Text>
-        <Pressable onPress={() => router.back()} style={es.btn}>
+        <Pressable
+          onPress={() => (router.canGoBack() ? router.back() : router.replace((isHuntActive() ? '/hunt-active' : '/(tabs)') as any))}
+          style={es.btn}
+        >
           <Text style={es.btnText}>Back to Hunt</Text>
         </Pressable>
       </View>
@@ -510,11 +547,31 @@ export default function HuntItemDetailScreen() {
   };
 
   const leaveToHunt = () => {
-    setCurrentScan(null);
-    markReturningFromHuntItemDetail();
+    if (leavingRef.current) return;               // a double tap must not leave twice
+    leavingRef.current = true;
     allowNavRef.current = true;
-    router.replace('/hunt-active' as any);
+    setCurrentScan(null);
+    // Back to the Hunt that is already underneath (or Home if the Hunt is gone), as ONE move.
+    router.dismissTo((isHuntActive() ? '/hunt-active' : '/(tabs)') as any);
   };
+
+  // The "Keep this find?" sheet is a native modal. Navigating while it is still sliding away
+  // makes iOS drop or garble the transition, so a choice made in it runs once it is gone.
+  // (The refs and the cleanup effect live with the other hooks, above the early returns.)
+  const runAfterConfirm = () => {
+    if (afterConfirmTimer.current) { clearTimeout(afterConfirmTimer.current); afterConfirmTimer.current = null; }
+    const fn = afterConfirmRef.current;
+    afterConfirmRef.current = null;
+    fn?.();
+  };
+  const closeConfirmThen = (fn: () => void) => {
+    setConfirmVisible(false);
+    if (Platform.OS !== 'ios') { fn(); return; }
+    afterConfirmRef.current = fn;
+    // onDismiss is iOS's signal that the sheet is gone. The timer is only a net in case it never comes.
+    afterConfirmTimer.current = setTimeout(runAfterConfirm, 700);
+  };
+
 
   // Guided demo: tapping the highlighted price box enters the tag price for the user
   // (no keyboard, nothing to get wrong) and the coach moves on.
@@ -627,13 +684,21 @@ export default function HuntItemDetailScreen() {
     if (r === 'needs_price') { askForPrice(RESTORE_HELPER); return; }
     haptic('success');
     logEvent('hunt_item_restored', { hunt_id: getActiveHunt()?.id ?? null, hunt_item_id: item.huntItemId, huntItemId: item.huntItemId, category: item.category, from: 'analysis' });
-    router.back();
+    safeBack();
+  };
+
+  /** Back for the read-only views. If nothing is underneath (a restored session), go to the Hunt or Home. */
+  const safeBack = () => {
+    if (leavingRef.current) return;
+    leavingRef.current = true;
+    allowNavRef.current = true;
+    if (router.canGoBack()) router.back();
+    else router.replace((isHuntActive() ? '/hunt-active' : '/(tabs)') as any);
   };
 
   const goBack = () => {
     Keyboard.dismiss();
-    allowNavRef.current = true;
-    router.back();
+    safeBack();
   };
 
   const historyPrice = context === 'history' && item ? item.thriftPrice : 0;
@@ -799,6 +864,17 @@ export default function HuntItemDetailScreen() {
             </View>
           )}
 
+          {bigFind && (
+            <View style={[s.bigFind, bigFind.ready && s.bigFindReady]} testID="hunt-big-find-note">
+              <MaterialIcons name={bigFind.ready ? 'verified' : 'photo-camera'} size={15} color={bigFind.ready ? FOREST : '#7A5C0E'} style={{ marginTop: 1 }} />
+              <Text style={s.bigFindText}>
+                {bigFind.ready
+                  ? 'Big find! Taken in the app with a second photo, so it is set up to earn full XP.'
+                  : `Big find! Its XP is capped because ${bigFind.missing}. For full XP, rescan it with the in-app camera and add a tag or detail photo.`}
+              </Text>
+            </View>
+          )}
+
           {helper ? (
             <Text style={s.helper}>{helper}</Text>
           ) : provisional ? (
@@ -892,15 +968,15 @@ export default function HuntItemDetailScreen() {
       />
 
       {/* ── Back confirm modal (new scans only) ── */}
-      <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)}>
+      <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)} onDismiss={runAfterConfirm}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
             <Text style={s.modalTitle}>Keep this find?</Text>
             <Text style={s.modalSub}>Choose what to do with this item.</Text>
-            <Pressable onPress={() => { setConfirmVisible(false); handleSave(); }} style={s.modalSave}>
+            <Pressable onPress={() => closeConfirmThen(handleSave)} style={s.modalSave}>
               <Text style={s.modalSaveText}>Save to Hunt</Text>
             </Pressable>
-            <Pressable onPress={() => { setConfirmVisible(false); handleRemove(); }} style={s.modalRemove}>
+            <Pressable onPress={() => closeConfirmThen(handleRemove)} style={s.modalRemove}>
               <Text style={s.modalRemoveText}>Skip This Find</Text>
             </Pressable>
             <Pressable onPress={() => setConfirmVisible(false)} style={s.modalCancel}>
@@ -961,6 +1037,9 @@ const s = StyleSheet.create({
   guideText:    { fontSize: 12, fontWeight: '700', color: FOREST, textAlign: 'center', flexShrink: 1 },
   helper:          { fontSize: 12, fontWeight: '700', color: '#7A5C1E', textAlign: 'center' },
   provisionalNote: { fontSize: 11, color: MUTED, textAlign: 'center', lineHeight: 15 },
+  bigFind:      { flexDirection: 'row', alignItems: 'flex-start', gap: 7, backgroundColor: GOLD + '1F', borderWidth: 1, borderColor: GOLD + '66', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10 },
+  bigFindReady: { backgroundColor: FOREST + '12', borderColor: FOREST + '40' },
+  bigFindText:  { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: '600', color: BROWN },
 
   actions:      { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 10,
                   backgroundColor: BG, borderTopWidth: 1, borderTopColor: CARD_B,

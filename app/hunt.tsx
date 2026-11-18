@@ -285,7 +285,12 @@ export default function HuntScreen() {
   // after the gate→auth flow that's the hidden 'hunt-tab' route, which redirects
   // straight back into Hunt (the glitch). Resetting the root stack to a fresh
   // (tabs) reinitializes it to its first tab (Home), which is deterministic.
+  const leavingRef = useRef(false);
   const handleBack = () => {
+    if (leavingRef.current) return;          // one leave per tap, even if the button is hit twice
+    leavingRef.current = true;
+    // If the transition is ever swallowed, the next tap must still work.
+    setTimeout(() => { leavingRef.current = false; }, 1200);
     if (isHuntDemoActive()) endDemoHunt();
     try {
       navigation.reset({ index: 0, routes: [{ name: '(tabs)' as never }] });
@@ -314,7 +319,17 @@ export default function HuntScreen() {
           <Text style={{ color: '#8A7050', fontSize: 14, textDecorationLine: 'underline' }}>Already have an account? Log in</Text>
         </Pressable>
         {/* No "continue as guest": Hunt Mode requires an account, and the
-            label promised a mode the product no longer has. Back still works. */}
+            label promised a mode the product no longer has. */}
+        {/* A visible way out. Without it the only exit from this screen was a swipe. */}
+        <Pressable
+          onPress={handleBack}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          style={{ position: 'absolute', left: 18, top: insets.top + 12, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(42,74,42,0.12)', justifyContent: 'center', alignItems: 'center' }}
+        >
+          <Text style={{ color: '#2A4A2A', fontSize: 16, fontWeight: '600' }}>✕</Text>
+        </Pressable>
       </View>
     );
   }
@@ -349,6 +364,8 @@ export default function HuntScreen() {
         <Pressable
           onPress={handleBack}
           hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Close Hunt Mode"
           style={[s.backBtn, { top: insets.top + 12 }]}
         >
           <Text style={s.backBtnText}>✕</Text>

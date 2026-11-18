@@ -15,6 +15,7 @@
 
 import {
   View, Text, Pressable, StyleSheet, Alert, Platform, Image, Animated, PanResponder, Modal, ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,6 +23,7 @@ import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useState, useEffect, useRef } from 'react';
+import { useAfterModalClose } from '@/lib/useAfterModalClose';
 
 // Hunt scan icon — the marksman/crosshair image
 
@@ -401,7 +403,14 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
 }
   const [, forceUpdate] = useState(0);
   const [saveConfirmVisible, setSaveConfirmVisible] = useState(false);
+  // True from "Save Hunt" until the next screen opens. The server scores the Hunt
+  // in that window (a few seconds at most), so the screen says so instead of
+  // looking frozen, and a second tap can't start a second save.
+  const [savingHunt, setSavingHunt] = useState(false);
+  const savingRef = useRef(false);
   const [endConfirmVisible, setEndConfirmVisible] = useState(false);
+  // Leaving waits for the "End this hunt?" sheet to finish closing, or iOS can drop the screen change.
+  const endConfirmClose = useAfterModalClose();
   useEffect(() => {
     const unsub = subscribeToHunt(() => forceUpdate(n => n + 1));
     return unsub;
@@ -764,9 +773,13 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
               onPress={async () => {
                 setSaveConfirmVisible(false);
                 if (isHuntDemoActive()) { await finishDemoAndLeave(); return; }
+                if (savingRef.current) return;
                 const now      = Date.now();
                 const hunt     = getActiveHunt();
                 if (!hunt) return;
+                savingRef.current = true;
+                setSavingHunt(true);
+                try {
                 const keptItems: HuntBundleItem[]    = keptItemsOf(hunt).map(i => ({
                   huntItemId:   i.huntItemId,
                   scanId:       i.scanId,
@@ -819,14 +832,17 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                   estimatedROI,
                 };
 
-                // Calculate and apply XP — updates AsyncStorage profile atomically
-                // Must happen BEFORE addHuntBundle so bundle stores xpEarned/xpBreakdown
+                // The SERVER scores the Hunt and awards its XP (lib/huntXp → hunt.complete).
+                // Done BEFORE addHuntBundle so the saved Hunt carries the XP it earned.
+                // If the server can't be reached in time the Hunt is saved anyway with
+                // its XP pending, and the request is sent again later.
                 let xpResult: import('@/lib/huntXp').HuntXpResult | null = null;
                 try {
                   xpResult = await applyHuntXp(baseBundle);
                 } catch { /* never block save on XP failure */ }
-                // A repeat apply returns zero XP and an empty breakdown — not an award.
-                if (xpResult && (xpResult.totalXpEarned > 0 || xpResult.breakdown.length > 0)) {
+                const xpPending = xpResult?.pending === true;
+                // Only a real award is logged: not a pending one, not a zero-XP repeat.
+                if (xpResult && !xpPending && (xpResult.totalXpEarned > 0 || xpResult.breakdown.length > 0)) {
                   logHuntXpAwarded({
                     hunt_id:         hunt.id,
                     xp_earned:       xpResult.totalXpEarned,
@@ -840,7 +856,10 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
 
                 // Attach XP to bundle before persisting to history
                 const bundle: HuntBundle = xpResult
-                  ? { ...baseBundle, xpEarned: xpResult.totalXpEarned, xpBreakdown: xpResult.breakdown }
+                  ? {
+                      ...baseBundle, xpEarned: xpResult.totalXpEarned, xpBreakdown: xpResult.breakdown,
+                      ...(xpPending ? { xpPending: true } : {}),
+                    }
                   : baseBundle;
 
                 addHuntBundle(bundle);
@@ -858,8 +877,16 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                 // the bundle is confirmed in history (lib/hunt-context).
                 finishHunt(bundle.id);
                 allowNavRef.current = true;
-                // Navigate to XP reveal screen first — then user continues to hunt-complete
-                router.replace(`/hunt-xp-reveal?bundleId=${bundle.id}` as any);
+                // XP reveal first, then hunt-complete. With XP still pending there is
+                // nothing to reveal yet, so go straight to the summary (which says so).
+                router.replace((xpPending
+                  ? `/hunt-complete?bundleId=${bundle.id}`
+                  : `/hunt-xp-reveal?bundleId=${bundle.id}`) as any);
+                } finally {
+                  // Whatever happened, never leave the "Saving" card up.
+                  savingRef.current = false;
+                  setSavingHunt(false);
+                }
               }}
               style={({ pressed }) => [s.modalSave, pressed && { opacity: 0.85 }]}
             >
@@ -875,12 +902,24 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
         </View>
       </Modal>
 
+      {/* ── Saving: the server is scoring the Hunt ── */}
+      <Modal visible={savingHunt} transparent animationType="fade" onRequestClose={() => { /* not dismissible */ }}>
+        <View style={s.modalOverlay} accessibilityViewIsModal accessibilityLiveRegion="polite">
+          <View style={[s.modalCard, { alignItems: 'center' }]}>
+            <ActivityIndicator size="large" color={GOLD} />
+            <Text style={s.modalTitle}>Saving your Hunt…</Text>
+            <Text style={s.modalSub}>Adding up your XP.</Text>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── End Hunt confirmation modal (back arrow) ── */}
       <Modal
         visible={endConfirmVisible}
         transparent
         animationType="fade"
         onRequestClose={() => setEndConfirmVisible(false)}
+        onDismiss={endConfirmClose.run}
       >
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
@@ -889,8 +928,7 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
               Are you sure you want to leave? Your current hunt progress may be lost.
             </Text>
             <Pressable
-              onPress={() => {
-                setEndConfirmVisible(false);
+              onPress={() => endConfirmClose.closeThen(() => setEndConfirmVisible(false), () => {
                 if (isHuntDemoActive()) { void onboarding.markSkipped(); leaveDemoToHome(); return; }
                 allowNavRef.current = true;
                 logHuntEnded({
@@ -902,8 +940,11 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
                   estimatedProfit: stats.estimatedProfit,
                 });
                 discardHunt();
-                router.replace('/(tabs)' as any);
-              }}
+                // A fresh Home, the same way Hunt Mode's own back does it (a plain replace can land on
+                // whichever tab was last focused, and leaves this screen sitting underneath).
+                try { (navigation as any).reset({ index: 0, routes: [{ name: '(tabs)' }] }); }
+                catch { router.replace('/(tabs)' as any); }
+              })}
               style={({ pressed }) => [s.modalLeave, pressed && { opacity: 0.85 }]}
             >
               <Text style={s.modalLeaveText}>Leave Hunt</Text>
