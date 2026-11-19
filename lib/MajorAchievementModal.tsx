@@ -23,7 +23,7 @@
  *   never_miss         — ember red, rising fire particles
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, Modal, StyleSheet, Pressable,
   Animated, Dimensions,
@@ -700,6 +700,14 @@ function FireParticles({ color }: { color: string }) {
 
 // ─── Main Modal ───────────────────────────────────────────────────────────────
 
+/**
+ * How long a celebration stays on screen before it can be closed. Long enough
+ * to take it in (founder, Nov 18, 2026: pressing Continue the instant it
+ * appeared killed the moment). The button fades in when the time is up; until
+ * then nothing closes the screen, not even the Android back button.
+ */
+export const CELEBRATION_MIN_MS = 2500;
+
 /** Words that depend on the moment ("3 weeks in a row"). Anything left out uses the design's own. */
 export interface MajorAchievementText { title?: string; body?: string; subtext?: string }
 
@@ -711,6 +719,31 @@ interface Props {
 }
 
 export function MajorAchievementModal({ type, visible, onContinue, text }: Props) {
+  // ── Hold the screen for CELEBRATION_MIN_MS, then let it be closed once ─────
+  const btnFade = useRef(new Animated.Value(0)).current;
+  const [canContinue, setCanContinue] = useState(false);
+  const canContinueRef = useRef(false);
+  const closedRef = useRef(false);
+  useEffect(() => {
+    canContinueRef.current = false;
+    closedRef.current = false;
+    setCanContinue(false);
+    btnFade.setValue(0);
+    if (!visible || !type) return;
+    const t = setTimeout(() => {
+      canContinueRef.current = true;
+      setCanContinue(true);
+      Animated.timing(btnFade, { toValue: 1, duration: 350, useNativeDriver: true }).start();
+    }, CELEBRATION_MIN_MS);
+    return () => clearTimeout(t);
+  }, [visible, type]);
+  /** Closes once, and only after the hold. A double tap never skips the next celebration in a queue. */
+  const handleContinue = () => {
+    if (!canContinueRef.current || closedRef.current) return;
+    closedRef.current = true;
+    onContinue();
+  };
+
   const badgeScale   = useRef(new Animated.Value(0)).current;
   const contentFade  = useRef(new Animated.Value(0)).current;
   const bgFade       = useRef(new Animated.Value(0)).current;
@@ -762,7 +795,7 @@ export function MajorAchievementModal({ type, visible, onContinue, text }: Props
       transparent
       animationType="none"
       statusBarTranslucent
-      onRequestClose={onContinue}
+      onRequestClose={handleContinue}
     >
       <Animated.View style={[s.root, { backgroundColor: cfg.bg, opacity: bgFade }]}>
 
@@ -793,10 +826,16 @@ export function MajorAchievementModal({ type, visible, onContinue, text }: Props
           <Text style={s.subtext}>{cfg.subtext}</Text>
         </Animated.View>
 
-        {/* Continue button */}
-        <Animated.View style={{ opacity: contentFade, width: '100%', alignItems: 'center' }}>
+        {/* Continue button: appears once the screen has been held for CELEBRATION_MIN_MS */}
+        <Animated.View
+          pointerEvents={canContinue ? 'auto' : 'none'}
+          style={{ opacity: btnFade, width: '100%', alignItems: 'center' }}
+        >
           <Pressable
-            onPress={onContinue}
+            onPress={handleContinue}
+            disabled={!canContinue}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !canContinue }}
             style={({ pressed }) => [
               s.btn,
               { backgroundColor: cfg.btnBg },
@@ -805,9 +844,6 @@ export function MajorAchievementModal({ type, visible, onContinue, text }: Props
           >
             <Text style={[s.btnText, { color: cfg.btnText2 }]}>{cfg.btnText}</Text>
           </Pressable>
-          <Text style={[s.tapDismiss, { color: cfg.ringColor + '60' }]}>
-            Tap anywhere to continue
-          </Text>
         </Animated.View>
 
       </Animated.View>
@@ -872,8 +908,5 @@ const s = StyleSheet.create({
   },
   btnText: {
     fontFamily: FONTS.serif, fontSize: 17, fontWeight: '900', letterSpacing: 0.5,
-  },
-  tapDismiss: {
-    marginTop: 14, fontSize: 11,
   },
 });

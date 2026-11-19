@@ -16,9 +16,87 @@
  */
 
 const hydrated = new Set<string>();
+const hydratedWaiters = new Map<string, Array<() => void>>();
 
 export function markProgressHydrated(uid: string): void {
   hydrated.add(uid);
+  const waiting = hydratedWaiters.get(uid) ?? [];
+  hydratedWaiters.delete(uid);
+  waiting.forEach(resolve => { try { resolve(); } catch { /* ignore */ } });
+}
+
+/**
+ * Resolves true once this account's progress state is ready (markProgressHydrated),
+ * or false after `timeoutMs`. Lets the Progress tab wait for the global watcher
+ * instead of racing it.
+ */
+export function whenProgressHydrated(uid: string, timeoutMs = 20_000): Promise<boolean> {
+  if (hydrated.has(uid)) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    const list = hydratedWaiters.get(uid) ?? [];
+    list.push(() => { clearTimeout(timer); resolve(true); });
+    hydratedWaiters.set(uid, list);
+  });
+}
+
+// ─── Signing in ───────────────────────────────────────────────────────────────
+//
+// Signing in (after signing out, or switching accounts) must never replay what
+// the account already has: no "new" badges for old brands or achievements, and
+// no full-screen celebrations for milestones reached long ago. The "seen" and
+// "celebrated" records on the phone are wiped on an account switch, and the
+// copy in Supabase is not always complete or quick to arrive, so it cannot be
+// relied on. Instead, once the account's history is fully loaded, everything it
+// has unlocked at that moment is marked seen and celebrated. Only what is
+// unlocked after that point notifies.
+//
+// A cold start of an app that was already signed in is NOT a sign-in: its
+// records were never wiped, so it notifies exactly as before (a streak earned
+// just before the app closed still gets its celebration on the next open).
+
+const signedInThisSession = new Set<string>();
+/** Per sign-in: resolves when the wipe of the last account's records and this account's downloads are done. */
+const loginSyncs = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+
+/**
+ * The account was signed into during this session (not restored at launch).
+ * Call synchronously, before any await, so nothing can notify for it first.
+ */
+export function markSignedIn(uid: string): void {
+  signedInThisSession.add(uid);
+  if (!loginSyncs.has(uid)) {
+    let resolve: () => void = () => {};
+    const promise = new Promise<void>(r => { resolve = r; });
+    loginSyncs.set(uid, { promise, resolve });
+  }
+}
+/** The sign-in's own work (wipe, downloads) to wait for. Its failure counts as done. */
+export function setSignInSync(uid: string, work: Promise<unknown>): void {
+  const entry = loginSyncs.get(uid);
+  if (!entry) return;
+  work.then(() => entry.resolve(), () => entry.resolve());
+}
+export function wasJustSignedIn(uid: string): boolean { return signedInThisSession.has(uid); }
+/** The sign-in has been settled (everything it had was marked seen). */
+export function settleSignIn(uid: string): void {
+  signedInThisSession.delete(uid);
+  const entry = loginSyncs.get(uid);
+  entry?.resolve();
+  loginSyncs.delete(uid);
+}
+/** Waits for the sign-in's wipe and downloads (XP, seen state), at most `timeoutMs`. */
+export async function waitForSignInSync(uid: string, timeoutMs = 15_000): Promise<void> {
+  const entry = loginSyncs.get(uid);
+  if (!entry) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([entry.promise, new Promise<void>(res => { timer = setTimeout(res, timeoutMs); })]);
+  if (timer) clearTimeout(timer);
+}
+
+/** Tests only. */
+export function __resetProgressHydrationForTests(): void {
+  hydrated.clear(); hydratedWaiters.clear(); signedInThisSession.clear(); loginSyncs.clear();
 }
 
 export function isProgressHydrated(uid: string): boolean {
@@ -42,12 +120,16 @@ export function resetProgressHydration(): void {
 export async function seedSeenBaselineOnce(
   uid: string,
   current: { achievements: string[]; brands: string[]; diamonds: string[] },
+  opts: { force?: boolean } = {},
 ): Promise<void> {
   try {
     const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
-    const flagKey = `@flipstart/seen_baseline_done:${uid}`;
+    // v2 (Nov 18, 2026): every account takes one fresh snapshot after this update,
+    // which clears the badges an account switch used to leave behind.
+    const flagKey = `@flipstart/seen_baseline_v2_done:${uid}`;
     const done = await AsyncStorage.getItem(flagKey);
-    if (done === 'true') return; // already seeded on this device for this account
+    // force: a sign-in. Everything the account has right now counts as seen.
+    if (done === 'true' && !opts.force) return; // already seeded on this device for this account
 
     const SEEN_ACHV     = '@flipstart/seen_achievement_ids';
     const SEEN_BRANDS   = '@flipstart/seen_brand_discoveries';

@@ -58,6 +58,16 @@ function enqueue(c: Celebration): void {
   emit();
 }
 
+/**
+ * Drop everything queued. Called when the signed-in account changes, so one
+ * account's celebrations never play for another.
+ */
+export function clearCelebrations(): void {
+  if (queue.length === 0) return;
+  queue = [];
+  emit();
+}
+
 /** The user dismissed the celebration on screen. */
 export async function finishCelebration(key: string): Promise<void> {
   queue = queue.filter(q => q.key !== key);
@@ -127,7 +137,7 @@ function celebrationFor(id: string): Celebration | null {
   return null;
 }
 
-const BASELINE_KEY = (uid: string) => `@flipstart/celebration_baseline_v2:${uid}`;
+const BASELINE_KEY = (uid: string) => `@flipstart/celebration_baseline_v3:${uid}`;
 
 /**
  * Called with everything this account has unlocked, each time that is worked
@@ -140,7 +150,11 @@ const BASELINE_KEY = (uid: string) => `@flipstart/celebration_baseline_v2:${uid}
  * Only the biggest of a group is shown: #1 covers the top 3, and the longest
  * streak covers the shorter ones.
  */
-export async function queueUnlockCelebrations(uid: string | null, unlockedIds: string[]): Promise<void> {
+export async function queueUnlockCelebrations(
+  uid: string | null,
+  unlockedIds: string[],
+  opts: { baselineOnly?: boolean } = {},
+): Promise<void> {
   if (!uid) return;
   inFlight++;
   try {
@@ -153,7 +167,8 @@ export async function queueUnlockCelebrations(uid: string | null, unlockedIds: s
 
     let baselined = false;
     try { baselined = (await AsyncStorage.getItem(BASELINE_KEY(uid))) === '1'; } catch { baselined = true; }
-    if (!baselined) {
+    // baselineOnly: a sign-in. What the account already has is never celebrated again.
+    if (!baselined || opts.baselineOnly) {
       for (const c of pending) await markCelebrationShown(c.key);
       try { await AsyncStorage.setItem(BASELINE_KEY(uid), '1'); } catch { /* baselined again next time */ }
       return;

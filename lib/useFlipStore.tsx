@@ -65,6 +65,9 @@ function collectLocalItemUris(bundle: HuntBundle): string[] {
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
+/** One shared empty list, so "no history yet" never changes identity between renders. */
+const NO_FLIPS: HistoryEntry[] = [];
+
 const GUEST_KEY  = 'flipstart_confirmed_flips';           // legacy / guest
 const userKey    = (uid: string) => `flipstart_flips:${uid}`; // per-user
 
@@ -73,6 +76,15 @@ const userKey    = (uid: string) => `flipstart_flips:${uid}`; // per-user
 interface FlipStoreState {
   flips:    HistoryEntry[];
   isLoaded: boolean;
+  /**
+   * The account `flips` belong to (null = guest). When the signed-in account
+   * changes, the old account's history stays in state until the new one is
+   * read from storage. Everything checks this first, so for that moment the
+   * app sees an empty, not-loaded store instead of someone else's history.
+   */
+  loadedFor: string | null;
+  /** The account whose history has also been merged with the cloud (or tried and failed). */
+  cloudSyncedFor: string | null;
 
   /**
    * Session-only thrift price cache.
@@ -86,7 +98,8 @@ interface FlipStoreState {
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 type FlipAction =
-  | { type: 'LOAD';              payload: HistoryEntry[] }
+  | { type: 'LOAD';              payload: HistoryEntry[]; userId?: string | null }
+  | { type: 'CLOUD_SYNCED';      userId: string }
   | { type: 'ADD_FLIP';          payload: FlipResult }
   | { type: 'REMOVE_FLIP';       payload: string }       // by id
   | { type: 'UPDATE_FLIP';       payload: { id: string; updates: Partial<FlipResult> } }
@@ -101,7 +114,14 @@ type FlipAction =
 function reducer(state: FlipStoreState, action: FlipAction): FlipStoreState {
   switch (action.type) {
     case 'LOAD':
-      return { ...state, flips: action.payload, isLoaded: true };
+      return {
+        ...state, flips: action.payload, isLoaded: true,
+        // A LOAD that names its account takes ownership; one that does not keeps it.
+        loadedFor: action.userId !== undefined ? action.userId : state.loadedFor,
+      };
+
+    case 'CLOUD_SYNCED':
+      return { ...state, cloudSyncedFor: action.userId };
 
     case 'ADD_FLIP': {
       // Replace if already exists (e.g. re-confirm), otherwise prepend
@@ -193,6 +213,12 @@ interface FlipStoreValue {
   // State
   flips:    HistoryEntry[];
   isLoaded: boolean;
+  /**
+   * The signed-in account once its history is complete: read from the phone
+   * AND merged with the cloud (or the cloud failed). Null until then, and for
+   * guests. Code that must judge "what does this account already have" waits for it.
+   */
+  historyReadyFor: string | null;
   pendingThriftPrices: Record<string, string>;
 
   // Actions
@@ -233,23 +259,38 @@ export function FlipStoreProvider({
   const [state, dispatch] = useReducer(reducer, {
     flips:    [],
     isLoaded: false,
+    loadedFor: null,
+    cloudSyncedFor: null,
     pendingThriftPrices: {},
   });
 
+  // Which account is signed in right now. Async work that finishes after the
+  // account changed must not write its answer into the new account.
+  const owner = userId ?? null;
+  const ownerRef = useRef<string | null>(owner);
+  ownerRef.current = owner;
+  /** State belongs to the signed-in account (not the one before it). */
+  const owned = state.loadedFor === owner;
+  const ready = state.isLoaded && owned;
+  const flipsOut = owned ? state.flips : NO_FLIPS;
+
   // ── Load from AsyncStorage on mount / when userId changes ──────────────────
   useEffect(() => {
+    const forUser = userId ?? null;
     const key = userId ? userKey(userId) : GUEST_KEY;
     AsyncStorage.getItem(key)
       .then(raw => {
+        if (ownerRef.current !== forUser) return;      // switched again meanwhile
         const parsed = raw ? (JSON.parse(raw) as HistoryEntry[]) : [];
-        dispatch({ type: 'LOAD', payload: parsed });
+        dispatch({ type: 'LOAD', payload: parsed, userId: forUser });
       })
-      .catch(() => dispatch({ type: 'LOAD', payload: [] }));
+      .catch(() => { if (ownerRef.current === forUser) dispatch({ type: 'LOAD', payload: [], userId: forUser }); });
   }, [userId]);
 
   // ── Persist to AsyncStorage whenever flips change ──────────────────────────
   useEffect(() => {
-    if (!state.isLoaded) return;
+    // Never write one account's history under another account's key.
+    if (!state.isLoaded || state.loadedFor !== (userId ?? null)) return;
     const key = userId ? userKey(userId) : GUEST_KEY;
     const bundleIds = state.flips.filter(isHuntBundle).map(b => b.id);
     AsyncStorage.setItem(key, JSON.stringify(state.flips))
@@ -257,11 +298,11 @@ export function FlipStoreProvider({
       // active-hunt record be deleted (lib/hunt-context).
       .then(() => { if (userId) confirmHuntBundlesPersisted(bundleIds); })
       .catch(() => {});
-  }, [state.flips, state.isLoaded, userId]);
+  }, [state.flips, state.isLoaded, state.loadedFor, userId]);
 
   // ── Cloud sync on login: migrate guest → user, pull cloud, merge ─────────
   useEffect(() => {
-    if (!userId || !state.isLoaded) return;
+    if (!userId || !state.isLoaded || state.loadedFor !== userId) return;
     (async () => {
       try {
         const key      = userKey(userId);
@@ -289,7 +330,8 @@ export function FlipStoreProvider({
         const mergedBundles = mergeHuntBundles(localBundles, cloudBundles);
         const merged        = [...mergedScans, ...mergedBundles];
 
-        dispatch({ type: 'LOAD', payload: merged });
+        if (ownerRef.current !== userId) return;       // switched account meanwhile: drop it
+        dispatch({ type: 'LOAD', payload: merged, userId });
         AsyncStorage.setItem(key, JSON.stringify(merged)).catch(() => {});
 
         // Clear guest key after migration
@@ -298,9 +340,12 @@ export function FlipStoreProvider({
         }
       } catch (err) {
         if (__DEV__) console.warn('[useFlipStore] sync effect threw:', err);
+      } finally {
+        // Done (or failed): this account's history is as complete as it will get.
+        if (ownerRef.current === userId) dispatch({ type: 'CLOUD_SYNCED', userId });
       }
     })();
-  }, [userId, state.isLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userId, state.isLoaded, state.loadedFor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const addFlip = useCallback((flip: FlipResult) => {
@@ -411,8 +456,9 @@ export function FlipStoreProvider({
   // forever — invisible on other devices and lost on reinstall. This retries
   // those uploads on load and whenever the app returns to the foreground.
   // Bounded per pass and guarded against overlapping runs.
-  const flipsRef    = useRef(state.flips);
-  flipsRef.current  = state.flips;
+  // The signed-in account's history only: never another account's photos.
+  const flipsRef    = useRef(flipsOut);
+  flipsRef.current  = flipsOut;
   const sweepingRef = useRef(false);
 
   const retryPendingPhotoUploads = useCallback(async () => {
@@ -473,13 +519,13 @@ export function FlipStoreProvider({
   }, [userId, updateFlip, addHuntBundle]);
 
   useEffect(() => {
-    if (!userId || !state.isLoaded) return;
+    if (!userId || !ready) return;
     retryPendingPhotoUploads();
     const sub = AppState.addEventListener('change', s => {
       if (s === 'active') retryPendingPhotoUploads();
     });
     return () => sub.remove();
-  }, [userId, state.isLoaded, retryPendingPhotoUploads]);
+  }, [userId, ready, retryPendingPhotoUploads]);
 
   // ── Retry sweep: Hunts whose XP is still waiting on the server ────────────
   // A Hunt finished offline is saved at once with its XP "pending". This sends
@@ -500,13 +546,13 @@ export function FlipStoreProvider({
   }, [userId, addHuntBundle]);
 
   useEffect(() => {
-    if (!userId || !state.isLoaded) return;
+    if (!userId || !ready) return;
     void settlePendingHuntXp();
     const sub = AppState.addEventListener('change', s => {
       if (s === 'active') void settlePendingHuntXp();
     });
     return () => sub.remove();
-  }, [userId, state.isLoaded, settlePendingHuntXp]);
+  }, [userId, ready, settlePendingHuntXp]);
 
   const setPendingThriftPrice = useCallback((id: string, price: string) => {
     dispatch({ type: 'SET_THRIFT_PRICE', payload: { id, price } });
@@ -521,11 +567,11 @@ export function FlipStoreProvider({
   // deriveGlobalStats operates on FlipResult[], so we compute normal-scan stats
   // first then fold in hunt bundle data (kept items only) on top.
   const globalStats = useMemo((): GlobalStats => {
-    const normalFlips  = state.flips.filter((f): f is FlipResult => !isHuntBundle(f));
+    const normalFlips  = flipsOut.filter((f): f is FlipResult => !isHuntBundle(f));
     const base         = deriveGlobalStats(normalFlips);
 
     // Aggregate kept-item data from all hunt bundles
-    const bundles      = state.flips.filter(isHuntBundle);
+    const bundles      = flipsOut.filter(isHuntBundle);
     let bundleProfit   = 0;
     let bundleCost     = 0;
     let bundleFlips    = 0;   // count of kept items across all bundles
@@ -549,18 +595,19 @@ export function FlipStoreProvider({
     const winRate     = totalFlips  > 0 ? Math.round((totalWins  / totalFlips)   * 100) : 0;
 
     return { totalFlips, totalProfit, totalCost, lifetimeRoi, avgProfit, winRate };
-  }, [state.flips]);
+  }, [flipsOut]);
 
   const getFlipById = useCallback(
-    (id: string) => state.flips.find((f): f is FlipResult => !isHuntBundle(f) && f.id === id),
-    [state.flips],
+    (id: string) => flipsOut.find((f): f is FlipResult => !isHuntBundle(f) && f.id === id),
+    [flipsOut],
   );
 
   return (
     <FlipStoreContext.Provider
       value={{
-        flips:    state.flips,
-        isLoaded: state.isLoaded,
+        flips:    flipsOut,
+        isLoaded: ready,
+        historyReadyFor: ready && state.cloudSyncedFor === owner ? owner : null,
         pendingThriftPrices: state.pendingThriftPrices,
         addFlip,
         addHuntBundle,

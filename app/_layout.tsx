@@ -35,7 +35,10 @@ import { AchievementNotificationProvider, useAchievementNotifications } from '@/
 import { useFlipStore } from '@/lib/useFlipStore';
 import { getUnlockedDiamondIds, getUnseenDiamondIds, computeUnlockedDiamonds } from '@/lib/diamonds';
 import { DIAMONDS_ENABLED } from '@/lib/diamondsAvailability';
-import { markProgressHydrated, resetProgressHydration } from '@/lib/progressHydration';
+import {
+  markProgressHydrated, markSignedIn, resetProgressHydration, setSignInSync, settleSignIn,
+  waitForSignInSync, wasJustSignedIn,
+} from '@/lib/progressHydration';
 import {
   buildUserAchievementData, getAllUnlockedIds, ACHIEVEMENT_CATEGORIES,
 } from '@/lib/achievements';
@@ -57,7 +60,15 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 // AuthBridge: reads userId from AuthProvider (safe — no supabase import here)
 // and passes it to FlipStoreProvider so scan/bundle sync knows the current user.
 function AppProviders({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
+
+  // True once this session has been signed out with auth settled (signed out on
+  // launch, or signed out later). A sign-in after that is a real sign-in; an
+  // account restored at launch is not (see lib/progressHydration).
+  const sawSignedOutRef = useRef(false);
+  useEffect(() => {
+    if (!authLoading && !user?.id) sawSignedOutRef.current = true;
+  }, [authLoading, user?.id]);
 
   // Dedup guard: tracks which userId we've already run syncXpOnLogin for
   // this session. Prevents double-sync on profileChecked bounces or re-renders.
@@ -75,6 +86,15 @@ function AppProviders({ children }: { children: React.ReactNode }) {
     const uid  = user?.id ?? null;
     const prev = prevAuthUidRef.current;
     prevAuthUidRef.current = uid;
+
+    // A sign-in (after signing out, or a switch), not a launch that restored the
+    // account. Marked before any await, so the watcher can never notify for it
+    // first. The watcher then marks everything the account already has as seen
+    // and celebrated, once its history is loaded. No replays.
+    const signedIn = !!uid && prev !== undefined && prev !== uid
+      && (prev !== null || sawSignedOutRef.current);
+    const signInWork: Promise<unknown>[] = [];
+    if (signedIn) markSignedIn(uid);
 
     (async () => {
       // On sign-out (A→null) or account switch (A→B) — but NOT initial login
@@ -120,21 +140,23 @@ function AppProviders({ children }: { children: React.ReactNode }) {
       if (uid && syncedForUserRef.current !== uid) {
         // First time seeing this userId this session — run cloud merge
         syncedForUserRef.current = uid;
-        syncXpOnLogin(uid).catch(() => {});
+        signInWork.push(syncXpOnLogin(uid).catch(() => {}));
         // Achievements: merge remote seen/celebration state into local (background,
         // fail-safe). Passing [] for unlockedIds keeps this to the cross-device
         // seen/celebration merge; per-achievement unlock upserts happen in
         // progress.tsx when unlocks are detected.
-        import('@/lib/achievementSync')
+        signInWork.push(import('@/lib/achievementSync')
           .then(({ syncAchievementsWithSupabase }) => syncAchievementsWithSupabase(uid, []))
-          .catch(() => {});
+          .catch(() => {}));
         // Brand Compendium: same pattern — download remote discoveries/seen state +
         // upload existing local discovery meta. Discovered-set upload/reconcile
         // happens in progress.tsx where the discovered set is computed.
-        import('@/lib/brandSync')
+        signInWork.push(import('@/lib/brandSync')
           .then(({ syncBrandCompendiumWithSupabase }) => syncBrandCompendiumWithSupabase(uid, []))
-          .catch(() => {});
+          .catch(() => {}));
       }
+      // The wipe above is finished by now; the watcher waits for these downloads too.
+      if (signedIn && uid) setSignInSync(uid, Promise.all(signInWork));
 
       if (!uid) {
         // Signed out — reset so next login triggers sync again
@@ -176,7 +198,7 @@ function AppProviders({ children }: { children: React.ReactNode }) {
 // Progress tab.
 function DiamondNotificationWatcher() {
   const { user } = useAuth();
-  const { flips } = useFlipStore();
+  const { flips, isLoaded: flipsLoaded, historyReadyFor } = useFlipStore();
   const { addUnseenDiamonds, notifyNew, addUnseenBrands } = useAchievementNotifications();
   // Tick increments whenever hunt-context fires a change (item saved mid-hunt).
   const [huntTick, setHuntTick] = useState(0);
@@ -199,8 +221,17 @@ function DiamondNotificationWatcher() {
     // re-downloads seen state before surfacing anything.
     if (!user?.id) { hydratedUidRef.current = undefined; resetProgressHydration(); return; }
     const uid = user.id;
+    // This account's history has not been read yet: nothing to judge.
+    if (!flipsLoaded) return;
+    // Just signed in: wait until the history is complete (phone + cloud), so the
+    // "already had it" snapshot below is the whole account, not part of it.
+    // The same goes for the first look at an account this session (a launch).
+    const justSignedIn = wasJustSignedIn(uid);
+    if ((justSignedIn || hydratedUidRef.current !== uid) && historyReadyFor !== uid) return;
     let alive = true;
     (async () => {
+      if (justSignedIn) await waitForSignInSync(uid);
+      if (!alive) return;
       // Build a synthetic HuntBundle from the active in-progress hunt so the
       // diamond matcher sees kept items immediately, without waiting for hunt end.
       const activeHunt = getActiveHunt();
@@ -266,17 +297,28 @@ function DiamondNotificationWatcher() {
         import('@/lib/brandSync').then(m => m.syncBrandCompendiumWithSupabase(uid, [...discovered])).catch(() => {}),
         import('@/lib/diamondSync').then(m => m.syncDiamondsWithSupabase(uid, diamondRecords)).catch(() => {}),
       ]);
-      if (firstRun) {
-        hydratedUidRef.current = uid;   // set before await to avoid duplicate hydration on rapid re-runs
+      if (firstRun || justSignedIn) {
         await runSync();
         // First open of this account on this device: mark all currently-unlocked
         // achievements/brands/diamonds as seen so a returning user gets no
         // notification spam. Only post-baseline unlocks will notify.
+        // After a sign-in this is forced: everything the account has right now is
+        // seen and already celebrated. Nothing old badges or plays full screen.
         await import('@/lib/progressHydration').then(m => m.seedSeenBaselineOnce(uid, {
           achievements: achvUnlocked,
           brands:       [...discovered],
           diamonds:     diamondUnlockedIds,
-        })).catch(() => {});
+        }, { force: justSignedIn })).catch(() => {});
+        if (justSignedIn) {
+          await queueUnlockCelebrations(uid, achvUnlocked, { baselineOnly: true });
+          settleSignIn(uid);
+          hydratedUidRef.current = uid;
+          markProgressHydrated(uid);    // let the Progress tab go ahead
+          return;                       // nothing to badge: it was all already theirs
+        }
+        // Only now: a run cut short before the snapshot was taken must take it again.
+        // (Two runs taking it is harmless: it only ever adds to "seen".)
+        hydratedUidRef.current = uid;
         markProgressHydrated(uid);      // let the Progress tab skip its own wait
         if (!alive) return;
       } else {
@@ -306,7 +348,7 @@ function DiamondNotificationWatcher() {
       if (alive && bUnseen.length > 0) addUnseenBrands(bUnseen);
     })();
     return () => { alive = false; };
-  }, [flips, huntTick, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [flips, huntTick, user?.id, flipsLoaded, historyReadyFor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }

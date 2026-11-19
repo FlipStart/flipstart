@@ -54,7 +54,7 @@ import {
   TOTAL_DIAMONDS,
 } from '@/lib/diamonds';
 import { DIAMONDS_ENABLED } from '@/lib/diamondsAvailability';
-import { isProgressHydrated, markProgressHydrated, seedSeenBaselineOnce } from '@/lib/progressHydration';
+import { isProgressHydrated, whenProgressHydrated } from '@/lib/progressHydration';
 import { trackAnalyticsEvent, useScreenFocus } from '@/lib/analytics';
 import { useAuth } from '@/lib/auth-context';
 import FeatureGate from '@/components/FeatureGate';
@@ -214,31 +214,13 @@ export default function ProgressScreen() {
       // Detect newly unlocked achievements and push to notification context
       const unlockedIds = getAllUnlockedIds(data);
 
-      // If the global watcher hasn't yet downloaded this account's seen-state
-      // from Supabase (e.g. Progress opened immediately after login), await that
-      // download here BEFORE notifying — otherwise already-seen achievements/
-      // brands/diamonds would replay as new. Normally the watcher wins this race
-      // and the flag is already set, so this block is skipped.
-      if (uid && !isProgressHydrated(uid)) {
-        try {
-          const disc  = computeDiscoveredBrands(flips, xp?.discoveredBrands ?? []);
-          const dRecs = Object.values(computeUnlockedDiamonds(flips));
-          await Promise.all([
-            import('@/lib/achievementSync').then(m => m.syncAchievementsWithSupabase(uid, unlockedIds)).catch(() => {}),
-            import('@/lib/brandSync').then(m => m.syncBrandCompendiumWithSupabase(uid, [...disc])).catch(() => {}),
-            import('@/lib/diamondSync').then(m => m.syncDiamondsWithSupabase(uid, dRecs)).catch(() => {}),
-          ]);
-          // First time this account is opened on this device: treat everything
-          // already unlocked as "seen" so a returning user gets no notification
-          // spam. Only items unlocked AFTER this baseline will notify.
-          await seedSeenBaselineOnce(uid, {
-            achievements: unlockedIds,
-            brands:       [...disc],
-            diamonds:     getUnlockedDiamondIds(flips),
-          });
-        } catch { /* fail-safe: proceed with local SEEN */ }
-        markProgressHydrated(uid);
-      }
+      // Badges only once the global watcher (app/_layout.tsx) has settled this
+      // account: after a sign-in it waits for the full history, then marks
+      // everything the account already had as seen. Racing it from here is what
+      // used to badge every old brand and achievement after logging back in.
+      // If it has not settled yet, wait for it; if it never does, no badges
+      // from this visit (the watcher still adds them later).
+      const canNotify = isProgressHydrated(uid) || await whenProgressHydrated(uid, 20_000);
 
       // DEV — count dev-unlocked achievements NOT already unlocked by stats, so
       // the Progress card total matches the category screen (which merges dev
@@ -270,7 +252,7 @@ export default function ProgressScreen() {
             });
           }
         }
-        await notifyNew(unlockedIds, allDetails);
+        if (canNotify) await notifyNew(unlockedIds, allDetails);
 
         // Background cloud sync for signed-in users — records unlocks in Supabase.
         // Fire-and-forget; never blocks the local notification flow above.
@@ -297,7 +279,7 @@ export default function ProgressScreen() {
       // Store the accurate, deduped, normalized brand count for display.
       setBrandCount(discoveredBrands.size);
       const unseenBrands = await getUnseenBrandNames(discoveredBrands);
-      if (unseenBrands.length > 0) {
+      if (canNotify && unseenBrands.length > 0) {
         addUnseenBrands(unseenBrands);
       }
 
@@ -322,7 +304,7 @@ export default function ProgressScreen() {
 
       setDiamondCount(unlockedDiamondIds.length);
       const unseenDiamonds = DIAMONDS_ENABLED ? await getUnseenDiamondIds(unlockedDiamondIds) : [];
-      if (unseenDiamonds.length > 0) {
+      if (canNotify && unseenDiamonds.length > 0) {
         addUnseenDiamonds(unseenDiamonds);
       }
 

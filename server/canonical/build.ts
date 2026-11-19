@@ -168,6 +168,9 @@ function buildDisplayName(
   };
 }
 
+/** Top of the range for a piece the model marks basic_item (prompt PRICING: "$2-8"). */
+export const BASIC_ITEM_MAX = 8;
+
 function buildPricing(
   ai: AiAnalysis,
   condition: DerivedConditionSummary,
@@ -186,6 +189,19 @@ function buildPricing(
 
   const adjustments = [...conditionAdjustments(ai, condition)];
   let adjLow = rawLow as number, adjHigh = rawHigh as number;
+
+  // ── The model's own "nobody is looking for this" call ───────────────────────
+  // The prompt says: basic_item true means the range is $2-8. The model sometimes
+  // sets the flag and still prices the piece like it will sell (a plain modern
+  // Champion full-zip flagged basic, priced $17, sold for $4). When it says
+  // basic, its range is held to what basic means. This is the model's own label,
+  // not a brand rule: nothing happens unless the model itself set basic_item.
+  if (ai.marketability?.basic_item === true && adjHigh > BASIC_ITEM_MAX) {
+    const before = `${adjLow}-${adjHigh}`;
+    adjHigh = BASIC_ITEM_MAX;
+    adjLow  = Math.min(adjLow, BASIC_ITEM_MAX - 3);
+    console.log(`[pricing] basic_item: range ${before} held to ${adjLow}-${adjHigh}`);
+  }
 
   // No brand-list price ceiling. There used to be one here (plain modern mall-brand basics capped
   // at $15-25), and it capped pieces it should never have touched: a late-2000s Hollister sherpa

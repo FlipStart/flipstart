@@ -12,7 +12,7 @@
  *
  * It also tells lib/achievementStats which account is signed in.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'expo-router';
 
 import { useAuth } from '@/lib/auth-context';
@@ -21,7 +21,7 @@ import { logEvent } from '@/lib/analytics';
 import { MajorAchievementModal } from '@/lib/MajorAchievementModal';
 import { setAchievementUser } from '@/lib/achievementStats';
 import {
-  currentCelebration, finishCelebration, hasPendingCelebration, subscribeCelebrations,
+  clearCelebrations, currentCelebration, finishCelebration, hasPendingCelebration, subscribeCelebrations,
   type Celebration,
 } from '@/lib/achievementCelebrations';
 
@@ -35,7 +35,15 @@ export function CelebrationHost() {
   const pathname = usePathname();
   const uid = user?.id ?? null;
 
-  useEffect(() => { setAchievementUser(uid); }, [uid]);
+  // Signed out of an account, or switched: nothing queued for it may play for
+  // anyone else. (Guest to account keeps the queue: a guest's first scan becomes
+  // the new account's, so its celebration still belongs to them.)
+  const lastUid = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (lastUid.current != null && lastUid.current !== uid) clearCelebrations();
+    lastUid.current = uid;
+    setAchievementUser(uid);
+  }, [uid]);
 
   const [current, setCurrent] = useState<Celebration | null>(currentCelebration());
   useEffect(() => subscribeCelebrations(() => setCurrent(currentCelebration())), []);
