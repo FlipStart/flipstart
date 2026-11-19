@@ -53,6 +53,8 @@ export const LIMITS = {
   /** The unblock list and the app's own XP profile: plain reads the app makes a few times a visit. */
   blockedList:          { max: 60,  windowMs: 60_000 },
   huntProfile:          { max: 120, windowMs: 60_000 },
+  /** Own weekly finishes, for achievements. The app asks a few times a day. */
+  weeklyFinishes:       { max: 30,  windowMs: 60_000 },
   /** Finishing Hunts. The offline queue can send up to 20 in one go. */
   huntComplete:         { max: 60,  windowMs: 60_000 },
 } as const;

@@ -56,6 +56,17 @@ export const ENV = {
     return ["none", "low", "medium", "high", "xhigh", "max"].includes(v) ? v : "none";
   })(),
 
+  // ── Per-account reasoning trial ─────────────────────────────────────────
+  // Scans from the accounts in OPENAI_TEST_MODEL_USER_IDS use this effort
+  // instead of OPENAI_REASONING_EFFORT. Everyone else is untouched. Works with
+  // or without OPENAI_TEST_MODEL (without it, the trial accounts keep the
+  // normal scan model and only think harder). Blank or unknown = no trial.
+  // Ending the trial = clear this variable.
+  openaiTestReasoningEffort: (() => {
+    const v = (process.env.OPENAI_TEST_REASONING_EFFORT ?? "").trim().toLowerCase();
+    return ["none", "low", "medium", "high", "xhigh", "max"].includes(v) ? v : "";
+  })(),
+
   // ── CanonicalAnalysisV1 rollout ──────────────────────────────────────────
   // Off by default. The legacy scan path stays intact and is the immediate
   // rollback: unset this variable and the old route resumes on restart.
@@ -105,6 +116,19 @@ export const ENV = {
 export function inModelTrial(userId: string | undefined | null): boolean {
   if (!ENV.openaiTestModel || !userId) return false;
   return ENV.openaiTestModelUserIds.includes(userId.trim());
+}
+
+/**
+ * Reasoning effort for this account's photo scan. Accounts listed in
+ * OPENAI_TEST_MODEL_USER_IDS get OPENAI_TEST_REASONING_EFFORT when it is set;
+ * everyone else gets OPENAI_REASONING_EFFORT.
+ */
+export function scanReasoningEffortFor(userId: string | undefined | null): string {
+  const id = (userId ?? "").trim();
+  if (ENV.openaiTestReasoningEffort && id && ENV.openaiTestModelUserIds.includes(id)) {
+    return ENV.openaiTestReasoningEffort;
+  }
+  return ENV.openaiReasoningEffort;
 }
 
 /** Model for the photo scan. Trial accounts get OPENAI_TEST_MODEL. */

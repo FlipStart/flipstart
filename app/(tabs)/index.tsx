@@ -318,7 +318,17 @@ export default function HomeScreen() {
       void (async () => {
         try {
           const m = await import('@/lib/reviewPrompt');
-          if (cancelled || !(await m.isReviewRequestAllowed())) return;
+          if (cancelled) return;
+          if (!(await m.isReviewRequestAllowed())) {
+            // No review request this visit, so this is also the moment for the notifications
+            // popup: once ever, after the first scan that was saved or passed on. The two are
+            // never shown on the same visit (lib/notifications.ts).
+            try {
+              const n = await import('@/lib/notifications');
+              if (!cancelled) await n.askForNotificationsIfDue();
+            } catch { /* notifications must never affect the app */ }
+            return;
+          }
           // Burned BEFORE the call: if requestReview throws or the app dies
           // mid-call, "already asked" is still the correct outcome. Retrying
           // would be nagging, which is what this replaced.

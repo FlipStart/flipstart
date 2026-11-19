@@ -65,6 +65,7 @@ import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { logHuntItemSaved, logHuntItemRemoved, logEvent } from '@/lib/analytics';
 import { HuntPriceField, type HuntPriceFieldHandle } from '@/components/hunt/HuntPriceField';
 import { isHuntDemoActive, isDemoExiting } from '@/lib/huntDemoMode';
+import { onScanDecided } from '@/lib/achievementCelebrations';
 import { advanceCoach } from '@/lib/huntDemoCoach';
 import { demoPriceFor, applyDemoPrefill } from '@/lib/huntDemoSession';
 import { demoPhotoUri } from '@/components/hunt/onboarding/demoAssets';
@@ -546,11 +547,15 @@ export default function HuntItemDetailScreen() {
     }
   };
 
-  const leaveToHunt = () => {
+  const leaveToHunt = (kept = false) => {
     if (leavingRef.current) return;               // a double tap must not leave twice
     leavingRef.current = true;
     allowNavRef.current = true;
     setCurrentScan(null);
+    // Scan achievements count every finished scan, kept or skipped (lib/achievementStats).
+    void onScanDecided(kept === true);
+    // A find was saved or skipped: Live Hunt may now show the notifications popup (once, ever).
+    void import('@/lib/notifications').then(m => m.markScanDecided()).catch(() => {});
     // Back to the Hunt that is already underneath (or Home if the Hunt is gone), as ONE move.
     router.dismissTo((isHuntActive() ? '/hunt-active' : '/(tabs)') as any);
   };
@@ -649,7 +654,7 @@ export default function HuntItemDetailScreen() {
       });
     } catch {}
     advanceCoach('save');                       // guided demo only; a no-op otherwise
-    leaveToHunt();
+    leaveToHunt(true);
   };
 
   const handleRemove = () => {

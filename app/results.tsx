@@ -40,6 +40,7 @@ import { trpc } from '@/lib/trpc';
 import { FlipResult, isHuntBundle } from '@/types/flip';
 import { FONTS } from '@/constants/typography';
 import { MajorAchievementModal } from '@/lib/MajorAchievementModal';
+import { onScanDecided } from '@/lib/achievementCelebrations';
 import {
   hasShownMajorAchievement,
   markMajorAchievementShown,
@@ -228,6 +229,19 @@ export default function ResultsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { currentScan, setCurrentScan, updateScan } = useScanContext();
+
+  // Leaving this screen means the scan was decided on, saved or not (every exit goes through
+  // here). The first time that happens, Home shows the notifications popup. See lib/notifications.
+  const sawScanRef = useRef(false);
+  if (currentScan) sawScanRef.current = true;
+  // Whether this scan ended up saved. Scan achievements count every finished scan;
+  // "Picky" counts the ones that were passed on.
+  const savedScanRef = useRef(false);
+  useEffect(() => () => {
+    if (!sawScanRef.current) return;
+    void onScanDecided(savedScanRef.current);
+    void import('@/lib/notifications').then(m => m.markScanDecided()).catch(() => {});
+  }, []);
   const { addFlip, updateFlip, removeFlip, flips, pendingThriftPrices, setPendingThriftPrice } = useFlipStore();
   const { addUnseenBrands } = useAchievementNotifications();
   const { user } = useAuth();
@@ -635,6 +649,7 @@ export default function ResultsScreen() {
         : null,
     };
     addFlip(flip);
+    savedScanRef.current = true;
 
     // Back up the scan photo to Supabase Storage so it survives logout/login
     // and reinstalls — local file:// paths never do. Non-blocking, guest-gated.

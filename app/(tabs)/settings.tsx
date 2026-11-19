@@ -164,6 +164,7 @@ export default function SettingsScreen() {
   const [cameraStatus,   setCameraStatus]   = useState<PermStatus>('Not Asked');
   const [photoStatus,    setPhotoStatus]    = useState<PermStatus>('Not Asked');
   const [locationStatus, setLocationStatus] = useState<PermStatus>('Not Asked');
+  const [notifStatus,    setNotifStatus]    = useState<PermStatus>('Not Asked');
   const [avatarUri,      setAvatarUri]      = useState<string | null>(null);
 
   // ── Permissions — load once on mount ─────────────────────────────────────
@@ -179,6 +180,25 @@ export default function SettingsScreen() {
       setLocationStatus(loc.granted ? 'Allowed' : loc.canAskAgain ? 'Not Asked' : 'Denied');
     })();
   }, []);
+
+  // Notifications: re-read on every visit, since it is changed in iOS Settings.
+  const readNotifStatus = useCallback(async () => {
+    try {
+      const { getNotificationPermission } = await import('@/lib/notifications');
+      const p = await getNotificationPermission();
+      setNotifStatus(p === 'granted' ? 'Allowed' : p === 'denied' ? 'Denied' : 'Not Asked');
+    } catch { /* row keeps its last value */ }
+  }, []);
+  useFocusEffect(useCallback(() => { void readNotifStatus(); }, [readNotifStatus]));
+  const handleNotificationsTap = async () => {
+    if (notifStatus !== 'Not Asked') { Linking.openSettings(); return; }
+    // Asked for here on purpose: the user tapped the row.
+    try {
+      const { requestNotificationPermission } = await import('@/lib/notifications');
+      await requestNotificationPermission('settings');
+    } catch { /* nothing shown */ }
+    void readNotifStatus();
+  };
 
   // ── Avatar — refresh on focus so Edit Profile changes appear immediately ──
   useFocusEffect(useCallback(() => {
@@ -461,6 +481,14 @@ export default function SettingsScreen() {
             sub="Used for Hunt Mode sessions and location tracking."
             status={locationStatus}
             onPress={() => handlePermissionTap(locationStatus, 'location')}
+          />
+          <View style={s.cardDivider} />
+          <PermRow
+            icon="notifications"
+            label="Notifications"
+            sub="Occasional reminders about your Hunt rank, brands and Hunts. Never daily."
+            status={notifStatus}
+            onPress={handleNotificationsTap}
           />
         </View>
 

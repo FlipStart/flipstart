@@ -550,6 +550,23 @@ function generateAutoHuntName(existingBundles: import('@/types/flip').HistoryEnt
     if (demo) (navigation as any).setOptions?.({ gestureEnabled: false });
   }, [demo, navigation]);
 
+  // Back on Live Hunt after the first find was saved or skipped: the notifications popup, once
+  // ever (lib/notifications.ts decides; never in the guided demo). A short wait lets the
+  // screen settle first.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const ask = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!(navigation as any).isFocused?.()) return;
+        void import('@/lib/notifications').then(m => m.askForNotificationsIfDue()).catch(() => {});
+      }, 900);
+    };
+    ask();
+    const unsub = (navigation as any).addListener('focus', ask);
+    return () => { if (timer) clearTimeout(timer); unsub?.(); };
+  }, [navigation]);
+
   const session = getActiveHunt();
 
   // Safety: no active hunt (e.g. app reload cleared state)

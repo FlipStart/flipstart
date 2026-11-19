@@ -16,6 +16,7 @@ import {
   buildUserAchievementData, getAllUnlockedIds, ACHIEVEMENT_CATEGORIES,
 } from '@/lib/achievements';
 import { computeDiscoveredBrands } from '@/lib/brandCompendium';
+import { peekAchievementExtras } from '@/lib/achievementStats';
 import { getUnlockedDiamondIds, getDiamondById } from '@/lib/diamonds';
 
 // Flat id→name lookup for achievements (no getAchievementById in the lib).
@@ -58,7 +59,11 @@ const EMPTY_CTX: ImpactContext = { completedHunts: 0, huntStreak: 0, huntBrands:
 
 function unlockedAchievements(flips: HistoryEntry[], ctx: ImpactContext): Set<string> {
   const brandCount = computeDiscoveredBrands(flips, ctx.huntBrands).size;
-  const data = buildUserAchievementData(flips, ctx.completedHunts, ctx.huntStreak, brandCount);
+  // Scan counts, streaks and weekly finishes do not depend on the saved history,
+  // so deleting a scan must not be reported as losing them: the last loaded
+  // extras (lib/achievementStats) are used for both the "before" and the "after".
+  const extras = { ...peekAchievementExtras(), huntBrands: ctx.huntBrands };
+  const data = buildUserAchievementData(flips, ctx.completedHunts, ctx.huntStreak, brandCount, extras);
   return new Set(getAllUnlockedIds(data));
 }
 

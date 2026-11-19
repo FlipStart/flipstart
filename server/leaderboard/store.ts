@@ -86,6 +86,12 @@ export interface LeaderboardStore {
    */
   closeFinishedWeeks(): Promise<ClosedWeek[] | null>;
   /**
+   * This account's top-10 finishes on frozen Weekly boards, newest first, each
+   * with how many hunters that week had. Null when it could not be read.
+   * (Optional so a store written before it existed still satisfies the type.)
+   */
+  weeklyFinishes?(userId: string): Promise<WeeklyFinish[] | null>;
+  /**
    * File names of every public picture an account is still using. Null when
    * the list could not be read IN FULL (it decides what may be deleted, so a
    * partial answer is never returned).
@@ -98,6 +104,7 @@ export interface LeaderboardStore {
 }
 
 export interface ClosedWeek { week_start: string; hunters: number }
+export interface WeeklyFinish { week_start: string; position: number; hunters: number }
 
 export const MAX_AVATAR_BYTES = 12 * 1024 * 1024;
 
@@ -231,6 +238,27 @@ function supabaseStore(sb: any): LeaderboardStore {
       if (error) { warn("freeze finished weeks", error); return null; }
       const d = Array.isArray(data) && data.length === 1 && Array.isArray(data[0]) ? data[0] : data;
       return Array.isArray(d) ? (d as ClosedWeek[]) : [];
+    },
+    async weeklyFinishes(userId) {
+      // Two plain reads on tables only the server can see (phase 4). No new SQL.
+      const mine = await sb.from("weekly_results").select("week_start,position")
+        .eq("user_id", userId).lte("position", 10)
+        .order("week_start", { ascending: false }).limit(120);
+      if (mine.error) { warn("read weekly finishes", mine.error); return null; }
+      const rows = (mine.data ?? []) as Array<{ week_start: string; position: number }>;
+      if (rows.length === 0) return [];
+      const weeks = await sb.from("weekly_results_weeks").select("week_start,hunters")
+        .in("week_start", rows.map(r => r.week_start));
+      if (weeks.error) { warn("read weekly finishes", weeks.error); return null; }
+      const hunters = new Map<string, number>(
+        ((weeks.data ?? []) as Array<{ week_start: string; hunters: number }>)
+          .map(w => [String(w.week_start), Number(w.hunters) || 0]),
+      );
+      return rows.map(r => ({
+        week_start: String(r.week_start),
+        position:   Number(r.position),
+        hunters:    hunters.get(String(r.week_start)) ?? 0,
+      }));
     },
   };
 }

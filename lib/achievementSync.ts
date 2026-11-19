@@ -31,8 +31,23 @@ const MAJOR_KEY = '@flipstart/major_achievement_shown_v1';
 const MAJOR_MAP: Record<string, MajorAchievementType> = {
   profit_10000:   'flipstart_legend',
   scan_5000:      'master_scanner',
-  hunt_2500:      'hunt_mode_legend',
-  streak_365:     'never_miss',
+  hunt_250:       'hunt_mode_legend',
+  streak_w52:     'never_miss',
+  hunt_top3:      'weekly_podium',
+  hunt_first:     'weekly_champion',
+  rare_value_1000: 'holy_grail',
+  rare_value_500: 'heavy_hitter',
+  rare_bin:       'bin_diver',
+  profit_1000:    'treasure_hunter',
+  scan_100:       'scan_machine',
+  era_pre1970:    'time_traveler',
+  // One design, different words: remembered per achievement (majorAchievementStorage).
+  streak_w2:      'week_streak:streak_w2'  as MajorAchievementType,
+  streak_w3:      'week_streak:streak_w3'  as MajorAchievementType,
+  streak_w4:      'week_streak:streak_w4'  as MajorAchievementType,
+  streak_w8:      'week_streak:streak_w8'  as MajorAchievementType,
+  streak_w12:     'week_streak:streak_w12' as MajorAchievementType,
+  streak_w26:     'week_streak:streak_w26' as MajorAchievementType,
   rare_100profit: 'jackpot',
   era_bandtee:    'band_tee_bloodhound',
   brand_100:      'brand_encyclopedia',
@@ -266,6 +281,14 @@ export async function syncAchievementsWithSupabase(
     if (!sb) return;
 
     const remote = await loadRemoteAchievements(userId);
+
+    // ── DOWNLOAD: sticky achievements earned on another phone ───────────────
+    // A streak that has since reset, a weekly finish or a scan count cannot be
+    // worked out again from this phone's history, so the unlock itself is kept.
+    try {
+      const { rememberEarned } = await import('@/lib/achievementStats');
+      await rememberEarned(userId, remote.map(r => r.achievement_id).filter(id => CANONICAL_IDS.has(id)));
+    } catch { /* local-only ok */ }
 
     // ── DOWNLOAD: remote seen → local SEEN_KEY ──────────────────────────────
     const localSeen = await readSet(SEEN_KEY);

@@ -84,6 +84,9 @@ const config: ExpoConfig = {
       },
     ],
     "expo-font",
+    // Local reminders only (lib/notifications.ts). No push server, so no sounds or
+    // icons to configure; the plugin just wires up the native module.
+    "expo-notifications",
     "expo-audio",
     "expo-web-browser",
     "expo-apple-authentication",

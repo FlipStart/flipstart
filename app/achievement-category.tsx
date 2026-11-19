@@ -15,6 +15,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { loadAchievementExtras } from '@/lib/achievementStats';
 import { useState, useCallback, useEffect, useRef } from 'react';
 
 import { FONTS } from '@/constants/typography';
@@ -38,6 +40,7 @@ import {
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const FOREST = '#2A4A2A';
+const CROWN_GOLD = '#D4A82A';
 const GOLD   = '#BE9C2C';
 const PARCH  = '#FFFFFF';
 const CARD   = '#F8F7F0';
@@ -116,6 +119,7 @@ export default function AchievementCategoryScreen() {
         profile?.completedHunts       ?? 0,
         profile?.huntStreak           ?? 0,
         profile?.discoveredBrands?.length ?? 0,
+        await loadAchievementExtras(uid, profile),
       ));
       if (__DEV__) {
         const { getDevUnlocked } = await import('@/lib/devAchievementOverrides');
@@ -277,7 +281,18 @@ function AchievementRow({
 
       {/* Text */}
       <View style={s.achBody}>
-        <Text style={[s.achName, !isUnlocked && { color: MUTED }]}>{ach.name}</Text>
+        <View style={s.achNameRow}>
+          <Text style={[s.achName, { flexShrink: 1 }, !isUnlocked && { color: MUTED }]}>{ach.name}</Text>
+          {/* Gold crown: unlocking this one shows a full-screen celebration. */}
+          {ach.isMajor && (
+            <MaterialCommunityIcons
+              name="crown"
+              size={14}
+              color={CROWN_GOLD}
+              accessibilityLabel="Full-screen achievement"
+            />
+          )}
+        </View>
         <Text style={s.achFlavor}>{ach.flavor}</Text>
         <Text style={s.achReq}>{ach.requirement}</Text>
       </View>
@@ -370,6 +385,7 @@ const s = StyleSheet.create({
   },
 
   achBody:   { flex: 1, gap: 2 },
+  achNameRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   achName:   { fontFamily: FONTS.serif, fontSize: 13, fontWeight: '800', color: BROWN },
   achFlavor: { fontSize: 11, color: GOLD, fontWeight: '700' },
   achReq:    { fontSize: 10, color: MUTED, lineHeight: 14 },

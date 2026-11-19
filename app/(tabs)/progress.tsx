@@ -18,6 +18,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Image, Dimensions
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { loadAchievementExtras } from '@/lib/achievementStats';
 import { useState, useCallback, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Svg, { Circle } from 'react-native-svg';
@@ -94,7 +95,7 @@ const SW = Dimensions.get('window').width;
 const EXPLORER_ILL = require('@/assets/images/progress-illustration.png');
 
 // ─── Collection totals ────────────────────────────────────────────────────────
-// TOTAL_ACHIEVEMENTS (39) imported as ACHV_TOTAL from lib/achievements
+// TOTAL_ACHIEVEMENTS (67) imported as ACHV_TOTAL from lib/achievements
 const TOTAL_BRANDS = TOTAL_SUPPORTED_BRANDS;  // 241 supported brands
 
 // ─── Destinations (order matches reference image) ────────────────────────────
@@ -206,6 +207,7 @@ export default function ProgressScreen() {
         xp?.completedHunts       ?? 0,
         xp?.huntStreak           ?? 0,
         xp?.discoveredBrands?.length ?? 0,
+        await loadAchievementExtras(uid, xp),
       );
       setAchvData(data);
 

@@ -7,7 +7,13 @@
  * Each achievement has a completely unique visual experience.
  *
  * Designs:
- *   first_achievement  — gold dawn, "Your Journey Begins"
+ *   first_achievement  — gold dawn, "Finally Flipping" (the first scan)
+ *   weekly_podium      — bronze-gold, top 3 on a finished Weekly board
+ *   weekly_champion    — crown gold, #1 on a finished Weekly board
+ *   week_streak_2 … _26 — one design per streak length (2, 3, 4, 8, 12, 26
+ *                        weeks), each its own colour, icon and words
+ *   holy_grail / heavy_hitter / bin_diver / treasure_hunter / scan_machine /
+ *   time_traveler      — mid-game milestones, shown on the main tabs
  *   jackpot            — blazing amber, cascading coin glow
  *   band_tee_bloodhound — warm sepia, drifting music notes
  *   master_scanner     — deep teal, animated scan beam
@@ -24,6 +30,7 @@ import {
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { FONTS } from '@/constants/typography';
+import { TOTAL_ACHIEVEMENTS } from '@/lib/achievements';
 
 // Defined locally to avoid cross-lib import issues
 export type MajorAchievementType =
@@ -34,7 +41,21 @@ export type MajorAchievementType =
   | 'flipstart_legend'
   | 'brand_encyclopedia'
   | 'hunt_mode_legend'
-  | 'never_miss';
+  | 'never_miss'
+  | 'weekly_podium'
+  | 'weekly_champion'
+  | 'week_streak_2'
+  | 'week_streak_3'
+  | 'week_streak_4'
+  | 'week_streak_8'
+  | 'week_streak_12'
+  | 'week_streak_26'
+  | 'holy_grail'
+  | 'heavy_hitter'
+  | 'bin_diver'
+  | 'treasure_hunter'
+  | 'scan_machine'
+  | 'time_traveler';
 
 const { width: SW, height: SH } = Dimensions.get('window');
 
@@ -61,10 +82,10 @@ const CONFIGS: Record<MajorAchievementType, AchievementConfig> = {
     ringColor: '#BE9C2C',
     icon:      'emoji-events',
     iconColor: '#BE9C2C',
-    eyebrow:   '✦  Achievement Unlocked  ✦',
-    title:     'Your Journey\nBegins',
-    body:      'You\'ve earned your first achievement.',
-    subtext:   'Thirty-eight more are waiting for you.',
+    eyebrow:   '✦  First Achievement  ✦',
+    title:     'Finally\nFlipping',
+    body:      'Scan your first item.',
+    subtext:   `You got one. ${TOTAL_ACHIEVEMENTS - 1} more are waiting for you.`,
     btnText:   'Let\'s Go',
     btnBg:     '#BE9C2C',
     btnText2:  '#060F06',
@@ -147,7 +168,7 @@ const CONFIGS: Record<MajorAchievementType, AchievementConfig> = {
     iconColor: '#BE9C2C',
     eyebrow:   '✦  Hunt Mode Achievement  ✦',
     title:     'HUNT MODE\nLEGEND',
-    body:      '2,500 hunts completed.',
+    body:      '250 Hunts completed.',
     subtext:   'You are the apex predator.',
     btnText:   'Continue',
     btnBg:     '#1A4A1A',
@@ -161,12 +182,208 @@ const CONFIGS: Record<MajorAchievementType, AchievementConfig> = {
     iconColor: '#FF6A20',
     eyebrow:   '✦  Streak Achievement  ✦',
     title:     'NEVER MISS',
-    body:      '365 consecutive days.',
+    body:      '52 weeks in a row.',
     subtext:   'Unbreakable.',
     btnText:   'Keep Going',
     btnBg:     '#CC4400',
     btnText2:  '#FFF8F0',
     particles: 'fire',
+  },
+  weekly_podium: {
+    bg:        '#0C0A04',
+    ringColor: '#D9A441',
+    icon:      'military-tech',
+    iconColor: '#D9A441',
+    eyebrow:   '✦  Hunt Mode Achievement  ✦',
+    title:     'PODIUM',
+    body:      'You finished the week in the top 3.',
+    subtext:   'Weekly XP leaderboard.',
+    btnText:   'Continue',
+    btnBg:     '#1A4A1A',
+    btnText2:  '#D9A441',
+    particles: 'sparkles',
+  },
+  weekly_champion: {
+    bg:        '#0D0900',
+    ringColor: '#FFD700',
+    icon:      'emoji-events',
+    iconColor: '#FFD700',
+    eyebrow:   '✦  Hunt Mode Achievement  ✦',
+    title:     'KING OF\nTHE WEEK',
+    body:      'You finished the week at #1.',
+    subtext:   'Nobody out-hunted you.',
+    btnText:   'Take the Crown',
+    btnBg:     '#B8960C',
+    btnText2:  '#0D0900',
+    particles: 'stars',
+  },
+  week_streak_2: {
+    bg:        '#130400',
+    ringColor: '#FF6A20',
+    icon:      'local-fire-department',
+    iconColor: '#FF6A20',
+    eyebrow:   '✦  Hunt Streak: Back for More  ✦',
+    title:     '2 WEEK\nSTREAK',
+    body:      'You hunted 2 weeks in a row.',
+    subtext:   'Your first streak. Hunt next week to make it 3.',
+    btnText:   'Keep It Going',
+    btnBg:     '#CC4400',
+    btnText2:  '#FFF8F0',
+    particles: 'fire',
+  },
+  week_streak_3: {
+    bg:        '#140B00',
+    ringColor: '#FFB020',
+    icon:      'whatshot',
+    iconColor: '#FFB020',
+    eyebrow:   '✦  Hunt Streak: On Fire  ✦',
+    title:     '3 WEEK\nSTREAK',
+    body:      'You hunted 3 weeks in a row.',
+    subtext:   'Three straight. This is becoming a habit.',
+    btnText:   'Stay Hot',
+    btnBg:     '#B87400',
+    btnText2:  '#140B00',
+    particles: 'sparkles',
+  },
+  week_streak_4: {
+    bg:        '#12020A',
+    ringColor: '#FF4D6D',
+    icon:      'bolt',
+    iconColor: '#FF4D6D',
+    eyebrow:   '✦  Hunt Streak: Locked In  ✦',
+    title:     '4 WEEK\nSTREAK',
+    body:      'You hunted 4 weeks in a row.',
+    subtext:   'A full month without missing a week.',
+    btnText:   'Locked In',
+    btnBg:     '#B3123A',
+    btnText2:  '#FFF1F4',
+    particles: 'stars',
+  },
+  week_streak_8: {
+    bg:        '#030C03',
+    ringColor: '#7CC576',
+    icon:      'pets',
+    iconColor: '#7CC576',
+    eyebrow:   '✦  Hunt Streak: Hunt Predator  ✦',
+    title:     '8 WEEK\nSTREAK',
+    body:      'You hunted 8 weeks in a row.',
+    subtext:   'Two months. The racks know you by now.',
+    btnText:   'Keep Hunting',
+    btnBg:     '#1A4A1A',
+    btnText2:  '#D8F2D4',
+    particles: 'orbit',
+  },
+  week_streak_12: {
+    bg:        '#0A0514',
+    ringColor: '#B48CFF',
+    icon:      'rocket-launch',
+    iconColor: '#B48CFF',
+    eyebrow:   '✦  Hunt Streak: Unstoppable  ✦',
+    title:     '12 WEEK\nSTREAK',
+    body:      'You hunted 12 weeks in a row.',
+    subtext:   'Three months straight. Almost nobody does this.',
+    btnText:   'Unstoppable',
+    btnBg:     '#5B2FC0',
+    btnText2:  '#F3ECFF',
+    particles: 'stars',
+  },
+  week_streak_26: {
+    bg:        '#03101A',
+    ringColor: '#4FC3F7',
+    icon:      'military-tech',
+    iconColor: '#4FC3F7',
+    eyebrow:   '✦  Hunt Streak: Dedication Pays  ✦',
+    title:     '26 WEEK\nSTREAK',
+    body:      'You hunted 26 weeks in a row.',
+    subtext:   'Half a year of Hunts, every single week.',
+    btnText:   'Halfway to Never Miss',
+    btnBg:     '#0B6FA4',
+    btnText2:  '#EAF8FF',
+    particles: 'coins',
+  },
+  holy_grail: {
+    bg:        '#0D0900',
+    ringColor: '#FFD700',
+    icon:      'diamond',
+    iconColor: '#FFD700',
+    eyebrow:   '✦  Rare Find Achievement  ✦',
+    title:     'HOLY GRAIL',
+    body:      'An item worth $1,000 or more.',
+    subtext:   'Most hunters never find one.',
+    btnText:   'Unreal',
+    btnBg:     '#B8960C',
+    btnText2:  '#0D0900',
+    particles: 'stars',
+  },
+  heavy_hitter: {
+    bg:        '#120C00',
+    ringColor: '#F2B632',
+    icon:      'auto-awesome',
+    iconColor: '#F2B632',
+    eyebrow:   '✦  Rare Find Achievement  ✦',
+    title:     'HEAVY\nHITTER',
+    body:      'An item worth $500 or more.',
+    subtext:   'That one pays for a lot of thrift trips.',
+    btnText:   'Bank It',
+    btnBg:     '#2A5A20',
+    btnText2:  '#F2B632',
+    particles: 'coins',
+  },
+  bin_diver: {
+    bg:        '#061008',
+    ringColor: '#7CC576',
+    icon:      'savings',
+    iconColor: '#7CC576',
+    eyebrow:   '✦  Rare Find Achievement  ✦',
+    title:     'BIN DIVER',
+    body:      'You paid $5 or less for an item worth $100+.',
+    subtext:   'This is the whole game.',
+    btnText:   'Keep Digging',
+    btnBg:     '#2A5A20',
+    btnText2:  '#E8F5E4',
+    particles: 'coins',
+  },
+  treasure_hunter: {
+    bg:        '#0C0A04',
+    ringColor: '#BE9C2C',
+    icon:      'trending-up',
+    iconColor: '#BE9C2C',
+    eyebrow:   '✦  Profit Achievement  ✦',
+    title:     'TREASURE\nHUNTER',
+    body:      '$1,000 in total estimated profit.',
+    subtext:   'Four figures. This is real now.',
+    btnText:   'Keep Flipping',
+    btnBg:     '#BE9C2C',
+    btnText2:  '#0C0A04',
+    particles: 'sparkles',
+  },
+  scan_machine: {
+    bg:        '#040F0D',
+    ringColor: '#3AB8A0',
+    icon:      'camera-alt',
+    iconColor: '#3AB8A0',
+    eyebrow:   '✦  Scan Achievement  ✦',
+    title:     'SCAN\nMACHINE',
+    body:      '100 items scanned.',
+    subtext:   'You are starting to see what others walk past.',
+    btnText:   'Keep Scanning',
+    btnBg:     '#3AB8A0',
+    btnText2:  '#040F0D',
+    particles: 'scan',
+  },
+  time_traveler: {
+    bg:        '#0F0800',
+    ringColor: '#D4943A',
+    icon:      'history',
+    iconColor: '#D4943A',
+    eyebrow:   '✦  Era Achievement  ✦',
+    title:     'TIME\nTRAVELER',
+    body:      'An item made before 1970.',
+    subtext:   'Older than almost anything on the rack.',
+    btnText:   'Keep Hunting',
+    btnBg:     '#D4943A',
+    btnText2:  '#0F0800',
+    particles: 'orbit',
   },
 };
 
@@ -483,13 +700,17 @@ function FireParticles({ color }: { color: string }) {
 
 // ─── Main Modal ───────────────────────────────────────────────────────────────
 
+/** Words that depend on the moment ("3 weeks in a row"). Anything left out uses the design's own. */
+export interface MajorAchievementText { title?: string; body?: string; subtext?: string }
+
 interface Props {
   type:       MajorAchievementType | null;
   visible:    boolean;
   onContinue: () => void;
+  text?:      MajorAchievementText;
 }
 
-export function MajorAchievementModal({ type, visible, onContinue }: Props) {
+export function MajorAchievementModal({ type, visible, onContinue, text }: Props) {
   const badgeScale   = useRef(new Animated.Value(0)).current;
   const contentFade  = useRef(new Animated.Value(0)).current;
   const bgFade       = useRef(new Animated.Value(0)).current;
@@ -515,7 +736,13 @@ export function MajorAchievementModal({ type, visible, onContinue }: Props) {
 
   if (!type) return null;
 
-  const cfg = CONFIGS[type];
+  const base = CONFIGS[type];
+  const cfg = {
+    ...base,
+    title:   text?.title   || base.title,
+    body:    text?.body    || base.body,
+    subtext: text?.subtext || base.subtext,
+  };
 
   const Particles = () => {
     switch (cfg.particles) {

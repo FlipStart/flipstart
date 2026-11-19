@@ -100,6 +100,12 @@ export type InvokeParams = {
   response_format?: ResponseFormat;
   /** Aborts the HTTP request (the scan's 40 s budget, or a cancel). */
   signal?: AbortSignal;
+  /**
+   * Reasoning effort for this call. Omitted = OPENAI_REASONING_EFFORT.
+   * The scan passes scanReasoningEffortFor(userId) so a trial can change it
+   * for chosen accounts only.
+   */
+  reasoningEffort?: ReasoningEffort;
 };
 
 export type ToolCall = {
@@ -340,7 +346,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     outputLimitParams(
       resolvedModel,
       params.max_tokens ?? params.maxTokens ?? 1200,
-      ENV.openaiReasoningEffort as ReasoningEffort,
+      (params.reasoningEffort ?? ENV.openaiReasoningEffort) as ReasoningEffort,
       { hasTools: !!(tools && tools.length > 0) },
     ),
   );
@@ -358,6 +364,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
+  const callStarted = Date.now();
   const response = await fetch(resolveApiUrl(), {
     signal: params.signal,
     method: "POST",
@@ -375,6 +382,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   const result = (await response.json()) as InvokeResult;
+  const callMs = Date.now() - callStarted;
 
   // ── Cost/token logging (dev visibility only — never exposed to users) ──────
   if (result.usage) {
@@ -402,7 +410,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       ` | tokens — prompt:${prompt_tokens} (cached:${cachedIn}) completion:${completion_tokens}` +
       (reasoningTokens ? ` (reasoning:${reasoningTokens})` : "") +
       ` effort:${(payload.reasoning_effort as string | undefined) ?? "n/a"}` +
-      ` total:${total_tokens} | est_cost:$${estimatedCostUSD.toFixed(6)}`
+      ` total:${total_tokens} | ${callMs}ms | est_cost:$${estimatedCostUSD.toFixed(6)}`
     );
     // OpenAI has shipped a bug where effort "none" is ignored once a token cap
     // is set, and the model thinks anyway (slower, and it can empty the reply).

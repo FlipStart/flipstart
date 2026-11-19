@@ -22,6 +22,12 @@ import { trpc, createTRPCClient } from "@/lib/trpc";
 import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
 import { ScanProvider } from "@/lib/scan-context";
 import { FlipStoreProvider } from "@/lib/useFlipStore";
+import { NotificationsHost } from "@/components/notifications/NotificationsHost";
+import { CelebrationHost } from "@/components/achievements/CelebrationHost";
+import {
+  loadAchievementExtras, refreshWeeklyFinishIfDue, rememberEarned, subscribeAchievementStats,
+} from "@/lib/achievementStats";
+import { queueUnlockCelebrations, setHasSavedHistory } from "@/lib/achievementCelebrations";
 import { logEvent, resumeOrStartSession, backgroundSession, endSession } from "@/lib/analytics";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { ForceUpdateGate } from "@/components/ForceUpdateGate";
@@ -154,6 +160,9 @@ function AppProviders({ children }: { children: React.ReactNode }) {
   return (
     <FlipStoreProvider userId={user?.id ?? null}>
       <ScanProvider>
+        {/* Local reminders and reminder taps. Draws nothing. */}
+        <NotificationsHost />
+        <CelebrationHost />
         {children}
       </ScanProvider>
     </FlipStoreProvider>
@@ -181,6 +190,9 @@ function DiamondNotificationWatcher() {
   // Subscribe to active hunt mutations so we catch diamonds unlocked before
   // the hunt ends and the bundle lands in flips.
   useEffect(() => subscribeToHunt(() => setHuntTick(t => t + 1)), []);
+  // A finished scan (saved or not) or a new weekly finish can unlock an
+  // achievement without the saved history changing, so they re-run this too.
+  useEffect(() => subscribeAchievementStats(() => setHuntTick(t => t + 1)), []);
 
   useEffect(() => {
     // Guests never generate progress badges. Reset hydration so the next login
@@ -227,13 +239,22 @@ function DiamondNotificationWatcher() {
         .catch(() => null);
       if (!alive) return;
 
+      // The best weekly finish comes from the server, a few times a day at most,
+      // in the background. If it improved, this effect runs again by itself.
+      void refreshWeeklyFinishIfDue(uid);
+      setHasSavedHistory(flips.length > 0 || (xp?.completedHunts ?? 0) > 0);
+
       const achvData = buildUserAchievementData(
         flips,
         xp?.completedHunts           ?? 0,
         xp?.huntStreak               ?? 0,
         xp?.discoveredBrands?.length ?? 0,
+        await loadAchievementExtras(uid, xp),
       );
+      if (!alive) return;
       const achvUnlocked = getAllUnlockedIds(achvData);
+      // Streaks, weekly finishes and scan counts stay unlocked once earned.
+      await rememberEarned(uid, achvUnlocked);
       const discovered   = computeDiscoveredBrands(flips, xp?.discoveredBrands ?? []);
 
       // ── Sync. On the FIRST run for this account, AWAIT the download so local
@@ -276,6 +297,10 @@ function DiamondNotificationWatcher() {
         );
         if (alive) await notifyNew(achvUnlocked, details);
       }
+      // Full-screen celebrations for a weekly streak, a top-3 or #1 week and 250
+      // Hunts. Shown on the main tabs by CelebrationHost. After the sync above,
+      // so one already celebrated on another phone is not shown again.
+      if (alive) await queueUnlockCelebrations(uid, achvUnlocked);
 
       const bUnseen = await getUnseenBrandNames(discovered);
       if (alive && bUnseen.length > 0) addUnseenBrands(bUnseen);

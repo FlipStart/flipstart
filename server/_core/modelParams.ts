@@ -27,7 +27,10 @@ export function isReasoningModel(model: string): boolean {
 /** Extra completion tokens reserved for thinking, on top of the visible answer. */
 const HEADROOM: Record<ReasoningEffort, number> = {
   none: 0,
-  low: 1500,
+  // Room for thinking on a 3-photo scan with a long prompt. Only a cap: unused
+  // tokens cost nothing. Too small and the thinking eats the answer (empty
+  // reply, finish_reason "length"), which fails the scan.
+  low: 3000,
   medium: 4000,
   high: 8000,
   xhigh: 16000,

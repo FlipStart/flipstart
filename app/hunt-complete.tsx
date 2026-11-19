@@ -42,8 +42,6 @@ import {
   type Brand,
 } from '@/lib/brandCompendium';
 import {
-  hasShownMajorAchievement,
-  markMajorAchievementShown,
   type MajorAchievementType,
 } from '@/lib/majorAchievementStorage';
 import { isHuntDemoActive, isDemoExiting, getHuntDemoXp, beginDemoExit, endDemoExit } from '@/lib/huntDemoMode';
@@ -177,23 +175,12 @@ export default function HuntCompleteScreen() {
         progressAfter:   getRankProgress(newTotalXp),
       });
 
-      // ── Major achievement detection (hunt-based) ─────────────────────────
-      // completedHunts and huntStreak come from the live XP profile.
-      // We show the modal here — user is on hunt-complete and can press Continue.
+      // ── Rewards shown on this screen ─────────────────────────────────────
+      // (Nov 2026) Hunt Mode Legend (250 Hunts), the weekly streak and the weekly
+      // finish celebrations are no longer shown here: they are queued by
+      // lib/achievementCelebrations and appear on the main tabs, right after this
+      // screen is left. One place, one "already shown" record.
       try {
-        const hunts  = profile.completedHunts ?? 0;
-        const streak = profile.huntStreak ?? 0;
-
-        // Hunt Mode Legend — 2,500 hunts
-        if (hunts >= 2500 && !await hasShownMajorAchievement('hunt_mode_legend')) {
-          await markMajorAchievementShown('hunt_mode_legend');
-          enqueueAchievement('hunt_mode_legend');
-        }
-        // Never Miss — 365-day streak
-        else if (streak >= 365 && !await hasShownMajorAchievement('never_miss')) {
-          await markMajorAchievementShown('never_miss');
-          enqueueAchievement('never_miss');
-        }
 
         // ── Brand reveals for brands newly discovered via this hunt ─────────
         // Items saved during the hunt already fired brand reveals via results.tsx.

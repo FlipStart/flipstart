@@ -7,7 +7,7 @@
  * repaired result is a fabricated analysis and is worse than no result.
  */
 import { invokeLLM } from "./_core/llm.js";
-import { scanModelFor } from "./_core/env.js";
+import { scanModelFor, scanReasoningEffortFor } from "./_core/env.js";
 import {
   SCAN_PROMPT_VERSION, buildSystemMessage, vintageCutoffYear,
 } from "./prompts/scanPromptV1_14_0.js";
@@ -152,6 +152,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
       // matcher discards — about 1.6s of generation on every scan.
       response_format: canonicalResponseFormat(includeFeatures, captureCheck) as never,
       max_tokens: MAX_OUTPUT_TOKENS,
+      reasoningEffort: scanReasoningEffortFor(input.userId) as never,
       signal: input.signal,
     });
   } catch (err) {

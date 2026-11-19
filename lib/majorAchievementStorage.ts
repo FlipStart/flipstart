@@ -36,17 +36,50 @@ export async function hasShownMajorAchievement(
 const TYPE_TO_ACHIEVEMENT: Record<string, string> = {
   flipstart_legend:    'profit_10000',
   master_scanner:      'scan_5000',
-  hunt_mode_legend:    'hunt_2500',
-  never_miss:          'streak_365',
+  hunt_mode_legend:    'hunt_250',
+  never_miss:          'streak_w52',
+  weekly_podium:       'hunt_top3',
+  weekly_champion:     'hunt_first',
+  holy_grail:          'rare_value_1000',
+  heavy_hitter:        'rare_value_500',
+  bin_diver:           'rare_bin',
+  treasure_hunter:     'profit_1000',
+  scan_machine:        'scan_100',
+  time_traveler:       'era_pre1970',
   jackpot:             'rare_100profit',
   band_tee_bloodhound: 'era_bandtee',
   brand_encyclopedia:  'brand_100',
   // 'first_achievement' has no single achievement_id → local-only, not synced.
 };
 
+/**
+ * Celebrations that are one design with different words (a week streak) are
+ * remembered by a key of their own: "week_streak:streak_w3". The part after the
+ * colon is the achievement id, which is what gets mirrored to Supabase.
+ */
+export const STREAK_CELEBRATION_PREFIX = 'week_streak:';
+
+/** Same as hasShownMajorAchievement, for any celebration key. */
+export async function hasShownCelebration(key: string): Promise<boolean> {
+  const shown = await getShownSet();
+  return shown.has(key);
+}
+/** Same as markMajorAchievementShown, for any celebration key. */
+export function markCelebrationShown(key: string): Promise<void> {
+  return markMajorAchievementShown(key as MajorAchievementType);
+}
+
+const markedAt = new Map<string, number>();
+/** True when this celebration was marked shown in the last `ms` (this app session). */
+export function wasJustCelebrated(key: string, ms: number, now = Date.now()): boolean {
+  const at = markedAt.get(key);
+  return at != null && now - at >= 0 && now - at < ms;
+}
+
 export async function markMajorAchievementShown(
   type: MajorAchievementType,
 ): Promise<void> {
+  markedAt.set(String(type), Date.now());
   try {
     const shown = await getShownSet();
     shown.add(type);
@@ -57,7 +90,9 @@ export async function markMajorAchievementShown(
 
   // Background: mirror celebration_seen to Supabase for signed-in users.
   // Fail-safe — never blocks or throws. first_achievement maps to nothing → skipped.
-  const achievementId = TYPE_TO_ACHIEVEMENT[type];
+  const achievementId = String(type).startsWith(STREAK_CELEBRATION_PREFIX)
+    ? String(type).slice(STREAK_CELEBRATION_PREFIX.length)
+    : TYPE_TO_ACHIEVEMENT[type];
   if (achievementId) {
     try {
       const { supabase } = await import('@/lib/supabase');

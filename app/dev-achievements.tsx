@@ -7,7 +7,7 @@
  * Accessible from Settings → "Test Achievements" (dev builds only).
  *
  * Allows:
- *   - Viewing all 39 achievements with real + dev unlock state
+ *   - Viewing all 67 achievements with real + dev unlock state
  *   - Manually unlocking any achievement (triggers notification flow)
  *   - Manually removing any achievement (resets for re-testing)
  *   - Testing full-screen major achievement modals
@@ -48,6 +48,7 @@ import {
   removeFromMajorShown, clearAllMajorShown,
 } from '@/lib/devAchievementOverrides';
 import { markMajorAchievementShown, type MajorAchievementType } from '@/lib/majorAchievementStorage';
+import { loadAchievementExtras } from '@/lib/achievementStats';
 import { clearRevealedBrands } from '@/lib/brandCompendium';
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
@@ -66,8 +67,23 @@ const DEV_BG = '#0A0A14';  // dark dev-tool background accent
 const MAJOR_MAP: Record<string, MajorAchievementType> = {
   profit_10000:    'flipstart_legend',
   scan_5000:       'master_scanner',
-  hunt_2500:       'hunt_mode_legend',
-  streak_365:      'never_miss',
+  hunt_250:        'hunt_mode_legend',
+  streak_w52:      'never_miss',
+  hunt_top3:       'weekly_podium',
+  hunt_first:      'weekly_champion',
+  rare_value_1000: 'holy_grail',
+  rare_value_500:  'heavy_hitter',
+  rare_bin:        'bin_diver',
+  profit_1000:     'treasure_hunter',
+  scan_100:        'scan_machine',
+  era_pre1970:     'time_traveler',
+  scan_1:          'first_achievement',
+  streak_w2:       'week_streak_2',
+  streak_w3:       'week_streak_3',
+  streak_w4:       'week_streak_4',
+  streak_w8:       'week_streak_8',
+  streak_w12:      'week_streak_12',
+  streak_w26:      'week_streak_26',
   rare_100profit:  'jackpot',
   era_bandtee:     'band_tee_bloodhound',
   brand_100:       'brand_encyclopedia',
@@ -122,6 +138,7 @@ function DevAchievementsScreenImpl() {
       profile?.completedHunts       ?? 0,
       profile?.huntStreak           ?? 0,
       profile?.discoveredBrands?.length ?? 0,
+      await loadAchievementExtras(uid, profile),
     );
     setUserData(data);
     setDevUnlocked(await getDevUnlocked());

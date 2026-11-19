@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { loadAchievementExtras } from '@/lib/achievementStats';
 import { useState, useCallback, useRef, useEffect } from 'react';
 
 import { FONTS } from '@/constants/typography';
@@ -74,6 +75,7 @@ export default function AchievementsScreen() {
         profile?.completedHunts  ?? 0,
         profile?.huntStreak      ?? 0,
         profile?.discoveredBrands?.length ?? 0,
+        await loadAchievementExtras(uid, profile),
       ));
       if (__DEV__) {
         const { getDevUnlocked } = await import('@/lib/devAchievementOverrides');

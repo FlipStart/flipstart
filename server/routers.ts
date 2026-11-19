@@ -1597,6 +1597,9 @@ const huntRouter = router({
 // ─── Hunt Leaderboard ─────────────────────────────────────────────────────────
 const PUBLIC_ID = z.string().uuid();
 
+/** A weekly finish only counts when the week had this many hunters. Same number as lib/achievements.ts. */
+export const MIN_HUNTERS_FOR_FINISH = 25;
+
 const leaderboardRouter = router({
   /**
    * One page of one board, plus the viewer's own place.
@@ -1670,6 +1673,28 @@ const leaderboardRouter = router({
         ? { ok: true as const, blocked: r.status === "blocked" }
         : { ok: false as const, reason: "NOT_ALLOWED" as const };
     }),
+
+  /**
+   * This account's best finish on a finished Weekly board, for the weekly-finish
+   * achievements (Top 10, Podium, King of the Week).
+   *
+   * Only a week with at least MIN_HUNTERS_FOR_FINISH hunters counts: with a
+   * dozen hunters "top 10" means nothing. The app never sends a rank; it only
+   * reads what the server froze, so this cannot be faked from the phone.
+   */
+  myFinishes: publicProcedure.query(async ({ ctx }) => {
+    const uid = await resolveSupabaseUserId(ctx?.req as never, "leaderboard-finishes");
+    if (!uid) return { ok: false as const, reason: "NOT_AUTHENTICATED" as const };
+    if (!allowFor("weeklyFinishes", uid)) return { ok: false as const, reason: "RATE_LIMITED" as const };
+    const store = getLeaderboardStore();
+    const rows = store?.weeklyFinishes ? await store.weeklyFinishes(uid).catch(() => null) : null;
+    if (!rows) return { ok: false as const, reason: "UNAVAILABLE" as const };
+    const counted = rows.filter(r =>
+      Number.isInteger(r.position) && r.position >= 1 && r.hunters >= MIN_HUNTERS_FOR_FINISH);
+    const best = counted.length ? Math.min(...counted.map(r => r.position)) : null;
+    const bestWeek = best == null ? null : (counted.find(r => r.position === best)?.week_start ?? null);
+    return { ok: true as const, best, bestWeek: bestWeek ? String(bestWeek).slice(0, 10) : null, minHunters: MIN_HUNTERS_FOR_FINISH };
+  }),
 
   /** Who this account has blocked, for the unblock list. */
   blocked: publicProcedure.query(async ({ ctx }) => {
