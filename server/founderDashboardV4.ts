@@ -298,11 +298,19 @@ function renderExplorer(ex: any): string {
     <button type="submit">Search</button>
     <span class="muted">Search runs by form post, so what you type never appears in a URL or a server log.</span></form>`;
   let body = "";
-  if (ex?.results) {
-    body += ex.results.length
-      ? `<div class="card">${table(["User", "Username", "Email", "Created", "Plan", "Status"], ex.results.map((r: any) => [
+  // One clear match opens straight away (below); the list only shows when there
+  // is a real choice, or as "other matches" above the person who was opened.
+  const opened = ex?.user ? ex.selectedUid : null;
+  const others = (ex?.results ?? []).filter((r: any) => r.userId !== opened);
+  if (ex?.results && (others.length > 0 || !opened)) {
+    const intro = opened
+      ? `<div class="muted">Showing the exact match below. Other accounts that also match — click one to open it instead:</div>`
+      : `<div class="muted">${num(ex.results.length)} accounts match. <strong>Click a name</strong> (or Open) to see that person's full history.</div>`;
+    body += others.length
+      ? `<div class="card">${intro}${table(["User", "Username", "Email", "Created", "Plan", "Status", ""], others.map((r: any) => [
           userLink(r.userId, r.displayName ?? r.username ?? r.userId.slice(0, 8) + "…"), esc(r.username ?? "—"), esc(r.email ?? "—"),
-          when(r.createdAt), esc(r.plan), r.internal ? `<span class="sev sev-info">internal</span>` : r.inScope ? "in scope" : `<span class="muted">outside scope</span>`]), "compact")}
+          when(r.createdAt), esc(r.plan), r.internal ? `<span class="sev sev-info">internal</span>` : r.inScope ? "in scope" : `<span class="muted">outside scope</span>`,
+          userLink(r.userId, "Open →")]), "compact")}
           ${ex.results.length >= 25 ? `<div class="muted">First 25 matches — narrow the search.</div>` : ""}</div>`
       : `<div class="card muted">No users match.</div>`;
   }

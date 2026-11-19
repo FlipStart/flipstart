@@ -3832,9 +3832,31 @@ async function collectionCounts(uid: string) {
   return { achievements, brands, diamonds };
 }
 
+/**
+ * Which match a search should open by itself: the only match, or the one whose
+ * name, username or email is exactly what was typed. Null when it is a real
+ * choice (several partial matches), and the list is shown to pick from.
+ */
+export function autoOpenMatch(
+  results: Array<{ userId: string; displayName: string | null; username: string | null; email: string | null }> | null,
+  query: string | undefined,
+): string | null {
+  if (!results || results.length === 0) return null;
+  if (results.length === 1) return results[0].userId;
+  const q = (query ?? "").trim().toLowerCase().replace(/^@/, "");
+  if (!q) return null;
+  const exact = results.filter(r =>
+    [r.displayName, r.username, r.email].some(v => (v ?? "").trim().toLowerCase().replace(/^@/, "") === q));
+  return exact.length === 1 ? exact[0].userId : null;
+}
+
 async function getExplorer(d: V4Data, params: ExplorerParams, rates: any) {
   // A full ID opens the user directly; listing search matches for it is noise.
   const results = params.query && params.query.toLowerCase() !== params.uid ? searchUsers(d, params.query) : null;
+  // A search with one clear answer opens that person's whole history at once,
+  // instead of a one-row list you have to click through (founder, Nov 18, 2026).
+  const auto = params.uid ? null : autoOpenMatch(results, params.query);
+  if (auto) params = { ...params, uid: auto };
   const user = params.uid ? exploreUser(d, params.uid, rates) : null;
   const collections = user ? await collectionCounts(params.uid!) : null;
   if (user) {
