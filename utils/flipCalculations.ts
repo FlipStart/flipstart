@@ -11,12 +11,14 @@
 import type {
   BuyLabel, Platform,
   FlipCalc, GlobalStats, FlipResult,
-} from '@/types/flip';
-import { getRecommendation, type Recommendation } from '@/utils/recommendation';
-import { tierFromScore } from '@shared/confidenceTier';
+} from '../types/flip';
+// Relative imports on purpose: the server imports this file too (Hunt XP is scored
+// there with the same engine the app shows), and it has no '@/' alias.
+import { getRecommendation, type Recommendation } from './recommendation';
+import { tierFromScore } from '../shared/confidenceTier';
 
 // ─── Rank gate constants ──────────────────────────────────────────────────────
-import { WIN_LABELS } from '@/types/flip';
+import { WIN_LABELS } from '../types/flip';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -195,6 +197,16 @@ export function getPlatformRationale(platform: Platform, resaleValue: number): s
  * Returns a FlipCalc object — UI just renders it.
  */
 /**
+ * Profit if the item only sells at the low end of its range. Undefined when the
+ * low end is unknown, so the rating behaves exactly as before.
+ */
+export function worstCaseProfit(resaleValue: number, resaleLow: number | undefined, thriftPrice: number): number | undefined {
+  if (typeof resaleLow !== 'number' || !Number.isFinite(resaleLow) || resaleLow <= 0) return undefined;
+  const low = Math.min(resaleLow, resaleValue);
+  return calculateProfit(low, calculateFees(low), thriftPrice);
+}
+
+/**
  * Find the highest whole-dollar thrift price at which the rating stays at
  * BUY or STRONG_BUY (i.e. does NOT drop to RISKY_BUY or SKIP).
  *
@@ -233,7 +245,8 @@ export function findMaxBuyPriceForRating(
   demandLevel:      string = '',
   sellSpeed:        string = '',
   v1Signals: { buyerPool?: string; basicItem?: boolean; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
-               priceConfidence?: number } = {},
+               priceConfidence?: number; authenticityConcern?: boolean; resaleLow?: number;
+               confidenceTier?: 'high' | 'medium' | 'low' | null } = {},
 ): number | null {
   const fees = calculateFees(resaleValue);
   const ceiling = Math.max(0, Math.round(resaleValue));
@@ -249,6 +262,9 @@ export function findMaxBuyPriceForRating(
       hasObviousDamage: v1Signals.hasObviousDamage,
       eraUnconfirmed:   v1Signals.eraUnconfirmed,
       priceConfidence:  v1Signals.priceConfidence,
+      confidenceTier:   v1Signals.confidenceTier,
+      authenticityConcern: v1Signals.authenticityConcern,
+      worstCaseProfit:  worstCaseProfit(resaleValue, v1Signals.resaleLow, price),
     });
     if (rec.label !== 'SKIP') return price;
   }
@@ -270,7 +286,8 @@ export function findBuyThresholdPrice(
   demandLevel:      string = '',
   sellSpeed:        string = '',
   v1Signals: { buyerPool?: string; basicItem?: boolean; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
-               priceConfidence?: number } = {},
+               priceConfidence?: number; authenticityConcern?: boolean; resaleLow?: number;
+               confidenceTier?: 'high' | 'medium' | 'low' | null } = {},
 ): number | null {
   const fees = calculateFees(resaleValue);
   for (let price = Math.max(0, Math.round(resaleValue)); price >= 0; price--) {
@@ -284,6 +301,9 @@ export function findBuyThresholdPrice(
       hasObviousDamage: v1Signals.hasObviousDamage,
       eraUnconfirmed:   v1Signals.eraUnconfirmed,
       priceConfidence:  v1Signals.priceConfidence,
+      confidenceTier:   v1Signals.confidenceTier,
+      authenticityConcern: v1Signals.authenticityConcern,
+      worstCaseProfit:  worstCaseProfit(resaleValue, v1Signals.resaleLow, price),
     });
     if (rec.label === 'BUY' || rec.label === 'STRONG_BUY') return price;
   }
@@ -316,7 +336,8 @@ export function findBuyUnderPrice(
   demandLevel:      string = '',
   sellSpeed:        string = '',
   v1Signals: { buyerPool?: string; basicItem?: boolean; hasObviousDamage?: boolean; eraUnconfirmed?: boolean;
-               priceConfidence?: number } = {},
+               priceConfidence?: number; authenticityConcern?: boolean; resaleLow?: number;
+               confidenceTier?: 'high' | 'medium' | 'low' | null } = {},
 ): number | null {
   const byRating = findBuyThresholdPrice(resaleValue, matchConfidence, competitionLevel, demandLevel, sellSpeed, v1Signals);
   if (byRating != null && byRating >= MIN_USEFUL_BUY_UNDER) return byRating;
@@ -385,8 +406,12 @@ export function computeFlipCalc(
     hasObviousDamage?: boolean;
     eraUnconfirmed?: boolean;
     priceConfidence?: number;
-    /** Server identification tier. Wording of the reasons only. */
+    /** Server identification tier. Wording of the reasons, and (with an
+     *  authenticity concern) whether the brand itself was read. */
     confidenceTier?: 'high' | 'medium' | 'low' | null;
+    authenticityConcern?: boolean;
+    /** Low end of the estimated resale range (safe-margin check). */
+    resaleLow?: number;
   } = {},
 ): FlipCalc {
   const fees        = calculateFees(resaleValue);
@@ -413,6 +438,8 @@ export function computeFlipCalc(
     eraUnconfirmed:   v1Signals.eraUnconfirmed,
     priceConfidence:  v1Signals.priceConfidence,
     confidenceTier:   v1Signals.confidenceTier,
+    authenticityConcern: v1Signals.authenticityConcern,
+    worstCaseProfit:  worstCaseProfit(resaleValue, v1Signals.resaleLow, thriftPrice),
   });
 
   return {

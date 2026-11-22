@@ -8,7 +8,7 @@
  * Pure function: input → output, no side effects, no React deps.
  */
 
-import { resolveConfidenceTier, type ConfidenceTier } from '@shared/confidenceTier';
+import { resolveConfidenceTier, type ConfidenceTier } from '../shared/confidenceTier';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,14 @@ export interface RecommendationInput {
    *  state). Wording only — it never changes the rating. Absent on older
    *  scans, which work it out from matchConfidence. */
   confidenceTier?: ConfidenceTier | null;
+  /**
+   * Net profit if the item only sells at the LOW end of its estimated range.
+   * When even that clears the Strong Buy bar, an uncertain price cannot hurt
+   * the buyer, so it does not block Strong Buy.
+   */
+  worstCaseProfit?: number;
+  /** The scan raised an authenticity concern (ai.risks.authenticity_concerns). */
+  authenticityConcern?: boolean;
 }
 
 export interface Recommendation {
@@ -52,6 +60,12 @@ export interface Recommendation {
    *  the user sees the specific reason rather than a generic caution. Same
    *  source as the Deep Analysis reasons, so the two cannot drift. */
   riskFactors:  RiskFactor[];
+  /**
+   * One line for the two cases where the rating alone hides the story: a BUY
+   * with Strong Buy money (what held it back, and what to check), and a STRONG
+   * BUY on an item whose authenticity should be checked before listing.
+   */
+  strongBuyNote?: string;
 }
 
 export type RiskFactorCode =
@@ -97,6 +111,24 @@ const STRONG_BUY_MIN_PRICE_CONFIDENCE = 75;
  * authenticity directly), not the confidence bands.
  */
 export const STRONG_BUY_MIN_IDENTIFICATION_SCORE = 70;
+
+/** Profit (after fees) that makes an item Strong Buy money. */
+export const STRONG_BUY_MIN_PROFIT = 25;
+
+/**
+ * An authenticity concern blocks Strong Buy only above this buy price.
+ *
+ * The server holds a flagged item's identification score at 60 so app 2.1,
+ * which has no authenticity input, can never call a suspected fake a Strong
+ * Buy (server/canonical/confidence.ts: "remove it only once every app in use
+ * reads authenticity directly"). This app reads it directly. The model flags
+ * almost every designer item ("check the serial"), so the hold meant a Coach
+ * bag could NEVER be a Strong Buy, even at $3 with $60 profit (founder report,
+ * Nov 18, 2026). At thrift prices a fake costs you the few dollars you paid; at
+ * a real price it costs real money. So the concern blocks Strong Buy only when
+ * the buy price is above this, and is always shown so the check gets done.
+ */
+export const AUTH_CHECK_MAX_PAID = 20;
 
 /** Ranked by how much each should worry a reseller. The card shows the top few,
  *  so ordering decides what the user actually reads. */
@@ -173,10 +205,21 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   if (input.hasObviousDamage)           add('OBVIOUS_DAMAGE');
   if (input.eraUnconfirmed)             add('ERA_UNCONFIRMED');
 
+  // ── Identification for Strong Buy ───────────────────────────────────────────
+  // A flagged designer item arrives with its score held at 60 (see
+  // AUTH_CHECK_MAX_PAID). When the server's own tier says the brand was read
+  // (HIGH), the identification itself is solid; authenticity is judged
+  // separately, right here, by what the user is paying.
+  const authConcern = input.authenticityConcern === true;
+  const idForStrong = authConcern && input.confidenceTier === 'high'
+    ? Math.max(matchConfidence, STRONG_BUY_MIN_IDENTIFICATION_SCORE)
+    : matchConfidence;
+  const authBlocks = authConcern && (input.thriftPrice ?? 0) > AUTH_CHECK_MAX_PAID;
+
   // ── Base tier from profit and confidence ────────────────────────────────────
   let base: number;
   if (netProfit < 0)                                   base = 0;
-  else if (netProfit >= 25 && matchConfidence >= STRONG_BUY_MIN_IDENTIFICATION_SCORE) base = 3;
+  else if (netProfit >= STRONG_BUY_MIN_PROFIT && idForStrong >= STRONG_BUY_MIN_IDENTIFICATION_SCORE && !authBlocks) base = 3;
   else if (netProfit >= 15 && matchConfidence >= 55)   base = 2;
   else if (netProfit >= 11 && matchConfidence >= 40)   base = 2;
   else if (netProfit >= 8)                             base = 1;
@@ -219,7 +262,14 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   // the remaining risk factors still apply, so an item with real problems can
   // land at RISKY_BUY or SKIP rather than being handed a floor it did not earn.
   const priceConf = input.priceConfidence;
-  if (tier === 3 && typeof priceConf === "number" &&
+  // Safe margin: if even the low end of the price range clears the Strong Buy
+  // bar, an uncertain estimate cannot cost the buyer anything, so it does not
+  // block. (Before, a $73 bag bought for a few dollars stayed BUY because the
+  // model was only "fairly" sure of $73.)
+  const safeAtLowEnd = typeof input.worstCaseProfit === 'number'
+    && Number.isFinite(input.worstCaseProfit) && input.worstCaseProfit >= STRONG_BUY_MIN_PROFIT;
+  const tierBeforeGate = tier;
+  if (tier === 3 && !safeAtLowEnd && typeof priceConf === "number" &&
       priceConf > 0 && priceConf <= STRONG_BUY_MIN_PRICE_CONFIDENCE) {
     tier = 2;
     add("PRICE_CONFIDENCE_TOO_LOW_FOR_STRONG_BUY");
@@ -246,6 +296,23 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
   );
   const shownFactors = label === 'STRONG_BUY' ? [] : ordered;
 
+  // ── Why not Strong Buy (or: what to check on one) ──────────────────────────
+  let strongBuyNote: string | undefined;
+  if (label === 'BUY' && netProfit >= STRONG_BUY_MIN_PROFIT) {
+    const heldBy = substantive.map(f => f.label.toLowerCase());
+    if (authBlocks) {
+      strongBuyNote = `Strong Buy money if it's authentic. At $${Math.round(input.thriftPrice)}, check the tags, serial and hardware before you pay.`;
+    } else if (idForStrong < STRONG_BUY_MIN_IDENTIFICATION_SCORE) {
+      strongBuyNote = "Strong Buy money, but FlipStart isn't sure exactly what this is yet. A clear tag photo can confirm it.";
+    } else if (tierBeforeGate === 3) {
+      strongBuyNote = "Strong Buy money, but the price estimate is uncertain and the low end is thin. Check sold listings before you pay.";
+    } else if (base === 3 && heldBy.length) {
+      strongBuyNote = `Strong Buy money, held back by: ${heldBy.join(', ')}.`;
+    }
+  } else if (label === 'STRONG_BUY' && authConcern) {
+    strongBuyNote = "Check it's authentic before you list it: tags, serial and hardware.";
+  }
+
   return {
     label,
     colorKey: label,
@@ -254,6 +321,7 @@ export function getRecommendation(input: RecommendationInput): Recommendation {
     bullets:      buildBullets(label, input, c, d, s),
     warning:      buildWarning(label, matchConfidence, c),
     riskFactors:  shownFactors,
+    ...(strongBuyNote ? { strongBuyNote } : {}),
   };
 }
 

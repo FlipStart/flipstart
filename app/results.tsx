@@ -65,7 +65,7 @@ import { useAchievementNotifications } from '@/lib/AchievementNotificationContex
 import { useAuth } from '@/lib/auth-context';
 import { trackAnalyticsEvent } from '@/lib/analytics';
 import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice, findBuyUnderPrice } from '@/utils/flipCalculations';
-import { ratingSignalsFromV1 } from '@/utils/ratingSignals';
+import { ratingSignalsFromV1, resaleLowOf } from '@/utils/ratingSignals';
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
@@ -383,12 +383,12 @@ export default function ResultsScreen() {
       _md?.demand ?? '',
       _md?.sell_speed ?? '',
       // Shared with Hunt, Deep Analysis and the Flip Record — see utils/ratingSignals.
-      ratingSignalsFromV1((_id as any)?.v1),
+      { ...ratingSignalsFromV1((_id as any)?.v1), resaleLow: resaleLowOf(currentScan) },
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [_md?.adjusted_estimated_value, effectiveThrift, _ra?.match_confidence,
      _md?.competition_level, _id?.style_labels, _id?.estimated_era,
-     _md?.demand, _md?.sell_speed],
+     _md?.demand, _md?.sell_speed, _md?.estimated_resale_range?.low, (_id as any)?.v1],
   );
 
   // backHandlerRef + BackHandler useEffect MUST also be before the early return.
@@ -513,7 +513,7 @@ export default function ResultsScreen() {
   // shown on screen — so it's never disconnected from what you actually see.
   // Paying more than this is guaranteed to downgrade the rating.
   // Same signals as the rating above, so the thresholds and the badge agree.
-  const v1Sig = ratingSignalsFromV1((_id as any)?.v1);
+  const v1Sig = { ...ratingSignalsFromV1((_id as any)?.v1), resaleLow: resaleLowOf(currentScan) };
   // Ceiling: the most you should pay before this becomes a SKIP. Null when the
   // item is not worth buying at any price — rendered as words, never as $0.
   const suggestedMax = findMaxBuyPriceForRating(
@@ -1354,6 +1354,20 @@ export default function ResultsScreen() {
                     : 'Workable, but nothing about this is a sure thing.';
                 })()}
               </Text>
+            </View>
+          )}
+
+          {/* ── 2a'. Strong Buy note ─────────────────────────────────────────
+              A BUY with Strong Buy money says what held it back and what to
+              check; a STRONG BUY on a designer piece says to check it's real.
+              Without this a $60-profit BUY looked like a broken rating. */}
+          {(canonicalRating === 'BUY' || canonicalRating === 'STRONG BUY') && !!calc.recommendation?.strongBuyNote && (
+            <View style={s.riskWhyCard}>
+              <View style={s.riskWhyHeader}>
+                <MaterialIcons name="info-outline" size={15} color={BROWN} />
+                <Text style={s.riskWhyTitle}>{canonicalRating === 'BUY' ? 'Why not Strong Buy' : 'Before you list it'}</Text>
+              </View>
+              <Text style={s.riskWhyNote}>{calc.recommendation.strongBuyNote}</Text>
             </View>
           )}
 

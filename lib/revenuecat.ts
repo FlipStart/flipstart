@@ -330,7 +330,11 @@ async function loadOffering(sdk: any): Promise<Partial<RcState>> {
     return {
       offeringLoaded: true,
       monthlyPackage: find(PRODUCT_MONTHLY),
-      annualPackage: find(PRODUCT_ANNUAL),
+      // annualProductId(), not the deprecated PRODUCT_ANNUAL (the Test Store id):
+      // with the Apple key that constant never matches, so this was always null
+      // in a real build. Nothing reads it today (the paywall and purchase()
+      // resolve their own packages), but it must not be wrong when something does.
+      annualPackage: find(annualProductId()),
     };
   } catch {
     return { offeringLoaded: false, monthlyPackage: null, annualPackage: null };

@@ -15,38 +15,54 @@
  */
 
 export interface RatingSignals {
-    buyerPool?:        string;
-    basicItem?:        boolean;
-    hasObviousDamage?: boolean;
-    eraUnconfirmed?:   boolean;
-    priceConfidence?:  number;
-    confidenceTier?:   'high' | 'medium' | 'low' | null;
-  }
-  
-  /** The canonical v1 block, wherever this object keeps it. */
-  export function v1Of(entry: unknown): any {
-    const e = entry as any;
-    if (!e) return undefined;
-    return e.structured?.v1           // FlipResult (results snapshot, saved flips, hunt projections)
-      ?? e.identification?.v1         // ScanResult (fresh scans, hunt scan snapshots)
-      ?? e.scanSnapshot?.identification?.v1  // HuntItem / HuntBundleItem
-      ?? undefined;
-  }
-  
-  /** The risk signals for computeFlipCalc / findBuyUnderPrice. Empty for v0 scans. */
-  export function ratingSignalsFromV1(v1: any): RatingSignals {
-    if (!v1 || typeof v1 !== 'object') return {};
-    return {
-      buyerPool:        v1.buyerPool,
-      basicItem:        v1.basicItem === true,
-      hasObviousDamage: (v1.obviousDamage?.length ?? 0) > 0,
-      eraUnconfirmed:   (v1.eraStatus ?? '') === 'unknown',
-      priceConfidence:  v1.priceConfidence,
-      confidenceTier:   v1.confidenceTier,
-    };
-  }
-  
-  /** Convenience: signals straight from a FlipResult, ScanResult or hunt item. */
-  export function ratingSignalsFor(entry: unknown): RatingSignals {
-    return ratingSignalsFromV1(v1Of(entry));
-  }
+  buyerPool?:        string;
+  basicItem?:        boolean;
+  hasObviousDamage?: boolean;
+  eraUnconfirmed?:   boolean;
+  priceConfidence?:  number;
+  confidenceTier?:   'high' | 'medium' | 'low' | null;
+  /** The model raised an authenticity concern. Judged against the buy price. */
+  authenticityConcern?: boolean;
+  /** Low end of the estimated resale range, for the safe-margin check. */
+  resaleLow?:        number;
+}
+
+/** The canonical v1 block, wherever this object keeps it. */
+export function v1Of(entry: unknown): any {
+  const e = entry as any;
+  if (!e) return undefined;
+  return e.structured?.v1           // FlipResult (results snapshot, saved flips, hunt projections)
+    ?? e.identification?.v1         // ScanResult (fresh scans, hunt scan snapshots)
+    ?? e.scanSnapshot?.identification?.v1  // HuntItem / HuntBundleItem
+    ?? undefined;
+}
+
+/** The risk signals for computeFlipCalc / findBuyUnderPrice. Empty for v0 scans. */
+export function ratingSignalsFromV1(v1: any): RatingSignals {
+  if (!v1 || typeof v1 !== 'object') return {};
+  return {
+    buyerPool:        v1.buyerPool,
+    basicItem:        v1.basicItem === true,
+    hasObviousDamage: (v1.obviousDamage?.length ?? 0) > 0,
+    eraUnconfirmed:   (v1.eraStatus ?? '') === 'unknown',
+    priceConfidence:  v1.priceConfidence,
+    confidenceTier:   v1.confidenceTier,
+    authenticityConcern: (v1.authenticityConcerns?.length ?? 0) > 0,
+  };
+}
+
+/** Low end of the estimated range, wherever this object keeps it. Undefined when unknown. */
+export function resaleLowOf(entry: unknown): number | undefined {
+  const e = entry as any;
+  if (!e) return undefined;
+  const v = e.market_data?.estimated_resale_range?.low            // ScanResult
+    ?? e.resaleRangeLow                                          // FlipResult
+    ?? e.scanSnapshot?.market_data?.estimated_resale_range?.low; // hunt item
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+/** Convenience: signals straight from a FlipResult, ScanResult or hunt item. */
+export function ratingSignalsFor(entry: unknown): RatingSignals {
+  const low = resaleLowOf(entry);
+  return { ...ratingSignalsFromV1(v1Of(entry)), ...(low !== undefined ? { resaleLow: low } : {}) };
+}

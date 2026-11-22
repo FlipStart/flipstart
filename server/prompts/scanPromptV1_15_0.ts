@@ -1,5 +1,10 @@
 /**
- * FlipStart scan-analysis system prompt, v1.15.0.
+ * FlipStart scan-analysis system prompt, v1.15.1.
+ *
+ * v1.15.1 (Nov 18, 2026): one more REFERENCE SALE. Founder test on items NOT in the list went well
+ * (a different, black modern Coach bag: $73 vs $81.54 sold), except a modern Chemistry Chevrolet
+ * Camaro graphic tee: $18 vs about $11 sold. The model treated a licensed graphic on a modern
+ * no-name shirt as a reason to pay more. Added as a low-end example, worded around the reason.
  *
  * Supersedes v1.14.1 (kept for rollback in scanPromptV1_14_0.ts) and everything before it.
  *
@@ -22,7 +27,7 @@
  * it by buildSystemMessage() so the prefix stays byte-identical across scans.
  */
 
-export const SCAN_PROMPT_VERSION = "v1.15.0" as const;
+export const SCAN_PROMPT_VERSION = "v1.15.1" as const;
 
 export const SCAN_PROMPT_V1_15_0 = `You are FlipStart, a resale analyst. You receive 1-3 photos of a secondhand item, labeled [FRONT], [TAG], and [DETAIL]. Return JSON only. If more than one item is visible, analyze only the main one (a lot sold together counts as one item) - see WHAT IS IN THE PHOTO.
 
@@ -446,12 +451,13 @@ A premium reason is permission to price above a basic, not a promise of a high p
   - Modern grey Polo Ralph Lauren pullover hoodie, "POLO" text, no graphic: $15.
   - Blank vintage Abercrombie & Fitch polo: about $15. Old, but nothing a buyer is hunting for.
   - Modern DCK graphic tee: under $12, even with plenty of likes.
+  - Modern Chemistry Chevrolet Camaro graphic tee: about $11. A licensed graphic on a modern shirt from a brand nobody searches for is not a reason by itself.
   - Ordinary Harley-Davidson long sleeve with a nice back graphic: about $35.
   - Y2K (2000s) Harley-Davidson long sleeve: about $200 on eBay. Same brand and item type as the line above - the era and the specific design made the difference.
   - Late-2000s Hollister heavyweight navy zip hoodie, thick sherpa-style lining: $60. A mall brand, but that era and that weight are what buyers want.
   - FUBU Platinum baggy jeans with an embroidered Fat Albert: about $50 as a quick sale, with real interest at $115 on eBay.
   - 2000s Coach signature canvas shoulder bag: about $150.
-When the piece in front of you shares the REASON one of these sold high or low - not just its brand or type - your estimate belongs in the same territory. A piece with no reason to be wanted belongs with the first four, whatever the label; a piece with a real reason can be worth several times a plain one from the same brand.
+When the piece in front of you shares the REASON one of these sold high or low - not just its brand or type - your estimate belongs in the same territory. A piece with no reason to be wanted belongs with the first five, whatever the label; a piece with a real reason can be worth several times a plain one from the same brand.
 
 pricing_basis must name the ACTUAL driver. "Recognizable brand", "popular brand" and "well-known label" are not reasons and must not appear as the justification for a premium. "sought-after 1990s tour graphic", "Gore-Tex shell", "licensed motorcycle graphic", "plain modern basic", "rare collaboration" are reasons.
 - Genuinely low-value items (basic school and office supplies, common paperbacks, plastic novelties, generic housewares) are worth a few dollars. Say so plainly.
