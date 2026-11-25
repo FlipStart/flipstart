@@ -27,6 +27,17 @@
  * swallowed. If the table doesn't exist yet (the SQL hasn't been run), writes
  * pause for ten minutes at a time with one warning in the log.
  *
+ * ── Prompt version and model (2.2.2) ───────────────────────────────────────
+ * Every row says which prompt and which model the scan ran on, so AI quality
+ * can be compared version against version (Release Impact). A V1 result takes
+ * both from its own analysis (canonical.meta: the exact model snapshot the API
+ * answered with); a failure takes what the route planned to run. The legacy
+ * route has neither, and records null rather than a guess.
+ * Until drizzle/sql/prelaunch_2_2_2.sql has been run the two
+ * columns don't exist: the first write that says so is retried without them,
+ * and writes leave them out for ten minutes at a time, with one warning in
+ * the log. No row is ever lost to a missing column.
+ *
  * Privacy: the user's id and the scan's own fields only. No email, no photo,
  * no item text, no typed context.
  */
@@ -67,6 +78,10 @@ export interface ScanOutcomeRow {
   holds_charges: boolean;
   duration_ms: number;
   updated_at: string;
+  /** e.g. "v1.15.1" or "v1.15.1+capture1". Null on the legacy route. */
+  prompt_version: string | null;
+  /** The model the scan ran on. Null on the legacy route. */
+  model: string | null;
 }
 
 // ── Pure: build a row ───────────────────────────────────────────────────────
@@ -80,6 +95,9 @@ export interface OutcomeContext {
   startedAt: number;
   /** Set by settleCharge: only a request that settled a result records it. */
   charge?: OutcomeCharge;
+  /** Set by the V1 route before the AI call, so a failure records them too. */
+  promptVersion?: string | null;
+  model?: string | null;
 }
 
 const TIERS = new Set(["high", "medium", "low"]);
@@ -87,6 +105,15 @@ const PROBLEMS = new Set(["blurry", "too_dark", "too_far", "glare", "cut_off"]);
 
 function str(x: unknown, max = 40): string | null {
   return typeof x === "string" && x.length > 0 ? x.slice(0, max) : null;
+}
+
+/** Prompt version and model for a row: the analysis's own, else what was planned. */
+function versionsOf(c: OutcomeContext, payload?: any): { prompt_version: string | null; model: string | null } {
+  const meta = payload?.canonical?.meta;
+  return {
+    prompt_version: str(meta?.prompt_version, 60) ?? str(c.promptVersion, 60),
+    model: str(meta?.model, 80) ?? str(c.model, 80),
+  };
 }
 
 /** The row for a delivered result, or null when this request didn't settle one (a replay). */
@@ -117,6 +144,7 @@ export function rowForResult(c: OutcomeContext, payload: any, now = Date.now()):
     holds_charges: c.holdsCharges,
     duration_ms: Math.max(0, now - c.startedAt),
     updated_at: new Date(now).toISOString(),
+    ...versionsOf(c, payload),
   };
 }
 
@@ -149,13 +177,17 @@ export function rowForError(c: OutcomeContext, err: unknown, now = Date.now()): 
     holds_charges: c.holdsCharges,
     duration_ms: Math.max(0, now - c.startedAt),
     updated_at: new Date(now).toISOString(),
+    ...versionsOf(c),
   };
 }
 
 // ── Writing ─────────────────────────────────────────────────────────────────
 
+/** A row as written: the 2.2.2 version columns are left out while they don't exist yet. */
+export type OutcomeWrite = Omit<ScanOutcomeRow, "prompt_version" | "model"> & Partial<Pick<ScanOutcomeRow, "prompt_version" | "model">>;
+
 type Sink = {
-  upsert(row: ScanOutcomeRow): Promise<{ error?: { code?: string; message?: string } | null }>;
+  upsert(row: OutcomeWrite): Promise<{ error?: { code?: string; message?: string } | null }>;
   resolve(owner: string, attemptId: string, patch: Partial<ScanOutcomeRow>): Promise<{ error?: { code?: string; message?: string } | null }>;
 };
 
@@ -224,6 +256,40 @@ function missingTable(e: { code?: string; message?: string } | null | undefined)
     || /relation .*scan_outcomes.* does not exist|could not find the table/i.test(e.message ?? "");
 }
 
+/**
+ * The prompt_version / model columns aren't there yet (the 2.2.2 SQL hasn't
+ * been run). PostgREST says PGRST204 ("Could not find the 'model' column");
+ * Postgres says 42703. Only those two columns count: any other missing
+ * column is a real fault and is reported as one.
+ */
+export function missingVersionColumn(e: { code?: string; message?: string } | null | undefined): boolean {
+  if (!e || (e.code !== "PGRST204" && e.code !== "42703")) return false;
+  return /\b(prompt_version|model)\b/i.test(e.message ?? "");
+}
+
+let versionsMissingUntil = 0;
+
+function withoutVersions(row: OutcomeWrite): OutcomeWrite {
+  const { prompt_version: _p, model: _m, ...rest } = row;
+  return rest;
+}
+
+/**
+ * Upsert a row, with the version columns when the table has them. If it
+ * doesn't, the same row is sent again without them, so the outcome itself is
+ * never lost, and later writes skip them for ten minutes before trying again.
+ */
+async function upsertRow(sink: Sink, row: OutcomeWrite) {
+  if (Date.now() < versionsMissingUntil) return sink.upsert(withoutVersions(row));
+  const res = await sink.upsert(row);
+  if (missingVersionColumn(res?.error)) {
+    versionsMissingUntil = Date.now() + PAUSE_MS;
+    console.warn("[scanOutcomes] prompt_version / model columns not found — run drizzle/sql/prelaunch_2_2_2.sql. Writing rows without them; trying again in 10 min.");
+    return sink.upsert(withoutVersions(row));
+  }
+  return res;
+}
+
 function enqueue(key: string, job: (sink: Sink) => Promise<{ error?: { code?: string; message?: string } | null }>, what: string): Promise<void> {
   const prev = chains.get(key) ?? Promise.resolve();
   const next = prev.then(async () => {
@@ -263,7 +329,7 @@ export function writeOutcome(row: ScanOutcomeRow | null, now = Date.now()): Prom
   if (!prev && !underCap(row.user_id, now)) return Promise.resolve();
   lastKind.set(key, { kind: row.kind, at: now });
   sweep(now);
-  return enqueue(key, s => s.upsert(row), "upsert");
+  return enqueue(key, s => upsertRow(s, row), "upsert");
 }
 
 /** The user's choice on a soft-fail screen. */
@@ -297,5 +363,5 @@ export async function __settleOutcomesForTests(): Promise<void> {
 }
 
 export function __setOutcomeSinkForTests(s: Sink | null | undefined): void {
-  sinkOverride = s; pausedUntil = 0; lastKind.clear(); chains.clear(); gaveUp.clear(); newRows.clear();
+  sinkOverride = s; pausedUntil = 0; versionsMissingUntil = 0; lastKind.clear(); chains.clear(); gaveUp.clear(); newRows.clear();
 }

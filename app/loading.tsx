@@ -46,6 +46,7 @@ import { useProPaywall, ProPaywallHost } from "@/components/monetization/paywall
 import { scanSoftFail, softFailCanContinue } from "@shared/scanFailure";
 import { APP_STORE_PRODUCT_URL } from "@/lib/reviewPrompt";
 import { logEvent, incrementSessionCount, saveScanRecord, getScannerId } from "@/lib/analytics";
+import { ratingFieldsAtOpen } from "@/lib/shownRating";
 import { scanGoesToHunt, getActiveHunt } from "@/lib/hunt-context";
 import { rememberScanPhotos } from "@/lib/scanSessionPhotos";
 import { useAuth } from "@/lib/auth-context";
@@ -515,6 +516,8 @@ export default function LoadingScreen() {
               confidence: matchConf, category: safeIdentification.category, brand: safeIdentification.brand,
               recommendation: result.recommendation ?? "", tier,
               continuedAfterSoftFail: true, softFail: soft, attemptId: scanAttemptId,
+              // The rating the result opens with (the server sends none).
+              ...ratingFieldsAtOpen(scanResult, result.recommendation),
             },
           };
           // scanUsed comes from a server that holds charges; a server that
@@ -561,7 +564,11 @@ export default function LoadingScreen() {
             confidence:      matchConf,
             category:        safeIdentification.category,
             brand:           safeIdentification.brand,
+            // Kept as it always was (the server's value; empty on V1 scans).
             recommendation:  result.recommendation ?? "",
+            // What the server sent vs the rating the user is shown. See lib/shownRating.ts.
+            ...ratingFieldsAtOpen(scanResult, result.recommendation),
+            attemptId:       scanAttemptId,
           });
           incrementSessionCount("completedScanCount");
           saveScanRecord({

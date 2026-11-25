@@ -1181,9 +1181,10 @@ function renderDataQualityV4(q: any): string {
   const li = q.loader;
   const loaderBlock = li ? `<div class="card"><div class="card-h">Loader integrity <span class="muted">— checked on every page load</span></div>${grid([
     m("Events loaded", li.loaded), m("Events in database", li.inDatabase),
-    textCard("Status", li.status === "ok" ? "OK" : li.status === "unverified" ? "Unverified" : li.status === "duplicated" ? "Duplicated rows" : "Skipped rows",
-      li.status === "ok" ? "EXACT" : "LEGACY", li.note),
-  ])}</div>` : "";
+    textCard("Status", li.status === "ok" ? "OK" : li.status === "unverified" ? "Unverified" : li.status === "duplicated" ? "Duplicated rows"
+      : li.status === "truncated" ? "Truncated — oldest events missing" : "Skipped rows",
+      li.status === "ok" ? "EXACT" : li.status === "truncated" ? "CONFLICT" : "LEGACY", li.note),
+  ])}${li.timing ? `<div class="muted">Loaded newest first in ${esc((li.timing.ms / 1000).toFixed(1))} s over ${esc(String(li.timing.pages))} page(s) · events up to ${esc(String(li.timing.upTo))} · cap ${esc(Number(li.timing.cap).toLocaleString("en-US"))}</div>` : ""}</div>` : "";
   const ss = q.scanSources;
   const scanBlock = ss ? `<div class="card"><div class="card-h">Scan sources</div>${grid([
     m("Scans completed", ss.scansCompleted), m("Saved items", ss.savedItems), m("Save rate", ss.saveRate),

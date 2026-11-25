@@ -160,12 +160,63 @@ export async function persistAnswersToProfile(client: unknown, record: Onboardin
       if (__DEV__) console.warn("[onboarding] profile answers save failed (kept staged):", res.error?.message ?? "no row");
       return false;
     }
+    lastSaved = { uid, record };
     return true;
   } catch (e) {
     if (__DEV__) console.warn("[onboarding] profile answers save threw (kept staged):", (e as Error)?.message);
     return false;
   }
 }
+
+// ── Reading saved answers back (for onboarding_completed) ───────────────────
+
+/**
+ * Once the answers are saved to the account, the staged copy on the phone is
+ * deleted. The onboarding screen is a fresh mount by the time the user
+ * reaches the offer (username setup replaces it), so its quiz state is empty
+ * too. Without a way back to what was saved, onboarding_completed — the event
+ * the dashboard reads goal, experience and acquisition source from — went
+ * out with every answer null on the main new-user path. These read the saved
+ * record instead: this app session's own write first (same account only),
+ * then the account's user_metadata, which the restored session carries.
+ */
+let lastSaved: { uid: string; record: OnboardingMetadata } | null = null;
+
+export interface SavedAnswers {
+  primaryGoal: StagedOnboardingAnswers["primaryGoal"];
+  experienceLevel: StagedOnboardingAnswers["experienceLevel"];
+  painPoints: StagedOnboardingAnswers["painPoints"];
+  acquisitionSource: AcquisitionSource | null;
+}
+
+/** A saved snake_case record back as answers, or null when it isn't one. */
+export function answersFromSavedRecord(r: unknown): SavedAnswers | null {
+  if (!r || typeof r !== "object") return null;
+  const o = r as Record<string, unknown>;
+  if (!isPrimaryGoal(o.primary_goal) || !isExperienceLevel(o.experience_level)) return null;
+  const pains = Array.isArray(o.pain_points) ? o.pain_points.filter(isPainPoint) : [];
+  return {
+    primaryGoal: o.primary_goal,
+    experienceLevel: o.experience_level,
+    painPoints: PAIN_POINTS.map(x => x.value).filter(v => pains.includes(v)),
+    acquisitionSource: isAcquisitionSource(o.acquisition_source) ? o.acquisition_source : null,
+  };
+}
+
+/** The answers already saved to this signed-in account, or null. */
+export function answersSavedToAccount(user: { id?: string | null; user_metadata?: unknown } | null | undefined): SavedAnswers | null {
+  const uid = user?.id ?? null;
+  if (uid && lastSaved && lastSaved.uid === uid) {
+    const mine = answersFromSavedRecord(lastSaved.record);
+    if (mine) return mine;
+  }
+  const md = user?.user_metadata;
+  const meta = md && typeof md === "object" ? (md as Record<string, unknown>)[ONBOARDING_METADATA_KEY] : null;
+  return answersFromSavedRecord(meta);
+}
+
+/** Tests only. */
+export function __resetSavedAnswersForTests(): void { lastSaved = null; }
 
 // ── Staged-answer migration ─────────────────────────────────────────────────
 

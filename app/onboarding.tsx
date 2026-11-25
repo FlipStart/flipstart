@@ -71,7 +71,7 @@ import {
   stageOnboardingAnswers, readStagedAnswers, clearStagedAnswers, bindStagedAnswersToUser,
   setPendingNewUserOffer, readPendingNewUserOffer, clearPendingNewUserOffer, bindPendingOfferToUser,
 } from '@/lib/onboarding-storage';
-import { classifyAccount, persistAnswersToAccount } from '@/lib/onboardingAnswers';
+import { classifyAccount, persistAnswersToAccount, answersSavedToAccount } from '@/lib/onboardingAnswers';
 import { setAuthReturnDest, clearAuthReturnDest } from '@/lib/authReturn';
 import {
   EMPTY_ANSWERS, QUIZ_STAGES, PRIMARY_GOALS, EXPERIENCE_LEVELS, PAIN_POINTS, ACQUISITION_SOURCES,
@@ -391,7 +391,10 @@ export default function OnboardingScreen() {
      * payload is the truthful record of what they answered, and reading it
      * here is what lets `answers` stay tap-only.
      */
-    const recorded = (await readStagedAnswers().catch(() => null)) ?? null;
+    // Staged answers are deleted once saved to the account; then read the
+    // saved copy back, so the event still carries what the user answered.
+    const recorded = (await readStagedAnswers().catch(() => null))
+      ?? answersSavedToAccount(user);
     trackAnalyticsEvent('onboarding_completed', {
       onboarding_version: ONBOARDING_VERSION, outcome, flow: 'v2',
       primary_goal: recorded?.primaryGoal ?? answers.primaryGoal,
@@ -411,7 +414,7 @@ export default function OnboardingScreen() {
      */
     router.replace('/(tabs)' as any);
     setTimeout(() => { router.push('/camera' as any); }, CAMERA_HANDOFF_MS);
-  }, [answers, persistIfStaged, router]);
+  }, [answers, persistIfStaged, router, user]);
 
   // ── The offer: the shared Pro paywall, opened once per arrival ──────────
   const [offerShown, setOfferShown] = useState(false);

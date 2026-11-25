@@ -68,6 +68,7 @@ import { computeFlipCalc, findMaxBuyPriceForRating, resolveEffectiveThriftPrice,
 import { ratingSignalsFromV1, resaleLowOf } from '@/utils/ratingSignals';
 import { REC_THEMES } from '@/utils/recommendation';
 import { normalizeBuyRating } from '@/utils/recommendation';
+import { ratingFieldsAtSave } from '@/lib/shownRating';
 import { getConfidenceDisplay } from '@/utils/confidenceDisplay';
 import { pickTitleSize, titleColumnWidth } from '@/lib/resultsTitleSize';
 import { FitTitle } from '@/components/results/FitTitle';
@@ -691,6 +692,9 @@ export default function ResultsScreen() {
       category:        (flip as any).category ?? null,
       estimated_resale: (flip as any).profit ?? null,
       notes_present:   !!(flip as any).notes,
+      // The rating on screen at the moment of saving, and the price it was
+      // rated at — it can differ from scan_completed's if a price was typed.
+      ...ratingFieldsAtSave(calc.recommendation?.label, !isEstimatedPrice, md.suggested_buy_price),
     });
 
     // Collect rewards locally so we know synchronously whether any exist, then

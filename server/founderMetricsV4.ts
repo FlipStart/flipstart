@@ -34,7 +34,7 @@
  * Four table loads (profiles+events via loadBaseData, scans, account_usage,
  * auth users) and everything else is maps in memory. No per-user queries.
  */
-import { loadBaseData, fetchAll, countRows, type BaseData } from "./founderMetrics";
+import { loadBaseData, fetchAll, countRows, type BaseData, type EventsLoad } from "./founderMetrics";
 import { getPricingEras, getAppleFeeRate, eraAt, currentEra, eraPrice, ERA_NOTES, type PricingEra } from "./pricingEras";
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { loadScanOutcomes, buildScanReliability } from "./scanReliability";
@@ -420,6 +420,8 @@ export interface V4Data {
   link: DeviceLink;
   /** Exact database count, for the loader-integrity check. Undefined = unverified. */
   eventsInDatabase?: number;
+  /** Snapshot time, pages, time taken and cap of the events load. */
+  eventsLoad?: EventsLoad;
   cohort: LaunchCohort;
   /** Profiles excluded by the scope. 0 in `all`. */
   preLaunchProfiles: number;
@@ -526,7 +528,7 @@ export async function loadV4Data(
 
   return {
     window, allEvents: events, allScans: cohortScans, allSaved: cohortSaved, anonymousScans,
-    eventsLoaded: b.events.length, eventsInDatabase: b.eventsInDatabase,
+    eventsLoaded: b.events.length, eventsInDatabase: b.eventsInDatabase, eventsLoad: b.eventsLoad,
     rawEvents: b.events,
     rawUsage: new Map(usageRows.map(u => [u.user_id, u])),
     rawSaved: savedRows,
@@ -2029,7 +2031,7 @@ export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: n
      * from the exact count in the database, the loader skipped or duplicated
      * rows and every event-based number on this page is suspect.
      */
-    loader: loaderIntegrity(d.eventsLoaded, d.eventsInDatabase),
+    loader: loaderIntegrity(d.eventsLoaded, d.eventsInDatabase, d.eventsLoad),
     scope: {
       scope: cohort.scope,
       launchAt: cohort.at,
@@ -2056,8 +2058,8 @@ export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: n
     scanCompletedPost: c.configured ? exact(post.filter(e => e.event_name === "scan_completed").length) : unavailable(),
     scanCompletedLegacy: { value: all.filter(e => e.event_name === "scan_completed" && (!c.at || e.created_at < c.at)).length, trust: "LEGACY" as Trust, note: "Pre-cutover scan_completed had no emitter — expect 0. Scans table is authoritative historically." },
     anomalies: [
-      ...(() => { const l = loaderIntegrity(d.eventsLoaded, d.eventsInDatabase);
-                  return l.status === "duplicated" || l.status === "skipped" ? [`Loader integrity: ${l.note}`] : []; })(),
+      ...(() => { const l = loaderIntegrity(d.eventsLoaded, d.eventsInDatabase, d.eventsLoad);
+                  return LOADER_FAILED.has(l.status) ? [`Loader integrity: ${l.note}`] : []; })(),
       ...(all.some(e => e.event_name === PW_EVENTS.completed && !e.user_id) ? ["purchase_completed rows with no user_id"] : []),
       ...(c.configured && post.length > 0 && withSnap.length === 0 ? ["Cutover configured but no events carry a snapshot — client build may not be live"] : []),
     ],
@@ -2121,19 +2123,34 @@ export function getUnitEconomics(d: V4Data, v3Cost: any) {
  *   database ahead by > 5  → rows were SKIPPED
  */
 export const LOADER_TOLERANCE = 5;
-export function loaderIntegrity(loaded: number | undefined, inDb: number | undefined) {
+/** Loader statuses that mean event-based numbers are wrong or incomplete. */
+export const LOADER_FAILED = new Set(["skipped", "duplicated", "truncated"]);
+
+/**
+ * Rows loaded vs the exact count of the same snapshot. `load` (when given)
+ * says whether the row cap was reached: a cap that left rows out is
+ * "truncated", reported as loudly as skipped rows, naming how many of the
+ * OLDEST events are missing. The newest are always loaded first.
+ */
+export function loaderIntegrity(loaded: number | undefined, inDb: number | undefined, load?: EventsLoad) {
+  const timing = load ? { ms: load.ms, pages: load.pages, upTo: load.upTo, cap: load.cap } : undefined;
   if (loaded === undefined || inDb === undefined) {
     return { loaded: exact(loaded ?? null), inDatabase: { value: null, trust: "NOT_TRACKED" as Trust, available: false, note: "count query failed — unverified" },
-             status: "unverified" as const, note: "Could not verify: the exact-count query failed." };
+             status: "unverified" as const, note: "Could not verify: the exact-count query failed.", timing };
   }
   const gap = inDb - loaded;
-  const status = loaded > inDb ? "duplicated" as const : gap > LOADER_TOLERANCE ? "skipped" as const : "ok" as const;
+  const truncated = !!load?.capped && gap > 0;
+  const status = loaded > inDb ? "duplicated" as const
+    : truncated ? "truncated" as const
+    : gap > LOADER_TOLERANCE ? "skipped" as const : "ok" as const;
   const note = status === "ok"
     ? (gap === 0 ? "Every row loaded." : `${gap} row(s) written during the load — new activity, not loss.`)
     : status === "duplicated"
       ? `${loaded - inDb} more row(s) loaded than exist — rows were counted twice.`
-      : `${gap} row(s) missing from the load — rows were skipped.`;
-  return { loaded: exact(loaded), inDatabase: exact(inDb), gap, status, note };
+      : status === "truncated"
+        ? `Hit the ${load!.cap.toLocaleString("en-US")}-event cap: the ${gap.toLocaleString("en-US")} OLDEST event(s), from before ${load!.oldestLoaded ?? "the oldest loaded"}, were not loaded. Recent numbers are complete; lifetime and cohort numbers that reach further back are understated. Raise FOUNDER_EVENTS_MAX_ROWS, or move those numbers to database-side counts.`
+        : `${gap} row(s) missing from the load — rows were skipped.`;
+  return { loaded: exact(loaded), inDatabase: exact(inDb), gap, status, note, timing };
 }
 
 const isErrLike = (x: any) => !!x && typeof x === "object" && typeof x.error === "string";
@@ -3383,7 +3400,7 @@ export function getDataIntegrity(d: V4Data) {
   issues.sort((a, b) => sev[a.severity] - sev[b.severity] || (b.at ?? "").localeCompare(a.at ?? ""));
   const usersWithProblems = new Set(issues.filter(i => i.severity !== "INFO").map(i => i.userId));
   const inScope = d.base.profiles.length;
-  const loader = loaderIntegrity(d.eventsLoaded, d.eventsInDatabase);
+  const loader = loaderIntegrity(d.eventsLoaded, d.eventsInDatabase, d.eventsLoad);
 
   return {
     issues,
@@ -3584,9 +3601,10 @@ export function getFounderAttention(m: any): AttentionItem[] {
   const ok = (x: any) => x && typeof x === "object" && !("error" in x && typeof x.error === "string");
   const di = m.dataIntegrity, act = m.activation, pj = m.paidJourneys, pu = m.powerUserPeak;
 
-  if (ok(di) && (di.loader?.status === "skipped" || di.loader?.status === "duplicated")) {
-    out.push({ level: "critical", icon: "🚨", title: "Loader integrity failed",
-      detail: `${di.loader.note} Every event-based number on this page is suspect until this is resolved.`, anchor: "dq" });
+  if (ok(di) && LOADER_FAILED.has(di.loader?.status)) {
+    out.push({ level: "critical", icon: "🚨", title: di.loader.status === "truncated" ? "Analytics history truncated" : "Loader integrity failed",
+      detail: di.loader.status === "truncated" ? di.loader.note
+        : `${di.loader.note} Every event-based number on this page is suspect until this is resolved.`, anchor: "dq" });
   }
   if (ok(di) && di.conflicts > 0) {
     const ex = di.issues.find((i: IntegrityIssue) => i.severity === "CONFLICT");

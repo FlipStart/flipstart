@@ -5,7 +5,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { canonicalV1EnabledFor, ENV } from "./_core/env.js";
-import { analyzeItemV1, ScanV1Error } from "./scanV1.js";
+import { analyzeItemV1, ScanV1Error, plannedScanVersions } from "./scanV1.js";
 import { persistScanPhotos } from "./photoPersistence.js";
 import { toLegacyShape } from "./compat/toLegacyShape.js";
 import { grantDevScans, revokeDevGrant, devGrantStatus } from "./devGrants.js";
@@ -574,6 +574,13 @@ const appRouter_scan = router({
             ]);
 
             run.assertLive();
+            // Hunt scans also ask how the photo was made (screen / listing image).
+            const captureCheck = isHuntScan && huntCaptureCheckEnabled();
+            // Which prompt and model this scan runs on, recorded on its
+            // scan_outcomes row even if it fails.
+            const planned = plannedScanVersions(sid, captureCheck);
+            outcome.promptVersion = planned.promptVersion;
+            outcome.model = planned.model;
             const v1Start = Date.now();
             const { canonical, telemetry } = await analyzeItemV1({
               images,
@@ -585,8 +592,7 @@ const appRouter_scan = router({
               photoRefs,
               userContext: userCtx,
               signal: run.signal,
-              // Hunt scans also ask how the photo was made (screen / listing image).
-              captureCheck: isHuntScan && huntCaptureCheckEnabled(),
+              captureCheck,
             });
 
             // Stored so comps (and later, anything else) can be run against

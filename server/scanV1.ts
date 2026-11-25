@@ -25,6 +25,22 @@ import {
 
 const MAX_OUTPUT_TOKENS = 2000;
 
+/** The prompt version a scan records, with the capture-check variant marked. */
+export function scanPromptVersionFor(captureCheck: boolean): string {
+  return captureCheck ? `${SCAN_PROMPT_VERSION}+capture1` : SCAN_PROMPT_VERSION;
+}
+
+/**
+ * The prompt version and model a scan for this user is about to run on.
+ * scan_outcomes records these up front, so a scan that FAILS still says which
+ * prompt and model it failed on. A delivered result records the values the
+ * analysis itself carries (canonical.meta), which name the exact model
+ * snapshot the API answered with.
+ */
+export function plannedScanVersions(userId: string | undefined | null, captureCheck: boolean): { promptVersion: string; model: string } {
+  return { promptVersion: scanPromptVersionFor(captureCheck), model: scanModelFor(userId) };
+}
+
 const SLOT_LABELS: Record<PhotoSlot, string> = {
   front: "[FRONT] Front of the item.",
   detail: "[DETAIL] Supporting detail: back, close-up, graphic, flaw, texture, or marking.",
@@ -179,7 +195,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
 
   const telemetry: ScanV1Telemetry = {
     model: raw.model || model,
-    prompt_version: captureCheck ? `${SCAN_PROMPT_VERSION}+capture1` : SCAN_PROMPT_VERSION,
+    prompt_version: scanPromptVersionFor(captureCheck),
     schema_version: SCHEMA_VERSION,
     schema_hash: canonicalSchemaHash(includeFeatures, captureCheck),
     duration_ms: duration,
@@ -227,7 +243,7 @@ export async function analyzeItemV1(input: ScanV1Input): Promise<ScanV1Success> 
 
   const meta: CanonicalMeta = {
     schema_version: SCHEMA_VERSION,
-    prompt_version: captureCheck ? `${SCAN_PROMPT_VERSION}+capture1` : SCAN_PROMPT_VERSION,
+    prompt_version: scanPromptVersionFor(captureCheck),
     schema_hash: canonicalSchemaHash(includeFeatures, captureCheck),
     model: telemetry.model,
     photo_slots_provided: slots,

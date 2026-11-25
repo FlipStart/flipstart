@@ -94,16 +94,116 @@ export async function fetchAll<T = any>(
 // Count-only helper (cheap; uses head request).
 export async function countRows(
   table: string,
-  filter?: { col: string; gte?: string; eq?: string },
+  filter?: { col: string; gte?: string; lte?: string; eq?: string },
 ): Promise<number> {
   const sb = getSupabaseAdmin();
   if (!sb) throw new Error("Supabase not configured");
   let q = sb.from(table).select("*", { count: "exact", head: true });
   if (filter?.gte) q = q.gte(filter.col, filter.gte);
+  if (filter?.lte) q = q.lte(filter.col, filter.lte);
   if (filter?.eq)  q = q.eq(filter.col, filter.eq);
   const { count, error } = await q;
   if (error) throw new Error(`${table} count: ${error.message}`);
   return count ?? 0;
+}
+
+// ─── analytics_events loader ────────────────────────────────────────────────
+//
+// The biggest table, and the one every event-based number reads. It used to
+// be read like any other table: offset pages, OLDEST first, stopping at a
+// 250,000-row cap. Two problems, the second the dangerous one:
+//
+//   • offset paging gets slower page by page (each page makes Postgres walk
+//     past every row before it), so the load grows quadratically;
+//   • at the cap the read stopped, and what it never reached was the NEWEST
+//     events: today's scans, today's purchases, the release being measured.
+//     The page would have kept rendering, wrong, with only a console warning.
+//
+// Now: keyset pages (created_at, id) NEWEST first, so every page is one index
+// range read and, if the cap is ever reached, what is left out is the oldest
+// history, never the newest. The read is pinned to a snapshot time (`upTo`):
+// only rows created at or before it are read, and the exact count used by the
+// loader-integrity check is taken over the same rows, so the check compares
+// like with like. Hitting the cap is reported as its own loud status
+// ("truncated"), never as a clean load.
+
+export const EVENTS_PAGE_SIZE = 1000;
+export const DEFAULT_EVENTS_MAX_ROWS = 250_000;
+
+/** Row cap for the events load. FOUNDER_EVENTS_MAX_ROWS overrides (min 1,000). */
+export function eventsMaxRows(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.FOUNDER_EVENTS_MAX_ROWS);
+  return Number.isFinite(n) && n >= 1000 ? Math.floor(n) : DEFAULT_EVENTS_MAX_ROWS;
+}
+
+/** How the events load went, for the loader-integrity check. */
+export interface EventsLoad {
+  /** Snapshot time: only events created at or before it were read and counted. */
+  upTo: string;
+  pages: number;
+  ms: number;
+  cap: number;
+  /** The cap was reached. Whether anything was left out is decided against the exact count. */
+  capped: boolean;
+  /** created_at of the oldest event loaded, or null when none were. */
+  oldestLoaded: string | null;
+}
+
+/** A PostgREST filter value, quoted so ":", "+" and "." in a timestamp are never misread. */
+function pgq(v: string): string {
+  return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * analytics_events, newest first by keyset, returned OLDEST first (the order
+ * every caller has always received). Stops at an empty page, never at a short
+ * one, so a server row limit below the page size can't end the read early.
+ */
+export async function fetchEventsNewestFirst<T extends { created_at: string }>(
+  columns: string,
+  opts: { upTo: string; maxRows: number; pageSize?: number },
+): Promise<{ rows: T[]; pages: number; capped: boolean }> {
+  const sb = getSupabaseAdmin();
+  if (!sb) throw new Error("Supabase not configured");
+  const pageSize = opts.pageSize ?? EVENTS_PAGE_SIZE;
+  // Keyset needs the id. Selected even if the caller didn't ask for it.
+  const cols = /(^|,)\s*id\s*(,|$)/.test(columns) ? columns : `${columns}, id`;
+  const out: T[] = [];
+  let cursor: { at: string; id: string } | null = null;
+  let pages = 0;
+  let capped = false;
+  // Every page must move the cursor (checked below), so the read ends by
+  // itself; this is a last backstop that holds even at one row per page.
+  const maxPages = opts.maxRows + 50;
+  while (pages < maxPages) {
+    // The plain upper bound is what lets Postgres start the index scan at the
+    // cursor; the OR alone (no row comparison in PostgREST) would make it walk
+    // down from the newest row on every page, which is offset paging again.
+    // The cursor is never after upTo, so it replaces it once there is one.
+    let q: any = sb.from("analytics_events").select(cols).lte("created_at", cursor ? cursor.at : opts.upTo);
+    if (cursor) {
+      q = q.or(`created_at.lt.${pgq(cursor.at)},and(created_at.eq.${pgq(cursor.at)},id.lt.${pgq(cursor.id)})`);
+    }
+    q = q.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(pageSize);
+    const { data, error } = await q;
+    if (error) throw new Error(`analytics_events: ${error.message}`);
+    if (!data || data.length === 0) break;
+    pages++;
+    for (const r of data as T[]) {
+      if (out.length >= opts.maxRows) { capped = true; break; }
+      out.push(r);
+    }
+    if (capped || out.length >= opts.maxRows) { capped = true; break; }
+    const last = (data as any[])[data.length - 1];
+    const next = { at: String(last.created_at), id: String(last.id) };
+    if (cursor && next.at === cursor.at && next.id === cursor.id) {
+      throw new Error("analytics_events: keyset cursor did not advance");
+    }
+    cursor = next;
+  }
+  if (pages >= maxPages) throw new Error("analytics_events: page limit reached without finishing");
+  out.reverse();
+  return { rows: out, pages, capped };
 }
 
 // ─── Shared base data ───────────────────────────────────────────────────────
@@ -131,6 +231,8 @@ export interface BaseData {
    * Undefined if the count query failed — never guessed.
    */
   eventsInDatabase?: number;
+  /** How the events load went: snapshot time, pages, time taken, cap. */
+  eventsLoad?: EventsLoad;
   // analytics events, lightweight projection
   events: Array<{
     user_id: string | null;
@@ -232,26 +334,37 @@ export async function loadBaseData(): Promise<BaseData> {
    * is_internal: a missing column is a query ERROR, so an environment without
    * the migration still gets the legacy projection rather than a blank page.
    */
-  let events: BaseData["events"];
+  const upTo = new Date().toISOString();
+  const cap = eventsMaxRows();
+  const started = Date.now();
+  let loaded: { rows: BaseData["events"]; pages: number; capped: boolean };
   try {
-    events = await fetchAll<BaseData["events"][number]>(
-      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata, app_version, route, entitlement_state_snapshot",
-      { order: ["created_at", "id"] },
+    loaded = await fetchEventsNewestFirst<BaseData["events"][number]>(
+      "user_id, anonymous_id, session_id, event_name, created_at, metadata, app_version, route, entitlement_state_snapshot",
+      { upTo, maxRows: cap },
     );
   } catch {
-    events = await fetchAll<BaseData["events"][number]>(
-      "analytics_events", "user_id, anonymous_id, session_id, event_name, created_at, metadata, app_version, route",
-      { order: ["created_at", "id"] },
+    loaded = await fetchEventsNewestFirst<BaseData["events"][number]>(
+      "user_id, anonymous_id, session_id, event_name, created_at, metadata, app_version, route",
+      { upTo, maxRows: cap },
     );
   }
+  const events = loaded.rows;
+  const eventsLoad: EventsLoad = {
+    upTo, pages: loaded.pages, ms: Date.now() - started, cap, capped: loaded.capped,
+    oldestLoaded: events.length ? events[0].created_at : null,
+  };
+  console.log(`[founder] analytics_events: ${events.length} rows in ${eventsLoad.ms}ms (${eventsLoad.pages} pages)${loaded.capped ? ` — CAPPED at ${cap}, oldest loaded ${eventsLoad.oldestLoaded}` : ""}`);
 
   /**
-   * The exact row count, so a loader that drops or duplicates rows is caught
-   * on every page load rather than assumed away. A failed count stays
-   * undefined; the dashboard then says "unverified" instead of inventing one.
+   * The exact row count over the SAME snapshot (created_at <= upTo), so a
+   * loader that drops or duplicates rows is caught on every page load rather
+   * than assumed away, and new activity during the load can't look like
+   * loss. A failed count stays undefined; the dashboard then says
+   * "unverified" instead of inventing one.
    */
   let eventsInDatabase: number | undefined;
-  try { eventsInDatabase = await countRows("analytics_events"); } catch { eventsInDatabase = undefined; }
+  try { eventsInDatabase = await countRows("analytics_events", { col: "created_at", lte: upTo }); } catch { eventsInDatabase = undefined; }
 
   /**
    * Ghost = never finished signup, older than the grace window, AND no
@@ -269,7 +382,7 @@ export async function loadBaseData(): Promise<BaseData> {
 
   const profileIds = new Set(profiles.map(p => p.id));
   return {
-    profiles, profileIds, events, ghostProfiles, eventsInDatabase,
+    profiles, profileIds, events, ghostProfiles, eventsInDatabase, eventsLoad,
     // undefined (not 0) when the migration has not run, so the dashboard can
     // say "not yet available" rather than claiming zero internal accounts.
     internalProfiles: hasInternalColumn ? internalProfiles : undefined,
