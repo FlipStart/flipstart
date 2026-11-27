@@ -27,8 +27,10 @@ import {
   renderBrands, renderDiamonds, renderListings, renderSold, renderScans,
 } from "./founderDashboardV3";
 import type { Metric, Trust, PaywallRow, PaidJourney, Scope, AnalysisWindow, RangePreset } from "./founderMetricsV4";
-import { formatCentralDateTime } from "./dashboardDates";
+import { formatCentralDateTime, formatDayLabel, centralDay } from "./dashboardDates";
 import { REASON_LABEL, buildScanReliability } from "./scanReliability";
+import type { Cell, CompareRow, ReleaseImpact } from "./releaseImpact";
+import type { Tile, TileGroup } from "./executiveKpis";
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -109,6 +111,8 @@ const buckets = (obj: Record<string, number>, total?: number, unit = "Users") =>
   const t = total ?? Object.values(obj).reduce((a, b) => a + b, 0);
   return table(["Bucket", unit, "Share"], Object.entries(obj).map(([k, v]) => [esc(k), num(v), t ? pct(v / t) : "—"]));
 };
+/** A block kept one click down: detail that's useful, but not on first read. */
+const more = (summary: string, body: string) => `<details class="more"><summary>${esc(summary)}</summary>${body}</details>`;
 const legend = () => `<div class="legend">${(["EXACT", "DERIVED", "ESTIMATED", "PARTIAL", "CONFLICT", "NOT_TRACKED", "LEGACY"] as Trust[]).map(t => `${badge(t)} ${esc(TRUST_TIP[t])}`).join(" &nbsp; ")}</div>`;
 
 // ── Sections ─────────────────────────────────────────────────────────────────
@@ -183,12 +187,13 @@ function renderIntegrity(di: any): string {
     esc(i.label), sevPill(i.severity), `<span class="muted">${esc(i.sourceA)}</span>`, `<span class="muted">${esc(i.sourceB)}</span>`,
     when(i.at), `<span class="muted">${esc(i.notes)}</span>`,
   ]);
-  const more = di.issues.length > 150 ? `<div class="muted">Showing 150 of ${num(di.issues.length)}, most severe first.</div>` : "";
-  return section("integrity", "1b · Data Integrity", head + evGrid +
+  const moreNote = di.issues.length > 150 ? `<div class="muted">Showing 150 of ${num(di.issues.length)}, most severe first.</div>` : "";
+  return section("integrity", "1b · Data Integrity", head +
+    `<div class="card wide"><div class="card-h">Issues — most severe first</div>${rows.length ? table(["User", "Issue", "Severity", "Source A", "Source B", "When", "Notes"], rows, "compact") : `<div class="muted">No issues found.</div>`}${moreNote}
+     <div class="muted">CONFLICT: sources that must agree, don't. WARNING: data missing or suspect, so numbers may be floors. INFO: looks odd, has an innocent explanation — never counted against health. ${esc(di.scopeNote)}</div></div>` +
+    more("Event counters, scan-source reconciliation, and behaviour", evGrid +
     `<div class="two"><div class="card"><div class="card-h">Scan sources — different things, not expected to match</div>${recon}</div>
-     <div class="card"><div class="card-h">Behaviour, not errors</div>${grid([m("Scanned, never saved", di.behaviour.scannedNeverSaved), m("Save rate", di.behaviour.saveRate)])}<div class="muted">${esc(di.behaviour.note)}</div></div></div>
-     <div class="card wide"><div class="card-h">Issues — most severe first</div>${rows.length ? table(["User", "Issue", "Severity", "Source A", "Source B", "When", "Notes"], rows, "compact") : `<div class="muted">No issues found.</div>`}${more}
-     <div class="muted">CONFLICT: sources that must agree, don't. WARNING: data missing or suspect, so numbers may be floors. INFO: looks odd, has an innocent explanation — never counted against health. ${esc(di.scopeNote)}</div></div>`,
+     <div class="card"><div class="card-h">Behaviour, not errors</div>${grid([m("Scanned, never saved", di.behaviour.scannedNeverSaved), m("Save rate", di.behaviour.saveRate)])}<div class="muted">${esc(di.behaviour.note)}</div></div></div>`),
     di.conflicts ? `${di.conflicts} conflict(s)` : "");
 }
 
@@ -435,6 +440,7 @@ function renderFreeToPaid(fp: any): string {
     "observed association, not causation");
 }
 
+const PU_HEAD = ["#", "User", "Plan", "7d", "30d", "Lifetime", "Sessions", "Active days", "Listings", "Hunts", "Last active", "Est. cost"];
 function renderPowerUsers(pu: any): string {
   if (!pu || typeof pu !== "object") return section("power", "7b · Power Users", absent("Power Users", pu));
   // Wrapped in its section so the contents link still lands somewhere.
@@ -448,7 +454,7 @@ function renderPowerUsers(pu: any): string {
   return section("power", "7b · Power Users",
     `<div class="two"><div class="card"><div class="card-h">Thresholds</div>${tiers}</div>
      <div class="card"><div class="card-h">How this is ranked</div><div class="muted">Scans in the last 30 days, then lifetime scans. Internal accounts are excluded by the scope. Cost is ESTIMATED at the dashboard's per-action rates.</div></div></div>
-     <div class="card wide"><div class="card-h">Top ${num(pu.top.length)}</div>${rows.length ? table(["#", "User", "Plan", "7d", "30d", "Lifetime", "Sessions", "Active days", "Listings", "Hunts", "Last active", "Est. cost"], rows, "compact") : `<div class="muted">No scans yet.</div>`}</div>`);
+     <div class="card wide"><div class="card-h">Top ${num(Math.min(10, pu.top.length))}</div>${rows.length ? table(PU_HEAD, rows.slice(0, 10), "compact") : `<div class="muted">No scans yet.</div>`}${rows.length > 10 ? more(`Ranks 11 to ${num(rows.length)}`, table(PU_HEAD, rows.slice(10), "compact")) : ""}</div>`);
 }
 
 function renderDistributions(ds: any): string {
@@ -492,18 +498,14 @@ function renderFunnel(fs: any): string {
   if (!fs || typeof fs !== "object") return section("funnel", "3b · First-Session Funnel", absent("First-Session Funnel", fs));
   // Wrapped in its section so the contents link still lands somewhere.
   if (isErr(fs)) return section("funnel", "3b · First-Session Funnel", errorCard("First-Session Funnel", fs));
-  const o = fs.offerOutcomes, totalO = o.pro + o.free + o.activation_pending + o.unknown;
-  return section("funnel", "3b · First-Session Funnel",
-    `<div class="card"><div class="card-h">Before the account <span class="muted">— by device, ${num(fs.devices)} that started onboarding</span></div>${funnelTable(fs.before, "Devices")}</div>
-     <div class="card"><div class="card-h">After the account <span class="muted">— by user, ${num(fs.users)} acquired in range, followed forward</span></div>${funnelTable(fs.after, "Users")}</div>
-     <div class="two"><div class="card"><div class="card-h">How the onboarding offer was answered</div>${table(["Outcome", "Users", "Share"], [
-        ["Continue Free", num(o.free), totalO ? pct(o.free / totalO) : "—"], ["Subscribed", num(o.pro), totalO ? pct(o.pro / totalO) : "—"],
-        ["Activation pending", num(o.activation_pending), totalO ? pct(o.activation_pending / totalO) : "—"],
-        ...(o.unknown ? [["Outcome not recorded", num(o.unknown), pct(o.unknown / totalO)]] : []),
-      ], "compact")}<div class="muted">From <code>onboarding_completed</code>, which records the offer's outcome — exact in every era, unlike the generic Continue Free event that starts at the V4 cutover.</div></div>
-     <div class="card"><div class="card-h">Beside the funnel</div>${grid([m("Saved a scan", fs.side.saved), m("Started an analysis, no completed scan", fs.side.analysisNoScan), m("…with a failed analysis", fs.side.failedNoScan)])}
-     <div class="muted">Saving is shown here, not as a stage: scanning without saving is normal, and a nested "saved" stage would drop people who simply scan.</div></div></div>
-     <div class="note-block">${badge("NOT_TRACKED")} ${esc(fs.gaps.join(" and "))} have no events, so the funnel cannot split the step between finishing onboarding and capturing a photo. ${esc(fs.note)}</div>`,
+  // V5: the one funnel, account created → third scan. The offer's answers live in Onboarding V2.
+  const gaps = fs.gaps?.length ? `<div class="note-block">${badge("NOT_TRACKED")} ${esc(fs.gaps.join(" and "))} have no events, so the funnel cannot split the step between finishing onboarding and capturing a photo.</div>` : "";
+  return section("funnel", "3b · Signup → third scan",
+    `<div class="card"><div class="card-h">From account to third scan <span class="muted">— ${num(fs.users)} people who signed up in the range, followed forward</span></div>${funnelTable(fs.after, "Users")}</div>${gaps}` +
+    more("Before the account: onboarding by phone", `<div class="card"><div class="card-h">Before the account <span class="muted">— by phone, ${num(fs.devices)} that started onboarding</span></div>${funnelTable(fs.before, "Devices")}</div>`) +
+    more("Beside the funnel: saving, analyses that never finished", `<div class="card">${grid([m("Saved a scan", fs.side.saved), m("Started an analysis, no completed scan", fs.side.analysisNoScan), m("…with a failed analysis", fs.side.failedNoScan)])}
+     <div class="muted">Saving is shown here, not as a stage: scanning without saving is normal, and a nested "saved" stage would drop people who simply scan.</div></div>`) +
+    `<div class="muted">${esc(fs.note)}</div>`,
     "where new users stop");
 }
 
@@ -545,14 +547,38 @@ function renderRetentionSegments(rs: any): string {
   if (!rs || typeof rs !== "object") return section("retseg", "11b · Retention by Segment", absent("Retention by Segment", rs));
   // Wrapped in its section so the contents link still lands somewhere.
   if (isErr(rs)) return section("retseg", "11b · Retention by Segment", errorCard("Retention by Segment", rs));
-  const c = (x: any) => x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : "—";
+  const week = Array.isArray(rs.firstWeek) && rs.firstWeek.length
+    ? `<div class="card wide"><div class="card-h">By first week: Hunt, leaderboard, notifications</div>${table(["Segment", "D7", "D14", "D30"],
+        rs.firstWeek.map((x: any) => [esc(x.label), retCell(x.d7), retCell(x.d14), retCell(x.d30)]), "compact")}
+       <div class="muted">${esc(rs.firstWeekNote)}</div></div>` : "";
   return section("retseg", "11b · Retention by Segment",
-    `<div class="card wide">${table(["Segment", "Users", "D1", "D3", "D7", "D14", "D30"],
-      rs.rows.map((x: any) => [esc(x.label), num(x.users), c(x.d1), c(x.d3), c(x.d7), c(x.d14), c(x.d30)]), "compact")}
-     <div class="muted">${esc(rs.note)}</div></div>`, "first-day segments");
+    `<div class="card wide"><div class="card-h">By first day: scanning and paying</div>${table(["Segment", "Users", "D1", "D7", "D14", "D30"],
+      rs.rows.map((x: any) => [esc(x.label), num(x.users), retCell(x.d1), retCell(x.d7), retCell(x.d14), retCell(x.d30)]), "compact")}
+     <div class="muted">${esc(rs.note)}</div></div>` + week +
+    more("D3 by first-day segment", table(["Segment", "D3"], rs.rows.map((x: any) => [esc(x.label), retCell(x.d3)]), "compact")),
+    "first-day and first-week segments");
 }
 
 const cell = (x: any) => x && x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : "—";
+
+/**
+ * A retention number with its maturity: n/d, "partial · d of total old
+ * enough" while some of the cohort is too young, "immature" (and when the
+ * first person is ready) while all of it is, "noisy" under 30.
+ */
+const retCell = (x: any): string => {
+  if (!x) return "—";
+  if (!x.d) return x.total ? `${riTag("ri-imm", "immature", "Nobody in this group is old enough yet")}${x.firstDue ? ` <span class="muted">ready ${esc(formatDayLabel(x.firstDue))}</span>` : ""}` : `<span class="muted">—</span>`;
+  const tags = [
+    x.total && x.d < x.total ? riTag("ri-part", `partial · ${num(x.d)} of ${num(x.total)} old enough`, "Only people old enough for this number are counted") : "",
+    x.d < 30 ? riTag("ri-noisy", "noisy · n<30", "Fewer than 30 behind this number") : "",
+  ].filter(Boolean).join(" ");
+  return `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span>${tags ? ` ${tags}` : ""}`;
+};
+const retTile = (label: string, x: any) => `<div class="stat"><div class="stat-v">${x && x.d ? pct(x.value) : `<span class="muted">${x?.total ? "immature" : "—"}</span>`} ${badge("DERIVED")}</div>
+  <div class="stat-l">${esc(label)}</div><div class="stat-s">${x && !x.d && x.total
+    ? (x.firstDue ? `nobody old enough yet · ready ${esc(formatDayLabel(x.firstDue))}` : "nobody old enough yet")
+    : retCell(x).replace(/^[\d.]+% /, "")}</div></div>`;
 
 function renderAppVersions(av: any): string {
   if (!av || typeof av !== "object") return section("versions", "12b · App Versions", absent("App Versions", av));
@@ -572,6 +598,118 @@ function renderAppVersions(av: any): string {
     "event-time version");
 }
 
+// ── Release Impact (V5) ─────────────────────────────────────────────────────
+
+const shortDate = (ms: number) => formatDayLabel(centralDay(new Date(ms))) || "—";
+const riTag = (cls: string, text: string, tip = "") => `<span class="ri-tag ${cls}"${tip ? ` title="${esc(tip)}"` : ""}>${esc(text)}</span>`;
+
+/** One side of a comparison: value, n, and what state it's in. */
+function riCell(c: Cell | null | undefined, kind: CompareRow["kind"]): string {
+  if (!c) return `<span class="muted">—</span>`;
+  if (c.status === "not_tracked") return `${badge("NOT_TRACKED")} <span class="muted">${esc(c.note ?? "not tracked")}</span>`;
+  if (c.status === "none") return `<span class="muted" title="${esc(c.note ?? "")}">—</span>`;
+  if (c.status === "immature") {
+    return `${riTag("ri-imm", "immature", "Nobody in this group is old enough for this number yet.")}${c.matureOn ? ` <span class="muted">first users ready ${esc(formatCentralDateTime(c.matureOn) ?? "")}</span>` : ""}`;
+  }
+  const v = c.value;
+  const shown = kind === "rate" ? `${pct(v)} <span class="muted">${num(c.n)}/${num(c.d)}</span>`
+    : kind === "hours" ? `${hrs(v)} <span class="muted">n=${num(c.d)}</span>`
+    : kind === "per_user" ? `${num(v, 2)} <span class="muted">n=${num(c.d)}</span>`
+    : `${num(v)}`;
+  const tags = [
+    c.status === "partial" ? riTag("ri-part", `partial · ${num(c.d)} of ${num(c.total)} old enough`, "Only users old enough for this number are counted.") : "",
+    c.noisy && kind !== "count" ? riTag("ri-noisy", "noisy · n<30", "Fewer than 30 behind this number. Shown, never called better or worse.") : "",
+  ].filter(Boolean).join(" ");
+  return `${shown}${tags ? ` ${tags}` : ""}`;
+}
+
+function riChange(r: CompareRow): string {
+  if (r.change === null) return `<span class="muted">—</span>`;
+  const x = r.change, sign = x > 0 ? "+" : x < 0 ? "−" : "±", a = Math.abs(x);
+  const t = r.kind === "rate" ? `${sign}${a.toFixed(1)} pts` : r.kind === "hours" ? `${sign}${a.toFixed(1)}h`
+    : r.kind === "per_user" ? `${sign}${a.toFixed(2)}` : `${sign}${num(a)}`;
+  return esc(t);
+}
+
+const RI_CALL: Record<CompareRow["call"], string> = {
+  better: `<span class="ri-call ri-better">Better</span>`,
+  worse: `<span class="ri-call ri-worse">Worse</span>`,
+  no_clear_change: `<span class="muted">No clear change</span>`,
+  too_few: `<span class="muted" title="Under 30 on at least one side">Too few to call</span>`,
+  not_comparable: `<span class="muted">—</span>`,
+  no_test: `<span class="muted">—</span>`,
+};
+
+function riTable(rows: CompareRow[], base: string, target: string): string {
+  return table(["", base, target, "Change", "Read"], rows.map(r => [
+    `${esc(r.label)}${r.help ? `<div class="muted">${esc(r.help)}</div>` : ""}`,
+    riCell(r.base, r.kind), riCell(r.target, r.kind), riChange(r), RI_CALL[r.call],
+  ]), "compact ri");
+}
+
+function renderReleaseImpact(ri: ReleaseImpact | any): string {
+  const title = "Release Impact";
+  if (!ri || typeof ri !== "object") return section("impact", title, absent(title, ri));
+  if (isErr(ri)) return section("impact", title, errorCard(title, ri));
+  const c = ri.config, base = c.baseline ?? "baseline", target = c.target ?? "new version";
+  const problems = c.problems.length ? `<div class="banner warn">${c.problems.map((p: string) => `<div>${esc(p)}</div>`).join("")}</div>` : "";
+  if (!ri.ready) return section("impact", title, problems || `<div class="card muted">Nothing to compare yet.</div>`);
+
+  const days = c.windowDays >= 1 ? `${num(c.windowDays, 1)} days` : `${num(c.windowDays * 24, 1)} hours`;
+  const head = `<div class="card"><div class="ri-head"><span><strong>${esc(target)}</strong> <span class="muted">vs</span> <strong>${esc(base)}</strong></span>
+    <span><span class="muted">Release</span> ${when(c.releaseAt)} ${c.releaseAtSource === "env" ? `<span class="muted">(RELEASE_IMPACT_AT)</span>` : riTag("ri-noisy", "estimated", "First event on this version; set RELEASE_IMPACT_AT")}</span>
+    <span><span class="muted">Matched windows</span> ${esc(days)} each</span>
+    <span><span class="muted">Before</span> ${esc(shortDate(c.pre.start))} → ${esc(shortDate(c.pre.end))} · <span class="muted">After</span> ${esc(shortDate(c.post.start))} → ${esc(shortDate(c.post.end))}</span></div>
+    <div class="muted">${c.baselineSource === "env" ? "Baseline set by RELEASE_IMPACT_BASELINE." : `Baseline: the version most users were on in the ${num(28)} days before.`} The page's date range doesn't apply here; this sets its own windows of equal length.</div></div>`;
+
+  const rules = `<details class="more"><summary>How to read this</summary><ul class="ri-rules">${ri.rules.map((r: string) => `<li>${esc(r)}</li>`).join("")}</ul></details>`;
+
+  const cohorts = `<div class="card wide"><div class="card-h">New users, by the version they started on <span class="muted">— activation, paying, retention</span></div>
+    ${riTable(ri.cohorts, base, target)}
+    <div class="muted">${esc(base)}: signed up in the window before the release and started on ${esc(base)}. ${esc(target)}: signed up after it and started on ${esc(target)}. The force update moves existing users, so they're left out of this comparison.</div></div>`;
+
+  const activity = `<div class="card wide"><div class="card-h">Activity on each version <span class="muted">— reliability and engagement, every user on that version</span></div>
+    ${riTable(ri.activity, base, target)}</div>`;
+
+  const mix = ri.ratingMix;
+  const mixCell = (m: any, r: string) => m ? `${num(m.counts[r])} <span class="muted">${pct(m.total ? m.counts[r] / m.total : null)}</span>` : "";
+  const ratingNames: Record<string, string> = { STRONG_BUY: "Strong Buy", BUY: "Buy", RISKY_BUY: "Risky Buy", SKIP: "Skip" };
+  const ratings = mix ? `<div class="card"><div class="card-h">Ratings users were shown</div>
+    ${table(["Rating", base, target], Object.keys(ratingNames).map(r => [esc(ratingNames[r]),
+      mix.base ? mixCell(mix.base, r) : `${badge("NOT_TRACKED")}`, mix.target ? mixCell(mix.target, r) : `<span class="muted">none yet</span>`]), "compact")}
+    <div class="muted">${mix.baseNote ? esc(mix.baseNote) + " " : ""}${mix.target ? `n=${num(mix.target.total)} on ${esc(target)}${mix.target.total < 30 ? " · noisy" : ""}.` : ""} A mix isn't better or worse by itself: it's here to spot a release that suddenly rates everything Skip or everything Strong Buy.</div></div>` : "";
+
+  const e = ri.engine;
+  const engine = `<div class="card wide"><div class="card-h">AI engine, by prompt version and model <span class="muted">— server scan outcomes, both windows</span></div>
+    ${e.note ? `<div class="banner warn">${esc(e.note)}</div>` : ""}
+    ${e.status === "ok" ? table(["Prompt · model", "Attempts", "Failed (server)", "Soft fails", "High confidence", "Median time", "Seen"],
+      e.rows.map((r: any) => [esc(r.label), num(r.attempts), riCell(r.failureRate, "rate"), riCell(r.softRate, "rate"), riCell(r.highConfidence, "rate"),
+        r.medianSeconds.value === null ? "—" : `${num(r.medianSeconds.value, 1)}s <span class="muted">n=${num(r.medianSeconds.d)}</span>`,
+        `${when(r.firstSeen)} → ${when(r.lastSeen)}`]), "compact ri") : ""}
+    <div class="muted">Prompts and models change on the server for every app version at once, so they're compared with each other, not by app version. Failed = the server gave no result; soft fails = a result with a warning (low confidence, several items…).</div></div>`;
+
+  return section("impact", title, problems + head + rules + cohorts + activity + ratings + engine, "previous version vs new");
+}
+
+/** Four tiles on Executive: the release's headline, each with its n and status. */
+function renderReleaseStrip(ri: ReleaseImpact | any): string {
+  if (!ri || typeof ri !== "object" || isErr(ri)) return "";
+  const c = ri.config;
+  if (!ri.ready) {
+    return `<a class="ri-strip-msg" href="#impact"><strong>Release Impact</strong> <span class="muted">— ${esc(c.problems[0] ?? "nothing to compare yet")}</span></a>`;
+  }
+  // Only a verdict that cleared the test sits next to the number; anything else is a quiet line below.
+  const verdict = (r: CompareRow) => r.call === "better" || r.call === "worse" ? RI_CALL[r.call] : "";
+  const quiet = (r: CompareRow) => r.call === "no_clear_change" ? "No clear change · " : r.call === "too_few" ? "Too few to call · " : "";
+  const tile = (r: CompareRow, label: string) => `<a class="stat ri-tile" href="#impact">
+    <div class="stat-v">${r.target.status === "immature" || r.target.value === null ? `<span class="muted">${r.target.status === "immature" ? "immature" : "—"}</span>` : pct(r.target.value)} ${verdict(r)}</div>
+    <div class="stat-l">${esc(label)}</div>
+    <div class="stat-s">${esc(quiet(r))}${esc(c.target)} ${r.target.d ? `n=${num(r.target.d)}` : ""} · ${esc(c.baseline ?? "baseline")} ${r.base.value === null ? "—" : pct(r.base.value)}${r.base.d ? ` n=${num(r.base.d)}` : ""}</div></a>`;
+  const [act7, paid7, d1, fail] = ri.strip as CompareRow[];
+  return `<div class="ri-strip"><div class="attn-h">Release Impact <span class="muted">— ${esc(c.target)} vs ${esc(c.baseline ?? "baseline")}, ${esc(c.windowDays >= 1 ? `${num(c.windowDays, 1)} days` : "under a day")} after release${c.releaseAtSource === "env" ? "" : " · release time estimated"}</span></div>
+    <div class="stat-grid">${tile(act7, "Activation 7d")}${tile(paid7, "Paid within 7d")}${tile(d1, "D1 retention")}${tile(fail, "Scans ending on a fail screen")}</div></div>`;
+}
+
 // ── Scan reliability (Phase 6) ───────────────────────────────────────────────
 
 const reasonLabel = (k: string) => esc(REASON_LABEL[k] ?? k);
@@ -581,12 +719,99 @@ const ACTION_LABEL: Record<string, string> = {
   see_plans: "See plans / See Pro", scan_store: "Open Scan Store", update: "Update FlipStart",
 };
 const r8 = (x: any) => x && x.d ? `${pct(x.value)} <span class="muted">${num(x.n)}/${num(x.d)}</span> ${small(x.d)}` : `0% <span class="muted">0/0</span>`;
+// ── Quality (V5 Phase 5) ────────────────────────────────────────────────────
+
+const secs = (v: number | null | undefined) => v === null || v === undefined || !Number.isFinite(v) ? "—" : `${v < 10 ? v.toFixed(1) : Math.round(v)}s`;
+const ratingRows = (rows: any[]) => {
+  const max = Math.max(1, ...rows.map((r: any) => r.count));
+  return rows.map((r: any) => [esc(r.label), num(r.count), r.share === null ? "—" : pct(r.share), `<div style="min-width:110px">${bar(r.count / max * 100)}</div>`]);
+};
+
+export function renderScanQuality(q: any, legacy?: any): string {
+  const id = "scans", title = "Scans";
+  if (!q || typeof q !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(q)) return section(id, title, errorCard("Scans", q));
+  const fr = q.failRate;
+  const headline = fr.d
+    ? `<div class="banner"><b>${pct(fr.value)}</b> of scan attempts ended on a fail screen — ${num(fr.n)} of ${num(fr.d)}. What users saw, from the app's own events, these dates. The same definition as the Executive tile.</div>`
+    : `<div class="banner">No scans in these dates.</div>`;
+  const rt = q.retries, rm = q.rating;
+  const ratingBlock = rm.tracked
+    ? `<div class="card"><div class="card-h">The rating each result opened with ${badge("EXACT")} <span class="muted">— ${num(rm.rated)} results from app 2.2.2</span></div>
+      ${table(["Rating", "Results", "Share", ""], ratingRows(rm.atOpen), "compact")}
+      <div class="muted">${[rm.notWorkedOut ? `${num(rm.notWorkedOut)} couldn't be worked out` : "", rm.olderApp ? `${num(rm.olderApp)} results from older apps don't say` : "", rm.serverSent ? `the server sent its own rating on ${num(rm.serverSent)}` : ""].filter(Boolean).join(" · ")}</div>
+      ${more(`The rating on screen when saved (${num(rm.atSave.saves)} saves)`,
+        `<div class="two"><div><div class="card-h">At the suggested buy price</div>${table(["Rating", "Saves", "Share", ""], ratingRows(rm.atSave.suggested), "compact")}</div>
+         <div><div class="card-h">At a price the user typed (${num(rm.atSave.enteredCount)})</div>${table(["Rating", "Saves", "Share", ""], ratingRows(rm.atSave.entered), "compact")}</div></div>`)}
+      <div class="muted">${esc(rm.note)}</div></div>`
+    : `<div class="card"><div class="card-h">The rating each result opened with</div><div class="muted">Starts with app 2.2.2, which records the rating users were actually shown (recommendation_shown). Older apps logged the server's rating field, which the V1 server leaves empty, so there's nothing to show from them.</div></div>`;
+  const dailyRows = q.daily.map((d: any) => [esc(formatDayLabel(d.day) || d.day), num(d.completed), num(d.failScreens), d.rate === null ? "—" : pct(d.rate)]);
+  const k = q.kinds;
+  const kinds = table(["Fail screen", "Shown"], [
+    ["Low confidence (an unsure result)", num(k.soft)], ["…of which continued past, so they got a result", num(k.softContinued)],
+    ["Hard failure (no result)", num(k.hard)], ["Photo didn't load", num(k.photo)], ["Older app, kind not recorded", num(k.olderApp)],
+  ], "compact");
+  const retryRows = rt.byReason.map((x: any) => [esc(REASON_LABEL[x.key] ?? x.key), num(x.count)]);
+  const v3 = legacy && typeof legacy === "object" && !isErr(legacy) ? legacy : null;
+  return section(id, title,
+    headline +
+    grid([m("Ended on a fail screen", q.failRate), m("Scan attempts", q.attempts), m("Results shown", q.completed),
+      m("People who hit a fail screen", q.peopleHit), m("Needed an automatic retry", rt.share), m("Retried, then got a result", rt.rescued)]) +
+    `<div class="muted">A low-confidence screen the user continued past ended in a result, so it isn't a fail. Retries are invisible to the user: a scan that needed one and then worked counts as a result above. Accounts in scope.</div>` +
+    `<div class="two">${ratingBlock}<div class="card"><div class="card-h">Day by day <span class="muted">— the last ${num(q.daily.length)} days of the range, Central</span></div>
+      ${table(["Day", "Results", "Fail screens", "Fail rate"], dailyRows, "compact")}</div></div>` +
+    more("Fail screens by kind, and automatic retries",
+      `<div class="two"><div>${kinds}</div><div>${table(["First retry because", "Scans"], retryRows, "compact")}
+       <div class="muted">${num(rt.scans)} scans retried (${num(rt.events)} retries in all): ${num(rt.outcome.result)} then showed a result, ${num(rt.outcome.failed)} still failed, ${num(rt.outcome.unknown)} with no ending recorded (cancelled, or the app closed). ${num(rt.hardRetried)} hard failures say they had retried.</div></div></div>`) +
+    (v3 ? more("Scan volume (the older counts)", grid([
+      card("Scans started", num(v3.started)), card("Total saved (table)", num(v3.totalSaved)), card("Listing generations", num(v3.listingGen)),
+      card("Listing rate/completed", v3.listingRatePerCompleted == null ? "—" : `${num(v3.listingRatePerCompleted, 1)}%`),
+      card("Avg scans/active/day", num(v3.avgPerActive, 2)), card("Median scans/active", num(v3.median)), card("% users 5+ scans/day", v3.pct5Plus == null ? "—" : `${num(v3.pct5Plus, 1)}%`),
+    ])) : ""),
+    "app events");
+}
+
+export function renderTrustV5(t: any, comps: any): string {
+  const id = "trust", title = "Scan trust & sold comps";
+  if (!t || typeof t !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(t)) return section(id, title, errorCard("Scan trust", t));
+  const scoreCell = (r: any) => r.rated ? `${pct(r.score)} <span class="muted">${num(r.rated)} rated</span> ${small(r.rated)}` : "—";
+  const rows = (xs: any[], label = (r: any) => esc(r.key)) => xs.slice(0, 12).map((r: any) => [label(r), num(r.rated), num(r.accurate), num(r.somewhat), num(r.bad), scoreCell(r)]);
+  const head = ["", "Rated", "Accurate", "Somewhat", "Bad", "Score"];
+  const recent = t.recent.map((r: any) => [when(r.date), esc(r.item ?? "—"), esc(r.brand ?? "—"), esc(r.category ?? "—"), esc(r.rating ?? "—"), esc(r.shown ?? "—"),
+    r.aiValue !== null ? usd(r.aiValue, 0) : "—", r.userValue !== null ? usd(r.userValue, 0) : "—", r.noteLength ? `${num(r.noteLength)} ch` : "—"]);
+  const trustBody = t.total
+    ? grid([
+        `<div class="stat"><div class="stat-v">${pct(t.score)} ${badge("DERIVED")}</div><div class="stat-l">Trust score</div><div class="stat-s">${num(t.rated)} rated ${small(t.rated)} <span class="muted">accurate + ½ somewhat</span></div></div>`,
+        m("Results that got feedback", t.feedbackRate), card("Accurate", num(t.accurate)), card("Somewhat", num(t.somewhat)), card("Bad", num(t.bad)),
+      ]) +
+      `<div class="card"><div class="card-h">Trust by the rating shown <span class="muted">— is a Strong Buy believed?</span></div>${table(head.map((h, i) => i === 0 ? "Rating shown" : h), rows(t.byRating.filter((r: any) => r.rated || ["STRONG_BUY", "BUY", "RISKY_BUY", "SKIP"].includes(r.key)), (r: any) => esc(r.label)), "compact")}</div>` +
+      more("Trust by category and brand",
+        `<div class="two"><div><div class="card-h">By category</div>${table(head.map((h, i) => i === 0 ? "Category" : h), rows(t.byCategory), "compact")}</div>
+         <div><div class="card-h">By brand</div>${table(head.map((h, i) => i === 0 ? "Brand" : h), rows(t.byBrand), "compact")}</div></div>
+         <div class="card-h">Lowest-scoring categories (2+ ratings)</div>${table(head.map((h, i) => i === 0 ? "Category" : h), rows(t.worst), "compact")}
+         ${t.decisions.length ? `<div class="muted">What they said they did with the item: ${t.decisions.map((x: any) => `${esc(x.key)} ${num(x.count)}`).join(" · ")}${t.decisionsUnanswered ? ` · didn't say ${num(t.decisionsUnanswered)}` : ""}</div>` : ""}`) +
+      more(`Recent feedback (${num(t.recent.length)})`, `<div style="overflow-x:auto">${table(["When", "Item", "Brand", "Category", "Rating", "Shown", "AI $", "User $", "Notes"], recent, "compact")}</div>`)
+    : `<div class="card"><div class="muted">No feedback sent in these dates.</div></div>`;
+  let compsBody = "";
+  if (comps && isErr(comps)) compsBody = errorCard("Sold comps", comps);
+  else if (comps && typeof comps === "object") {
+    compsBody = `<div class="card"><div class="card-h">Sold comps on Hunt items ${badge("EXACT")} <span class="muted">— live searches in these dates · Hunt only</span></div>${comps.tracked
+      ? grid([m("Searches", comps.searches), m("Found sold listings", comps.found), m("Nothing close enough", comps.none), m("Search failed or timed out", comps.unavailable),
+          m("Had an exact or strong match", comps.exactOrStrong), m("Listings shown (median)", comps.compsMedian), m("Search time, seconds (median)", comps.secondsMedian, { dp: 1 }), m("Search time, seconds (90th pct)", comps.secondsP90, { dp: 1 })])
+        + `<div class="muted">${num(comps.reopened)} saved results reopened (not searches). ${comps.byAvailability.length ? `Without results: ${comps.byAvailability.map((x: any) => `${esc(x.key)} ${num(x.count)}`).join(" · ")}.` : ""} The Sold comps inspector under Admin shows individual searches.</div>`
+      : `<div class="muted">No hunt_sold_comps_result event in these dates.</div>`}</div>`;
+  }
+  return section(id, title, trustBody + compsBody, "app events");
+}
+
 /** A rate card that reads 0% (not blank) before there is any data. */
 const rateCard = (label: string, x: any) => m(label, { value: x && x.d ? x.value : 0, trust: "DERIVED", n: x?.n ?? 0, d: x?.d ?? 0 });
 
 /**
  * Every fail screen, most shown first — "what fails most often" at a glance.
- * Zeros stay listed, so a screen nobody hit is visibly zero.
+ * Screens nobody hit are still listed, at zero, one click down (V5: thirty
+ * rows of zeros pushed the screens that matter off the first screen).
  */
 export function renderFailScreenRanking(fs: any): string {
   if (!fs || !Array.isArray(fs.rows)) return "";
@@ -596,8 +821,10 @@ export function renderFailScreenRanking(fs: any): string {
     ? `<div class="banner">Most hit: <b>${esc(top.label)}</b> — ${num(top.shown)} of ${num(total)} fail screens (${pct(top.share)}), ${num(top.users)} ${top.users === 1 ? "user" : "users"}.</div>`
     : `<div class="banner">No fail screens shown in this range.</div>`;
   const maxShown = Math.max(1, ...fs.rows.map((r: any) => Number(r.shown) || 0));
-  const rows = fs.rows.map((r: any, i: number) => [
-    r.shown ? num(i + 1) : "—",
+  const hit = fs.rows.filter((r: any) => r.shown > 0);
+  const zero = fs.rows.filter((r: any) => !r.shown);
+  const rows = hit.map((r: any, i: number) => [
+    num(i + 1),
     esc(r.label),
     `<span class="muted">${esc(r.group)}</span>`,
     num(r.shown),
@@ -606,12 +833,16 @@ export function renderFailScreenRanking(fs: any): string {
     `<div style="min-width:100px">${bar(r.shown / maxShown * 100)}</div>`,
     when(r.lastShown),
   ]);
+  // Every screen stays listed: the ones nobody hit are one click down, each at zero.
+  const zeros = zero.length ? more(`${num(zero.length)} screen${zero.length === 1 ? "" : "s"} nobody saw in these dates`,
+    table(["Screen", "Kind", "Times shown"], zero.map((r: any) => [esc(r.label), `<span class="muted">${esc(r.group)}</span>`, "0"]), "compact")) : "";
   const older = (fs.olderApp ?? []).length
     ? `<div class="muted">Also ${num((fs.olderApp ?? []).reduce((a: number, x: any) => a + (Number(x.count) || 0), 0))} from app 2.1, which only says the general type: ${(fs.olderApp ?? []).map((x: any) => `${esc(x.key)} ${num(x.count)}`).join(" · ")}. Included in the total above.</div>`
     : "";
   return `<div class="card"><div class="card-h">Fail screens — most hit first ${badge("EXACT")} <span class="muted">— every user, the selected dates</span></div>
     ${headline}
-    <div style="overflow-x:auto">${table(["#", "Screen", "Kind", "Times shown", "Share", "Users", "", "Last shown"], rows, "compact")}</div>
+    ${rows.length ? `<div style="overflow-x:auto">${table(["#", "Screen", "Kind", "Times shown", "Share", "Users", "", "Last shown"], rows, "compact")}</div>` : ""}
+    ${zeros}
     <div class="muted">One count per screen shown. "Unsure result" screens follow a scan that ran (they show the result as Continue anyway); "Didn't run" means no result; "Account" screens are working as designed; "Before the scan" are messages from the scan button and the camera; "After the scan" are results screens that crashed.</div>
     ${older}</div>`;
 }
@@ -626,7 +857,7 @@ export function renderFailScreenRanking(fs: any): string {
  * bare error card, so the contents link landed nowhere.)
  */
 export function renderScanReliability(input: any): string {
-  const title = "12c · Fail Screens & Scan Reliability";
+  const title = "What failed, and why";
   let sr = input;
   if (!sr || typeof sr !== "object" || isErr(sr)) {
     const why = !sr || typeof sr !== "object"
@@ -635,9 +866,8 @@ export function renderScanReliability(input: any): string {
     sr = buildScanReliability({ configured: false, note: why }, [], { startMs: null, endMs: null } as any);
   }
   const app = sr.app ?? {};
-  const appBlock = `<div class="card"><div class="card-h">What the app showed ${badge("EXACT")} <span class="muted">— every user</span></div>
+  const appBlock = `<div class="card"><div class="card-h">What users tapped on a fail screen ${badge("EXACT")}</div>
     ${grid([card("Fail screens shown", num(app.failedEvents)), card("Phone offline", num(app.offline), "never reached the server"), card("Server down (Railway)", num(app.serverDown), "the app reached the internet but not us")])}
-    <div class="card-h">What users tapped</div>
     ${table(["Action", "Taps"], (app.actions ?? []).map((x: any) => [esc(ACTION_LABEL[x.key] ?? x.key), num(x.count)]), "compact")}
     <div class="card-h">Blocked screens shown (out of scans, update needed)</div>
     ${table(["Screen", "Shown"], (app.blocked ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}
@@ -645,12 +875,15 @@ export function renderScanReliability(input: any): string {
   const ranking = renderFailScreenRanking(app.screens);
   const problem = sr.problem ? `<div class="banner warn">${esc(sr.problem)}</div>` : "";
   const t = sr.tiers ?? { high: 0, medium: 0, low: 0, none: 0 };
+  const du = sr.durations ?? { results: { n: 0, median: null, p90: null, over30: { n: 0, d: 0, value: null } }, failures: { n: 0, median: null } };
   const tierRow = (label: string, n: number) => [esc(label), num(n), sr.results ? pct(n / sr.results) : "0%", bar(sr.results ? n / sr.results * 100 : 0)];
-  const hardBlock = `<div class="card"><div class="card-h">Hard failures — no result ${badge("EXACT")}</div>
-    ${grid([rateCard("Failure rate", sr.failureRate), card("Failed scans", num(sr.failures)), card("Cancelled by user", num(sr.stopped))])}
-    ${table(["Reason", "Scans", "Share of attempts"], (sr.failuresByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count), r8(x.share)]), "compact")}
-    <div class="card-h">Blocked — working as designed, not counted as failures</div>
-    ${table(["Reason", "Scans"], (sr.blockedByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}</div>`;
+  const serverBlock = `<div class="card wide"><div class="card-h">What the server recorded ${badge("EXACT")} <span class="muted">— scan_outcomes · one row per scan attempt, automatic retries count once · every user</span></div>
+    ${grid([rateCard("Hard failure rate", sr.failureRate), card("Scan attempts", num(sr.attempts), "results + failures"), card("Hard failures", num(sr.failures), "no result"),
+      rateCard("Low-confidence rate", sr.softRate), card("Time to a result (median)", secs(du.results.median), `n=${num(du.results.n)}`), card("Time to a result (90th pct)", secs(du.results.p90)),
+      rateCard("Results over 30 s", du.results.over30)])}
+    <div class="card-h">Hard failures by reason</div>
+    ${table(["Reason", "Scans", "Share of attempts", "Median time"], (sr.failuresByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count), r8(x.share), secs(x.medianSecs)]), "compact")}
+    <div class="muted">${esc(sr.note)} Cancelled by the user: ${num(sr.stopped)}, not counted as failures.</div></div>`;
   const softBlock = `<div class="card"><div class="card-h">Low-confidence results — soft fails ${badge("EXACT")}</div>
     ${grid([rateCard("Soft-fail rate", sr.softRate), rateCard("Continue anyway rate", sr.continueRate), card("Charged at once", num(sr.chargedAtOnce), "app 2.1, or past the daily cap")])}
     ${table(["Soft fail", "Scans", "Continued", "Back / Retake", "Left without choosing", "Waiting", "Charged at once", "Not charged, no choice", "Continue rate"],
@@ -658,13 +891,16 @@ export function renderScanReliability(input: any): string {
     <div class="muted">"Left without choosing": the app closed on the screen; after 10 minutes the hold expired and the scan went back to the user. "Charged at once": no choice could be recorded — app 2.1, or a user past the daily cap of uncharged soft fails. "Not charged, no choice": mostly "no item", which goes straight back.</div></div>`;
   const tierBlock = `<div class="card"><div class="card-h">Confidence of every result ${badge("EXACT")} <span class="muted">— for calibrating the tiers</span></div>
     ${table(["Tier", "Results", "Share", ""], [tierRow("HIGH", t.high), tierRow("MEDIUM", t.medium), tierRow("LOW", t.low), tierRow("No tier", t.none)], "compact")}
-    <div class="muted">${num(sr.results)} results in range. "No tier": couldn't identify, or an older result without a tier.</div></div>`;
+    <div class="muted">${num(sr.results)} results in range. "No tier": couldn't identify, or an older result without a tier.</div>
+    <div class="card-h">Blocked — working as designed, not counted as failures</div>
+    ${table(["Reason", "Scans"], (sr.blockedByReason ?? []).map((x: any) => [reasonLabel(x.key), num(x.count)]), "compact")}</div>`;
   return section("reliability", title,
-    `${problem}${ranking}
-     ${grid([card("Scan attempts", num(sr.attempts), "results + failures"), card("Results", num(sr.results)), card("Hard failures", num(sr.failures)), card("Soft fails", num(sr.soft))])}
-     <div class="two">${hardBlock}${softBlock}</div><div class="two">${tierBlock}${appBlock}</div>
-     <div class="muted">${esc(sr.note)}</div>`,
-    "server + app");
+    `${problem}<div class="note-block">Two records, kept apart. <b>What users saw</b> is the app's own events: it includes scans that never reached the server (phone offline, server down) and messages before and after a scan. <b>What the server recorded</b> is scan_outcomes: only scans that reached it, each attempt once however many times the app retried. They will not add up to each other, and shouldn't.</div>
+     <div class="card-h">What users saw — app events</div>${ranking}
+     ${serverBlock}
+     ${more("Low-confidence results, confidence tiers, and blocked scans", `<div class="two">${softBlock}${tierBlock}</div>`)}
+     ${more("What users tapped on fail screens", appBlock)}`,
+    "app + server, labelled apart");
 }
 
 export function renderOnboardingV2(o: any): string {
@@ -676,19 +912,28 @@ export function renderOnboardingV2(o: any): string {
   const seg = (rows: any[], head: string) => table([head, "Answered the offer", "Subscribed", "Subscribe rate", "Pending", "Continue Free"],
     rows.map((r: any) => [esc(r.label), num(r.users), num(r.pro), cell(r.proRate), num(r.pending), num(r.free)]), "compact");
   const none = `<div class="muted">No V2 offer answers in this range yet.</div>`;
+  // V5 headline: of the phones that started the V2 flow, how many reached its last screen.
+  const tracked = (o.screens ?? []).filter((st: any) => st.tracked);
+  const first = tracked[0]?.reached ?? 0, last = tracked.at(-1)?.reached ?? 0;
+  const completion = { value: first ? last / first : null, trust: "DERIVED" as Trust, n: last, d: first };
+  const worst = tracked.slice(1).reduce((w: any, st: any, i: number) => {
+    const prev = tracked[i].reached, lost = prev - st.reached;
+    return prev >= 10 && (!w || lost / prev > w.share) ? { from: tracked[i].label, to: st.label, share: lost / prev, lost, prev } : w;
+  }, null);
   return section(id, title,
-    `<div class="card"><div class="card-h">Screen by screen <span class="muted">— by device, ${num(o.devices)} that started the V2 flow</span></div>${o.devices ? funnelTable(o.screens, "Devices") : `<div class="muted">No device has started the V2 flow in this range yet.</div>`}
-     ${o.olderFlowDevices ? `<div class="muted">${num(o.olderFlowDevices)} device(s) started the older flow and are not counted here.</div>` : ""}</div>
-     <div class="two"><div class="card"><div class="card-h">How the offer was answered <span class="muted">— ${num(of.users)} new users</span></div>${grid([
-        m("Subscribed at the offer", of.subscribeRate), m("Sent to the camera (recorded)", of.landingCamera),
+    grid([m("Finished the V2 flow", completion), m("Subscribed at the offer", of.subscribeRate), m("Sent to the camera (recorded)", of.landingCamera)]) +
+    (worst ? `<div class="muted">Biggest drop: ${esc(worst.from)} → ${esc(worst.to)}, ${num(worst.lost)} of ${num(worst.prev)} (${pct(worst.share)}).</div>` : "") +
+    more("Screen by screen", `<div class="card"><div class="card-h">Screen by screen <span class="muted">— by phone, ${num(o.devices)} that started the V2 flow</span></div>${o.devices ? funnelTable(o.screens, "Devices") : `<div class="muted">No device has started the V2 flow in this range yet.</div>`}
+     ${o.olderFlowDevices ? `<div class="muted">${num(o.olderFlowDevices)} device(s) started the older flow and are not counted here.</div>` : ""}</div>`) +
+    `<div class="two"><div class="card"><div class="card-h">How the offer was answered <span class="muted">— ${num(of.users)} new users</span></div>${grid([
         m("Quiz answers saved late", o.answersSavedLate)])}
        ${table(["Outcome", "Users"], [["Subscribed", num(of.outcomes.pro)], ["Activation pending", num(of.outcomes.activation_pending)], ["Continue Free", num(of.outcomes.free)]], "compact")}
        <div class="muted">Existing accounts that never saw the offer: ${num(of.existingAccounts.value)}. Older-flow completions: ${num(of.olderFlow.value)}. Outcome not recorded: ${num(of.outcomeNotRecorded.value)}. None of these are inside a rate.</div></div>
-     <div class="card"><div class="card-h">By where they heard of FlipStart</div>${of.users ? seg(o.bySource, "Source") : none}</div></div>
-     <div class="two"><div class="card"><div class="card-h">By stated goal</div>${of.users ? seg(o.byGoal, "Goal") : none}</div>
+     <div class="card"><div class="card-h">By where they heard of FlipStart</div>${of.users ? seg(o.bySource, "Source") : none}</div></div>` +
+    more("Offer answers by goal, experience and what they want help with", `<div class="two"><div class="card"><div class="card-h">By stated goal</div>${of.users ? seg(o.byGoal, "Goal") : none}</div>
      <div class="card"><div class="card-h">By stated experience</div>${of.users ? seg(o.byExperience, "Experience") : none}</div></div>
-     <div class="card"><div class="card-h">By what they want help with <span class="muted">— several can be picked; a person counts under each</span></div>${of.users ? seg(o.byPain, "Help with") : none}</div>
-     <div class="muted">${esc(o.note)}</div>`,
+     <div class="card"><div class="card-h">By what they want help with <span class="muted">— several can be picked; a person counts under each</span></div>${of.users ? seg(o.byPain, "Help with") : none}</div>`) +
+    `<div class="muted">${esc(o.note)}</div>`,
     "where V2 loses people, and who converts");
 }
 
@@ -698,13 +943,15 @@ function renderAcquisitionSource(as: any): string {
   if (isErr(as)) return section("source", "2b · Acquisition Source", errorCard("Acquisition Source", as));
   const seg = (rows: any[], head: string) => table([head, "Users", "Activation 7d", "Paid 7d", "Est. revenue", "Est. revenue / user", "Est. revenue / paid user"],
     rows.map((r: any) => [esc(r.key), num(r.users), cell(r.activation7), cell(r.paid7), usd(r.revenue.value), usd(r.revenuePerUser.value), usd(r.revenuePerPaidUser.value)]), "compact");
+  const answered = as.answered ? grid([m("Answered “How did you hear about FlipStart?”", as.answered)]) : "";
   const sourceBlock = as.tracked
-    ? `<div class="card"><div class="card-h">By source</div>${seg(as.sources, "Source")}<div class="muted">CAC: ${esc(as.cac.note)}.</div></div>`
-    : `<div class="card"><div class="card-h">By source ${badge("NOT_TRACKED")}</div><div class="muted">No event carries an acquisition source, so TikTok, Instagram, creators and campaigns cannot be told apart. Nothing is inferred to fill the gap. The day the app writes any of <code>${esc(as.keysRead.join(", "))}</code> into event metadata, this table fills itself in. CAC also needs marketing spend, which the dashboard does not have.</div></div>`;
-  return section("source", "2b · Acquisition Source", sourceBlock +
-    `<div class="two"><div class="card"><div class="card-h">By stated goal <span class="muted">— self-reported intent, not channel</span></div>${seg(as.byGoal, "Goal")}</div>
-     <div class="card"><div class="card-h">By stated experience</div>${seg(as.byExperience, "Experience")}</div></div>
-     <div class="muted">${esc(as.note)}</div>`);
+    ? `<div class="card"><div class="card-h">Where they say they heard about FlipStart <span class="muted">— people who signed up in the range</span></div>${seg(as.sources, "Source")}
+       <div class="muted">Self-reported in onboarding, not tracked attribution: it says what people remember, not which post they saw. Activation and Paid 7d only count people 7+ days old. CAC: ${esc(as.cac.note)}.</div></div>`
+    : `<div class="card"><div class="card-h">Where they say they heard about FlipStart</div><div class="muted">Nobody who signed up in this range has answered yet. The question is in onboarding from 2.2.2, so people from older versions never saw it. Nothing is inferred to fill the gap.</div></div>`;
+  return section("source", "2b · Source", answered + sourceBlock +
+    more("Stated goal and experience (self-reported intent, not channel)", `<div class="two"><div class="card"><div class="card-h">By stated goal</div>${seg(as.byGoal, "Goal")}</div>
+     <div class="card"><div class="card-h">By stated experience</div>${seg(as.byExperience, "Experience")}</div></div><div class="muted">${esc(as.note)}</div>`),
+    "self-reported");
 }
 
 function renderCostByPlan(cb: any): string {
@@ -715,65 +962,96 @@ function renderCostByPlan(cb: any): string {
   const plan = (k: string) => {
     const x = cb[k]; if (!x) return "";
     const c = x.contribution;
-    return `<div class="card"><div class="card-h">Current ${esc(k)} · ${num(x.users)} users ${small(x.users)}</div>${grid([
-      m("Est. AI cost, lifetime", x.totalCost, { dp: 2 }), m("Est. cost / scan", x.costPerScan, { dp: 3 }),
-      m("Mean / user", { value: x.perUser.mean, trust: "ESTIMATED" }, { dp: 3 }), m("Median / user", { value: x.perUser.median, trust: "ESTIMATED" }, { dp: 3 }),
-      m("P90 / user", { value: x.perUser.p90, trust: "ESTIMATED" }, { dp: 3 }), m("Max / user", { value: x.perUser.max, trust: "ESTIMATED" }, { dp: 3 }),
-      m("Scans", x.scans), m("Est. AI cost, last 30d", x.cost30Total, { dp: 2 }),
+    const head = grid([
+      m("Est. AI cost / scan", x.costPerScan, { dp: 3 }),
+      m("Est. AI cost / user (median)", { value: x.perUser.median, trust: "ESTIMATED" }, { dp: 3 }),
       ...(c ? [m("Est. contribution / user / month", { value: c.mean, trust: "ESTIMATED", d: c.users }, { dp: 2 }),
-               m("…median", { value: c.median, trust: "ESTIMATED", d: c.users }, { dp: 2 }),
-               m("…total per month", { value: c.total, trust: "ESTIMATED" }, { dp: 2 }),
                m("Costing more than they pay", { value: c.negative, trust: "ESTIMATED" })] : []),
-    ])}</div>`;
+    ]);
+    const rest = grid([
+      m("Est. AI cost, lifetime", x.totalCost, { dp: 2 }), m("Est. AI cost, last 30d", x.cost30Total, { dp: 2 }), m("Scans", x.scans),
+      m("Mean / user", { value: x.perUser.mean, trust: "ESTIMATED" }, { dp: 3 }),
+      m("P90 / user", { value: x.perUser.p90, trust: "ESTIMATED" }, { dp: 3 }), m("Max / user", { value: x.perUser.max, trust: "ESTIMATED" }, { dp: 3 }),
+      ...(c ? [m("…contribution, median", { value: c.median, trust: "ESTIMATED", d: c.users }, { dp: 2 }),
+               m("…contribution, total per month", { value: c.total, trust: "ESTIMATED" }, { dp: 2 })] : []),
+    ]);
+    return `<div class="card"><div class="card-h">Current ${esc(k)} · ${num(x.users)} users ${small(x.users)}</div>${head}${more(`All ${k} numbers`, rest)}</div>`;
   };
   return section("costplan", "14b · Cost by Plan", plan("free") + plan("monthly") + plan("annual") +
     `<div class="note-block">${badge("ESTIMATED")} ${esc(cb.note)}${cb.unpriced ? ` ${num(cb.unpriced)} subscriber(s) have no purchase event and cannot be priced.` : ""} Rates: scan ${usd(cb.rates.NORMAL, 3)}, hunt scan ${usd(cb.rates.HUNT, 3)}, listing ${usd(cb.rates.LISTING, 3)}.</div>`,
     "ESTIMATED — not profit");
 }
 
-function renderExecutive(x: any): string {
-  const a = x.acquisition, mo = x.monetization, pw = x.paywalls, ret = x.retentionV2, ue = x.unitEconomics, sc = x.scans;
-  if (isErr(a) || isErr(mo)) return errorCard("Executive", isErr(a) ? a : mo);
-  const co = x.cohort;
+// ── Notifications (V5 Phase 4) ──────────────────────────────────────────────
 
+function renderNotifications(n: any): string {
+  const title = "Notifications";
+  if (!n || typeof n !== "object") return section("notif", title, absent(title, n));
+  if (isErr(n)) return section("notif", title, errorCard(title, n));
+  if (!n.tracked) return section("notif", title, `<div class="card muted">No notification events in this range yet. They start with the 2.2.2 build: the permission prompt, the answer, and taps on a notification.</div>`);
+  return section("notif", title,
+    grid([m("Allowed notifications", n.optIn), m("Allowed, of everyone shown the prompt", n.optInOfPrompted), m("Tapped a notification", n.openedOfAllowed),
+      m("Shown the prompt", n.prompted), m("Allowed", n.allowed)]) +
+    `<div class="two"><div class="card"><div class="card-h">Where the prompt was shown</div>${table(["Prompted from", "People", "Allowed", "Rate"],
+        n.bySource.map((r: any) => [`<code>${esc(r.source)}</code>`, num(r.prompted), num(r.allowed), cell(r.rate)]), "compact")}</div>
+     <div class="card"><div class="card-h">Which notifications get tapped</div>${table(["Kind", "Taps", "People"],
+        n.byKind.map((r: any) => [`<code>${esc(r.kind)}</code>`, num(r.opens), num(r.people)]), "compact")}</div></div>
+     <div class="muted">${esc(n.note)}</div>`,
+    "permission and taps");
+}
+
+/** Full-screen celebrations shown, added under the V3 achievement numbers. */
+function celebrationsBlock(c: any): string {
+  if (!c || typeof c !== "object" || isErr(c)) return "";
+  return `<div class="card"><div class="card-h">Full-screen celebrations shown <span class="muted">— in the range</span></div>${c.rows.length
+    ? table(["Celebration", "Shown", "People"], c.rows.map((r: any) => [`<code>${esc(r.celebration)}</code>`, num(r.shown), num(r.people)]), "compact")
+    : `<div class="muted">None shown in this range.</div>`}<div class="muted">${num(c.shown)} shown to ${num(c.people)} people. ${esc(c.note)}</div></div>`;
+}
+
+// ── Executive (V5 Phase 2) ───────────────────────────────────────────────────
+
+/** One KPI tile: the number, what it is, which window, how many it rests on. */
+function kpiTile(t: Tile): string {
+  const v = t.value;
+  const shown = v === null || v === undefined ? `<span class="muted">—</span>`
+    : t.fmt === "pct" ? pct(v) : t.fmt === "usd" ? `$${v.toFixed(2)}` : t.fmt === "usd4" ? `$${v.toFixed(4)}`
+    : t.fmt === "hrs" ? hrs(v) : t.fmt === "dec" ? num(v, 1) : num(v);
+  const base = t.n !== undefined && t.d !== undefined ? `${num(t.n)}/${num(t.d)}` : t.d !== undefined ? `n=${num(t.d)}` : "";
+  const noisy = t.noisy ? ` <span class="ri-tag ri-noisy" title="Fewer than 30 behind this number">noisy · n&lt;30</span>` : "";
+  return `<div class="stat kpi"><div class="stat-v">${shown} ${badge(t.trust as Trust)}</div>
+    <div class="stat-l">${esc(t.label)}</div>
+    <div class="stat-s">${esc(t.window)}${base ? ` · ${base}` : ""}${noisy}</div>${t.note ? `<div class="stat-s muted">${esc(t.note)}</div>` : ""}</div>`;
+}
+
+function renderExecutive(x: any): string {
+  const co = x.cohort;
   const scopeNote = co?.scope === "post_launch"
     ? `<div class="banner scope"><strong>Scope: Post Global Launch</strong> · ${esc(co.label)}${co.assumed ? ` <span class="muted">(time-of-day assumed 00:00 UTC — set FLIPSTART_GLOBAL_LAUNCH_AT to correct)</span>` : ""}<br><span class="muted">Only accounts created on or after this date are counted. Pre-launch accounts and anonymous pre-auth events appear in All Time only.</span></div>`
     : `<div class="banner scope"><strong>Scope: All Time</strong> <span class="muted">— includes ${num(x.preLaunchProfiles ?? 0)} pre-launch development-era accounts. Use Post Launch for business decisions.</span></div>`;
   const c = x.cutover;
-  const banner = c?.configured
+  const cutover = c?.configured
     ? `<div class="banner ok">Analytics V4 active since ${esc(c.at)}</div>`
     : `<div class="banner warn"><strong>Awaiting Analytics V4 client release.</strong> ${esc(c?.status ?? "")} — V4-only metrics show “Not yet available” until then.</div>`;
-  /**
-   * One headline number per question, each naming its own window, so the
-   * section answers "how are we doing" at a glance. Everything that used to
-   * be here is still one click away under "More metrics".
-   */
-  const ec = x.executiveCore && !isErr(x.executiveCore) ? x.executiveCore : {};
-  const core = grid([
-    m("New users · 7d", ec.newUsers7 ?? a.new7),
-    m("Activation · acquired in range", ec.activation ?? null),
-    m("WAU · rolling 7d", ec.wau ?? a.wau),
-    m("Paying users · now", ec.payingUsers ?? mo.totalPaying),
-    m("Paywall viewer → purchase · in range", ec.viewerToPurchase ?? mo.viewToPurchase),
-    m("D7 retention · cohort in range", ec.d7 ?? null),
-    ec.pricingConversion
-      ? m(`${ec.pricingEraLabel ?? "Current era"} · 7-day paid conversion`, ec.pricingConversion)
-      : m("Pricing era conversion", { value: null, trust: "NOT_TRACKED", available: false, note: "no users with a complete 7-day window yet" }),
-    m("Top user · scans 30d", ec.topUserScans30 === null || ec.topUserScans30 === undefined ? null : { value: ec.topUserScans30, trust: "EXACT", note: "highest in scope" }),
-  ]);
-  return section("exec", "1 · Executive", renderAttention(x.founderAttention) + scopeNote + banner + legend() + core +
-    `<details class="more"><summary>More metrics</summary>` + grid([
-    m("Total users", a.totalUsers), m("New users in range", a.newInRange), m("New users 7d", a.new7), m("New users 30d", a.new30),
-    m("DAU", a.dau), m("WAU", a.wau), m("MAU", a.mau), m("DAU / MAU", a.dauMau, { fmt: "pct" }),
-    m("Scans 7d", a && !isErr(a) ? a.scans7 : null),
-    m("Activated (1+ scan)", x.activation && !isErr(x.activation) ? x.activation.activationRate : null),
-    m("Paywall viewers 7d", pw && !isErr(pw) ? pw.viewers7 : null), m("Purchases 7d", pw && !isErr(pw) ? pw.purchases7 : null),
-    m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Holding pack scans", mo.scanPackHolders),
-    m("Subscription purchases · in range", mo.purchaseCompletions),
-    m("Revenue", mo.revenue), m("MRR", mo.mrr),
-    m("Est. API spend (in range)", ue && !isErr(ue) ? ue.estimatedSpend : null, { dp: 2 }),
-    m("D7 retention", ret && !isErr(ret) ? ret.d7 : null),
-  ]) + `</details>`);
+
+  const k = x.executiveKpis;
+  let kpis: string, more = "";
+  if (!k || typeof k !== "object" || isErr(k)) {
+    kpis = k && isErr(k) ? errorCard("Executive KPIs", k) : `<div class="card muted">Executive KPIs are unavailable for this load.</div>`;
+  } else {
+    kpis = `<div class="kgroups">${(k.groups as TileGroup[]).map(g =>
+      `<div class="kgroup"><div class="kgroup-h">${esc(g.label)}</div><div class="kgroup-tiles">${g.tiles.map(kpiTile).join("")}</div></div>`).join("")}</div>`;
+    const a = x.acquisition && !isErr(x.acquisition) ? x.acquisition : null;
+    const mo = x.monetization && !isErr(x.monetization) ? x.monetization : null;
+    more = `<details class="more"><summary>More metrics</summary><div class="stat-grid">${(k.more as Tile[]).map(kpiTile).join("")}${
+      a ? [m("Total users", a.totalUsers), m("Active today", a.dau), m("Active 30d", a.mau)].join("") : ""}${
+      mo ? m("Holding pack scans", mo.scanPackHolders) : ""}</div></details>`;
+  }
+  // The cutover warning stays in view while it applies; once it doesn't, it
+  // joins the scope note and the trust legend under "About these numbers".
+  const about = `<details class="more"><summary>About these numbers</summary>${scopeNote}${c?.configured ? cutover : ""}${legend()}${
+    k && !isErr(k) ? `<div class="muted">${esc(k.windowsNote)}</div>` : ""}</details>`;
+  return section("exec", "Executive",
+    renderAttention(x.founderAttention) + renderReleaseStrip(x.releaseImpact) + (c?.configured ? "" : cutover) + kpis + more + about);
 }
 
 function renderAcquisition(a: any): string {
@@ -788,40 +1066,63 @@ function renderAcquisition(a: any): string {
   const rangeBlock = `<div class="card"><div class="card-h">Selected window · ${esc(a.rangeLabel ?? "")}</div>${grid([
     m("New users in range", a.newInRange),
     m("Signups / day", a.signupsPerDay, { dp: 2 }),
-    textCard("Peak signup day", a.peakSignupDay, "EXACT", a.peakSignupDay ? `${num(a.peakSignupCount?.value)} signups` : "no signups in range"),
-    m("Share of cohort", a.shareOfCohort),
   ])}<div class="muted">Counted by account creation date inside the window, in ${esc("Central Time")}. ${esc(String(a.rangeDays ?? 0))} day(s) in range.</div></div>`;
+  // V5: history that prompts no action sits one click down.
+  const history = grid([
+    textCard("Peak signup day", a.peakSignupDay, "EXACT", a.peakSignupDay ? `${num(a.peakSignupCount?.value)} signups` : "no signups in range"),
+    m("Share of cohort", a.shareOfCohort), m("DAU / MAU", a.dauMau, { fmt: "pct" }),
+  ]);
   const trend = table(["Day", "New", "Active"], a.trend.slice(-14).reverse().map((r: any) => [esc(r.day), num(r.newUsers), num(r.active)]), "compact");
   const growth = `<div class="spark">${a.cumulative.map((p: any) => `<span title="${esc(p.day)}: ${p.users}" style="height:${Math.max(2, p.users / (a.cumulative.at(-1)?.users || 1) * 40)}px"></span>`).join("")}</div><div class="muted">Cumulative users across the charted window</div>`;
   return section("acq", "2 · Acquisition / Users", rangeBlock + `<div class="card"><div class="card-h">Current momentum <span class="muted">— fixed windows, not affected by the date selection</span></div>${grid([
     m("Total profiles", a.totalUsers), m("New today", a.newToday), m("New 7d", a.new7), m("New 30d", a.new30),
     m("Active today", a.dau), m("Active 7d (rolling)", a.wau), m("Active 30d (rolling)", a.mau),
-  ])}</div>` + `<div class="two"><div class="card"><div class="card-h">Cumulative growth</div>${growth}</div><div class="card"><div class="card-h">Daily trend <span class="muted">— last 14 charted days, Central</span></div>${trend}</div></div>
-  <div class="note-block">${badge("NOT_TRACKED")} ${esc(a.attributionNote)}</div>`);
+  ])}</div>` + more("Daily trend, growth curve and peaks", `${history}<div class="two"><div class="card"><div class="card-h">Cumulative growth</div>${growth}</div><div class="card"><div class="card-h">Daily trend <span class="muted">— last 14 charted days, Central</span></div>${trend}</div></div>`) +
+  `<div class="note-block">${badge("NOT_TRACKED")} ${esc(a.attributionNote)} <a href="#source">Source</a></div>`);
 }
 
 function renderActivation(x: any): string {
   // Wrapped in its section so the contents link still lands somewhere.
   if (isErr(x)) return section("act", "3 · Activation", errorCard("Activation", x));
-  return section("act", "3 · Activation", grid([
-    m("Activation rate", x.activationRate), m("Never scanned", x.neverScanned), m("Onboarding completed (event)", x.onboardingCompleted),
-    m("Median account → first scan", x.hoursToFirstScanMedian, { fmt: "hrs" }), m("Mean account → first scan", x.hoursToFirstScanMean, { fmt: "hrs" }),
-  ]) + `<div class="card"><div class="card-h">Lifecycle (nested — each stage is a subset of the one above)</div>${funnel(x.lifecycle)}</div>`,
-  "scans are scan_completed events, not saved items");
+  const ladder = x.lifecycle ?? [];
+  return section("act", "3 · Activation",
+    grid([
+      m("Activation 7d", x.activation7), m("First scan within 24h", x.activation24h),
+      m("Second scan within 7d", x.secondScan7), m("Median time to first scan", x.hoursToFirstScan7, { fmt: "hrs" }),
+      m("Never scanned", x.neverScanned),
+    ]) +
+    `<div class="muted">Activation = a completed scan within 7 days of signing up, the one definition used everywhere (Executive, Release Impact). Only people old enough for a number count towards it. scans are scan_completed events, not saved items.</div>
+     <div class="card"><div class="card-h">Scan ladder <span class="muted">— people who signed up in the range, every scan since</span></div>${funnel(ladder.slice(0, 4))}</div>` +
+    more("5+ and 10+ scans, mean time, ever scanned", grid([
+      m("Ever scanned (no time limit)", x.activationRate), m("Mean account → first scan", x.hoursToFirstScanMean, { fmt: "hrs" }),
+      m("Median account → first scan, any time", x.hoursToFirstScanMedian, { fmt: "hrs" }), m("Onboarding completed (event)", x.onboardingCompleted),
+    ]) + `<div class="card"><div class="card-h">Full ladder</div>${funnel(ladder)}</div>`),
+    "first completed scan within 7 days");
 }
 
-function renderMonetization(mo: any): string {
+function renderMonetization(mo: any, pw?: any): string {
   // Wrapped in its section so the contents link still lands somewhere.
   if (isErr(mo)) return section("mon", "4 · Monetization", errorCard("Monetization", mo));
+  const fn = pw && !isErr(pw) && Array.isArray(pw.funnelBySource) ? pw : null;
+  const fRow = (r: any, label: string) => [label, num(r.viewers), rate(r.chosePlan, r.viewers), rate(r.started, r.viewers), num(r.bought),
+    r.viewers ? `${pct(r.bought / r.viewers)} ${small(r.viewers)}` : "—"];
+  const funnelCard = fn ? `<div class="card wide"><div class="card-h">Subscription funnel, by paywall <span class="muted">— people who saw it in the range, and what they did</span></div>
+    ${table(["Paywall", "Viewers", "Chose a plan", "Started a purchase", "Bought", "Viewer → purchase"],
+      [fRow(fn.funnelAll, "<strong>All paywalls</strong>"), ...fn.funnelBySource.map((r: any) => fRow(r, `<code>${esc(r.source)}</code>`))], "compact")}
+    <div class="muted">Each column counts viewers of that paywall, by account or phone. "Chose a plan" isn't a required step: Annual is preselected. Impressions, repeat views and cancels per paywall are under Paywall detail at the bottom of this tab.</div></div>`
+    : `<div class="card muted">The paywall funnel is unavailable for this load.</div>`;
   return section("mon", "4 · Monetization", grid([
-    m("Current Free", mo.currentFree), m("Current Monthly", mo.currentMonthly), m("Current Annual", mo.currentAnnual), m("Total paying", mo.totalPaying),
-    m("Holding pack scans (ledger)", mo.scanPackHolders), m("Pack purchases Apple-approved", mo.scanPackApproved), m("Paywall viewers (in range)", mo.paywallViewers),
-    m("Purchase starts", mo.purchaseStarts), m("Purchase completions", mo.purchaseCompletions),
-    m("Cancellations", mo.purchaseCancellations), m("Failures", mo.purchaseFailures),
-    m("Viewer → purchase", mo.viewToPurchase),
-    m("Monthly purchases", mo.monthlyPurchases), m("Annual purchases", mo.annualPurchases), m("Scan-pack purchases", mo.scanPackPurchases),
-    m("Known revenue", mo.revenue), m("MRR", mo.mrr),
-  ]) + `<div class="card"><div class="card-h">Plan selections in range (all paywalls)</div>${buckets({ Monthly: mo.planSelection.monthly, Annual: mo.planSelection.annual }, undefined, "Selections")}</div>`);
+    m("Paying users · now", mo.totalPaying), m("Monthly · now", mo.currentMonthly), m("Annual · now", mo.currentAnnual),
+    m("Paywall viewer → purchase · in range", mo.viewToPurchase),
+    m("Subscription purchases · in range", mo.purchaseCompletions), m("Scan-pack purchases · in range", mo.scanPackPurchases),
+  ]) + `<div class="muted">Viewer → purchase: people who saw a paywall in the range and bought in it. Paid within 7 days of signing up is a cohort number; it lives in Pricing, below.</div>` + funnelCard +
+    more("Purchase detail: starts, cancels, failures, plan choices, revenue", grid([
+      m("Current Free", mo.currentFree), m("Holding pack scans (ledger)", mo.scanPackHolders), m("Pack purchases Apple-approved", mo.scanPackApproved),
+      m("Paywall viewers (in range)", mo.paywallViewers), m("Purchase starts", mo.purchaseStarts),
+      m("Cancellations", mo.purchaseCancellations), m("Failures", mo.purchaseFailures),
+      m("Monthly purchases", mo.monthlyPurchases), m("Annual purchases", mo.annualPurchases),
+      m("Known revenue", mo.revenue), m("MRR", mo.mrr),
+    ]) + `<div class="card"><div class="card-h">Plan selections in range (all paywalls)</div>${buckets({ Monthly: mo.planSelection.monthly, Annual: mo.planSelection.annual }, undefined, "Selections")}</div>`));
 }
 
 function renderPaywalls(pw: any): string {
@@ -1026,9 +1327,9 @@ function renderScanStore(s: any, insights?: any): string {
     m("Cancelled", { value: s.outcomes.cancelled, trust: "LEGACY", note: "test activity" }),
     m("Failed", { value: s.outcomes.failed, trust: "LEGACY", note: "test activity" }),
     m("Median first visit → purchase", { value: s.hoursFirstVisitToPurchase.median, trust: "DERIVED", d: s.hoursFirstVisitToPurchase.d }, { fmt: "hrs" }), m("Revenue", s.revenue),
-  ]) + `<div class="two"><div class="card"><div class="card-h">Funnel (unique users)</div>${funnel(s.funnel)}<div class="muted">StoreKit sheet presentation is not tracked, so it is not a stage.</div></div>
-  <div class="card"><div class="card-h">Entry mode (legacy field)</div>${table(["Mode", "Opens"], s.entryMode.map((r: any) => [esc(r.mode), num(r.opens)]))}</div></div>
-  <div class="card"><div class="card-h">Per SKU</div>${skus}</div>${v4}${renderScanStoreInsights(insights)}`, s.smallSample ? "small sample" : "");
+  ]) + `<div class="card"><div class="card-h">Funnel (unique users)</div>${funnel(s.funnel)}<div class="muted">StoreKit sheet presentation is not tracked, so it is not a stage.</div></div>` +
+  more("Scan Store deep dive: per pack, entry, real sales since 2.1.1", `<div class="card"><div class="card-h">Entry mode (legacy field)</div>${table(["Mode", "Opens"], s.entryMode.map((r: any) => [esc(r.mode), num(r.opens)]))}</div>
+  <div class="card"><div class="card-h">Per SKU</div>${skus}</div>${v4}${renderScanStoreInsights(insights)}`), s.smallSample ? "small sample" : "");
 }
 
 function cohortCard(c: any): string {
@@ -1046,7 +1347,20 @@ function cohortCard(c: any): string {
 function renderCohorts(c: any): string {
   // Wrapped in its section so the contents link still lands somewhere.
   if (isErr(c)) return section("cohorts", "9 · User Cohorts (current plan)", errorCard("Cohorts", c));
-  return section("cohorts", "9 · User Cohorts (current plan)", cohortCard(c.free) + cohortCard(c.monthly) + cohortCard(c.annual));
+  const plans = [c.free, c.monthly, c.annual].filter(Boolean);
+  const v = (x: any, dp = 0) => x === null || x === undefined ? "—" : typeof x === "object" ? (x.d !== undefined && x.n !== undefined ? cell(x) : num(x.value, dp)) : num(x, dp);
+  const row = (label: string, f: (p: any) => string) => [esc(label), ...plans.map(f)];
+  const tbl = table(["", ...plans.map((p: any) => `${p.plan} · ${num(p.users?.value)}`)], [
+    row("Active today", p => v(p.activeToday)), row("Active 7d", p => v(p.active7)), row("Active 30d", p => v(p.active30)),
+    row("Scans 7d / user", p => num(p.scans7PerUser, 2)), row("Scans 30d / user", p => num(p.scans30PerUser, 2)),
+    row("Lifetime scans / user (median)", p => num(p.lifetimeScansMedian, 1)), row("Lifetime scans / user (mean)", p => num(p.lifetimeScansMean, 1)),
+    row("Active days / user", p => num(p.activeDaysPerUser, 1)), row("Sessions / user", p => num(p.sessionsPerUser, 1)),
+    row("Listings", p => num(p.listings)), row("Hunt users", p => num(p.huntUsers)), row("Account age (mean days)", p => num(p.accountAgeDaysMean, 1)),
+  ], "compact");
+  return section("cohorts", "9 · Paying vs free",
+    `<div class="card wide"><div class="card-h">Current plan, side by side <span class="muted">— everyone in scope as they are now, fixed windows from today</span></div>${tbl}</div>` +
+    more("Allowance use and how plans are classified", plans.map((p: any) => cohortCard(p)).join("")),
+    "current plan");
 }
 
 function renderFree(f: any): string {
@@ -1071,16 +1385,19 @@ function renderFree(f: any): string {
 function renderRetentionV2(r: any): string {
   // Wrapped in its section so the contents link still lands somewhere.
   if (isErr(r)) return section("ret", "11 · Retention", errorCard("Retention", r));
-  return section("ret", "11 · Retention", grid([m("D1", r.d1), m("D3", r.d3), m("D7", r.d7), m("D14", r.d14), m("D30", r.d30)]) +
-    `<div class="muted">Anchor: ${esc(r.anchor)} · timezone ${esc(r.timezone)} · ${num(r.cohortUsers)} users with an anchor. Only users old enough for each window are counted in its denominator.</div>`,
+  return section("ret", "11 · Retention", grid([retTile("D1", r.d1), retTile("D7", r.d7), retTile("D14", r.d14), retTile("D30", r.d30)]) +
+    `<div class="muted">People whose first activity fell in the selected range, followed forward. Anchor: ${esc(r.anchor)} · timezone ${esc(r.timezone)} · ${num(r.cohortUsers)} people. Only people old enough for each number are counted; the rest are shown as partial or immature, never as 0%.</div>` +
+    more("D3", grid([retTile("D3", r.d3)])),
     "re-anchored on first activity, not profile creation");
 }
 
 function renderSessionsV2(s: any): string {
   // Wrapped in its section so the contents link still lands somewhere.
   if (isErr(s)) return section("sess", "12 · Sessions", errorCard("Sessions", s));
-  return section("sess", "12 · Sessions", grid([m("Sessions today", s.sessionsToday), m("Sessions 7d", s.sessions7), m("Sessions / user 7d", s.sessionsPerUser7, { dp: 2 })]) +
-    `<div class="note-block">${badge("LEGACY")} ${esc(s.durationNote.note)}</div>`);
+  return section("sess", "12 · Sessions", grid([m("Sessions / user · 7d", s.sessionsPerUser7, { dp: 2 }), m("Active days / user · 30d", s.activeDaysPerUser30, { dp: 1 }),
+      m("…median", s.activeDaysMedian30, { dp: 1 })]) +
+    more("Session counts and why there's no session length", grid([m("Sessions today", s.sessionsToday), m("Sessions 7d", s.sessions7)]) +
+      `<div class="note-block">${badge("LEGACY")} ${esc(s.durationNote.note)}</div>`));
 }
 
 /**
@@ -1145,11 +1462,20 @@ export function renderDeepAnalysis(x: any): string {
   return section("deepa", "Deep Analysis", previews + taps + opens + offer + paywall + note);
 }
 
-function renderFeatureUsage(f: any): string {
-  // Wrapped in its section so the contents link still lands somewhere.
-  if (isErr(f)) return section("feat", "13 · Feature Usage", errorCard("Feature usage", f));
-  const rows = f.map((r: any) => [esc(r.feature), r.accessed === null ? `<span class="muted">n/t</span>` : num(r.accessed), r.paywallTriggered === null ? `<span class="muted">n/a</span>` : num(r.paywallTriggered), r.completed === null ? `<span class="muted">n/t</span>` : num(r.completed), r.completedUsers === null ? "—" : num(r.completedUsers), `<span class="muted">${esc(r.note)}</span>`]);
-  return section("feat", "13 · Feature Usage", `<div class="card">${table(["Feature", "Accessed", "Paywall triggered", "Completed", "Users", "Source"], rows)}<div class="muted">A paywall being triggered is not feature usage; the columns are kept separate on purpose.</div></div>`);
+function renderFeatureUsage(f: any, ft?: any): string {
+  if (ft && !isErr(ft) && Array.isArray(ft.rows)) {
+    const rows = ft.rows.map((r: any) => [
+      `${esc(r.label)} <span class="muted" title="${esc(r.events.join(", "))}">ⓘ</span>`, num(r.users.n), r.users.d ? pct(r.users.value) : "—",
+      num(r.uses), r.usesPerUser === null ? "—" : num(r.usesPerUser, 1), cell(r.repeat), r.paywallHits === null ? `<span class="muted">—</span>` : num(r.paywallHits),
+    ]);
+    return section("feat", "13 · Features",
+      `<div class="card wide"><div class="card-h">Every feature, one table <span class="muted">— ${num(ft.active)} people active in the range</span></div>
+       ${table(["Feature", "People", "Of active", "Uses", "Uses / person", "Came back to it (2+ days)", "Paywall hits"], rows, "compact")}
+       <div class="muted">${esc(ft.note)} Hover ⓘ for the events behind a row. Diamonds is inactive and left out.</div></div>`,
+      "the selected range");
+  }
+  if (isErr(f)) return section("feat", "13 · Feature Usage", errorCard("Feature Usage", f));
+  return section("feat", "13 · Feature Usage", `<div class="card muted">The feature table is unavailable for this load.</div>`);
 }
 
 function renderUnitEconomics(u: any): string {
@@ -1158,7 +1484,7 @@ function renderUnitEconomics(u: any): string {
   return section("cost", "14 · Cost / Unit Economics", grid([
     m("Est. API spend (in range)", u.estimatedSpend, { dp: 2 }), m("Est. cost / scan", u.costPerScan, { dp: 3 }), m("Est. cost / user in scope", u.costPerUser, { dp: 3 }),
     m("Est. cost / active user (in range)", u.costPerActiveUser, { dp: 3 }), m("Scans in range", u.scansInRange), m("Scans 30d", u.scans30),
-  ]) + `<div class="note-block">${badge("ESTIMATED")} ${esc(u.marginNote)}</div>` + (u.v3 && !isErr(u.v3) ? renderCost(u.v3).replace(/<h2>[\s\S]*?<\/h2>/, `<h3>V3 cost detail</h3>`) : ""));
+  ]) + `<div class="note-block">${badge("ESTIMATED")} ${esc(u.marginNote)}</div>` + (u.v3 && !isErr(u.v3) ? more("Cost detail: today, 7d, 30d, images, budget and rate assumptions", renderCost(u.v3).replace(/<section[^>]*>/, "").replace(/<h2>[\s\S]*?<\/h2>/, "").replace(/<\/section>\s*$/, "")) : ""));
 }
 
 function renderDataQualityV4(q: any): string {
@@ -1198,14 +1524,14 @@ function renderDataQualityV4(q: any): string {
     m("Anonymous events excluded", sc.anonymousExcluded),
   ])}<div class="muted">${esc(sc.note)}${sc.assumed ? " · Launch time-of-day assumed 00:00 UTC; set FLIPSTART_GLOBAL_LAUNCH_AT to correct." : ""}</div>
   <div class="note-block">${badge("LEGACY")} ${esc(sc.scanPackWarning)}</div></div>` : "";
-  return section("dq", "23 · Data Quality", `<div class="banner ${c.configured ? "ok" : "warn"}">${esc(c.status)}</div>` + loaderBlock + winBlock + scanBlock + scopeBlock + grid([
+  const anomalies = q.anomalies.length ? `<div class="banner warn">${q.anomalies.map((a: string) => esc(a)).join("<br>")}</div>` : "";
+  return section("dq", "23 · Data Quality", `<div class="banner ${c.configured ? "ok" : "warn"}">${esc(c.status)}</div>` + loaderBlock + anomalies + more("Window debug, scan sources, scope, and every counter", winBlock + scanBlock + scopeBlock + grid([
     m("Analytics events", q.totalEvents), m("Authenticated", q.authenticated), m("Anonymous", q.anonymous), m("Missing session_id", q.missingSession),
     textCard("Latest event", q.latestEvent ? formatCentralDateTime(q.latestEvent) : null, "EXACT", "Central Time"),
     m("Post-cutover events", q.postCutoverEvents), m("Snapshot coverage", q.snapshotCoverage), m("Unknown snapshot %", q.unknownSnapshotPct),
     m("Legacy paywall_dismissed", q.legacyDismissed), m("Continue Free (post)", q.continueFreePost), m("paywall_closed (post)", q.closedPost),
     m("scan_completed (post)", q.scanCompletedPost), m("scan_completed (legacy)", q.scanCompletedLegacy),
-  ]) + (q.anomalies.length ? `<div class="banner warn">${q.anomalies.map((a: string) => esc(a)).join("<br>")}</div>` : "") +
-    `<div class="note-block">${badge("NOT_TRACKED")} ${esc(q.revenueCatHistoryNote)}</div>`);
+  ]) + `<div class="note-block">${badge("NOT_TRACKED")} ${esc(q.revenueCatHistoryNote)}</div>`));
 }
 
 /**
@@ -1282,7 +1608,6 @@ export function renderCompsInspector(input: any): string {
 
 // ── Last 50 new phones · Hunt XP · Hunt Levels (server/founderHuntJourney.ts) ──
 
-const tick = (b: boolean) => b ? "✓" : `<span class="muted">·</span>`;
 const cnt = (v: number | null | undefined) => v === null || v === undefined ? `<span class="muted">—</span>` : v === 0 ? `<span class="muted">0</span>` : num(v);
 
 function onboardingCell(o: any): string {
@@ -1349,12 +1674,82 @@ function renderNewPhones(x: any): string {
     x.xpError ? `XP unavailable: ${x.xpError}` : "",
   ].filter(Boolean).map((t: string) => `<div class="banner warn">${esc(t)}</div>`).join("");
   return section(id, title, warn + summary +
-    `<div class="card wide"><div class="card-h">Newest first <span class="muted">— Central Time · a phone is one install (reinstalling makes a new one) · scope and date range do not apply here${x.oldest ? ` · oldest shown first opened ${when(x.oldest)}` : ""}</span></div>
-    ${table(["First open", "Reached", "Onboarding", "Account", "Paywalls", "Scans", "Saved", "Hunt", "Brands", "Hunt XP", "Bought", "Last seen"], rows, "compact")}</div>
+    more(`The last ${num(rows.length)} phones, newest first`, `<div class="card wide"><div class="card-h">Newest first <span class="muted">— Central Time · a phone is one install (reinstalling makes a new one) · scope and date range do not apply here${x.oldest ? ` · oldest shown first opened ${when(x.oldest)}` : ""}</span></div>
+    ${table(["First open", "Reached", "Onboarding", "Account", "Paywalls", "Scans", "Saved", "Hunt", "Brands", "Hunt XP", "Bought", "Last seen"], rows, "compact")}</div>`) + `
     <div class="muted">${x.stepsTracked
       ? "Onboarding step = the furthest screen reached (onboarding_step_viewed)."
       : "Onboarding shows milestones only. The exact screen reached starts with the app build after 2.2 (onboarding_step_viewed)."}
       Scans, saves, paywalls and Hunt count events on this phone, plus the account's events on other phones after this phone's first open. Brands and XP are the account's current totals.</div>`);
+}
+
+// ── Hunt (V5 Phase 5) ───────────────────────────────────────────────────────
+
+const HUNT_END_LABEL: Array<[string, string, string]> = [
+  ["completed", "Completed", "the server scored it"],
+  ["savedNotScored", "Saved on the phone, no server record", "the app saved it but the server never scored it (offline, or XP still pending)"],
+  ["discarded", "Left without saving", "Leave Hunt on the confirm screen"],
+  ["noEnd", "No ending recorded", "the app was closed mid-Hunt, or it's still going"],
+];
+
+export function renderHuntV5(h: any): string {
+  const id = "hunt", title = "Hunt";
+  if (!h || typeof h !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
+  if (isErr(h)) return section(id, title, errorCard("Hunt", h));
+  const u = h.usage, c = h.completion, r = h.repeat, it = h.items;
+  const noServer = `<div class="banner warn">The server's hunts table couldn't be read, so completions, items and repeats are missing — not zero.</div>`;
+  const head = grid([
+    m("People who opened Hunt Mode", u.openers),
+    m("Open → start", u.openToStart),
+    u.completed ? m("Hunts completed", u.completed) : card("Hunts completed", "—", "hunts table unread"),
+    c ? m("Hunt completion", c.rate) : card("Hunt completion", "—", "hunts table unread"),
+    r ? retTile("Second Hunt within 7 days", r.d7) : card("Second Hunt within 7 days", "—"),
+    r ? retTile("Second Hunt within 30 days", r.d30) : card("Second Hunt within 30 days", "—"),
+    it ? m("Items removed per Hunt (median)", it.removedMedian, { dp: 1 }) : card("Items removed per Hunt", "—"),
+    it ? m("Share of scanned items removed", it.removedShare) : card("Share of scanned items removed", "—"),
+  ]);
+  const defs = `<div class="muted">Opens and starts are the app's events; a Hunt only counts as completed when the server scored it (the hunts table), joined to the start on the Hunt id. Completion leaves out Hunts started in the last 24 hours, which may still be running. A second Hunt counts people whose first-ever completed Hunt fell in these dates, once they've had 7 (or 30) days.</div>`;
+  const ends = c ? `<div class="card"><div class="card-h">How the Hunts started in these dates ended ${badge("EXACT")} <span class="muted">— ${num(c.settled)} started a day or more ago</span></div>
+    ${table(["Ending", "Hunts", "Share", ""], HUNT_END_LABEL.map(([k, label, tip]) => [`${esc(label)} <span class="muted">${esc(tip)}</span>`, num(c.ends[k]), c.settled ? pct(c.ends[k] / c.settled) : "—", `<div style="min-width:90px">${bar(c.settled ? c.ends[k] / c.settled * 100 : 0)}</div>`]), "compact")}
+    ${c.tooRecent || c.noId ? `<div class="muted">${[c.tooRecent ? `${num(c.tooRecent)} started in the last 24 hours, not counted yet` : "", c.noId ? `${num(c.noId)} from an app too old to send a Hunt id, left out` : ""].filter(Boolean).join(" · ")}.</div>` : ""}</div>` : "";
+  const shape = it ? `<div class="card"><div class="card-h">A finished Hunt ${badge("EXACT")} <span class="muted">— the ${num(it.hunts)} the server scored in these dates</span></div>${grid([
+    m("Items scanned (median)", it.scansMedian, { dp: 1 }), m("Items kept (median)", it.keptMedian, { dp: 1 }),
+    m("Items removed (average)", it.removedMean, { dp: 1 }), m("Finished with nothing kept", it.noneKept),
+    m("Minutes (median)", it.minutesMedian, { dp: 0 }), m("XP (median)", it.xpMedian),
+  ])}<div class="muted">Removed = scanned in the Hunt but not kept (the server's scan_count minus kept_count). In all: ${num(it.totals.scanned)} scanned, ${num(it.totals.kept)} kept, ${num(it.totals.removed)} removed.</div></div>` : "";
+  return section(id, title,
+    (h.huntsReadable ? "" : noServer) + head + defs + `<div class="two">${ends}${shape}</div>` + renderHuntDemo(h.demo) + renderHuntDetail(h.detail) +
+    `<div class="muted">Does Hunting in the first week go with coming back? See <a href="#retseg">Retention by first week</a>. Does the leaderboard lead to Hunting? See <a href="#lb">Leaderboard</a>.</div>`,
+    "app events · server hunts");
+}
+
+function renderHuntDemo(dm: any): string {
+  if (!dm) return "";
+  const headline = `<div class="card-h">Hunt demo — first run <span class="muted">— the guided tutorial, ${num(dm.people)} people in these dates</span></div>`;
+  if (!dm.tracked) return `<div class="card">${headline}<div class="muted">No <code>hunt_onboarding_*</code> event has arrived yet. These fill in once people are on the app build with the Hunt demo.</div></div>`;
+  const paths = dm.paths.map((p: any) => [esc(p.label), num(p.people), cell(p.startedReal), p.finishedReal ? cell(p.finishedReal) : "—"]);
+  const steps = dm.steps.map((s: any) => [num(s.number), `<code>${esc(s.step)}</code>`, num(s.people), s.share === null ? "—" : pct(s.share)]);
+  const exits = dm.exitsByStep.map((s: any) => [s.number === null ? "—" : num(s.number), `<code>${esc(s.step)}</code>`, num(s.people)]);
+  return `<div class="card wide">${headline}
+    ${funnel(dm.funnel)}
+    ${grid([m("Finished the demo", dm.completion), m("Left before the end", dm.exited), m("Skipped the welcome", dm.skipped),
+      m("Tapped Start a real Hunt", dm.tappedReal), m("Seconds to finish (median)", dm.secondsMedian)])}
+    <div class="card-h">What each path did next</div>
+    ${table(["Path", "People", "Started a real Hunt", "Finished a real Hunt"], paths, "compact")}
+    <div class="note-block">An association, not proof: people who sit through a demo may be keener to begin with. ${esc(dm.note)}</div>
+    ${more(`Step by step${dm.totalSteps ? ` (${dm.totalSteps} steps)` : ""}, where people left, and replays`,
+      `<div class="two"><div><div class="card-h">People who completed each step</div>${table(["#", "Step", "People", "Of those who began"], steps, "compact")}</div>
+       <div><div class="card-h">Where people left</div>${table(["#", "Step", "People"], exits, "compact")}
+       ${dm.exitReasons.length ? `<div class="muted">Why: ${dm.exitReasons.map((x: any) => `${esc(x.key)} ${num(x.count)}`).join(" · ")}</div>` : ""}</div></div>
+       <div class="muted">"Don't show again": ${num(dm.dismissed.value)} people · Tapped Done on the last card: ${num(dm.tappedDone.value)} · Replays (How Hunt Mode works): ${num(dm.replays.taps)} taps by ${num(dm.replays.people)} people, ${num(dm.replays.runs)} replay runs, ${num(dm.replays.finished)} finished.</div>`)}</div>`;
+}
+
+function renderHuntDetail(dt: any): string {
+  if (!dt) return "";
+  const rows = dt.rows.map((r: any) => [esc(r.label), num(r.count), num(r.people), `<code>${esc(r.event)}</code>`]);
+  const tl = (xs: any[]) => xs.length ? xs.map((x: any) => `${esc(x.key)} ${num(x.count)}`).join(" · ") : "none";
+  return more("Every Hunt event in these dates",
+    table(["What", "Times", "People", "Event"], rows, "compact") +
+    `<div class="muted">Hunt endings the app logged: ${tl(dt.ended)}. Scan destination chosen: ${tl(dt.destination)}. Restored from: ${tl(dt.restoredFrom)}. Hunt problems the user never sees (hunt_error): ${tl(dt.errors)}.</div>`);
 }
 
 function renderHuntXp(x: any): string {
@@ -1368,20 +1763,20 @@ function renderHuntXp(x: any): string {
     t.streak ? `${num(t.streak)}${t.streakLive ? "" : ` <span class="muted">ended</span>`}` : `<span class="muted">0</span>`,
     t.lastHunt ? esc(String(t.lastHunt).slice(0, 10)) : "—",
   ]);
+  const weeks = x.streakUnit === "weeks";
   return section(id, title,
-    `<div class="card"><div class="card-h">Lifetime <span class="muted">— current totals from xp_profiles · the date range does not apply</span></div>${grid([
-      m("Accounts with XP", x.withXp), m("Total XP", x.totalXp), m("Avg XP (with XP)", x.meanXp), m("Median XP (with XP)", x.medianXp),
-      m("Most XP", x.maxXp), m("Hunts completed", x.huntsCompleted), m("Accounts with a hunt", x.hunters),
-      m(x.streakUnit === "weeks" ? "Live weekly streaks" : "Live streaks", x.liveStreaks),
-      m(x.streakUnit === "weeks" ? "Longest live streak (weeks)" : "Longest live streak", x.longestLiveStreak),
-    ])}</div>
-    <div class="card"><div class="card-h">In the selected range <span class="muted">— ${x.inRangeSource === "server" ? "from the server's record of every Hunt it scored" : "from the app's hunt_xp_awarded event (the server has scored no Hunt in scope yet)"}</span></div>${grid([
-      m("XP earned", ev.xpInRange), m("XP awards (hunts)", ev.awardsInRange), m("People who earned XP", ev.earnersInRange), m("XP per hunt", ev.perHunt, { dp: 0 }),
-    ])}</div>
-    <div class="card"><div class="card-h">Top ${num(x.top.length)} hunters by XP</div>${table(["#", "User", "XP", "Rank", "Hunts", x.streakUnit === "weeks" ? "Week streak" : "Streak", "Last hunt"], top, "compact")}</div>
-    <div class="muted">Only signed-in accounts have an XP row (${num(x.xpRows)} of ${num(x.accounts)} accounts in scope). ${x.streakUnit === "weeks"
-      ? `A weekly streak is live if they Hunted this leaderboard week (from ${esc(x.weekStart ?? "")}) or the one before.`
-      : `A streak is live if the last hunt was ${esc(x.today)} or the day before.`}${x.staleRankNames ? ` ${num(x.staleRankNames)} stored rank name${x.staleRankNames === 1 ? " is" : "s are"} out of date; ranks here are recomputed from XP.` : ""}</div>`,
+    grid([
+      m("XP earned in these dates", ev.xpInRange), m("People who earned XP", ev.earnersInRange), m("XP per Hunt", ev.perHunt, { dp: 0 }),
+      m("Accounts with XP", x.withXp), m("Median XP (with XP)", x.medianXp), m(weeks ? "Live weekly streaks" : "Live streaks", x.liveStreaks),
+    ]) +
+    `<div class="muted">The first three: ${x.inRangeSource === "server" ? "the server's record of every Hunt it scored" : "the app's hunt_xp_awarded event (the server has scored no Hunt in scope yet)"}, the selected dates. The rest are current totals from xp_profiles; the date range doesn't apply.</div>` +
+    more(x.top.length ? `Lifetime totals and the top ${num(x.top.length)} hunters` : "Lifetime totals",
+      grid([m("Total XP", x.totalXp), m("Average XP (with XP)", x.meanXp), m("Most XP", x.maxXp), m("Hunts completed", x.huntsCompleted),
+        m("Accounts with a Hunt", x.hunters), m(weeks ? "Longest live streak (weeks)" : "Longest live streak", x.longestLiveStreak), m("XP awards (Hunts) in these dates", ev.awardsInRange)]) +
+      table(["#", "User", "XP", "Rank", "Hunts", weeks ? "Week streak" : "Streak", "Last hunt"], top, "compact") +
+      `<div class="muted">Only signed-in accounts have an XP row (${num(x.xpRows)} of ${num(x.accounts)} accounts in scope). ${weeks
+        ? `A weekly streak is live if they Hunted this leaderboard week (from ${esc(x.weekStart ?? "")}) or the one before.`
+        : `A streak is live if the last hunt was ${esc(x.today)} or the day before.`}${x.staleRankNames ? ` ${num(x.staleRankNames)} stored rank name${x.staleRankNames === 1 ? " is" : "s are"} out of date; ranks here are recomputed from XP.` : ""}</div>`),
     x.inRangeSource === "server" ? "source: xp_profiles · hunts" : "source: xp_profiles");
 }
 
@@ -1390,26 +1785,31 @@ function renderHuntLevels(x: any): string {
   if (!x || typeof x !== "object") return section(id, title, `<div class="card muted">Unavailable for this load.</div>`);
   if (isErr(x)) return section(id, title, errorCard("Hunt Levels", x));
   const max = Math.max(1, ...x.ladder.map((r: any) => r.users));
-  const rows = x.ladder.map((r: any) => [
+  const row = (r: any) => [
     num(r.number), esc(r.rank),
     `${num(r.fromXp)}${r.toXp !== null ? `–${num(r.toXp)}` : "+"}`,
     r.users ? num(r.users) : `<span class="muted">0</span>`,
     r.share === null ? "—" : pct(r.share),
     `<div style="min-width:120px">${bar(r.users / max * 100)}</div>`,
     r.rankUpsInRange === null ? `<span class="muted">—</span>` : r.rankUpsInRange ? num(r.rankUpsInRange) : `<span class="muted">0</span>`,
-  ]);
+  ];
+  const head = ["#", "Rank", "XP", "Accounts", "Share", "", "Rank-ups in these dates"];
+  // Ranks somebody holds, plus any rank someone reached in the range.
+  const populated = x.ladder.filter((r: any) => r.users > 0 || (r.rankUpsInRange ?? 0) > 0);
+  const empty = x.ladder.length - populated.length;
   return section(id, title,
     grid([
       textCard("Highest rank reached", x.highest ? `${x.highest.number} · ${x.highest.rank}` : null),
       textCard("Median rank (with XP)", x.medianRank ? `${x.medianRank.number} · ${x.medianRank.rank}` : null, "DERIVED"),
       m("Accounts at 0 XP", { value: x.zeroXp, trust: "EXACT", d: x.xpRows }),
-      m("Rank-ups in range", x.rankUpsInRange),
+      m("Rank-ups in these dates", x.rankUpsInRange),
     ]) +
-    `<div class="card"><div class="card-h">Accounts on each rank <span class="muted">— current, recomputed from total XP · share of the ${num(x.xpRows)} accounts with an XP row · rank 1 includes the ${num(x.zeroXp)} at 0 XP</span></div>
-    ${table(["#", "Rank", "XP", "Accounts", "Share", "", "Rank-ups in range"], rows, "compact")}</div>`,
+    `<div class="card"><div class="card-h">Ranks people are on <span class="muted">— current, recomputed from total XP · share of the ${num(x.xpRows)} accounts with an XP row · rank 1 includes the ${num(x.zeroXp)} at 0 XP</span></div>
+    ${table(head, populated.map(row), "compact")}
+    ${empty ? `<div class="muted">${num(empty)} of the ${num(x.ladder.length)} ranks have nobody on them yet.</div>` : ""}</div>` +
+    more(`The full ladder (${num(x.ladder.length)} ranks)`, table(head, x.ladder.map(row), "compact")),
     "source: xp_profiles");
 }
-
 
 // ── Hunt Leaderboard ─────────────────────────────────────────────────────────
 
@@ -1463,19 +1863,21 @@ export function renderLeaderboard(x: any, impact: any): string {
   }
   return section(id, title,
     (x.ever ? "" : `<div class="banner warn">No <code>leaderboard_opened</code> event has arrived yet. These cards fill in once the leaderboard app build is in use.</div>`) +
-    `<div class="card"><div class="card-h">Who opens it <span class="muted">— selected range · accounts in scope</span></div>${grid([
-      m("People who opened it", x.viewers), m("Opens", x.opens), m("Opens per person", x.opensPerViewer, { dp: 1 }),
-      m("Came back another day", x.repeatViewers), m("Return visits", x.returnVisits), m("My Hunt Level shown", x.levelTrackViews),
-    ])}</div>
-    <div class="card"><div class="card-h">Does it lead to a Hunt? <span class="muted">— a Hunt the server scored within ${num(x.conversionDays)} days</span></div>${grid([
+    grid([
+      m("People who opened it", x.viewers), m("Opens per person", x.opensPerViewer, { dp: 1 }), m("Came back another day", x.repeatViewers),
+      m("Opened it → finished a Hunt", x.openToHunt), m("Tapped Start Hunt → finished a Hunt", x.clickToHunt),
+    ]) +
+    `<div class="muted">The selected dates, accounts in scope. "Finished a Hunt" = one the server scored within ${num(x.conversionDays)} days.</div>` +
+    impactHtml +
+    more("Boards, where it's opened from, Start Hunt taps, and safety",
+      `<div class="card"><div class="card-h">More on who opens it</div>${grid([m("Opens", x.opens), m("Return visits", x.returnVisits), m("My Hunt Level shown", x.levelTrackViews)])}</div>
+    <div class="card"><div class="card-h">Start Hunt taps</div>${grid([
       m("Start Hunt taps", x.startHuntClicks), m("People who tapped Start Hunt", x.startHuntClickers), m("Tapped while unranked", x.startHuntUnranked),
-      m("Tapped Start Hunt → finished a Hunt", x.clickToHunt), m("Opened it → finished a Hunt", x.openToHunt),
     ])}</div>
     <div class="card"><div class="card-h">Boards</div>${table(["Board", "Views", "People", "Opened on", "Tab taps", "Viewed while unranked"], boards, "compact")}
     <div class="muted">A view is counted once per board each time the screen is opened, when that board's data arrives.</div></div>
     <div class="card"><div class="card-h">Opened from</div>${table(["From", "Opens"], sources, "compact")}</div>
-    <div class="card"><div class="card-h">Safety</div>${grid([m("Reports sent", x.reports), m("Blocks", x.blocks)])}${reasons ? `<div class="muted">Reports by reason: ${reasons}. Open reports are under Leaderboard review.</div>` : ""}</div>` +
-    impactHtml,
+    <div class="card"><div class="card-h">Safety</div>${grid([m("Reports sent", x.reports), m("Blocks", x.blocks)])}${reasons ? `<div class="muted">Reports by reason: ${reasons}. Open reports are under Leaderboard review.</div>` : ""}</div>`),
     "source: analytics_events (leaderboard_*) · hunts");
 }
 
@@ -1608,10 +2010,122 @@ export function renderLeaderboardReview(x: any): string {
 
 const TOC: Array<[string, string]> = [
   ["exec", "Executive"], ["integrity", "Integrity"], ["explorer", "User explorer"], ["acq", "Users"], ["source", "Source"], ["act", "Activation"], ["funnel", "First session"], ["onv2", "Onboarding V2"], ["newphones", "New phones"], ["mon", "Monetization"], ["pricing", "Pricing"], ["freepaid", "Free → Paid"], ["pw", "Paywalls"], ["pwintel", "Paywall value"], ["offer", "Onboarding offer"],
-  ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["deepa", "Deep Analysis"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"],
-  ["scans", "Scans"], ["reliability", "Fail screens & reliability"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Scan trust"], ["hunt", "Hunt"], ["huntxp", "Hunt XP"], ["huntlevels", "Hunt levels"], ["lb", "Leaderboard"], ["lbboards", "Boards"], ["lbint", "Leaderboard integrity"], ["lbreview", "Leaderboard review"], ["progress", "Progress"],
+  ["paid", "Paid journeys"], ["power", "Power users"], ["store", "Scan Store"], ["deepa", "Deep Analysis"], ["cohorts", "Cohorts"], ["dist", "Distribution"], ["free", "Free users"], ["ret", "Retention"], ["retseg", "Retention segments"], ["sess", "Sessions"], ["versions", "Versions"], ["impact", "Release Impact"],
+  ["scans", "Scans"], ["reliability", "What failed, and why"], ["comps", "Sold comps inspector"], ["feat", "Features"], ["notif", "Notifications"], ["adopt", "Feature adoption"], ["cost", "Cost"], ["costplan", "Cost by plan"], ["trust", "Trust & sold comps"], ["hunt", "Hunt"], ["huntxp", "Hunt XP"], ["huntlevels", "Hunt levels"], ["lb", "Leaderboard"], ["lbboards", "Boards"], ["lbint", "Leaderboard integrity"], ["lbreview", "Leaderboard review"], ["progress", "Progress"],
   ["achievements", "Achievements"], ["brands", "Brands"], ["diamonds", "Diamonds"], ["listings", "Listings"], ["sold", "Sold"], ["dq", "Data quality"],
 ];
+
+// ── V5 navigation (Phase 1) ──────────────────────────────────────────────────
+//
+// The same 48 sections, grouped into 11 tabs on the same page and route. No
+// section's content changes here; they only move. Tabs are pure CSS (:target
+// and :has), so the page still runs no script: a tab is shown when the
+// address ends in its #tab-… hash, or in the id of anything inside it. So
+// every old link keeps working and lands on the right tab: Founder
+// Attention's #dq / #paid / #lbboards, the explorer's #explorer, the
+// leaderboard actions' #lbreview redirect. No hash shows Executive. A
+// browser without :has() shows every section, as the page always did.
+//
+// A "fold" section is collapsed to one line until opened; opening it (or
+// following a link to it) is the same hash mechanism, so a link to a folded
+// section opens it.
+
+export type TabKey = "executive" | "release" | "growth" | "monetization" | "retention" | "product" | "hunt" | "quality" | "economics" | "users" | "admin";
+
+export interface TabSpec {
+  key: TabKey;
+  label: string;
+  /** Section ids in display order. */
+  show: string[];
+  /** Section ids collapsed to one line until opened. */
+  fold?: string[];
+  /** One line under the tab bar, when the tab needs explaining. */
+  note?: string;
+}
+
+export const TABS: TabSpec[] = [
+  { key: "executive", label: "Executive", show: ["exec"] },
+  { key: "release", label: "Release Impact", show: ["impact"], fold: ["versions"] },
+  { key: "growth", label: "Growth", show: ["acq", "source", "act", "funnel", "onv2"] },
+  { key: "monetization", label: "Monetization", show: ["mon", "pricing", "freepaid", "store", "deepa"], fold: ["pw", "offer", "pwintel", "paid"] },
+  { key: "retention", label: "Retention", show: ["ret", "retseg", "cohorts", "sess"], fold: ["free"] },
+  { key: "product", label: "Product", show: ["sold", "feat", "notif", "achievements", "brands"], fold: ["adopt", "progress", "listings", "diamonds"] },
+  { key: "hunt", label: "Hunt", show: ["hunt", "huntxp", "lb", "huntlevels"], fold: ["lbboards"] },
+  { key: "quality", label: "Quality", show: ["scans", "reliability", "trust"] },
+  { key: "economics", label: "Economics", show: ["cost", "costplan"], fold: ["dist"] },
+  { key: "users", label: "Users", show: ["explorer", "power"] },
+  { key: "admin", label: "Admin", show: ["integrity", "dq", "lbreview", "lbint", "comps", "newphones"],
+    note: "Checks and tools: data integrity, leaderboard moderation, the comps inspector and new phones. Problems found here still surface in Founder Attention." },
+];
+
+/** Labels for collapsed sections whose one line needs more than the TOC name. */
+const FOLD_LABEL: Record<string, string> = {
+  diamonds: "Diamonds in the Rough · INACTIVE",
+  versions: "Every version, side by side",
+  pw: "Paywall detail: impressions, repeat views, cancels per paywall",
+  adopt: "Feature use and paying (lifetime, before paying)",
+  offer: "Onboarding offer detail",
+};
+const INACTIVE_NOTE: Record<string, string> = {
+  diamonds: "INACTIVE — the Diamonds in the Rough screen is switched off in the app. Its history is kept here and nothing is deleted, but it gets no headline space.",
+};
+
+const tocLabel = (id: string) => TOC.find(([t]) => t === id)?.[1] ?? id;
+
+/** The section's own heading loses its old page-wide number ("4b · "), which means nothing inside a tab. */
+function unnumbered(html: string): string {
+  return html.replace(/(<section id="[^"]+"(?: class="[^"]*")?><h2>)\d+[a-z]? · /, "$1");
+}
+
+/** Mark a rendered section folded; a renderer that returned only an error card is wrapped so its id still exists. */
+function folded(id: string, html: string, tab: TabKey): string {
+  const open = `<section id="${id}">`;
+  let out = html.includes(open) ? html.replace(open, `<section id="${id}" class="folded">`) : `<section id="${id}" class="folded">${html}</section>`;
+  // Open, it can be closed again: back to the tab itself.
+  const close = `<div class="fold-close"><a href="#tab-${tab}">▾ Collapse</a></div>`;
+  out = /<\/h2>/.test(out) ? out.replace(/<\/h2>/, `</h2>${close}`) : out.replace(`<section id="${id}" class="folded">`, `<section id="${id}" class="folded">${close}`);
+  if (INACTIVE_NOTE[id]) out = out.replace(close, `${close}<div class="note-block inactive">${esc(INACTIVE_NOTE[id])}</div>`);
+  const label = FOLD_LABEL[id] ?? tocLabel(id);
+  return `<div class="fold"><a href="#${id}">▸ ${esc(label)}</a> <span class="muted">collapsed — click to open</span></div>${out}`;
+}
+
+function sectionHtml(id: string, html: string): string {
+  // Unknown or empty output still leaves an anchor, so no link ever points at nothing.
+  if (!html) return `<section id="${id}"></section>`;
+  return html.includes(`<section id="${id}"`) ? html : `<section id="${id}">${html}</section>`;
+}
+
+/** The 11 tab panels, from each section's rendered HTML keyed by id. */
+export function composeTabs(rendered: Record<string, string>): string {
+  return TABS.map(t => {
+    const ids = [...t.show, ...(t.fold ?? [])];
+    const jump = ids.length > 1
+      ? `<div class="subnav"><span class="muted">On this tab:</span> ${ids.map(id => `<a href="#${id}">${esc(t.fold?.includes(id) ? (FOLD_LABEL[id] ?? tocLabel(id)) : tocLabel(id))}</a>`).join("")}</div>` : "";
+    const note = t.note ? `<div class="note-block">${esc(t.note)}</div>` : "";
+    const shown = t.show.map(id => unnumbered(sectionHtml(id, rendered[id] ?? ""))).join("");
+    const fold = (t.fold ?? []).length
+      ? `<div class="folds"><div class="folds-h">More on this tab</div>${(t.fold ?? []).map(id => unnumbered(folded(id, sectionHtml(id, rendered[id] ?? ""), t.key))).join("")}</div>` : "";
+    return `<div class="tabpanel" id="tab-${t.key}">${jump}${note}${shown}${fold}</div>`;
+  }).join("");
+}
+
+/** CSS that shows one tab at a time and highlights its name. Only where :has() works. */
+function tabCss(): string {
+  const on = TABS.map(t =>
+    `body:has(#tab-${t.key}:target) nav.tabs a[href="#tab-${t.key}"],body:has(#tab-${t.key} :target) nav.tabs a[href="#tab-${t.key}"]{background:var(--accent);color:#14200f;font-weight:600}`).join("\n");
+  return `@supports selector(:has(*)){
+.tabpanel{display:none}
+.tabpanel:target{display:block}
+.tabpanel:has(:target){display:block}
+main:not(:has(:target)) #tab-executive{display:block}
+body:not(:has(main :target)) nav.tabs a[href="#tab-executive"]{background:var(--accent);color:#14200f;font-weight:600}
+${on}
+section.folded{display:none}
+section.folded:target{display:block}
+.fold:has(+ section.folded:target){display:none}
+.fold{display:block}
+}`;
+}
 
 export function generateFounderDashboardV4(metrics: any, secret?: string): string {
   const scope: Scope = metrics?.cohort?.scope === "all" ? "all" : "post_launch";
@@ -1626,29 +2140,33 @@ export function generateFounderDashboardV4(metrics: any, secret?: string): strin
       [renderScans(metrics.scans), renderTrust(metrics.trust), renderCost(metrics.cost), renderHunt(metrics.hunt), renderProgress(metrics.progress),
        renderAchievements(metrics.achievements), renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold)].join(""), metrics.generatedAt, scope, secret, win);
   }
-  const body = [
-    renderExecutive(metrics), renderIntegrity(metrics.dataIntegrity), renderExplorer(metrics.userExplorer),
-    renderAcquisition(metrics.acquisition), renderAcquisitionSource(metrics.acquisitionSource), renderActivation(metrics.activation), renderFunnel(metrics.firstSession), renderOnboardingV2(metrics.onboardingV2), renderNewPhones(metrics.newPhones),
-    renderMonetization(metrics.monetization), renderPricing(metrics.pricing), renderFreeToPaid(metrics.freeToPaid),
-    renderPaywalls(metrics.paywalls), renderPaywallIntel(metrics.paywallIntel), renderOnboardingOffer(metrics.onboardingOffer),
-    renderPaidJourneys(metrics.paidJourneys), renderPowerUsers(metrics.powerUsers), renderScanStore(metrics.scanStore, metrics.scanStoreInsights),
-    renderDeepAnalysis(metrics.deepAnalysis),
-    renderCohorts(metrics.cohorts), renderDistributions(metrics.distributions),
-    renderFree(metrics.freeBehaviour), renderRetentionV2(metrics.retentionV2), renderRetentionSegments(metrics.retentionSegments), renderSessionsV2(metrics.sessionsV2), renderAppVersions(metrics.appVersions),
-    renderScans(metrics.scans), renderScanReliability(metrics.scanReliability), renderCompsInspector(metrics.compsInspector), renderFeatureUsage(metrics.featureUsage), renderFeatureAdoption(metrics.featureAdoption), renderUnitEconomics(metrics.unitEconomics), renderCostByPlan(metrics.costByPlan),
-    // V3 product analytics, preserved and demoted below the business funnel.
-    renderTrust(metrics.trust), renderHunt(metrics.hunt), renderHuntXp(metrics.huntXp), renderHuntLevels(metrics.huntLevels),
-    renderLeaderboard(metrics.leaderboard, metrics.leaderboardImpact), renderLeaderboardBoards(metrics.leaderboardBoards),
-    renderLeaderboardIntegrity(metrics.leaderboardIntegrity), renderLeaderboardReview(metrics.leaderboardReview),
-    renderProgress(metrics.progress), renderAchievements(metrics.achievements),
-    renderBrands(metrics.brands), renderDiamonds(metrics.diamonds), renderListings(metrics.listings), renderSold(metrics.sold),
-    renderDataQualityV4(metrics.dataQualityV4),
-  ].join("");
+  const rendered: Record<string, string> = {
+    exec: renderExecutive(metrics), integrity: renderIntegrity(metrics.dataIntegrity), explorer: renderExplorer(metrics.userExplorer),
+    acq: renderAcquisition(metrics.acquisition), source: renderAcquisitionSource(metrics.acquisitionSource), act: renderActivation(metrics.activation),
+    funnel: renderFunnel(metrics.firstSession), onv2: renderOnboardingV2(metrics.onboardingV2), newphones: renderNewPhones(metrics.newPhones),
+    mon: renderMonetization(metrics.monetization, metrics.paywalls), pricing: renderPricing(metrics.pricing), freepaid: renderFreeToPaid(metrics.freeToPaid),
+    pw: renderPaywalls(metrics.paywalls), pwintel: renderPaywallIntel(metrics.paywallIntel), offer: renderOnboardingOffer(metrics.onboardingOffer),
+    paid: renderPaidJourneys(metrics.paidJourneys), power: renderPowerUsers(metrics.powerUsers), store: renderScanStore(metrics.scanStore, metrics.scanStoreInsights),
+    deepa: renderDeepAnalysis(metrics.deepAnalysis),
+    cohorts: renderCohorts(metrics.cohorts), dist: renderDistributions(metrics.distributions),
+    free: renderFree(metrics.freeBehaviour), ret: renderRetentionV2(metrics.retentionV2), retseg: renderRetentionSegments(metrics.retentionSegments),
+    sess: renderSessionsV2(metrics.sessionsV2), versions: renderAppVersions(metrics.appVersions), impact: renderReleaseImpact(metrics.releaseImpact),
+    scans: renderScanQuality(metrics.scanQuality, metrics.scans), reliability: renderScanReliability(metrics.scanReliability), comps: renderCompsInspector(metrics.compsInspector),
+    feat: renderFeatureUsage(metrics.featureUsage, metrics.featureTable), notif: renderNotifications(metrics.notifications), adopt: renderFeatureAdoption(metrics.featureAdoption), cost: renderUnitEconomics(metrics.unitEconomics),
+    costplan: renderCostByPlan(metrics.costByPlan),
+    trust: renderTrustV5(metrics.trustV5, metrics.soldComps), hunt: renderHuntV5(metrics.huntV5), huntxp: renderHuntXp(metrics.huntXp), huntlevels: renderHuntLevels(metrics.huntLevels),
+    lb: renderLeaderboard(metrics.leaderboard, metrics.leaderboardImpact), lbboards: renderLeaderboardBoards(metrics.leaderboardBoards),
+    lbint: renderLeaderboardIntegrity(metrics.leaderboardIntegrity), lbreview: renderLeaderboardReview(metrics.leaderboardReview),
+    progress: renderProgress(metrics.progress), achievements: renderAchievements(metrics.achievements, celebrationsBlock(metrics.celebrations)),
+    brands: renderBrands(metrics.brands), diamonds: renderDiamonds(metrics.diamonds), listings: renderListings(metrics.listings), sold: renderSold(metrics.sold),
+    dq: renderDataQualityV4(metrics.dataQualityV4),
+  };
+  const body = composeTabs(rendered);
   return shell(body, metrics.generatedAt, scope, secret, win);
 }
 
 function shell(body: string, generatedAt: string, scope: Scope = "post_launch", secret?: string, win?: AnalysisWindow): string {
-  const toc = TOC.map(([id, label]) => `<a href="#${id}">${esc(label)}</a>`).join("");
+  const toc = TABS.map(t => `<a href="#tab-${t.key}">${esc(t.label)}</a>`).join("");
   /**
    * The secret must ride along or the tab logs you out. It is already in the
    * address bar on this page, so putting it in a same-page link exposes
@@ -1687,9 +2205,34 @@ function shell(body: string, generatedAt: string, scope: Scope = "post_launch", 
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
 header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 header h1{font-size:15px;margin:0;color:var(--accent)}header .gen{color:var(--muted);font-size:11px;margin-left:auto}
-nav.toc{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11.5px}nav.toc a{color:var(--muted);text-decoration:none}nav.toc a:hover{color:var(--fg)}
+nav.tabs{display:flex;flex-wrap:wrap;gap:2px;width:100%;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:2px}
+nav.tabs a{color:var(--muted);text-decoration:none;font-size:12px;padding:4px 11px;border-radius:4px}nav.tabs a:hover{color:var(--fg)}
+.tabpanel{scroll-margin-top:100vh}
+.subnav{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;margin:0 0 12px}.subnav a{color:var(--muted)}.subnav a:hover{color:var(--fg)}
+.folds{margin-top:8px}.folds-h{font-size:12px;color:var(--muted);margin:0 0 6px;padding-top:8px;border-top:1px solid var(--line)}
+.fold{display:none;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 11px;margin-bottom:6px;font-size:12px}
+.fold a{color:var(--fg);text-decoration:none;font-weight:600}.fold a:hover{color:var(--accent)}
+.note-block.inactive{border-left-color:var(--warn);color:var(--warn)}
+@media(max-width:700px){header{position:static}section,.tabpanel{scroll-margin-top:12px}}
+.kgroups{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:10px;margin-bottom:10px}
+.kgroup{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:9px 10px}
+.kgroup-h{font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--accent);margin-bottom:7px}
+.kgroup-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.kgroup-tiles .stat{background:#121a16}
+@media(max-width:520px){.kgroups{grid-template-columns:1fr}.kgroup-tiles{grid-template-columns:1fr 1fr}}
+.ri-head{display:flex;flex-wrap:wrap;gap:6px 22px;font-size:12.5px;margin-bottom:6px}
+table.ri td:first-child{width:34%}table.ri td{vertical-align:top}
+.ri-tag{display:inline-block;font-size:9.5px;font-weight:600;padding:0 5px;border-radius:3px;letter-spacing:.3px;cursor:help;white-space:nowrap}
+.ri-noisy{color:var(--warn);border:1px solid var(--warn)}.ri-part{color:#7fb8e8;border:1px solid #7fb8e8}.ri-imm{color:var(--muted);border:1px solid var(--line)}
+.ri-call{display:inline-block;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:3px}
+.ri-better{background:#1f3b2a;color:#7bd394}.ri-worse{background:#4a1d1d;color:#ff9b8a}
+.ri-rules{margin:4px 0 8px 18px;padding:0;color:var(--muted);font-size:11.5px}
+.ri-strip{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:12px}
+.ri-strip .stat-grid{margin-bottom:0}.ri-tile{text-decoration:none;color:var(--fg)}.ri-tile:hover{border-color:var(--accent)}
+.ri-strip-msg{display:block;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin-bottom:12px;color:var(--fg);text-decoration:none;font-size:12px}
+.note-block a,.muted a,.card a:not([class]){color:var(--fg)}
+.fold-close{margin:-4px 0 8px;font-size:11.5px}.fold-close a{color:var(--muted)}.fold-close a:hover{color:var(--fg)}
 main{padding:14px 18px 60px;max-width:1500px;margin:0 auto}
-section{margin:0 0 26px;scroll-margin-top:150px}section h2{font-size:15px;margin:0 0 10px;padding-top:6px;border-top:1px solid var(--line)}section h2 .note{font-weight:400;color:var(--muted);font-size:11px;margin-left:10px}
+section{margin:0 0 26px;scroll-margin-top:190px}section h2{font-size:15px;margin:0 0 10px;padding-top:6px;border-top:1px solid var(--line)}section h2 .note{font-weight:400;color:var(--muted);font-size:11px;margin-left:10px}
 h3{font-size:12.5px;color:var(--muted);margin:14px 0 6px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:10px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:9px 11px}.stat-v{font-size:19px;font-weight:600;line-height:1.2}.stat-l{color:var(--muted);font-size:11px;margin-top:2px}.stat-s{color:var(--muted);font-size:10.5px;margin-top:2px}
@@ -1741,6 +2284,7 @@ table.kv td:first-child{color:var(--muted);width:150px}
 .banner.scope{background:#12200f;border:1px solid var(--accent)}
 .spark{display:flex;align-items:flex-end;gap:2px;height:44px}.spark span{flex:1;background:var(--accent);opacity:.7;border-radius:1px 1px 0 0;min-width:2px}
 code{font-size:11px;background:#0b110e;padding:1px 4px;border-radius:3px}.uid{cursor:help}
+${tabCss()}
 </style></head><body>
 <header><h1>FlipStart · Founder Dashboard <span style="color:var(--muted);font-weight:400">V4</span></h1>
 <div class="scopes">${scopeTabs}</div>
@@ -1754,6 +2298,7 @@ code{font-size:11px;background:#0b110e;padding:1px 4px;border-radius:3px}.uid{cu
   <input type="date" name="to" value="${esc(win?.toDay ?? "")}" max="${esc(todayDay)}" aria-label="End date">
   <button type="submit">Apply</button>
 </form>
-<nav class="toc">${toc}</nav><span class="gen">generated ${esc(generatedAt)}</span></header>
+<span class="gen">generated ${esc(generatedAt)}</span>
+<nav class="tabs" aria-label="Dashboard tabs">${toc}</nav></header>
 <main>${summary}${body}</main></body></html>`;
 }

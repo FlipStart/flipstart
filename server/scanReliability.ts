@@ -300,6 +300,16 @@ export function buildScanReliability(
     return row;
   });
   const sum = (k: keyof SoftRow) => softByReason.reduce((a, r) => a + (r[k] as number), 0);
+  // How long the server took, from scan_outcomes.duration_ms. Results and hard
+  // failures apart: a failure that waited out the 45 s clock would drag a result median.
+  const secs = (xs: OutcomeRow[]) => xs.map(r => Number(r.duration_ms)).filter(v => Number.isFinite(v) && v >= 0).map(v => v / 1000);
+  const resultSecs = secs(results), failureSecs = secs(failures);
+  const medianOf = (xs: number[]) => { if (!xs.length) return null; const s2 = [...xs].sort((p, q) => p - q), m = Math.floor(s2.length / 2); return s2.length % 2 ? s2[m] : (s2[m - 1] + s2[m]) / 2; };
+  const p90Of = (xs: number[]) => { if (!xs.length) return null; const s2 = [...xs].sort((p, q) => p - q); return s2[Math.min(s2.length - 1, Math.ceil(0.9 * s2.length) - 1)]; };
+  const durations = {
+    results: { n: resultSecs.length, median: medianOf(resultSecs), p90: p90Of(resultSecs), over30: rate(resultSecs.filter(v => v > 30).length, resultSecs.length) },
+    failures: { n: failureSecs.length, median: medianOf(failureSecs) },
+  };
   const continued = sum("continued"), declined = sum("declined"), abandoned = sum("abandoned");
 
   return {
@@ -314,7 +324,11 @@ export function buildScanReliability(
     soft: soft.length,
     softRate: rate(soft.length, results.length),
     tiers,
-    failuresByReason: seeded(tally(failures, r => r.reason), FAILURE_REASONS).map(x => ({ ...x, share: rate(x.count, attempts) })),
+    failuresByReason: seeded(tally(failures, r => r.reason), FAILURE_REASONS).map(x => ({
+      ...x, share: rate(x.count, attempts),
+      medianSecs: medianOf(secs(failures.filter(r => (r.reason || "unknown") === x.key))),
+    })),
+    durations,
     blockedByReason: seeded(tally(blocked, r => r.reason), BLOCKED_REASONS),
     stopped: stopped.length,
     softByReason,

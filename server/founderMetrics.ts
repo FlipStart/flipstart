@@ -391,230 +391,8 @@ export async function loadBaseData(): Promise<BaseData> {
 }
 
 // Filter helpers over the in-memory event set (profiles-only).
-function eventsInRange(events: BaseData["events"], sinceISO?: string) {
-  if (!sinceISO) return events;
-  return events.filter(e => e.created_at >= sinceISO);
-}
 function profileEvents(events: BaseData["events"], profileIds: Set<string>) {
   return events.filter(e => e.user_id && profileIds.has(e.user_id));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 1 — CORE USER METRICS
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function getUserMetrics(base: BaseData): Maybe<any> {
-  try {
-    const { profiles, profileIds, events } = base;
-    const total = profiles.length;
-    const t1 = iso(daysAgo(1)), t7 = iso(daysAgo(7)), t30 = iso(daysAgo(30));
-    const todayStart = iso(new Date(new Date().setHours(0, 0, 0, 0)));
-
-    const newToday = profiles.filter(p => p.created_at >= todayStart).length;
-    const new7  = profiles.filter(p => p.created_at >= t7).length;
-    const new30 = profiles.filter(p => p.created_at >= t30).length;
-
-    const pe = profileEvents(events, profileIds);
-    const activeUserSet = (sinceISO: string) =>
-      new Set(pe.filter(e => e.created_at >= sinceISO).map(e => e.user_id));
-
-    const activeToday = activeUserSet(todayStart).size;
-    const activeWeek  = activeUserSet(t7).size;
-    const activeMonth = activeUserSet(t30).size;
-
-    // Returning = profile created before the period AND has an event within it.
-    const profileCreatedAt = new Map(profiles.map(p => [p.id, p.created_at]));
-    const returningInPeriod = (sinceISO: string) => {
-      const ids = new Set<string>();
-      for (const e of pe) {
-        if (e.created_at < sinceISO) continue;
-        const created = profileCreatedAt.get(e.user_id!);
-        if (created && created < sinceISO) ids.add(e.user_id!);
-      }
-      return ids.size;
-    };
-
-    return {
-      total,
-      newToday, new7, new30,
-      activeToday, activeWeek, activeMonth,
-      returningToday: returningInPeriod(todayStart),
-      returningWeek:  returningInPeriod(t7),
-    };
-  } catch (e: any) { return { error: e?.message ?? "user metrics failed" }; }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 2 — RETENTION
-// ═══════════════════════════════════════════════════════════════════════════
-// First active day = profile.created_at (safer: every profile has it). Returned
-// on day N = has any event in [firstDay + N, firstDay + N + 1). Eligible for DN
-// = profile is at least N+1 days old (so the window has elapsed).
-
-export function getRetentionMetrics(base: BaseData): Maybe<any> {
-  try {
-    const { profiles, profileIds, events } = base;
-    const pe = profileEvents(events, profileIds);
-
-    // Map user → sorted event days (ms at midnight UTC for bucketing).
-    const byUser = new Map<string, number[]>();
-    for (const e of pe) {
-      const t = new Date(e.created_at).getTime();
-      const arr = byUser.get(e.user_id!) ?? [];
-      arr.push(t);
-      byUser.set(e.user_id!, arr);
-    }
-
-    const computeDN = (n: number) => {
-      let eligible = 0, retained = 0;
-      const windowOpen = n * DAY_MS, windowClose = (n + 1) * DAY_MS;
-      for (const p of profiles) {
-        const first = new Date(p.created_at).getTime();
-        const ageMs = Date.now() - first;
-        if (ageMs < windowClose) continue; // not old enough — window hasn't fully elapsed
-        eligible++;
-        const evts = byUser.get(p.id);
-        if (!evts) continue;
-        const hit = evts.some(t => (t - first) >= windowOpen && (t - first) < windowClose);
-        if (hit) retained++;
-      }
-      return { eligible, retained, percentage: eligible ? pct(retained, eligible) : null };
-    };
-
-    const d1 = computeDN(1), d7 = computeDN(7), d30 = computeDN(30);
-    const fmt = (d: any) => d.eligible === 0
-      ? { ...d, label: "Not enough data yet" }
-      : d;
-
-    return { d1: fmt(d1), d7: fmt(d7), d30: fmt(d30) };
-  } catch (e: any) { return { error: e?.message ?? "retention failed" }; }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 3 — ACTIVATION FUNNEL (profiles-only)
-// ═══════════════════════════════════════════════════════════════════════════
-
-export async function getActivationFunnelMetrics(base: BaseData): Promise<Maybe<any>> {
-  try {
-    const { profiles, profileIds, events } = base;
-    const totalProfiles = profiles.length;
-    const pe = profileEvents(events, profileIds);
-
-    // Distinct profile users who fired a given event.
-    const usersWithEvent = (name: string) =>
-      new Set(pe.filter(e => e.event_name === name).map(e => e.user_id)).size;
-
-    // Source-of-truth tables: distinct profile users with ≥1 row.
-    const distinctUsersInTable = async (table: string): Promise<number> => {
-      const rows = await fetchAll<{ user_id: string }>(table, "user_id");
-      return new Set(rows.filter(r => profileIds.has(r.user_id)).map(r => r.user_id)).size;
-    };
-
-    const scansUsers = await distinctUsersInTable("scans");
-    const achUsers   = await distinctUsersInTable("user_achievements");
-    const brandUsers = await distinctUsersInTable("user_brand_discoveries");
-    const diaUsers   = await distinctUsersInTable("user_diamond_discoveries");
-
-    const stages = [
-      { key: "profiles_created",      label: "Profiles created",          count: totalProfiles },
-      { key: "onboarding_started",    label: "Onboarding started",        count: usersWithEvent("onboarding_started") },
-      { key: "onboarding_completed",  label: "Onboarding completed",      count: usersWithEvent("onboarding_completed") },
-      { key: "first_scan_started",    label: "First scan started",        count: usersWithEvent("scan_started") },
-      { key: "first_scan_completed",  label: "First scan completed",      count: usersWithEvent("scan_completed") },
-      { key: "first_scan_saved",      label: "First scan saved (table)",  count: scansUsers },
-      { key: "first_hunt_opened",     label: "First Hunt Mode opened",    count: usersWithEvent("hunt_mode_opened") },
-      { key: "first_hunt_started",    label: "First Hunt started",        count: usersWithEvent("hunt_started") },
-      { key: "first_achievement",     label: "First achievement (table)", count: achUsers },
-      { key: "first_brand",           label: "First brand (table)",       count: brandUsers },
-      { key: "first_diamond",         label: "First Diamond (table)",     count: diaUsers },
-      { key: "first_listing",         label: "First listing generated",   count: usersWithEvent("listing_generated") },
-      { key: "first_feedback",        label: "Submitted scan feedback",   count: usersWithEvent("scan_feedback_submitted") },
-    ];
-
-    let prev = totalProfiles;
-    const withRates = stages.map((s, i) => {
-      const pctOfTotal = pct(s.count, totalProfiles);
-      const dropFromPrev = i === 0 ? null : (prev ? pct(prev - s.count, prev) : null);
-      prev = s.count;
-      return { ...s, pctOfTotal, dropFromPrev };
-    });
-
-    return { totalProfiles, stages: withRates };
-  } catch (e: any) { return { error: e?.message ?? "funnel failed" }; }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 4 — ACCOUNT FUNNEL
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function getAccountFunnelMetrics(base: BaseData): Maybe<any> {
-  try {
-    const { events } = base;
-    const count = (name: string) => events.filter(e => e.event_name === name).length;
-
-    const onboardingStarts = count("onboarding_started");
-    const accountCreated   = count("account_created");
-    const loginSuccess     = count("login_success");
-
-    return {
-      onboardingStarts,
-      accountCreated,
-      loginSuccess,
-      conversionFromOnboarding: onboardingStarts ? pct(accountCreated, onboardingStarts) : null,
-    };
-  } catch (e: any) { return { error: e?.message ?? "account funnel failed" }; }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 5 — SESSION / APP OPEN
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function getSessionMetrics(base: BaseData): Maybe<any> {
-  try {
-    const { events, profileIds } = base;
-    const t7 = iso(daysAgo(7));
-    const todayStart = iso(new Date(new Date().setHours(0, 0, 0, 0)));
-    const count = (name: string, sinceISO?: string) =>
-      events.filter(e => e.event_name === name && (!sinceISO || e.created_at >= sinceISO)).length;
-
-    const sessionsToday = new Set(
-      events.filter(e => e.event_name === "app_session_started" && e.created_at >= todayStart)
-            .map(e => e.session_id),
-    ).size;
-    const sessions7 = new Set(
-      events.filter(e => e.event_name === "app_session_started" && e.created_at >= t7)
-            .map(e => e.session_id),
-    ).size;
-
-    // Average session length: app_session_ended carries durationMs in metadata.
-    const ended = events.filter(e => e.event_name === "app_session_ended");
-    const durations = ended
-      .map(e => Number(e.metadata?.durationMs))
-      .filter(n => Number.isFinite(n) && n > 0);
-    const avgSessionMs = durations.length
-      ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
-      : null;
-
-    const pe = profileEvents(events, profileIds);
-    const activeWeekUsers = new Set(pe.filter(e => e.created_at >= t7).map(e => e.user_id)).size;
-    const sessionsPerActivePerDay = activeWeekUsers
-      ? Math.round((sessions7 / activeWeekUsers / 7) * 100) / 100
-      : null;
-    const avgSessionsPerProfile = profileIds.size
-      ? Math.round((sessions7 / profileIds.size) * 100) / 100
-      : null;
-
-    return {
-      appOpensToday: count("app_opened", todayStart),
-      appOpens7:     count("app_opened", t7),
-      sessionsToday,
-      sessions7,
-      avgSessionMs,
-      avgSessionLabel: avgSessionMs === null ? "Session length not fully tracked yet" : null,
-      sessionsPerActivePerDay,
-      avgSessionsPerProfile,
-    };
-  } catch (e: any) { return { error: e?.message ?? "session metrics failed" }; }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -624,7 +402,6 @@ export function getSessionMetrics(base: BaseData): Maybe<any> {
 export async function getScanMetrics(base: BaseData): Promise<Maybe<any>> {
   try {
     const { events, profileIds } = base;
-    const todayStart = iso(new Date(new Date().setHours(0, 0, 0, 0)));
     const pe = profileEvents(events, profileIds);
     const count = (name: string, sinceISO?: string) =>
       pe.filter(e => e.event_name === name && (!sinceISO || e.created_at >= sinceISO)).length;
@@ -987,7 +764,6 @@ export async function getBrandAnalytics(base: BaseData): Promise<Maybe<any>> {
       };
     });
 
-    const discovered = table.filter(b => b.users > 0);
     const sortedByUsers = table.slice().sort((a, b) => b.users - a.users);
     const mostDiscovered  = sortedByUsers.filter(b => b.users > 0).slice(0, 15);
     const leastDiscovered = sortedByUsers.filter(b => b.users === 0).slice(0, 15); // supported but never found
@@ -1127,71 +903,6 @@ export async function getListingAnalytics(base: BaseData): Promise<Maybe<any>> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 15 — DATA QUALITY / TRACKING STATUS
-// ═══════════════════════════════════════════════════════════════════════════
-
-export async function getDataQualityMetrics(base: BaseData): Promise<Maybe<any>> {
-  try {
-    const { events, profiles, ghostProfiles } = base;
-    const todayStart = iso(new Date(new Date().setHours(0, 0, 0, 0)));
-    const withUser = events.filter(e => e.user_id).length;
-    const anonOnly = events.filter(e => !e.user_id && e.anonymous_id).length;
-    const missingSession = events.filter(e => !e.session_id).length;
-
-    const latest = (arr: string[]) => arr.length ? arr.slice().sort().slice(-1)[0] : null;
-    const latestEvent = latest(events.map(e => e.created_at));
-    const latestProfile = latest(profiles.map(p => p.created_at));
-
-    // latest scan saved
-    let latestScan: string | null = null;
-    try {
-      const scanRows = await fetchAll<{ created_at: string }>("scans", "created_at");
-      latestScan = latest(scanRows.map(r => r.created_at));
-    } catch { latestScan = null; }
-
-    // Table connectivity probe.
-    const probe = async (table: string) => {
-      try { await countRows(table); return true; } catch { return false; }
-    };
-    const tables = {
-      profiles: await probe("profiles"),
-      scans: await probe("scans"),
-      analytics_events: await probe("analytics_events"),
-      user_achievements: await probe("user_achievements"),
-      user_brand_discoveries: await probe("user_brand_discoveries"),
-      user_diamond_discoveries: await probe("user_diamond_discoveries"),
-    };
-
-    return {
-      totalEvents: events.length,
-      eventsToday: events.filter(e => e.created_at >= todayStart).length,
-      withUser, anonOnly, missingSession,
-      latestEvent, latestProfile, latestScan,
-      // Abandoned profiles excluded from every metric above (bounced social
-      // logins on the login-only route). Shown so the exclusion is visible.
-      ghostProfiles,
-      tables,
-      trackingStatus: {
-        exact: [
-          "Total profiles", "New users", "Achievements/Brands/Diamonds unlocked (tables)",
-          "Scans saved (table)", "Navigation opens", "Listing generations",
-        ],
-        estimated: ["AI cost / budget (config-rate based)"],
-        notTracked: [
-          "Exact token usage / exact $ cost",
-          "Hunt duration / hunt abandonment",
-          "Session length (unless app_session_ended fires with durationMs)",
-        ],
-      },
-    };
-  } catch (e: any) { return { error: e?.message ?? "data quality failed" }; }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// AGGREGATOR
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════════════════
 // SECTION 16 — SOLD ITEMS / REALIZED PROFIT (source: scans where status='sold')
 // ═══════════════════════════════════════════════════════════════════════════
 // Every sold item, with the AI's estimate vs the user's actual sale price —
@@ -1283,6 +994,9 @@ export async function getSoldMetrics(_base: BaseData): Promise<Maybe<any>> {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// AGGREGATOR
+// ═══════════════════════════════════════════════════════════════════════════
 /**
  * `preloaded` lets the dashboard route load the base data ONCE and hand the
  * same rows to V3 and V4. Loading twice doubled the cost of every page view
@@ -1303,26 +1017,19 @@ export async function getFounderDashboardV3Metrics(preloaded?: BaseData): Promis
 
   // Run sections; each is independently fail-safe.
   const [
-    funnel, scans, achievements, brands, diamonds, listings, dataQuality, sold,
+    scans, achievements, brands, diamonds, listings, sold,
   ] = await Promise.all([
-    getActivationFunnelMetrics(base),
     getScanMetrics(base),
     getAchievementAnalytics(base),
     getBrandAnalytics(base),
     getDiamondAnalytics(base),
     getListingAnalytics(base),
-    getDataQualityMetrics(base),
     getSoldMetrics(base),
   ]);
 
   return {
     configured: true,
     generatedAt: new Date().toISOString(),
-    users:       getUserMetrics(base),
-    retention:   getRetentionMetrics(base),
-    funnel,
-    conversion:  getAccountFunnelMetrics(base),
-    sessions:    getSessionMetrics(base),
     scans,
     trust:       getScanTrustMetrics(base),
     cost:        getCostBudgetMetrics(base),
@@ -1332,7 +1039,6 @@ export async function getFounderDashboardV3Metrics(preloaded?: BaseData): Promis
     brands,
     diamonds,
     listings,
-    dataQuality,
     sold,
   };
 }

@@ -38,6 +38,9 @@ import { loadBaseData, fetchAll, countRows, type BaseData, type EventsLoad } fro
 import { getPricingEras, getAppleFeeRate, eraAt, currentEra, eraPrice, ERA_NOTES, type PricingEra } from "./pricingEras";
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { loadScanOutcomes, buildScanReliability } from "./scanReliability";
+import { buildHunt, buildScanQuality, buildTrust, buildSoldComps, type QHunt } from "./founderHuntQuality";
+import { buildReleaseImpact, loadOutcomeVersions, MAX_WINDOW_DAYS } from "./releaseImpact";
+import { buildExecutiveKpis, activationFor } from "./executiveKpis";
 import { loadHuntData, getHuntXp, getHuntLevels, getNewPhones, type HuntData } from "./founderHuntJourney";
 import {
   loadLeaderboardData, getLeaderboardUsage, getLeaderboardImpact, getLeaderboardBoards, getLeaderboardIntegrity,
@@ -701,14 +704,11 @@ export function getAcquisition(d: V4Data) {
 
     trend: days.map(day => ({ day, newUsers: newByDay.get(day) ?? 0, active: activeByDay.get(day)?.size ?? 0 })),
     cumulative,
-    attributionNote: "Acquisition source attribution not currently tracked.",
+    attributionNote: "Tracked attribution (links, campaigns, which post) isn't recorded. What people say in onboarding is under Source.",
   };
 }
 
 // ── Activation ──────────────────────────────────────────────────────────────
-
-/** Per-user scan counts within the ACTIVITY window. */
-function scanStats(d: V4Data) { return scanStatsOver(d.scans); }
 
 /** Per-user scan counts over ALL of the cohort's scans, ignoring the window. */
 function scanStatsAll(d: V4Data) { return scanStatsOver(d.allScans); }
@@ -773,6 +773,20 @@ export function getActivation(d: V4Data) {
     cohortWindow: d.window.startMs === null ? null : { from: d.window.fromDay, to: d.window.toDay, label: d.window.label },
     semantics: "Acquisition cohort: users who signed up during the selected range. Their scans are counted for all time, including after the range ends.",
     neverScanned: exact(total - withAtLeast(1)),
+    // V5: the canonical definitions, shared with Executive (server/executiveKpis.ts).
+    ...(() => {
+      const scanTimes = new Map<string, number[]>();
+      for (const sc of d.allScans) if (sc.user_id) (scanTimes.get(sc.user_id) ?? scanTimes.set(sc.user_id, []).get(sc.user_id)!).push(Date.parse(sc.created_at));
+      const a = activationFor(profiles.map(p => ({ id: p.id, created_at: d.auth.get(p.id)?.created_at ?? p.created_at })), scanTimes, d.now.getTime());
+      const older = (h: string, x: { d: number }) => total > x.d ? `${total - x.d} too new for ${h} yet` : undefined;
+      return {
+        activation7: derived(a.act7.n, a.act7.d, older("7 days", a.act7)),
+        activation24h: derived(a.act24.n, a.act24.d, older("24 hours", a.act24)),
+        secondScan7: derived(a.second7.n, a.second7.d, older("7 days", a.second7)),
+        hoursToFirstScan7: { value: a.hours.median, trust: "DERIVED" as Trust, d: a.hours.d, note: "people 7+ days old who scanned within 7 days" },
+      };
+    })(),
+    /** Ever scanned, no time limit. Not the activation definition; kept for the lifecycle. */
     activationRate: derived(withAtLeast(1), total, "users with at least one scan"),
     hoursToFirstScanMedian: { value: median(hours), trust: "DERIVED" as Trust, d: hours.length },
     hoursToFirstScanMean:   { value: mean(hours),   trust: "DERIVED" as Trust, d: hours.length },
@@ -865,12 +879,49 @@ export function getPaywalls(d: V4Data, c: Cutover) {
     else if (n <= 5) buckets["4–5"]++; else buckets["6+"]++;
   }
 
+  /**
+   * The subscription funnel, by paywall: people, not events — viewers of
+   * that paywall in the range, then how many of THOSE viewers chose a plan,
+   * started a purchase and bought on it. One person per account: a view
+   * made signed out counts as the account that phone then signed into (when
+   * only one did), so it matches the purchase after signing in. "Chose a
+   * plan" isn't a required step: Annual is preselected, so many buyers never
+   * tap a plan.
+   */
+  // One person per account. A signed-out event belongs to the account that
+  // phone signed into, when exactly one did; otherwise it stays the phone's own.
+  const phoneUsers = new Map<string, Set<string>>();
+  for (const e of all) if (e.user_id && e.anonymous_id) (phoneUsers.get(e.anonymous_id) ?? phoneUsers.set(e.anonymous_id, new Set()).get(e.anonymous_id)!).add(e.user_id);
+  const personOf = (e: Ev): string | null => {
+    if (e.user_id) return e.user_id;
+    if (!e.anonymous_id) return null;
+    const u = phoneUsers.get(e.anonymous_id);
+    return u && u.size === 1 ? [...u][0] : `phone:${e.anonymous_id}`;
+  };
+  const reached = (name: string, src: string | null) => {
+    const out = new Set<string>();
+    for (const e of all) if (e.event_name === name && (src === null || metaStr(e, "paywall_source") === src)) { const p = personOf(e); if (p) out.add(p); }
+    return out;
+  };
+  const funnelRow = (src: string | null) => {
+    const viewers = reached(PW_EVENTS.opened, src);
+    const of = (set: Set<string>) => [...viewers].filter(p => set.has(p)).length;
+    const v = viewers.size, b = of(reached(PW_EVENTS.completed, src));
+    return { source: src ?? "all", viewers: v, chosePlan: of(reached(PW_EVENTS.plan, src)), started: of(reached(PW_EVENTS.started, src)), bought: b,
+      viewerToPurchase: derived(b, v, "viewers who bought on this paywall") };
+  };
+  const funnelBySource = PAYWALL_SOURCES.filter(s => s !== "dev_preview").map(funnelRow).filter(r => r.viewers > 0).sort((a, b) => b.viewers - a.viewers);
+  const allRow = funnelRow(null);
+
   const anyViewers = new Set(all.filter(e => e.event_name === PW_EVENTS.opened).map(e => e.user_id ?? e.anonymous_id ?? "")).size;
   const viewers7 = new Set(all.filter(e => e.event_name === PW_EVENTS.opened && e.created_at >= iso(ago(d.now, 7))).map(e => e.user_id ?? e.anonymous_id ?? "")).size;
   const purchases7 = all.filter(e => e.event_name === PW_EVENTS.completed && e.created_at >= iso(ago(d.now, 7))).length;
 
   return {
     rows, repeatExposure: buckets,
+    funnelBySource, funnelAll: allRow,
+    /** Paywall viewers in the range who bought (any paywall) in it — the Monetization headline. */
+    allViewersToPurchase: derived(allRow.bought, allRow.viewers, "paywall viewers in the range who bought in it"),
     mostShown: rows[0]?.source ?? null,
     totalViewers: exact(anyViewers), viewers7: exact(viewers7), purchases7: exact(purchases7),
     legacyDismissed: exact(all.filter(e => e.event_name === PW_EVENTS.dismissed).length,
@@ -1216,7 +1267,10 @@ export function getMonetization(d: V4Data, paywalls: ReturnType<typeof getPaywal
     paywallViewers: paywalls.totalViewers,
     purchaseStarts: exact(sum("purchaseStarts")), purchaseCompletions: exact(sum("purchases")),
     purchaseCancellations: exact(sum("cancelled")), purchaseFailures: exact(sum("failed")),
-    viewToPurchase: derived(sum("purchases"), paywalls.totalViewers.value ?? 0, "unique paywall viewers who purchased"),
+    // V5 (approved definition): paywall viewers in the range who bought in it.
+    // Was purchase EVENTS ÷ viewers, which counted a repeat buyer twice and
+    // could pass 100%.
+    viewToPurchase: paywalls.allViewersToPurchase ?? derived(sum("purchases"), paywalls.totalViewers.value ?? 0, "unique paywall viewers who purchased"),
     monthlyPurchases: exact(all.filter(e => e.event_name === PW_EVENTS.completed && metaStr(e, "selected_plan") === "monthly").length),
     annualPurchases:  exact(all.filter(e => e.event_name === PW_EVENTS.completed && metaStr(e, "selected_plan") === "annual").length),
     scanPackPurchases: exact(all.filter(e => e.event_name === "scan_pack_purchase_completed").length, "Apple-approved, not server-granted"),
@@ -1789,14 +1843,19 @@ function retentionCalc(b: ReturnType<typeof retentionBase>, n: number, include: 
   // DST-safe: Central days are not all 24h, so stepping by milliseconds from
   // a UTC midnight would drift by an hour twice a year and mis-bucket a return.
   const addDays = (day: string, k: number) => addCentralDays(day, k) ?? day;
-  let eligible = 0, returned = 0;
+  let eligible = 0, returned = 0, total = 0;
+  let firstDue: string | null = null;
   for (const [uid, f] of b.firstDay) {
     if (!include(uid)) continue;
-    if (addDays(f, n + 1) > b.today) continue;
+    total++;
+    const due = addDays(f, n + 1);
+    if (due > b.today) { if (!firstDue || due < firstDue) firstDue = due; continue; }
     eligible++;
     if (b.days.get(uid)!.has(addDays(f, n))) returned++;
   }
-  return { ...derived(returned, eligible), smallSample: eligible < SMALL_SAMPLE };
+  // total: everyone in the cohort; eligible (d) only those old enough. firstDue:
+  // the Central day the next not-yet-old-enough person becomes countable.
+  return { ...derived(returned, eligible), smallSample: eligible < SMALL_SAMPLE, total, firstDue };
 }
 
 export function getRetentionV2(d: V4Data) {
@@ -1844,6 +1903,31 @@ export function getRetentionSegments(d: V4Data) {
     { key: "paid0", label: "Paid by end of day 0", include: u => paidDay0.has(u) },
     { key: "free0", label: "Not paid by end of day 0", include: u => !paidDay0.has(u) },
   ];
+  /**
+   * V5: FIRST-WEEK segments (days 0–6) for the features that rarely happen on
+   * day 0: Hunt, the leaderboard, notifications. Retention is then read only
+   * AFTER that week (D7, D14, D30), so doing the thing can't count as coming
+   * back. D7 already requires the first week to be over, so nobody is put in
+   * "didn't" just because their week isn't finished.
+   */
+  const week = new Map<string, Set<string>>();
+  const mark = (u: string, k: string) => (week.get(u) ?? week.set(u, new Set()).get(u)!).add(k);
+  for (const e of d.allEvents) {
+    if (!e.user_id) continue;
+    const f = b.firstDay.get(e.user_id); if (!f) continue;
+    const day = dayOf(e.created_at), last = addCentralDays(f, 6) ?? f;
+    if (day < f || day > last) continue;
+    if (e.event_name === "hunt_started") mark(e.user_id, "hunt");
+    if (e.event_name === "leaderboard_opened" || e.event_name === "leaderboard_viewed") mark(e.user_id, "lb");
+    if (e.event_name === "notification_permission_answered" && (e.metadata as any)?.granted === true) mark(e.user_id, "notif");
+  }
+  const did = (k: string) => (u: string) => week.get(u)?.has(k) === true;
+  const didnt = (k: string) => (u: string) => week.get(u)?.has(k) !== true;
+  const weekSegments = [
+    { key: "hunt", label: "Started a Hunt in week 1", include: did("hunt") }, { key: "nohunt", label: "No Hunt in week 1", include: didnt("hunt") },
+    { key: "lb", label: "Opened the leaderboard in week 1", include: did("lb") }, { key: "nolb", label: "Didn't open the leaderboard", include: didnt("lb") },
+    { key: "notif", label: "Allowed notifications in week 1", include: did("notif") }, { key: "nonotif", label: "Didn't allow notifications", include: didnt("notif") },
+  ];
   return {
     rows: segments.map(sg => ({
       key: sg.key, label: sg.label,
@@ -1851,7 +1935,12 @@ export function getRetentionSegments(d: V4Data) {
       d1: retentionCalc(b, 1, sg.include), d3: retentionCalc(b, 3, sg.include), d7: retentionCalc(b, 7, sg.include),
       d14: retentionCalc(b, 14, sg.include), d30: retentionCalc(b, 30, sg.include),
     })),
+    firstWeek: weekSegments.map(sg => ({
+      key: sg.key, label: sg.label,
+      d7: retentionCalc(b, 7, sg.include), d14: retentionCalc(b, 14, sg.include), d30: retentionCalc(b, 30, sg.include),
+    })),
     note: "Segments use first-day behaviour only. Segmenting by lifetime totals would be circular — returning is how people accumulate scans and purchases.",
+    firstWeekNote: "What people did in their first 7 days (days 0–6), then whether they were back on day 7, 14 or 30. Only people whose first week is over are counted. Associations, not proof: people who hunt may simply be the keen ones.",
   };
 }
 
@@ -1862,7 +1951,13 @@ export function getSessionsV2(d: V4Data) {
   const started = all.filter(e => e.event_name === "app_session_started");
   const sessions7 = new Set(started.filter(e => e.created_at >= iso(ago(d.now, 7))).map(e => e.session_id)).size;
   const users7 = new Set(started.filter(e => e.created_at >= iso(ago(d.now, 7)) && e.user_id).map(e => e.user_id)).size;
+  // Distinct active Central days per person active in the last 30 days.
+  const t30 = iso(ago(d.now, 30)), daysBy = new Map<string, Set<string>>();
+  for (const e of d.allEvents) if (e.user_id && e.created_at >= t30) (daysBy.get(e.user_id) ?? daysBy.set(e.user_id, new Set()).get(e.user_id)!).add(dayOf(e.created_at));
+  const dayCounts = [...daysBy.values()].map(x => x.size);
   return {
+    activeDaysPerUser30: { value: mean(dayCounts), trust: "DERIVED" as Trust, d: dayCounts.length, note: "distinct days active, people active in the last 30 days" },
+    activeDaysMedian30: { value: median(dayCounts), trust: "DERIVED" as Trust, d: dayCounts.length },
     sessionsToday: exact(new Set(started.filter(e => dayOf(e.created_at) === dayOf(iso(d.now))).map(e => e.session_id)).size),
     sessions7: exact(sessions7), sessionsPerUser7: derived(sessions7, users7),
     durationNote: { trust: "LEGACY" as Trust, note: "Session duration is hidden: app_session_ended.durationMs includes background time (endSession fires on the NEXT foreground after 30 min), so historical values are inflated by hours. Not shown as a KPI until the client redefines a session." },
@@ -1980,6 +2075,99 @@ export function getFeatureUsage(d: V4Data) {
     { feature: "Progress tab", accessed: count("progress_tab_opened") || null, paywallTriggered: null, completed: null, completedUsers: users(e => e.event_name.startsWith("progress_") || e.event_name.startsWith("brand_") || e.event_name.startsWith("diamond_")), note: "accessed only" },
     { feature: "Scan saved", accessed: null, paywallTriggered: null, completed: count("scan_saved") || null, completedUsers: users(e => e.event_name === "scan_saved"), note: "from scan_saved events where present" },
   ];
+}
+
+/**
+ * V5 Product: ONE feature table, the selected range. Per feature: people who
+ * used it, uses, uses per person, people who came back to it on 2+ different
+ * days (repeat), and paywall hits where the feature has a paywall. Share is of
+ * everyone active in the range. Diamonds is left out: the feature is inactive.
+ */
+export const FEATURES: Array<{ key: string; label: string; events: string[]; paywall?: string; match?: (e: Ev) => boolean }> = [
+  { key: "scan", label: "Completed a scan", events: ["scan_completed"] },
+  { key: "saved", label: "Saved a scan", events: ["scan_saved"] },
+  { key: "listings", label: "Generate Listings", events: ["listing_generated"], paywall: "generate_listings" },
+  { key: "deep", label: "Deep Analysis", events: ["deep_analysis_viewed"], paywall: "deep_analysis" },
+  { key: "hunt", label: "Hunt Mode (started a Hunt)", events: ["hunt_started"] },
+  { key: "leaderboard", label: "Leaderboard", events: ["leaderboard_opened", "leaderboard_viewed"] },
+  { key: "progress", label: "Progress tab", events: ["progress_tab_opened"] },
+  { key: "achievements", label: "Achievements", events: ["achievements_opened"] },
+  { key: "brands", label: "Brand Compendium", events: ["brand_compendium_opened", "brand_detail_opened"] },
+  { key: "sold", label: "Logged a sale", events: ["flip_status_changed"], match: e => metaStr(e, "status") === "sold" },
+  { key: "store", label: "Scan Store", events: ["scan_store_opened"] },
+];
+export function getFeatureTable(d: V4Data) {
+  const all = d.base.events;
+  const active = new Set(all.filter(e => e.user_id).map(e => e.user_id!)).size;
+  const rows = FEATURES.map(f => {
+    const evs = all.filter(e => f.events.includes(e.event_name) && (!f.match || f.match(e)));
+    const days = new Map<string, Set<string>>();
+    for (const e of evs) if (e.user_id) (days.get(e.user_id) ?? days.set(e.user_id, new Set()).get(e.user_id)!).add(dayOf(e.created_at));
+    const users = days.size;
+    const paywallHits = f.paywall ? new Set(all.filter(e => e.event_name === PW_EVENTS.opened && metaStr(e, "paywall_source") === f.paywall && e.user_id).map(e => e.user_id!)).size : null;
+    return {
+      key: f.key, label: f.label, events: f.events,
+      users: derived(users, active, "of people active in the range"),
+      uses: evs.length,
+      usesPerUser: users ? evs.length / users : null,
+      repeat: derived([...days.values()].filter(x => x.size >= 2).length, users, "came back to it on 2+ different days"),
+      paywallHits,
+    };
+  });
+  return { rows, active, note: "The selected range. Uses are events; people are accounts. Repeat = used it on 2+ different Central days in the range. Paywall hits = people who saw that feature's paywall." };
+}
+
+/**
+ * Notifications (2.2.2): the permission prompt, the answer, and taps on a
+ * notification. Read for the first time here; the app has logged them since
+ * the notifications release. In the selected range, people not events.
+ */
+export function getNotifications(d: V4Data) {
+  const all = d.base.events;
+  const users = (pred: (e: Ev) => boolean) => new Set(all.filter(e => e.user_id && pred(e)).map(e => e.user_id!));
+  const prompted = users(e => e.event_name === "notification_permission_prompted");
+  const answered = users(e => e.event_name === "notification_permission_answered");
+  const allowed = users(e => e.event_name === "notification_permission_answered" && (e.metadata as any)?.granted === true);
+  const opened = users(e => e.event_name === "notification_opened");
+  const bySource = new Map<string, { prompted: Set<string>; allowed: Set<string> }>();
+  for (const e of all) {
+    if (!e.user_id) continue;
+    const src = metaStr(e, "source") ?? "unknown";
+    if (e.event_name === "notification_permission_prompted") (bySource.get(src) ?? bySource.set(src, { prompted: new Set(), allowed: new Set() }).get(src)!).prompted.add(e.user_id);
+    if (e.event_name === "notification_permission_answered" && (e.metadata as any)?.granted === true) (bySource.get(src) ?? bySource.set(src, { prompted: new Set(), allowed: new Set() }).get(src)!).allowed.add(e.user_id);
+  }
+  const kinds = new Map<string, { opens: number; people: Set<string> }>();
+  for (const e of all) if (e.event_name === "notification_opened") {
+    const k = metaStr(e, "kind") ?? "unknown";
+    const x = kinds.get(k) ?? kinds.set(k, { opens: 0, people: new Set() }).get(k)!;
+    x.opens++; if (e.user_id) x.people.add(e.user_id);
+  }
+  const tracked = all.some(e => e.event_name.startsWith("notification_"));
+  return {
+    tracked,
+    prompted: exact(prompted.size), answered: exact(answered.size), allowed: exact(allowed.size), opened: exact(opened.size),
+    optIn: derived([...allowed].filter(u => answered.has(u)).length, answered.size, "allowed ÷ answered the prompt"),
+    optInOfPrompted: derived([...allowed].filter(u => prompted.has(u)).length, prompted.size, "allowed ÷ shown the prompt"),
+    openedOfAllowed: derived([...opened].filter(u => allowed.has(u)).length, allowed.size, "tapped a notification ÷ allowed (in the range)"),
+    bySource: [...bySource.entries()].map(([source, x]) => ({ source, prompted: x.prompted.size, allowed: x.allowed.size, rate: derived([...x.allowed].filter(u => x.prompted.has(u)).length, x.prompted.size) }))
+      .sort((a, b) => b.prompted - a.prompted),
+    byKind: [...kinds.entries()].map(([kind, x]) => ({ kind, opens: x.opens, people: x.people.size })).sort((a, b) => b.opens - a.opens),
+    note: "From the app's own events, the selected range. iOS only shows the prompt once: someone who said no before can't be asked again, so they never appear as prompted. Notifications sent are scheduled on the phone and aren't logged, so there is no sent → opened rate.",
+  };
+}
+
+/** Full-screen achievement celebrations shown (achievement_celebration_shown), by celebration, in the range. */
+export function getCelebrations(d: V4Data) {
+  const by = new Map<string, { shown: number; people: Set<string> }>();
+  for (const e of d.base.events) if (e.event_name === "achievement_celebration_shown") {
+    const k = metaStr(e, "celebration") ?? "unknown";
+    const x = by.get(k) ?? by.set(k, { shown: 0, people: new Set() }).get(k)!;
+    x.shown++; if (e.user_id) x.people.add(e.user_id);
+  }
+  const rows = [...by.entries()].map(([celebration, x]) => ({ celebration, shown: x.shown, people: x.people.size })).sort((a, b) => b.shown - a.shown);
+  const people = new Set(d.base.events.filter(e => e.event_name === "achievement_celebration_shown" && e.user_id).map(e => e.user_id!)).size;
+  return { rows, shown: rows.reduce((a, r) => a + r.shown, 0), people,
+    note: "Each full screen is shown once per account; a count above people means a re-show, which shouldn't happen." };
 }
 
 export function getDataQualityV4(d: V4Data, c: Cutover, totalProfilesAllTime?: number) {
@@ -3033,6 +3221,26 @@ export function getAppVersions(d: V4Data) {
   };
 }
 
+// ── Release Impact (V5) ─────────────────────────────────────────────────────
+
+/**
+ * Previous version vs the release being judged. See server/releaseImpact.ts
+ * for the three bases and the honesty rules. Built from the same events,
+ * account dates and subscription journeys as the rest of the page; the date
+ * range does not apply (the comparison sets its own matched windows).
+ */
+export function getReleaseImpact(d: V4Data, outcomes: Parameters<typeof buildReleaseImpact>[0]["outcomes"], env: NodeJS.ProcessEnv = process.env) {
+  const created = new Map(d.base.profiles.map(p => [p.id, p.created_at]));
+  const firstSub = new Map<string, string>();
+  for (const j of allJourneys(d)) if (j.firstPurchaseAt && j.firstPaidKind !== "scan_pack") firstSub.set(j.userId, j.firstPurchaseAt);
+  return buildReleaseImpact({
+    events: d.allEvents,
+    accountCreatedAt: uid => d.auth.get(uid)?.created_at ?? created.get(uid) ?? null,
+    firstSubscriptionAt: uid => firstSub.get(uid) ?? null,
+    outcomes, now: d.now, env,
+  });
+}
+
 // ── Acquisition source ──────────────────────────────────────────────────────
 
 /**
@@ -3088,18 +3296,34 @@ export function getAcquisitionSource(d: V4Data, env: NodeJS.ProcessEnv = process
       revenuePerPaidUser: { value: a.paid ? a.revenue / a.paid : null, trust: "ESTIMATED" as Trust, d: a.paid } };
   }).sort((x, y) => y.users - x.users || x.key.localeCompare(y.key));
 
-  // Acquisition source — only if the data carries one.
+  /**
+   * Where people SAY they heard about FlipStart: onboarding's "How did you
+   * first hear about FlipStart?" (2.2.2 onward). Read from the account's own
+   * events first (onboarding_completed carries it), then from the signed-out
+   * events of the same phone (the quiz is answered before signing up), so
+   * someone who answered but never finished the offer still counts.
+   * People who signed up in the selected range, like Activation.
+   */
+  const fromLinked = (uid: string): string | null => {
+    for (const e of d.link?.byUser.get(uid) ?? []) {
+      const v = metaStr(e, "acquisition_source") ?? (e.event_name === "onboarding_question_answered" && metaStr(e, "question") === "source" ? metaStr(e, "answer") : null);
+      if (v) return v;
+    }
+    return null;
+  };
+  const sourceOf = (uid: string): string | null => {
+    for (const e of evsByUser.get(uid) ?? []) { const k = ACQUISITION_KEYS.find(k => metaStr(e, k)); if (k) return metaStr(e, k)!; }
+    return fromLinked(uid);
+  };
+  const inRange = d.window.startMs === null ? d.base.profiles : d.base.profiles.filter(p => inWindow(d.window, p.created_at));
   const bySource = new Map<string, string[]>();
   let sourceEvents = 0;
-  for (const p of d.base.profiles) {
-    for (const e of evsByUser.get(p.id) ?? []) {
-      const k = ACQUISITION_KEYS.find(k => metaStr(e, k));
-      if (!k) continue;
-      sourceEvents++;
-      const v = metaStr(e, k)!.trim().toLowerCase();
-      (bySource.get(v) ?? bySource.set(v, []).get(v)!).push(p.id);
-      break;
-    }
+  for (const p of inRange) {
+    const raw = sourceOf(p.id); if (!raw) continue;
+    sourceEvents++;
+    const v = raw.trim().toLowerCase();
+    const label = ONBOARDING_V2_LABELS.source[v] ?? v;
+    (bySource.get(label) ?? bySource.set(label, []).get(label)!).push(p.id);
   }
   // Self-reported intent from the onboarding quiz.
   const answer = (uid: string, key: string) => {
@@ -3116,6 +3340,8 @@ export function getAcquisitionSource(d: V4Data, env: NodeJS.ProcessEnv = process
     tracked: bySource.size > 0,
     sources: bySource.size ? tally(bySource) : [],
     sourceEvents,
+    /** How many of the people who signed up in the range answered the question. */
+    answered: derived(sourceEvents, inRange.length, "signed up in the range and answered"),
     keysRead: ACQUISITION_KEYS,
     cac: { value: null, trust: "NOT_TRACKED" as Trust, available: false, note: "needs marketing spend, which the dashboard does not have" },
     byGoal: tally(group("primary_goal")),
@@ -3591,7 +3817,6 @@ export const ATTENTION_MAX_ITEMS = 7;
 export const ATTENTION_RULES = {
   activationBelow: 0.5,      // fewer than half have scanned
   activationMinUsers: 10,    // below this, a rate is too noisy to call out
-  powerUserScans30d: 25,
   funnelMinEntrants: 10,     // a stage needs this many entrants before its drop counts
   funnelDropAtLeast: 0.3,    // and must lose at least this share
 };
@@ -3599,7 +3824,7 @@ export const ATTENTION_RULES = {
 export function getFounderAttention(m: any): AttentionItem[] {
   const out: AttentionItem[] = [];
   const ok = (x: any) => x && typeof x === "object" && !("error" in x && typeof x.error === "string");
-  const di = m.dataIntegrity, act = m.activation, pj = m.paidJourneys, pu = m.powerUserPeak;
+  const di = m.dataIntegrity, act = m.activation, pj = m.paidJourneys;
 
   if (ok(di) && LOADER_FAILED.has(di.loader?.status)) {
     out.push({ level: "critical", icon: "🚨", title: di.loader.status === "truncated" ? "Analytics history truncated" : "Loader integrity failed",
@@ -3619,10 +3844,12 @@ export function getFounderAttention(m: any): AttentionItem[] {
     }
   }
   if (ok(pj)) {
-    const neverScanned = (pj.journeys ?? []).filter((j: PaidJourney) => !j.firstScanAt).length;
-    if (neverScanned > 0) {
-      out.push({ level: "info", icon: "💡", title: `${neverScanned} paying user${neverScanned === 1 ? " has" : "s have"} never completed a scan`,
-        detail: "They paid — mostly at the onboarding offer — but have not used the core feature yet.", anchor: "paid" });
+    // Only this week's payers: the all-time count repeated every day and stopped meaning anything.
+    const weekAgo = Date.now() - 7 * 86_400_000;
+    const recent = (pj.journeys ?? []).filter((j: PaidJourney) => !j.firstScanAt && j.firstPurchaseAt && Date.parse(j.firstPurchaseAt) >= weekAgo).length;
+    if (recent > 0) {
+      out.push({ level: "info", icon: "💡", title: `${recent} ${recent === 1 ? "person" : "people"} who paid this week ${recent === 1 ? "hasn't" : "haven't"} scanned yet`,
+        detail: "They paid (mostly at the onboarding offer) but haven't used the core feature. Worth a look in Paid journeys.", anchor: "paid" });
     }
   }
   const fs = m.firstSession;
@@ -3657,18 +3884,23 @@ export function getFounderAttention(m: any): AttentionItem[] {
         detail: "Estimated: list price after Apple's fee, minus estimated AI cost over the last 30 days.", anchor: "costplan" });
     }
   }
-  const pr = m.pricing;
-  if (ok(pr)) {
-    const cur = pr.eras?.find((e: any) => e.era.id === pr.currentEraId);
-    if (cur && cur.paid7.d > 0) {
-      const small = cur.paid7.d < 20 ? `, n=${cur.paid7.d} — small sample` : `, n=${cur.paid7.d}`;
-      out.push({ level: "info", icon: "📈", title: `${cur.era.label}: ${cur.paid7.n} of ${cur.paid7.d} subscribed within ${pr.conversionDays} days`,
-        detail: `${((cur.paid7.value ?? 0) * 100).toFixed(1)}% 7-day paid conversion${small}. Observational, not causal.`, anchor: "pricing" });
+  // V5: the pricing-era line (it restated a number already on the page) and
+  // "Power user" (a nice-to-know, not an action) no longer fire here.
+
+  // ── Release Impact: only a verdict the data can carry ─────────────────────
+  const ri = m.releaseImpact;
+  if (ok(ri) && ri.ready) {
+    for (const r of [...(ri.cohorts ?? []), ...(ri.activity ?? [])]) {
+      if (r.call !== "worse") continue;
+      const fmt = (c: any) => c?.value === null || c?.value === undefined ? "—" : r.kind === "rate" ? `${(c.value * 100).toFixed(1)}%` : String(c.value);
+      out.push({ level: "warning", icon: "📉", title: `${r.label} is worse on ${ri.config.target}`,
+        detail: `${fmt(r.target)} vs ${fmt(r.base)} on ${ri.config.baseline} (n=${r.target.d} vs ${r.base.d}), and the gap clears the 95% test.`, anchor: "impact" });
     }
-  }
-  if (pu && pu.scans30 >= ATTENTION_RULES.powerUserScans30d) {
-    out.push({ level: "opportunity", icon: "🔥", title: "Power user",
-      detail: `${pu.user ?? "One user"} (${pu.plan}) completed ${pu.scans30} scans in the last 30 days.`, anchor: "explorer" });
+    const active = (ri.activity ?? []).find((r: any) => r.key === "activeUsers")?.target?.value ?? 0;
+    if (ri.config.releaseAtSource !== "env" && active >= ATTENTION_RULES.activationMinUsers) {
+      out.push({ level: "info", icon: "🗓️", title: `Set the ${ri.config.target} release time`,
+        detail: `${active} people are on ${ri.config.target}, but Release Impact is guessing when it went live. Set RELEASE_IMPACT_AT on Railway.`, anchor: "impact" });
+    }
   }
   // ── Hunt Leaderboard: things only you can act on ──────────────────────────
   const lr = m.leaderboardReview, lbb = m.leaderboardBoards;
@@ -3709,38 +3941,52 @@ export function getFounderAttention(m: any): AttentionItem[] {
 }
 
 /**
- * The Executive section's headline set — one number per question, each
- * saying which window it uses, taken from the sections that own them.
+ * V5 Executive: the 18-tile KPI set. See server/executiveKpis.ts. Built from
+ * the page's own events and the server's hunts rows, and reuses the numbers
+ * other tabs already own (new / active users, paying users, the pricing
+ * cohort) so a tile can never disagree with its own tab.
  */
-export function getExecutiveCore(m: any) {
+export function getExecutiveKpis(d: V4Data, m: any, lb: { hunts: Array<{ user_id: string; hunt_id: string; completed_at: string; scan_count: number }>; errors?: Record<string, string> } | null, rates: any) {
   const ok = (x: any) => x && typeof x === "object" && !(typeof x.error === "string");
   const pick = (x: any, f: (x: any) => any) => ok(x) ? f(x) ?? null : null;
+  const ids = new Set(d.base.profiles.map(p => p.id));
   const pr = ok(m.pricing) ? m.pricing : null;
   const cur = pr?.eras?.find((e: any) => e.era.id === pr.currentEraId) ?? null;
-  return {
+  const num = (k: string) => (rates && typeof rates[k] === "number" ? rates[k] : null);
+  const NORMAL = num("NORMAL"), HUNT = num("HUNT"), LISTING = num("LISTING");
+  return buildExecutiveKpis({
+    events: d.allEvents,
+    accounts: d.base.profiles.map(p => ({ id: p.id, created_at: d.auth.get(p.id)?.created_at ?? p.created_at })),
+    hunts: lb && !lb.errors?.hunts ? lb.hunts.filter(h => ids.has(h.user_id)) : null,
+    rates: NORMAL !== null && HUNT !== null && LISTING !== null ? { NORMAL, HUNT, LISTING } : null,
+    targetVersion: ok(m.releaseImpact) ? m.releaseImpact.config?.target ?? null : null,
     newUsers7: pick(m.acquisition, a => a.new7),
-    activation: pick(m.activation, a => a.activationRate),
-    wau: pick(m.acquisition, a => a.wau),
+    activeUsers7: pick(m.acquisition, a => a.wau),
     payingUsers: pick(m.monetization, mo => mo.totalPaying),
-    viewerToPurchase: pick(m.monetization, mo => mo.viewToPurchase),
-    d7: pick(m.retentionV2, r => r.d7),
-    pricingEraLabel: cur?.era.label ?? null,
-    pricingConversion: cur ? cur.paid7 : null,
-    topUserScans30: ok(m.powerUserPeak) && m.powerUserPeak ? m.powerUserPeak.scans30 : null,
-  };
+    monthly: pick(m.monetization, mo => mo.currentMonthly),
+    annual: pick(m.monetization, mo => mo.currentAnnual),
+    purchases7: pick(m.paywalls, pw => pw.purchases7),
+    pricingPaid7: cur ? { ...cur.paid7, label: cur.era.label } : null,
+    now: d.now,
+  });
 }
 
-/** The single most active user in scope over the last 30 days. */
-export function getPowerUserPeak(d: V4Data) {
-  const t30 = iso(ago(d.now, 30));
-  const counts = new Map<string, number>();
-  for (const sc of d.allScans) if (sc.user_id && sc.created_at >= t30) counts.set(sc.user_id, (counts.get(sc.user_id) ?? 0) + 1);
-  let top: string | null = null, n = 0;
-  for (const [uid, c] of counts) if (c > n) { n = c; top = uid; }
-  if (!top) return null;
-  const p = d.profiles.get(top);
-  return { userId: top, user: p?.display_name ?? p?.username ?? null, plan: currentPlan(d, top), scans30: n };
+/**
+ * V5 Phase 5 — Hunt tab. App events for opens, starts and the demo; the
+ * server's hunts table (accounts in scope) for completions, items and repeats.
+ */
+export function getHuntV5(d: V4Data, lb: { hunts: QHunt[]; errors?: Record<string, string> } | null) {
+  const ids = d.base.profileIds;
+  return buildHunt({
+    events: d.base.events, allEvents: d.allEvents,
+    hunts: lb && !lb.errors?.hunts ? lb.hunts.filter(h => ids.has(h.user_id)) : null,
+    window: d.window, now: d.now.getTime(),
+  });
 }
+/** V5 Phase 5 — Quality tab, as the user experienced it: scoped events in the selected dates. */
+export function getScanQuality(d: V4Data) { return buildScanQuality(d.base.events, d.window, d.now.getTime()); }
+export function getTrustV5(d: V4Data) { return buildTrust(d.base.events); }
+export function getSoldComps(d: V4Data) { return buildSoldComps(d.base.events); }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
 
@@ -3770,6 +4016,9 @@ export async function getFounderDashboardV4Metrics(
   // Phase 6: every user, the selected dates only — see server/scanReliability.ts.
   const scanReliability = await safeAsync("scanReliability", async () =>
     buildScanReliability(await loadScanOutcomes(window), d.rawEvents ?? [], window));
+  // Release Impact reads scan_outcomes over its own span: up to 2 × 28 days back.
+  const releaseImpact = await safeAsync("releaseImpact", async () =>
+    getReleaseImpact(d, await loadOutcomeVersions(new Date(d.now.getTime() - 2 * MAX_WINDOW_DAYS * DAY).toISOString()), env));
   // Hunt XP / Levels / New Phones — two extra reads (xp_profiles, user_brand_discoveries).
   // Hunt Leaderboard: the server's own tables (hunts, hunt_scans, weekly XP, reports).
   const [hunt, lbLoad] = await Promise.all([
@@ -3785,7 +4034,6 @@ export async function getFounderDashboardV4Metrics(
     ...v3Metrics,
     cutover, cohort, window,
     dataIntegrity: safe("dataIntegrity", () => getDataIntegrity(d)),
-    powerUserPeak: safe("powerUserPeak", () => getPowerUserPeak(d)),
     pricing: safe("pricing", () => getPricingExperiments(d, env)),
     freeToPaid: safe("freeToPaid", () => getFreeToPaid(d)),
     distributions: safe("distributions", () => getUsageDistributions(d, rates)),
@@ -3803,6 +4051,7 @@ export async function getFounderDashboardV4Metrics(
     paywallIntel: safe("paywallIntel", () => getPaywallIntelligence(d, env)),
     retentionSegments: safe("retentionSegments", () => getRetentionSegments(d)),
     appVersions: safe("appVersions", () => getAppVersions(d)),
+    releaseImpact,
     acquisitionSource: safe("acquisitionSource", () => getAcquisitionSource(d, env)),
     onboardingV2: safe("onboardingV2", () => getOnboardingV2(d)),
     costByPlan: safe("costByPlan", () => getCostByPlan(d, rates, env)),
@@ -3820,14 +4069,21 @@ export async function getFounderDashboardV4Metrics(
     retentionV2: safe("retentionV2", () => getRetentionV2(d)),
     sessionsV2:  safe("sessionsV2", () => getSessionsV2(d)),
     featureUsage: safe("featureUsage", () => getFeatureUsage(d)),
+    featureTable: safe("featureTable", () => getFeatureTable(d)),
+    notifications: safe("notifications", () => getNotifications(d)),
+    celebrations: safe("celebrations", () => getCelebrations(d)),
     scanReliability,
+    huntV5: safe("huntV5", () => getHuntV5(d, lb)),
+    scanQuality: safe("scanQuality", () => getScanQuality(d)),
+    trustV5: safe("trustV5", () => getTrustV5(d)),
+    soldComps: safe("soldComps", () => getSoldComps(d)),
     unitEconomics: safe("unitEconomics", () => getUnitEconomics(d, v3Metrics?.cost)),
     dataQualityV4: safe("dataQualityV4", () => getDataQualityV4(d, cutover)),
     preLaunchProfiles: d.preLaunchProfiles,
   };
   // Last: these read the finished metrics, never raw data, so they can only
   // ever restate what the page itself shows.
-  out.executiveCore = safe("executiveCore", () => getExecutiveCore(out));
+  out.executiveKpis = safe("executiveKpis", () => getExecutiveKpis(d, out, lb, rates));
   out.founderAttention = safe("founderAttention", () => getFounderAttention(out));
   return out;
 }
