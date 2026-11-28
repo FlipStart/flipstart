@@ -385,13 +385,11 @@ const ONBOARDING_OFFER: PaywallConfig = {
  * What Pro adds, as the onboarding offer lists it BEFORE the plans.
  *
  * Every line is a real gate in server/monetization/policy.ts — the scan
- * allowances, the third photo slot, AI Context, Generate Listings and Deep
- * Analysis — and nothing else is: Sold Comps and Hunt Mode are free, so they
- * are not sold here. No promise about profit, sales or accuracy.
+ * allowances, AI Context, Generate Listings and Deep Analysis — and nothing
+ * else is: Sold Comps, Hunt Mode and (since Nov 2026) the third photo are
+ * free, so they are not sold here. No promise about profit, sales or accuracy.
  *
  * The scan numbers are interpolated from the constants above, never typed.
- * Free already has two photos (front and tag), so the third is described as
- * what it actually is: one more angle.
  */
 export interface ProOfferFeature { key: string; title: string; detail: string }
 
@@ -401,17 +399,10 @@ export const ONBOARDING_PRO_FEATURES: readonly ProOfferFeature[] = [
     title: "More scans",
     detail: `${MONTHLY_SCANS.toLocaleString("en-US")}/mo or ${ANNUAL_SCANS.toLocaleString("en-US")}/yr`,
   },
-  { key: "photos",   title: "3-photo scans",     detail: "Add another angle" },
   { key: "context",  title: "AI Context",        detail: "Add your own notes" },
   { key: "listings", title: "Generate Listings", detail: "For eBay and Depop" },
+  { key: "deep",     title: "Deep Analysis",     detail: "Why every rating" },
 ];
-
-/** Full width under the grid: the one feature whose value needs a sentence. */
-export const ONBOARDING_DEEP_ANALYSIS: ProOfferFeature = {
-  key: "deep",
-  title: "Deep Analysis",
-  detail: "The full reasoning behind every verdict: confidence breakdown, where to sell, how to list.",
-};
 
 const CONFIGS: Record<ProPaywallSource, PaywallConfig> = {
   generate_listings: GENERATE_LISTINGS,

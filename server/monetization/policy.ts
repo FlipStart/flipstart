@@ -195,7 +195,10 @@ export function orderContainsTrial(plan: PlanState): boolean {
 /**
  * Feature access.
  *
- * Sold Comps and Hunt Mode are FREE features — a deliberate product decision.
+ * Sold Comps, Hunt Mode and the third photo are FREE features — deliberate
+ * product decisions. The third photo was Pro until Nov 2026: its paywall was
+ * mostly hit by accident and almost never converted, and a third angle (often
+ * the tag) is what helps the AI most on high-value items.
  * Sold Comps costs real money per request, so the temptation to gate it is
  * real, but it is part of the core scanning experience and the comps budget
  * system already caps that spend independently.
@@ -206,8 +209,8 @@ export function canUseFeature(plan: PlanState, feature: Feature): boolean {
   const pro = plan === "monthly" || plan === "annual";
   switch (feature) {
     case "sold_comps":
-    case "hunt_mode":         return true;
-    case "scan_photo_3":
+    case "hunt_mode":
+    case "scan_photo_3":      return true;
     case "camera_context":
     case "generate_listings":
     case "deep_analysis":     return pro;
@@ -216,7 +219,7 @@ export function canUseFeature(plan: PlanState, feature: Feature): boolean {
   }
 }
 
-/** Photo slots allowed. Free is 2 (front + tag); Pro is 3. */
+/** Photo slots allowed: 3 for everyone (Free was 2 until Nov 2026). */
 export function maxPhotoSlots(plan: PlanState): 2 | 3 {
   return canUseFeature(plan, "scan_photo_3") ? 3 : 2;
 }

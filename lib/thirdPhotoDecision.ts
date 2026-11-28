@@ -27,17 +27,22 @@
 export type PhotoSlotName = "front" | "tag" | "detail";
 export const SLOT_FILL_ORDER: PhotoSlotName[] = ["front", "tag", "detail"];
 
-/** Hard product ceiling. Pro gets three; nobody gets four. */
+/** Hard product ceiling: three photos, for everyone; nobody gets four. */
 export const MAX_SLOTS = 3;
-export const FREE_SLOTS = 2;
+/**
+ * Free used to get two (the third was Pro). Since Nov 2026 everyone gets three,
+ * so this equals MAX_SLOTS and the paywall paths below never fire. Kept as a
+ * name so the gate could come back by changing one number.
+ */
+export const FREE_SLOTS = 3;
 
 export type EntitlementReadiness = "unresolved" | "ready" | "error";
 
 /**
  * How many slots this user may actually fill.
  *
- * Fails closed while unresolved: FREE_SLOTS, never MAX_SLOTS. A premium slot
- * must not be granted by a loading state — and note that packs are not a
+ * While unresolved this is FREE_SLOTS, which is now three as well — so a slow
+ * account check no longer sends anyone to a paywall. Packs are not a
  * parameter here at all, so no balance can widen it.
  */
 export function allowedSlots(status: EntitlementReadiness, maxPhotoSlots: number): number {

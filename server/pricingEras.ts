@@ -96,6 +96,10 @@ export const ERA_NOTES: Array<{ at: string | null; note: string }> = [
     note: "Pricing V3: people already subscribed kept the V2 price. Subscriber value uses the era of each person's first purchase, so they stay at V2. Someone whose V2 subscription lapsed and who re-subscribes in V3 pays V3 but is still valued at V2 here.",
   },
   {
+    at: null,
+    note: "Third photo free for everyone from the server deploy around Nov 28 (it was Pro). The third_photo paywall stops appearing, so its views drop to zero — that is the change, not a tracking gap. Free scans can cost slightly more with a third image.",
+  },
+  {
     at: "2026-11-29T12:00:00.000Z",
     note: "Pricing V4: annual back to $19.99, monthly stays $7.99. Only the annual price moved, so V4 vs V3 is mostly a test of the annual price. Revenue estimates count first periods only, so existing annual subscribers renewing at the lower price don't show here.",
   },

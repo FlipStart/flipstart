@@ -69,7 +69,6 @@ import { ProBenefits, type BenefitKey } from "./ProBenefits";
 
 /** Which benefit each contextual paywall should quietly emphasize. */
 const BENEFIT_FOR_SOURCE: Partial<Record<string, BenefitKey>> = {
-  third_photo: "photos",
   deep_analysis: "deep",
   generate_listings: "listings",
   camera_context: "context",

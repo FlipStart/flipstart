@@ -7,12 +7,11 @@
  *               ✦ PRO ✦
  *   ──────────────────────────────────
  *      Get more from every thrift trip.
- *      ✓ More scans      ✓ 3-photo scans
- *      ✓ AI Context      ✓ Generate Listings
- *      [ Deep Analysis: the full reasoning … ]
- *      ( Annual   Save 69%          $29.99 )
+ *      ✓ More scans      ✓ AI Context
+ *      ✓ Generate Listings  ✓ Deep Analysis
+ *      ( Annual   Save 79%          $19.99 )
  *      ( Monthly                     $7.99 )
- *      [ ✦  Start Annual Pro · $29.99/year  ✦ ]
+ *      [ ✦  Start Annual Pro · $19.99/year  ✦ ]
  *      [          Continue Free            ]
  *      15 lifetime scans included · Upgrade anytime
  *      Restore Purchases · disclosure · links
@@ -48,7 +47,7 @@ import { OnboardingHeader } from "@/components/onboarding/OnboardingHeader";
 import { OB, OB_SPACE } from "@/components/onboarding/onboardingTheme";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
-  ANNUAL_SCANS, MONTHLY_SCANS, ONBOARDING_DEEP_ANALYSIS, ONBOARDING_PRO_FEATURES,
+  ANNUAL_SCANS, MONTHLY_SCANS, ONBOARDING_PRO_FEATURES,
   type PaywallConfig,
 } from "@/lib/paywallConfig";
 import {
@@ -175,7 +174,7 @@ export function OnboardingOffer(p: OnboardingOfferProps) {
           accessibilityRole="summary"
           accessibilityLabel={
             "FlipStart Pro includes: " +
-            [...ONBOARDING_PRO_FEATURES, ONBOARDING_DEEP_ANALYSIS].map(f => `${f.title}, ${f.detail}`).join(". ")
+            ONBOARDING_PRO_FEATURES.map(f => `${f.title}, ${f.detail}`).join(". ")
           }
         >
           {[0, 2].map(i => (
@@ -193,15 +192,6 @@ export function OnboardingOffer(p: OnboardingOfferProps) {
               ))}
             </View>
           ))}
-
-          {/* The tick sits with the title so the sentence gets the full width. */}
-          <View style={[s.deep, compact && s.deepCompact]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-            <View style={s.deepHead}>
-              <MaterialIcons name="check-circle" size={17} color={OB.gold} />
-              <Text style={s.fTitle} maxFontSizeMultiplier={MAX_SCALE}>{ONBOARDING_DEEP_ANALYSIS.title}</Text>
-            </View>
-            <Text style={s.deepDetail} maxFontSizeMultiplier={MAX_SCALE}>{ONBOARDING_DEEP_ANALYSIS.detail}</Text>
-          </View>
         </View>
 
         {/* ── Plans. Annual first and selected by default, always. ───────── */}
@@ -470,16 +460,6 @@ const s = StyleSheet.create({
   cellText: { flex: 1 },
   fTitle: { fontSize: 14, lineHeight: 18, fontWeight: "800", color: OB.ink },
   fDetail: { fontSize: 12.5, lineHeight: 16, color: OB.ink },
-  /** Full width, lightly set apart: the one feature that earns a sentence. */
-  deep: {
-    gap: 3,
-    backgroundColor: OB.goldTint,
-    borderRadius: 12, borderWidth: 1, borderColor: "rgba(196,163,52,0.55)",
-    paddingVertical: 9, paddingHorizontal: 12,
-  },
-  deepCompact: { paddingVertical: 7, gap: 2 },
-  deepHead: { flexDirection: "row", alignItems: "center", gap: 7 },
-  deepDetail: { fontSize: 12.5, lineHeight: 17, color: OB.ink },
 
   // Plans
   plans: { gap: 8 },

@@ -40,7 +40,7 @@ import { PW, PW_RADIUS } from "./paywallTheme";
 
 /** The standardized Pro set. Identical on every paywall — never per-trigger. */
 export const PRO_BENEFITS = [
-  { icon: "photo-camera",   label: "3-Photo\nScans",     a11y: "3-photo scans" },
+  { icon: "add-a-photo",    label: "More\nScans",        a11y: "More scans" },
   { icon: "search",         label: "Deep\nAnalysis",     a11y: "Deep Analysis" },
   { icon: "sell",           label: "Generate\nListings", a11y: "Generate Listings" },
   { icon: "auto-awesome",   label: "AI\nContext",        a11y: "AI Context" },
@@ -51,8 +51,8 @@ export const PRO_BENEFITS = [
  * icon. Keyed on paywall source at the call site; null on paywalls with no
  * single feature (scan_limit, settings).
  */
-export type BenefitKey = "photos" | "deep" | "listings" | "context";
-const KEY_INDEX: Record<BenefitKey, number> = { photos: 0, deep: 1, listings: 2, context: 3 };
+export type BenefitKey = "scans" | "deep" | "listings" | "context";
+const KEY_INDEX: Record<BenefitKey, number> = { scans: 0, deep: 1, listings: 2, context: 3 };
 
 export function ProBenefits({ emphasize = null }: { emphasize?: BenefitKey | null }) {
   const [reduceMotion, setReduceMotion] = useState(false);
