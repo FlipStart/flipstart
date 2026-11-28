@@ -10,15 +10,16 @@
  * V1  $7.99 / month · $39.99 / year
  * V2  $5.99 / month · $19.99 / year   — from 2026-09-21
  * V3  $7.99 / month · $29.99 / year   — from 2026-11-06
+ * V4  $7.99 / month · $19.99 / year   — from 2026-11-29, 6:00 am Central (assumed)
  *
  * A new price change = one more entry in ERA_DEFS. Everything downstream
  * (cohorts, comparisons, per-paywall columns) reads the list, so nothing
  * else needs editing.
  *
- * Each start is known as a DATE only. It defaults to midnight Central on that
- * date and is marked `assumed`; set the era's env variable
- * (FLIPSTART_PRICING_V2_AT, FLIPSTART_PRICING_V3_AT) to the exact moment if it
- * is ever known, and that era's assumption flag clears itself.
+ * Each start is an assumption: midnight Central on its date unless the entry
+ * names another hour (V4: 6 am). It is marked `assumed`; set the era's env
+ * variable (FLIPSTART_PRICING_V2_AT … _V4_AT) to the exact moment if it is
+ * ever known, and that era's assumption flag clears itself.
  *
  * ── Existing subscribers keep their price ──────────────────────────────────
  * At V3, people already subscribed stayed at the V2 price. Every estimate
@@ -34,7 +35,7 @@
  */
 import { centralDayStartUtc } from "./dashboardDates";
 
-export type PricingEraId = "v1" | "v2" | "v3";
+export type PricingEraId = "v1" | "v2" | "v3" | "v4";
 
 export interface PricingEra {
   id: PricingEraId;
@@ -59,6 +60,8 @@ interface EraDef {
   /** Central date the era starts, or null for the first era. */
   date: string | null;
   env: string | null;
+  /** Central hour the era starts on its date, when it isn't midnight. */
+  hour?: number;
   monthlyUsd: number;
   annualUsd: number;
 }
@@ -66,12 +69,14 @@ interface EraDef {
 /** The boundary dates, as given. */
 export const PRICING_V2_DATE = "2026-09-21";
 export const PRICING_V3_DATE = "2026-11-06";
+export const PRICING_V4_DATE = "2026-11-29";
 
 /** Oldest first. Add a price change by appending one entry. */
 const ERA_DEFS: EraDef[] = [
   { id: "v1", label: "Pricing V1", date: null,            env: null,                      monthlyUsd: 7.99, annualUsd: 39.99 },
   { id: "v2", label: "Pricing V2", date: PRICING_V2_DATE, env: "FLIPSTART_PRICING_V2_AT", monthlyUsd: 5.99, annualUsd: 19.99 },
   { id: "v3", label: "Pricing V3", date: PRICING_V3_DATE, env: "FLIPSTART_PRICING_V3_AT", monthlyUsd: 7.99, annualUsd: 29.99 },
+  { id: "v4", label: "Pricing V4", date: PRICING_V4_DATE, env: "FLIPSTART_PRICING_V4_AT", hour: 6, monthlyUsd: 7.99, annualUsd: 19.99 },
 ];
 
 /**
@@ -90,6 +95,10 @@ export const ERA_NOTES: Array<{ at: string | null; note: string }> = [
     at: "2026-11-06T06:00:00.000Z",
     note: "Pricing V3: people already subscribed kept the V2 price. Subscriber value uses the era of each person's first purchase, so they stay at V2. Someone whose V2 subscription lapsed and who re-subscribes in V3 pays V3 but is still valued at V2 here.",
   },
+  {
+    at: "2026-11-29T12:00:00.000Z",
+    note: "Pricing V4: annual back to $19.99, monthly stays $7.99. Only the annual price moved, so V4 vs V3 is mostly a test of the annual price. Revenue estimates count first periods only, so existing annual subscribers renewing at the lower price don't show here.",
+  },
 ];
 
 export function getAppleFeeRate(env: NodeJS.ProcessEnv = process.env): number {
@@ -103,9 +112,11 @@ function resolveStart(def: EraDef, env: NodeJS.ProcessEnv): { at: string; assume
   const raw = def.env ? (env[def.env] ?? "").trim() : "";
   const parsed = raw && Number.isFinite(Date.parse(raw)) ? new Date(Date.parse(raw)).toISOString() : null;
   if (parsed) return { at: parsed, assumed: false };
-  const fallbackMs = centralDayStartUtc(def.date!);
+  const dayMs = centralDayStartUtc(def.date!);
+  const hourMs = (def.hour ?? 0) * 3_600_000;
   // Central is UTC−5 (CDT) until early November and UTC−6 (CST) after.
-  return { at: fallbackMs !== null ? new Date(fallbackMs).toISOString() : `${def.date}T06:00:00.000Z`, assumed: true };
+  const fallbackMs = dayMs !== null ? dayMs + hourMs : Date.parse(`${def.date}T06:00:00.000Z`) + hourMs;
+  return { at: new Date(fallbackMs).toISOString(), assumed: true };
 }
 
 export function getPricingEras(env: NodeJS.ProcessEnv = process.env): PricingEra[] {

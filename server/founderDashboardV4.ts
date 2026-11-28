@@ -413,7 +413,7 @@ function renderPricing(pr: any): string {
     "compact")}<div class="muted">${esc(pr.caveat)} Small samples are flagged on each card above. An era's 7-day numbers fill in once its first signups are a week old.</div></div>` : "";
   const assumed: any[] = Array.isArray(pr.assumedStarts) ? pr.assumedStarts : [];
   const notes = [
-    ...assumed.map(a => `${short(a.label)} start is a date-only assumption (midnight Central${a.startsAt ? `, ${when(a.startsAt)}` : ""}). Set ${a.env} to the exact moment if known.`),
+    ...assumed.map(a => `${short(a.label)} start is an assumption, not a recorded moment${a.startsAt ? ` (${when(a.startsAt)} Central)` : ""}. Set ${a.env} to the exact moment if known.`),
     `Revenue is ESTIMATED: list price in USD, first period only — before refunds, renewals and non-US storefront pricing. Net applies Apple's ${Math.round(pr.appleFeeRate * 100)}%. Subscriptions only; scan-pack events are test activity.`,
     ...pr.notes.map((n: any) => `${n.at ? when(n.at) + " — " : ""}${n.note}`),
   ].filter(Boolean).map(t => `<div class="note-block">${esc(t)}</div>`).join("");
