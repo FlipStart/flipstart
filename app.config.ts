@@ -8,7 +8,7 @@ const config: ExpoConfig = {
   slug:                "flipstart",
   version:             "2.2.2",
   orientation:         "portrait",
-  icon:                "./assets/images/icon.png",
+  icon:                "./assets/images/flipstart icon 2.png",
   scheme,
   userInterfaceStyle:  "automatic",
   newArchEnabled:      true,
